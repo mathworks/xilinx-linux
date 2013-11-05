@@ -141,7 +141,7 @@ int mwipcore_mmap(struct file *fp, struct vm_area_struct *vma)
     struct ipcore_info *thisInfo = fp->private_data;
     vma->vm_private_data = thisInfo;
  
-    vma->vm_flags |= VM_IO | VM_RESERVED;
+    vma->vm_flags |= VM_IO | VM_DONTDUMP | VM_DONTDUMP; // may be redundant with call to remap_pfn_range below
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
     
     if (remap_pfn_range(vma, vma->vm_start,
@@ -267,7 +267,7 @@ static void mwipcore_init(struct ipcore_info *thisIpcore)
 }
 
 
-static const struct of_device_id mwipcore_of_match[] __devinitconst = {
+static const struct of_device_id mwipcore_of_match[] = {
     { .compatible = "mathworks,mwipcore-axi4lite-v1.00",},
     {},
 
@@ -277,7 +277,7 @@ MODULE_DEVICE_TABLE(of, mwipcore_of_match);
 
 
 
-static int __devinit mwipcore_of_probe(struct platform_device *pdev)
+static int mwipcore_of_probe(struct platform_device *pdev)
 {
     int status = 0;
     struct ipcore_info *thisIpcore;
@@ -459,7 +459,7 @@ static struct platform_driver mwipcore_driver = {
 		.of_match_table = mwipcore_of_match,
 		},
     .probe = mwipcore_of_probe,
-    .remove = __devexit_p(mwipcore_of_remove),
+    .remove = mwipcore_of_remove,
 };
 
 module_platform_driver(mwipcore_driver);

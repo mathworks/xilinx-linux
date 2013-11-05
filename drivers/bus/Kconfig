@@ -41,4 +41,7 @@ config ARM_CCI
 	help
 	  Driver supporting the CCI cache coherent interconnect for ARM
 	  platforms.
+
+source "drivers/bus/axi4/Kconfig"
+
 endmenu
