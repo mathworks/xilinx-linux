@@ -1,0 +1,16 @@
+#
+# mwgeneric driver configuration
+#
+
+config MWGENERIC
+	tristate "Mathworks Generic Driver"
+	depends on ARM_AMBA && USE_OF
+	default m
+	help
+		Say Y here if you want to add support for the MathWorks Generic
+		driver
+
+		If unsure, say N.
+
+		To compile this driver as a module, choose M here:
+		the module will be called mwgeneric
