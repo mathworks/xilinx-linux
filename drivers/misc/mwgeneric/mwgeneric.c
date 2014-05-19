@@ -233,7 +233,10 @@ int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
     size_t	size = vma->vm_end - vma->vm_start;
 	int status = 0;
 	vma->vm_private_data = thisIpcore;
- 
+	
+	if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NOMEM) {
+		return -ENOMEM;
+	}
 	dev_info(&IP2DEV(thisIpcore), "[MMAP] size:%X pgoff: %lx\n", size, vma->vm_pgoff);
  
 	switch(vma->vm_pgoff) {
@@ -391,6 +394,7 @@ static int mwgeneric_setup_cdev(struct ipcore_info *thisIpcore, dev_t *dev_id)
        dev_err(&thisIpcore->pdev->dev, "Error: failed to create device node %s, err %d\n", thisIpcore->name, status);
        cdev_del(&thisIpcore->cdev);
    }
+   thisIpcore->class_device = thisDevice;
    return status;
 }
 
@@ -413,8 +417,10 @@ MODULE_DEVICE_TABLE(of, mwgeneric_of_match);
 static int mwgeneric_of_probe(struct platform_device *pdev)
 {
     int status = 0;
-    struct ipcore_info *thisIpcore;
+    const char *pm;
+	struct ipcore_info *thisIpcore;
     struct device_node *nodePointer = pdev->dev.of_node;
+    struct device_node *slave_node;
 
     thisIpcore = (struct ipcore_info*) kzalloc(sizeof(*thisIpcore), GFP_KERNEL);
     
@@ -424,36 +430,44 @@ static int mwgeneric_of_probe(struct platform_device *pdev)
         goto allocation_error;
     }
     
-    thisIpcore->mem = platform_get_resource(pdev, IORESOURCE_MEM,0);
+	thisIpcore->memtype = MWGENERIC_MEMTYPE_NORMAL; /* default device type */
+	status = of_property_read_string(nodePointer, "mwgen,type", &pm);
+	if (status >= 0) {
+		if(!strcasecmp(pm,MWGENERIC_MEMTYPE_NOMEM_STR)){
+			thisIpcore->memtype = MWGENERIC_MEMTYPE_NOMEM; /*no memory */
+		}
+	}
+	
+	if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NORMAL) {
+		thisIpcore->mem = platform_get_resource(pdev, IORESOURCE_MEM,0);
+		if(!thisIpcore->mem) 
+		{
+			status = -ENOENT;
+			dev_err(&pdev->dev, "Failed to obtain the resource for platform device\n");
+			goto invalid_platform_res;
+		}
 
-    if(!thisIpcore->mem) 
-    {
-        status = -ENOENT;
-        dev_err(&pdev->dev, "Failed to obtain the resource for platform device\n");
-        goto invalid_platform_res;
-    }
-
-    printk(KERN_INFO DRIVER_NAME " : Dev memory resource found at %08X %08X. \n", thisIpcore->mem->start, resource_size(thisIpcore->mem));
-
-
-    thisIpcore->mem = request_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem), pdev->name);
-
-    if (!thisIpcore->mem)
-    {
-        status = -ENODEV;
-        dev_err(&pdev->dev, "Error while request_mem_region call\n");
-        goto mem_request_err;
-    }
+		printk(KERN_INFO DRIVER_NAME " : Dev memory resource found at %08X %08X. \n", thisIpcore->mem->start, resource_size(thisIpcore->mem));
 
 
-    thisIpcore->regs = ioremap(thisIpcore->mem->start, resource_size(thisIpcore->mem));
-    if(!thisIpcore->regs)
-    {
-        status = -ENODEV;
-        dev_err(&pdev->dev, "Failed while ioremap\n"); 
-        goto ioremap_failure;
-    }
+		thisIpcore->mem = request_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem), pdev->name);
 
+		if (!thisIpcore->mem)
+		{
+			status = -ENODEV;
+			dev_err(&pdev->dev, "Error while request_mem_region call\n");
+			goto mem_request_err;
+		}
+
+
+		thisIpcore->regs = ioremap(thisIpcore->mem->start, resource_size(thisIpcore->mem));
+		if(!thisIpcore->regs)
+		{
+			status = -ENODEV;
+			dev_err(&pdev->dev, "Failed while ioremap\n"); 
+			goto ioremap_failure;
+		}
+	}
     thisIpcore->pdev = pdev;
     thisIpcore->name = nodePointer->name;
     dev_dbg(&pdev->dev,"IPCore name :%s\n", thisIpcore->name);
@@ -491,6 +505,31 @@ static int mwgeneric_of_probe(struct platform_device *pdev)
         }
     }
 
+    slave_node = of_parse_phandle(nodePointer, "i2c-controller", 0);
+    if (slave_node) {
+		dev_info(&IP2DEV(thisIpcore), "%s : creating i2c link\n", nodePointer->name);
+		thisIpcore->i2c = of_find_i2c_device_by_node(slave_node);
+		if(thisIpcore->i2c == NULL){
+			dev_info(&IP2DEV(thisIpcore), "%s : could not find i2c device\n", nodePointer->name);
+		} else {		
+			dev_info(&IP2DEV(thisIpcore), "%s : Adding link to %s[%s]\n", nodePointer->name, thisIpcore->i2c->adapter->name, thisIpcore->i2c->name);
+			
+			/* add a link to the i2c device */
+			status = sysfs_create_link(&thisIpcore->class_device->kobj, &thisIpcore->i2c->dev.kobj, "i2c_device");
+			if (status < 0)
+				goto dev_add_err;
+			
+			/* add a link to the i2c bus */			
+			status = sysfs_create_link(&thisIpcore->i2c->dev.kobj, &thisIpcore->i2c->adapter->dev.kobj, "i2c_adapter");
+			if (status < 0)
+				goto dev_add_err;
+			
+		}
+		of_node_put(slave_node);
+	} else {
+		thisIpcore->i2c = NULL;
+	}
+	
     mwgeneric_init(thisIpcore);
 
 
@@ -502,10 +541,13 @@ dev_add_err:
          class_destroy(mwgeneric_class);    
     }
 class_create_err:
-    iounmap(thisIpcore->regs);
+	if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NORMAL){
+		iounmap(thisIpcore->regs);
+	}
 ioremap_failure:
-     release_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem));
-
+	if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NORMAL){
+		release_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem));
+	}
 mem_request_err:
 invalid_platform_res:
     kfree(thisIpcore);
@@ -531,6 +573,13 @@ static int mwgeneric_of_remove(struct platform_device *pdev)
 
     dev_info(&IP2DEV(thisIpcore), "%s : free and release memory\n", nodePointer->name);
     
+	if (thisIpcore->i2c != NULL) {
+		/* Remove the i2c adapter link */
+		sysfs_remove_link(&thisIpcore->i2c->dev.kobj, "i2c_adapter");
+		/* Remove the i2c device link */
+		sysfs_remove_link(&thisIpcore->class_device->kobj, "i2c_device");
+	}
+	
     if(thisIpcore->regs)
     {
         iounmap(thisIpcore->regs);
@@ -543,11 +592,13 @@ static int mwgeneric_of_remove(struct platform_device *pdev)
 					thisIpcore->dma_info.virt, thisIpcore->dma_info.phys);
 	}
 	
-    if(thisIpcore->mem->start)
-    {
-        release_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem));
+	if(thisIpcore->mem){
+		if(thisIpcore->mem->start)
+		{
+			release_mem_region(thisIpcore->mem->start, resource_size(thisIpcore->mem));
 
-    }
+		}
+	}
     nodePointer->data = NULL;
     device_num--;
 

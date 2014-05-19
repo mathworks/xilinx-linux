@@ -23,6 +23,7 @@
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_i2c.h>
 #include <linux/kfifo.h>
 
 
@@ -35,20 +36,31 @@ struct mw_dma_info {
 };
 
 struct ipcore_info {
-    const char 			*name;
-    struct resource 		*mem;
-    void __iomem 		*regs;
-    struct platform_device 	*pdev;
-    struct cdev 		cdev;
-    dev_t 			dev_id;
-    int 			irq;
-    struct fasync_struct 	*asyncq;
+    const char 			        *name;
+    struct resource 		    *mem;
+    void __iomem 		        *regs;
+    struct platform_device 	    *pdev;
+    struct device				*class_device;
+	struct cdev 		        cdev;
+    dev_t 			            dev_id;
+    int 			            irq;
+    struct fasync_struct 	    *asyncq;
+	char						memtype;
 /*
  * DMA Virtual and physical address
  */
-    struct mw_dma_info	dma_info;
+    struct mw_dma_info	        dma_info;
+
+/*
+ * I2C Controller and EEPROM
+ */
+    struct i2c_client           *i2c;
 };
 
+
+#define MWGENERIC_MEMTYPE_NORMAL		0
+#define MWGENERIC_MEMTYPE_NOMEM			1
+#define MWGENERIC_MEMTYPE_NOMEM_STR		"nomem"
 
 #define MWGENERIC_MAX_DEVTYPE 32
 #define	MWGENERIC_DEVNAME_LEN 32
