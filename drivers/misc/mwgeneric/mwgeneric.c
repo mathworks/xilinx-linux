@@ -234,13 +234,13 @@ int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
 	int status = 0;
 	vma->vm_private_data = thisIpcore;
 	
-	if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NOMEM) {
-		return -ENOMEM;
-	}
 	dev_info(&IP2DEV(thisIpcore), "[MMAP] size:%X pgoff: %lx\n", size, vma->vm_pgoff);
  
 	switch(vma->vm_pgoff) {
 		case 0: 
+            if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NOMEM) {
+        		return -ENOMEM;
+        	}
 			/* mmap the MMIO base address */
 			vma->vm_flags |= VM_IO | VM_DONTDUMP | VM_DONTDUMP; // may be redundant with call to remap_pfn_range below
 			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
