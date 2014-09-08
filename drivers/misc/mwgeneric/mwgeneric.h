@@ -23,7 +23,6 @@
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_i2c.h>
 #include <linux/kfifo.h>
 
 
