@@ -43,7 +43,7 @@
 					#size-cells = <0>;
 					reg = <1>;
 					adv7511: adv7511 {
-						compatible = "adi,adv7511";
+						compatible = "mwadi,mwadv7511";
 						reg = <0x39>;
 
 						adi,input-style = <0x02>;
