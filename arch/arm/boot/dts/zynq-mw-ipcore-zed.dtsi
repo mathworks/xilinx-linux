@@ -1,0 +1,9 @@
+/{
+	amba@0{
+		mwipcore@400D0000 {
+			compatible = "mathworks,mwipcore-axi4lite-v1.00";
+			reg = <0x400D0000 0xffff>;
+		};
+	};
+};
+
