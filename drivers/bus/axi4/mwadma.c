@@ -5,7 +5,7 @@
 
 
 #include "mwadma.h"  /* IOCTL */
-
+#include <linux/amba/xilinx_dma.h>
 
 dev_t mwadma_dev_id = 0;
 
@@ -36,6 +36,9 @@ static int mwadma_channel_probe(struct mwadma_dev *mwdev);
 
 static void mwdma_test_loopback(struct mwadma_dev * mwdev,
         struct mw_axidma_params chn_prm);
+
+int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan);
+
 /*************************************************************************/
 /*
  * @brief mwadma_reg_write
@@ -83,11 +86,12 @@ static int mwadma_open(struct inode *inode, struct file *fp)
  */
 static bool mwadma_filterfn(struct dma_chan *chan, void *param)
 {
-    MW_DBG_printf(": Private is 0x%x\n", *((int *)chan->private));
-    if (*((int *)chan->private) == *(int *)param) {
-        return true;
-    }
-    return false;
+   MW_DBG_printf(":param:0x%d,ptr:0x%p, *(int *)prm=%d\n", (int)param, param, *(int*)param);
+   MW_DBG_printf(":chan, chan->private:0x%p, 0x%p-0x%d\n", chan, chan->private,(int)chan->private);
+   if ((int)chan->private == *(int*)param) {
+       return true;
+   }
+   return false;
 }
 
 
@@ -255,8 +259,6 @@ void mwadma_tx_cb_continuous_signal_dataflow(struct mwadma_dev *mwdev)
         kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT);
         mwchan->status = waiting;
         MW_DBG_text( ": Underflow condition\n");
-        /*printk(KERN_INFO ": transfer = %ld\n", mwchan->transfer_queued);*/
-        /*xilinx_dma_regdump(mwchan->chan);*/
     }
     mwchan->transfer_count++;
 }
@@ -409,7 +411,12 @@ int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan)
  */
 static int mwadma_stop(struct mwadma_dev *mwdev, struct mwadma_chan *mwchan)
 {
-    xilinx_dma_reset(mwchan->chan); /* make DMA engine aware that last transfer is interrupted */
+    struct xilinx_dma_config config;
+    
+    config.coalesc = 0;
+    config.delay = 0;
+    dmaengine_device_control(mwchan->chan, DMA_TERMINATE_ALL, (unsigned long)&config);
+    // xilinx_dma_reset(mwchan->chan); /* make DMA engine aware that last transfer is interrupted */
     dev_dbg(&IP2DEV(mwdev),"DMA STOP\nIterations = %lu\n",mwchan->transfer_count);
 #ifdef DEBUG_IN_RATE
     dev_dbg(&IP2DEV(mwdev),"DMA transfers time = %lld ns\n", (long long)ktime_to_ns(ktime_sub(mwchan->stop,mwchan->start)));
@@ -579,7 +586,6 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                 mwdev->tx->error = TX_ERROR_QFULL;
                 // kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT);
                 spin_unlock(&mwdev->tx->slock);
-                xilinx_dma_regdump(mwdev->tx->chan);
                 return 0;
             }
             mwdev->tx->transfer_queued += userval;
@@ -791,6 +797,8 @@ static void mwadma_mmap_dma_open(struct vm_area_struct *vma)
 static void mwadma_free_channel(struct mwadma_dev *mwdev, struct mwadma_chan *mwchan)
 {
     struct mwadma_slist *slist, *_slist;
+    struct xilinx_dma_config config;
+
     unsigned long flags;
     spin_lock_irqsave(&mwchan->slock, flags);
     list_for_each_entry_safe(slist, _slist, &mwchan->scatter->list, list) {
@@ -800,7 +808,8 @@ static void mwadma_free_channel(struct mwadma_dev *mwdev, struct mwadma_chan *mw
         list_del(&slist->list);
         kfree(&slist->list);
     }
-    xilinx_dma_reset(mwchan->chan);
+    dmaengine_device_control(mwchan->chan, DMA_TERMINATE_ALL, (unsigned long)&config);
+    // xilinx_dma_reset(mwchan->chan);
     dma_release_channel(mwchan->chan);
     spin_unlock_irqrestore(&mwchan->slock, flags);
     dev_dbg(&IP2DEV(mwdev), "MWADMA Free channel done.");
@@ -892,7 +901,7 @@ static int mwadma_mmap(struct file *fp, struct vm_area_struct *vma)
     switch(vma->vm_pgoff) {
 		case 0: 
 			/* mmap the Memory Mapped I/O's base address */
-            vma->vm_flags |= VM_IO | VM_DONTDUMP;
+                        vma->vm_flags |= VM_IO | VM_DONTDUMP;
 			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 			if (remap_pfn_range(vma, vma->vm_start,
 					mwdev->mem->start >> PAGE_SHIFT,
@@ -904,29 +913,29 @@ static int mwadma_mmap(struct file *fp, struct vm_area_struct *vma)
 			vma->vm_ops = &mwadma_mmap_ops;
 			break;
 		default:
-            /* mmap the DMA region */
-            status = mw_axidma_alloc(mwdev, size);
-            if ((status) && (status != -EEXIST))  {
-                return -ENOMEM;
-            }
-            dev_dbg(&IP2DEV(mwdev), "dma setup_cdev successful\n");
+                      /* mmap the DMA region */
+                      status = mw_axidma_alloc(mwdev, size);
+                     if ((status) && (status != -EEXIST))  {
+                         return -ENOMEM;
+                     }
+                    dev_dbg(&IP2DEV(mwdev), "dma setup_cdev successful\n");
 
-            status = 0;
+                    status = 0;
 			if (mwdev->virt == NULL){
-                return -EINVAL;
-            }
-            vma->vm_pgoff = 0;
-            status = dma_mmap_coherent(&IP2DEV(mwdev), vma, mwdev->virt,
-                    mwdev->phys, mwdev->size);
-            if (status) {
-                dev_dbg(&IP2DEV(mwdev),"Remapping memory failed, error: %d\n", status);
-                return status;
-            }
-            vma->vm_ops = &mwadma_mmap_dma_ops;
-            dev_dbg(&IP2DEV(mwdev),"%s: mapped dma addr 0x%08lx at 0x%08lx, size %d\n",
-                    __func__, (unsigned long)mwdev->phys, vma->vm_start,
-                    mwdev->size);
-            break;
+                            return -EINVAL;
+                        }
+                    vma->vm_pgoff = 0;
+                    status = dma_mmap_coherent(&IP2DEV(mwdev), vma, mwdev->virt,
+                        mwdev->phys, mwdev->size);
+                    if (status) {
+                        dev_dbg(&IP2DEV(mwdev),"Remapping memory failed, error: %d\n", status);
+                        return status;
+                    }
+                    vma->vm_ops = &mwadma_mmap_dma_ops;
+                    dev_dbg(&IP2DEV(mwdev),"%s: mapped dma addr 0x%08lx at 0x%08lx, size %d\n",
+                          __func__, (unsigned long)mwdev->phys, vma->vm_start,
+                          mwdev->size);
+                     break;
     }
 	return status;
 }
@@ -988,7 +997,6 @@ static int mw_axidma_setupchannel(struct mwadma_dev *mwdev,
     mwadma_reg_write(mwdev, 0x0, 0x1);
     /*reset pcore*/
     mwadma_reg_write(mwdev, 0x8, usrbuf->counter);
-    
     mwchan->buf                 = &(mwdev->virt[channel_offset]);
     if (mwchan->buf == NULL) {
         dev_err(&IP2DEV(mwdev), "Buffer is NULL. Failed to allocate memory\n");
@@ -1001,7 +1009,6 @@ static int mw_axidma_setupchannel(struct mwadma_dev *mwdev,
      */
     mwchan->chan_id             =  idx;
     idx++;
-
     dev_dbg(&IP2DEV(mwdev), "### Printing Channel info...\n");
     dev_dbg(&IP2DEV(mwdev), "Virtual Address        :0x%p\n", mwchan->buf);
     dev_dbg(&IP2DEV(mwdev), "Channel Length/Size    :%lu\n", mwchan->length);
@@ -1014,8 +1021,7 @@ static int mw_axidma_setupchannel(struct mwadma_dev *mwdev,
     mutex_init(&mwchan->lock);
     config.coalesc = 0;
     config.delay = 0;
-    dmaengine_device_control(mwchan->chan, DMA_SLAVE_CONFIG,
-            (unsigned long)&config);
+    dmaengine_device_control(mwchan->chan, DMA_SLAVE_CONFIG, (unsigned long)&config);
     dev_dbg(&IP2DEV(mwdev),"Name:%s, mwchan:0x%p, mwchan->chan:0x%p\n", 
             dma_chan_name(mwchan->chan), mwchan, mwchan->chan);
     
@@ -1143,13 +1149,16 @@ static int mwadma_channel_probe(struct mwadma_dev *mwdev)
     struct dma_chan *rxchan,*txchan;
     static char id = 0;
     dma_cap_mask_t mask;
+
     u32 match_rx, match_tx;
     
     match_tx  = (DMA_MEM_TO_DEV & 0xFF) | XILINX_DMA_IP_DMA;
     match_rx  = (DMA_DEV_TO_MEM & 0xFF) | XILINX_DMA_IP_DMA;
     
     dma_cap_zero(mask);
-    dma_cap_set(DMA_SLAVE | DMA_PRIVATE, mask);
+    dma_cap_set(DMA_SLAVE , mask);
+    dma_cap_set(DMA_PRIVATE, mask);
+    dma_cap_set(DMA_CYCLIC, mask);
     
     if (id > 1) {
         dev_dbg(&IP2DEV(mwdev), "Exceeded maximum allowable RX-TX DMA channel pairs\n");
@@ -1157,11 +1166,13 @@ static int mwadma_channel_probe(struct mwadma_dev *mwdev)
     }
     
     while (1) {
-        txchan = dma_request_channel(mask, mwadma_filterfn,
+       dev_dbg(&IP2DEV(mwdev), "requesting tx-channel\n");
+       txchan = dma_request_channel(mask, mwadma_filterfn,
                 (void *)&match_tx);
-        rxchan = dma_request_channel(mask, mwadma_filterfn,
+       dev_dbg(&IP2DEV(mwdev), "requesting rx-channel\n");
+       rxchan = dma_request_channel(mask, mwadma_filterfn,
                 (void *)&match_rx);
-        if (!txchan && !rxchan) {
+          if (!txchan && !rxchan) {
             dev_dbg(&IP2DEV(mwdev), "no more channels found!\n");
             break;
         } else {
@@ -1247,7 +1258,7 @@ static int mwadma_of_probe(struct platform_device *op)
             status = PTR_ERR(mwadma_class);
             goto class_create_err;
         }
-        dev_err(&op->dev, "mwadma class registration success\n");
+        dev_dbg(&op->dev, "mwadma class registration success\n");
     }
     status = mwadma_setup_cdev(mwdev, &(mwdev->dev_id));
     if(status)
@@ -1256,7 +1267,9 @@ static int mwadma_of_probe(struct platform_device *op)
         goto dev_add_err;
     }
     
-  
+    dev_info(&op->dev, "pcore phys_addr:0x%08llX mapped to 0x%p\n", (unsigned long long)mwdev->mem->start, mwdev->regs);
+    device_num++;
+   
     /*
      * ####################################################################
      * Following section does probing & init of DMA channels
@@ -1266,8 +1279,8 @@ static int mwadma_of_probe(struct platform_device *op)
     /*  find associated AXI DMA  */
     status = of_parse_phandle_with_args(np, "dma-request", "#dma-cells",0, &dma_spec);
     if(status) {
-        dev_err(&op->dev, "Could not parse the device tree to get dma-request\n");
-        goto ioremap_failed;
+        dev_info(&op->dev, "Device tree binding did not have dma-request. Continue as a MMIO device mapping\n");
+	return 0;
     }
     dev_dbg(&IP2DEV(mwdev), "of_parse_handle_with_args successful\n");
     status = mwadma_channel_probe(mwdev);
@@ -1275,10 +1288,7 @@ static int mwadma_of_probe(struct platform_device *op)
         dev_err(&IP2DEV(mwdev),"Channel probe failed. Verify device tree and FPGA IP core addresses.\n");
         goto dev_add_err;        
     }
-    dev_info(&op->dev, "pcore phys_addr:0x%08llX mapped to 0x%p\n", (unsigned long long)mwdev->mem->start, mwdev->regs);
-    device_num++;
-    return status;
-    
+   
     /*
      * ####################################################################
      * Following section creates the sysfs entires for DMA
@@ -1289,6 +1299,7 @@ static int mwadma_of_probe(struct platform_device *op)
         dev_err(&op->dev, "Error creating the sysfs devices\n");
         goto dev_add_err;
     }
+    return status;
     
 dev_add_err:
     if(mwadma_class){
@@ -1374,7 +1385,8 @@ static int mwadma_of_remove(struct platform_device *pdev)
  * @brief mwadma_of_match
  */
 static const struct of_device_id mwadma_of_match[]  = {
-    { .compatible = "mathworks,system-config",},
+    { .compatible = "mathworks,mwipcore-v2.00",},
+    { .compatible = "mathworks,mwipcore-axi4lite-v1.00",},
     {},
 };
 
@@ -1393,6 +1405,6 @@ module_platform_driver(mwadma_driver);
 MODULE_DEVICE_TABLE(of, mwadma_of_match);
 MODULE_AUTHOR("MathWorks, Inc");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION(DRIVER_NAME ": MathWorks AXI4 Stream DMA driver");
+MODULE_DESCRIPTION(DRIVER_NAME ": MathWorks AXI4-Lite/AXI4-Stream DMA driver");
 
 /*DMA PARAMS */
