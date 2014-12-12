@@ -127,10 +127,4 @@ struct mwadma_dev {
     struct mwadma_chan      *tx;
 };
 
-void mwadma_complete_callback(struct mwadma_dev *);
-extern void xilinx_dma_regdump(struct dma_chan*);
-extern void xilinx_dma_reset(struct dma_chan *dchan);
-int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan);
-void mwadma_rx_cb_continuous_signal(struct mwadma_dev *mwdev);
-
 #endif
