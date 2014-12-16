@@ -86,8 +86,7 @@ static int mwadma_open(struct inode *inode, struct file *fp)
  */
 static bool mwadma_filterfn(struct dma_chan *chan, void *param)
 {
-   MW_DBG_printf(":param:0x%d,ptr:0x%p, *(int *)prm=%d\n", (int)param, param, *(int*)param);
-   MW_DBG_printf(":chan, chan->private:0x%p, 0x%p-0x%d\n", chan, chan->private,(int)chan->private);
+   MW_DBG_printf(":chan->private=0x%p, chan_match=%d <--> param=0x%p, param_match=%d\n", chan->private,(int)chan->private, param, *(int*)param);
    if ((int)chan->private == *(int*)param) {
        return true;
    }
