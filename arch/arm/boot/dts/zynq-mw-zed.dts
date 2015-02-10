@@ -1,7 +1,6 @@
 /dts-v1/;
 
 /include/ "zynq-zed.dtsi"
-/include/ "zynq-mw-ipcore-zed.dtsi"
 
 / {
 	chosen {
