@@ -44,8 +44,6 @@ broken.
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/list.h>
-#include <linux/spinlock.h>
 
 #include "../comedidev.h"
 
@@ -53,10 +51,7 @@ broken.
 #include "8253.h"
 #include "plx9052.h"
 
-#if 0
-/* file removed due to GPL incompatibility */
-#include "me4000_fw.h"
-#endif
+#define ME4000_FIRMWARE		"me4000_firmware.bin"
 
 /*
  * ME4000 Register map and bit defines
@@ -170,15 +165,12 @@ broken.
 
 #define ME4000_AI_MIN_TICKS			66
 #define ME4000_AI_MIN_SAMPLE_TIME		2000
-#define ME4000_AI_BASE_FREQUENCY		(unsigned int) 33E6
 
 #define ME4000_AI_CHANNEL_LIST_COUNT		1024
 
 struct me4000_info {
 	unsigned long plx_regbase;
 	unsigned long timer_regbase;
-
-	unsigned int ao_readback[4];
 };
 
 enum me4000_boardid {
@@ -336,26 +328,19 @@ static const struct comedi_lrange me4000_ai_range = {
 	}
 };
 
-#define FIRMWARE_NOT_AVAILABLE 1
-#if FIRMWARE_NOT_AVAILABLE
-extern unsigned char *xilinx_firm;
-#endif
-
-static int xilinx_download(struct comedi_device *dev)
+static int me4000_xilinx_download(struct comedi_device *dev,
+				  const u8 *data, size_t size,
+				  unsigned long context)
 {
 	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 	struct me4000_info *info = dev->private;
 	unsigned long xilinx_iobase = pci_resource_start(pcidev, 5);
-	u32 value = 0;
-	wait_queue_head_t queue;
-	int idx = 0;
-	int size = 0;
-	unsigned int intcsr;
+	unsigned int file_length;
+	unsigned int val;
+	unsigned int i;
 
 	if (!xilinx_iobase)
 		return -ENODEV;
-
-	init_waitqueue_head(&queue);
 
 	/*
 	 * Set PLX local interrupt 2 polarity to high.
@@ -364,61 +349,58 @@ static int xilinx_download(struct comedi_device *dev)
 	outl(PLX9052_INTCSR_LI2POL, info->plx_regbase + PLX9052_INTCSR);
 
 	/* Set /CS and /WRITE of the Xilinx */
-	value = inl(info->plx_regbase + PLX9052_CNTRL);
-	value |= PLX9052_CNTRL_UIO2_DATA;
-	outl(value, info->plx_regbase + PLX9052_CNTRL);
+	val = inl(info->plx_regbase + PLX9052_CNTRL);
+	val |= PLX9052_CNTRL_UIO2_DATA;
+	outl(val, info->plx_regbase + PLX9052_CNTRL);
 
 	/* Init Xilinx with CS1 */
 	inb(xilinx_iobase + 0xC8);
 
 	/* Wait until /INIT pin is set */
 	udelay(20);
-	intcsr = inl(info->plx_regbase + PLX9052_INTCSR);
-	if (!(intcsr & PLX9052_INTCSR_LI2STAT)) {
+	val = inl(info->plx_regbase + PLX9052_INTCSR);
+	if (!(val & PLX9052_INTCSR_LI2STAT)) {
 		dev_err(dev->class_dev, "Can't init Xilinx\n");
 		return -EIO;
 	}
 
 	/* Reset /CS and /WRITE of the Xilinx */
-	value = inl(info->plx_regbase + PLX9052_CNTRL);
-	value &= ~PLX9052_CNTRL_UIO2_DATA;
-	outl(value, info->plx_regbase + PLX9052_CNTRL);
-	if (FIRMWARE_NOT_AVAILABLE) {
-		dev_err(dev->class_dev,
-			"xilinx firmware unavailable due to licensing, aborting");
-		return -EIO;
-	} else {
-		/* Download Xilinx firmware */
-		size = (xilinx_firm[0] << 24) + (xilinx_firm[1] << 16) +
-		    (xilinx_firm[2] << 8) + xilinx_firm[3];
+	val = inl(info->plx_regbase + PLX9052_CNTRL);
+	val &= ~PLX9052_CNTRL_UIO2_DATA;
+	outl(val, info->plx_regbase + PLX9052_CNTRL);
+
+	/* Download Xilinx firmware */
+	file_length = (((unsigned int)data[0] & 0xff) << 24) +
+		      (((unsigned int)data[1] & 0xff) << 16) +
+		      (((unsigned int)data[2] & 0xff) << 8) +
+		      ((unsigned int)data[3] & 0xff);
+	udelay(10);
+
+	for (i = 0; i < file_length; i++) {
+		outb(data[16 + i], xilinx_iobase);
 		udelay(10);
 
-		for (idx = 0; idx < size; idx++) {
-			outb(xilinx_firm[16 + idx], xilinx_iobase);
-			udelay(10);
-
-			/* Check if BUSY flag is low */
-			if (inl(info->plx_regbase + PLX9052_CNTRL) & PLX9052_CNTRL_UIO1_DATA) {
-				dev_err(dev->class_dev,
-					"Xilinx is still busy (idx = %d)\n",
-					idx);
-				return -EIO;
-			}
+		/* Check if BUSY flag is low */
+		val = inl(info->plx_regbase + PLX9052_CNTRL);
+		if (val & PLX9052_CNTRL_UIO1_DATA) {
+			dev_err(dev->class_dev,
+				"Xilinx is still busy (i = %d)\n", i);
+			return -EIO;
 		}
 	}
 
 	/* If done flag is high download was successful */
-	if (inl(info->plx_regbase + PLX9052_CNTRL) & PLX9052_CNTRL_UIO0_DATA) {
-	} else {
+	val = inl(info->plx_regbase + PLX9052_CNTRL);
+	if (!(val & PLX9052_CNTRL_UIO0_DATA)) {
 		dev_err(dev->class_dev, "DONE flag is not set\n");
 		dev_err(dev->class_dev, "Download not successful\n");
 		return -EIO;
 	}
 
 	/* Set /CS and /WRITE */
-	value = inl(info->plx_regbase + PLX9052_CNTRL);
-	value |= PLX9052_CNTRL_UIO2_DATA;
-	outl(value, info->plx_regbase + PLX9052_CNTRL);
+	val = inl(info->plx_regbase + PLX9052_CNTRL);
+	val |= PLX9052_CNTRL_UIO2_DATA;
+	outl(val, info->plx_regbase + PLX9052_CNTRL);
 
 	return 0;
 }
@@ -434,7 +416,7 @@ static void me4000_reset(struct comedi_device *dev)
 	val |= PLX9052_CNTRL_PCI_RESET;
 	outl(val, info->plx_regbase + PLX9052_CNTRL);
 	val &= ~PLX9052_CNTRL_PCI_RESET;
-	outl(val , info->plx_regbase + PLX9052_CNTRL);
+	outl(val, info->plx_regbase + PLX9052_CNTRL);
 
 	/* 0x8000 to the DACs means an output voltage of 0V */
 	for (chan = 0; chan < 4; chan++)
@@ -474,7 +456,7 @@ static int me4000_ai_insn_read(struct comedi_device *dev,
 			       struct comedi_subdevice *subdevice,
 			       struct comedi_insn *insn, unsigned int *data)
 {
-	const struct me4000_board *thisboard = comedi_board(dev);
+	const struct me4000_board *thisboard = dev->board_ptr;
 	int chan = CR_CHAN(insn->chanspec);
 	int rang = CR_RANGE(insn->chanspec);
 	int aref = CR_AREF(insn->chanspec);
@@ -598,67 +580,35 @@ static int me4000_ai_cancel(struct comedi_device *dev,
 	return 0;
 }
 
-static int ai_check_chanlist(struct comedi_device *dev,
-			     struct comedi_subdevice *s, struct comedi_cmd *cmd)
+static int me4000_ai_check_chanlist(struct comedi_device *dev,
+				    struct comedi_subdevice *s,
+				    struct comedi_cmd *cmd)
 {
-	const struct me4000_board *thisboard = comedi_board(dev);
-	int aref;
+	const struct me4000_board *board = dev->board_ptr;
+	unsigned int max_diff_chan = board->ai_diff_nchan;
+	unsigned int aref0 = CR_AREF(cmd->chanlist[0]);
 	int i;
 
-	/* Check whether a channel list is available */
-	if (!cmd->chanlist_len) {
-		dev_err(dev->class_dev, "No channel list available\n");
-		return -EINVAL;
-	}
-
-	/* Check the channel list size */
-	if (cmd->chanlist_len > ME4000_AI_CHANNEL_LIST_COUNT) {
-		dev_err(dev->class_dev, "Channel list is to large\n");
-		return -EINVAL;
-	}
-
-	/* Check the pointer */
-	if (!cmd->chanlist) {
-		dev_err(dev->class_dev, "NULL pointer to channel list\n");
-		return -EFAULT;
-	}
-
-	/* Check whether aref is equal for all entries */
-	aref = CR_AREF(cmd->chanlist[0]);
 	for (i = 0; i < cmd->chanlist_len; i++) {
-		if (CR_AREF(cmd->chanlist[i]) != aref) {
-			dev_err(dev->class_dev,
+		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
+		unsigned int range = CR_RANGE(cmd->chanlist[i]);
+		unsigned int aref = CR_AREF(cmd->chanlist[i]);
+
+		if (aref != aref0) {
+			dev_dbg(dev->class_dev,
 				"Mode is not equal for all entries\n");
 			return -EINVAL;
 		}
-	}
 
-	/* Check whether channels are available for this ending */
-	if (aref == SDF_DIFF) {
-		for (i = 0; i < cmd->chanlist_len; i++) {
-			if (CR_CHAN(cmd->chanlist[i]) >=
-			    thisboard->ai_diff_nchan) {
-				dev_err(dev->class_dev,
+		if (aref == AREF_DIFF) {
+			if (chan >= max_diff_chan) {
+				dev_dbg(dev->class_dev,
 					"Channel number to high\n");
 				return -EINVAL;
 			}
-		}
-	} else {
-		for (i = 0; i < cmd->chanlist_len; i++) {
-			if (CR_CHAN(cmd->chanlist[i]) >= thisboard->ai_nchan) {
-				dev_err(dev->class_dev,
-					"Channel number to high\n");
-				return -EINVAL;
-			}
-		}
-	}
 
-	/* Check if bipolar is set for all entries when in differential mode */
-	if (aref == SDF_DIFF) {
-		for (i = 0; i < cmd->chanlist_len; i++) {
-			if (CR_RANGE(cmd->chanlist[i]) != 1 &&
-			    CR_RANGE(cmd->chanlist[i]) != 2) {
-				dev_err(dev->class_dev,
+			if (!comedi_range_is_bipolar(s, range)) {
+				dev_dbg(dev->class_dev,
 				       "Bipolar is not selected in differential mode\n");
 				return -EINVAL;
 			}
@@ -685,10 +635,10 @@ static int ai_round_cmd_args(struct comedi_device *dev,
 		*init_ticks = (cmd->start_arg * 33) / 1000;
 		rest = (cmd->start_arg * 33) % 1000;
 
-		if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_NEAREST) {
+		if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_NEAREST) {
 			if (rest > 33)
 				(*init_ticks)++;
-		} else if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_UP) {
+		} else if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_UP) {
 			if (rest)
 				(*init_ticks)++;
 		}
@@ -698,10 +648,10 @@ static int ai_round_cmd_args(struct comedi_device *dev,
 		*scan_ticks = (cmd->scan_begin_arg * 33) / 1000;
 		rest = (cmd->scan_begin_arg * 33) % 1000;
 
-		if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_NEAREST) {
+		if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_NEAREST) {
 			if (rest > 33)
 				(*scan_ticks)++;
-		} else if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_UP) {
+		} else if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_UP) {
 			if (rest)
 				(*scan_ticks)++;
 		}
@@ -711,10 +661,10 @@ static int ai_round_cmd_args(struct comedi_device *dev,
 		*chan_ticks = (cmd->convert_arg * 33) / 1000;
 		rest = (cmd->convert_arg * 33) % 1000;
 
-		if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_NEAREST) {
+		if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_NEAREST) {
 			if (rest > 33)
 				(*chan_ticks)++;
-		} else if ((cmd->flags & TRIG_ROUND_MASK) == TRIG_ROUND_UP) {
+		} else if ((cmd->flags & CMDF_ROUND_MASK) == CMDF_ROUND_UP) {
 			if (rest)
 				(*chan_ticks)++;
 		}
@@ -764,7 +714,7 @@ static int ai_write_chanlist(struct comedi_device *dev,
 		else
 			entry |= ME4000_AI_LIST_RANGE_BIPOLAR_10;
 
-		if (aref == SDF_DIFF)
+		if (aref == AREF_DIFF)
 			entry |= ME4000_AI_LIST_INPUT_DIFFERENTIAL;
 		else
 			entry |= ME4000_AI_LIST_INPUT_SINGLE_ENDED;
@@ -883,9 +833,6 @@ static int me4000_ai_do_cmd_test(struct comedi_device *dev,
 	unsigned int scan_ticks;
 	int err = 0;
 
-	/* Only rounding flags are implemented */
-	cmd->flags &= TRIG_ROUND_NEAREST | TRIG_ROUND_UP | TRIG_ROUND_DOWN;
-
 	/* Round the timer arguments */
 	ai_round_cmd_args(dev, s, cmd, &init_ticks, &scan_ticks, &chan_ticks);
 
@@ -934,21 +881,12 @@ static int me4000_ai_do_cmd_test(struct comedi_device *dev,
 		err |= -EINVAL;
 	}
 
-	if (cmd->stop_src == TRIG_NONE && cmd->scan_end_src == TRIG_NONE) {
-	} else if (cmd->stop_src == TRIG_COUNT &&
-		   cmd->scan_end_src == TRIG_NONE) {
-	} else if (cmd->stop_src == TRIG_NONE &&
-		   cmd->scan_end_src == TRIG_COUNT) {
-	} else if (cmd->stop_src == TRIG_COUNT &&
-		   cmd->scan_end_src == TRIG_COUNT) {
-	} else {
-		err |= -EINVAL;
-	}
-
 	if (err)
 		return 2;
 
 	/* Step 3: check if arguments are trivially valid */
+
+	err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
 
 	if (cmd->chanlist_len < 1) {
 		cmd->chanlist_len = 1;
@@ -966,6 +904,11 @@ static int me4000_ai_do_cmd_test(struct comedi_device *dev,
 		cmd->convert_arg = 2000;
 		err |= -EINVAL;
 	}
+
+	if (cmd->stop_src == TRIG_COUNT)
+		err |= cfc_check_trigger_arg_min(&cmd->stop_arg, 1);
+	else	/* TRIG_NONE */
+		err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
 
 	if (err)
 		return 3;
@@ -1073,13 +1016,6 @@ static int me4000_ai_do_cmd_test(struct comedi_device *dev,
 			err++;
 		}
 	}
-	if (cmd->stop_src == TRIG_COUNT) {
-		if (cmd->stop_arg == 0) {
-			dev_err(dev->class_dev, "Invalid stop arg\n");
-			cmd->stop_arg = 1;
-			err++;
-		}
-	}
 	if (cmd->scan_end_src == TRIG_COUNT) {
 		if (cmd->scan_end_arg == 0) {
 			dev_err(dev->class_dev, "Invalid scan end arg\n");
@@ -1091,10 +1027,11 @@ static int me4000_ai_do_cmd_test(struct comedi_device *dev,
 	if (err)
 		return 4;
 
-	/*
-	 * Stage 5. Check the channel list.
-	 */
-	if (ai_check_chanlist(dev, s, cmd))
+	/* Step 5: check channel list if it exists */
+	if (cmd->chanlist && cmd->chanlist_len > 0)
+		err |= me4000_ai_check_chanlist(dev, s, cmd);
+
+	if (err)
 		return 5;
 
 	return 0;
@@ -1137,8 +1074,6 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 		} else if ((tmp & ME4000_AI_STATUS_BIT_FF_DATA)
 			   && !(tmp & ME4000_AI_STATUS_BIT_HF_DATA)
 			   && (tmp & ME4000_AI_STATUS_BIT_EF_DATA)) {
-			s->async->events |= COMEDI_CB_BLOCK;
-
 			c = ME4000_AI_FIFO_COUNT / 2;
 		} else {
 			dev_err(dev->class_dev,
@@ -1164,7 +1099,7 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 			lval = inl(dev->iobase + ME4000_AI_DATA_REG) & 0xFFFF;
 			lval ^= 0x8000;
 
-			if (!comedi_buf_put(s->async, lval)) {
+			if (!comedi_buf_write_samples(s, &lval, 1)) {
 				/*
 				 * Buffer overflow, so stop conversion
 				 * and disable all interrupts
@@ -1173,11 +1108,6 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 				tmp &= ~(ME4000_AI_CTRL_BIT_HF_IRQ |
 					 ME4000_AI_CTRL_BIT_SC_IRQ);
 				outl(tmp, dev->iobase + ME4000_AI_CTRL_REG);
-
-				s->async->events |= COMEDI_CB_OVERFLOW;
-
-				dev_err(dev->class_dev, "Buffer overflow\n");
-
 				break;
 			}
 		}
@@ -1191,7 +1121,7 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 
 	if (inl(dev->iobase + ME4000_IRQ_STATUS_REG) &
 	    ME4000_IRQ_STATUS_BIT_SC) {
-		s->async->events |= COMEDI_CB_BLOCK | COMEDI_CB_EOA;
+		s->async->events |= COMEDI_CB_EOA;
 
 		/*
 		 * Acquisition is complete, so stop
@@ -1209,11 +1139,8 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 			lval = inl(dev->iobase + ME4000_AI_DATA_REG) & 0xFFFF;
 			lval ^= 0x8000;
 
-			if (!comedi_buf_put(s->async, lval)) {
-				dev_err(dev->class_dev, "Buffer overflow\n");
-				s->async->events |= COMEDI_CB_OVERFLOW;
+			if (!comedi_buf_write_samples(s, &lval, 1))
 				break;
-			}
 		}
 
 		/* Work is done, so reset the interrupt */
@@ -1223,49 +1150,18 @@ static irqreturn_t me4000_ai_isr(int irq, void *dev_id)
 		outl(tmp, dev->iobase + ME4000_AI_CTRL_REG);
 	}
 
-	if (s->async->events)
-		comedi_event(dev, s);
+	comedi_handle_events(dev, s);
 
 	return IRQ_HANDLED;
 }
 
-/*=============================================================================
-  Analog output section
-  ===========================================================================*/
-
 static int me4000_ao_insn_write(struct comedi_device *dev,
 				struct comedi_subdevice *s,
-				struct comedi_insn *insn, unsigned int *data)
+				struct comedi_insn *insn,
+				unsigned int *data)
 {
-	const struct me4000_board *thisboard = comedi_board(dev);
-	struct me4000_info *info = dev->private;
 	int chan = CR_CHAN(insn->chanspec);
-	int rang = CR_RANGE(insn->chanspec);
-	int aref = CR_AREF(insn->chanspec);
 	unsigned int tmp;
-
-	if (insn->n == 0) {
-		return 0;
-	} else if (insn->n > 1) {
-		dev_err(dev->class_dev, "Invalid instruction length %d\n",
-			insn->n);
-		return -EINVAL;
-	}
-
-	if (chan >= thisboard->ao_nchan) {
-		dev_err(dev->class_dev, "Invalid channel %d\n", insn->n);
-		return -EINVAL;
-	}
-
-	if (rang != 0) {
-		dev_err(dev->class_dev, "Invalid range %d\n", insn->n);
-		return -EINVAL;
-	}
-
-	if (aref != AREF_GROUND && aref != AREF_COMMON) {
-		dev_err(dev->class_dev, "Invalid aref %d\n", insn->n);
-		return -EINVAL;
-	}
 
 	/* Stop any running conversion */
 	tmp = inl(dev->iobase + ME4000_AO_CTRL_REG(chan));
@@ -1279,26 +1175,7 @@ static int me4000_ao_insn_write(struct comedi_device *dev,
 	outl(data[0], dev->iobase + ME4000_AO_SINGLE_REG(chan));
 
 	/* Store in the mirror */
-	info->ao_readback[chan] = data[0];
-
-	return 1;
-}
-
-static int me4000_ao_insn_read(struct comedi_device *dev,
-			       struct comedi_subdevice *s,
-			       struct comedi_insn *insn, unsigned int *data)
-{
-	struct me4000_info *info = dev->private;
-	int chan = CR_CHAN(insn->chanspec);
-
-	if (insn->n == 0) {
-		return 0;
-	} else if (insn->n > 1) {
-		dev_err(dev->class_dev, "Invalid instruction length\n");
-		return -EINVAL;
-	}
-
-	data[0] = info->ao_readback[chan];
+	s->readback[chan] = data[0];
 
 	return 1;
 }
@@ -1392,6 +1269,7 @@ static int me4000_cnt_insn_config(struct comedi_device *dev,
 				  unsigned int *data)
 {
 	struct me4000_info *info = dev->private;
+	unsigned int chan = CR_CHAN(insn->chanspec);
 	int err;
 
 	switch (data[0]) {
@@ -1399,16 +1277,17 @@ static int me4000_cnt_insn_config(struct comedi_device *dev,
 		if (insn->n != 1)
 			return -EINVAL;
 
-		err = i8254_load(info->timer_regbase, 0, insn->chanspec, 0,
-				I8254_MODE0 | I8254_BINARY);
+		err = i8254_set_mode(info->timer_regbase, 0, chan,
+				     I8254_MODE0 | I8254_BINARY);
 		if (err)
 			return err;
+		i8254_write(info->timer_regbase, 0, chan, 0);
 		break;
 	case GPCT_SET_OPERATION:
 		if (insn->n != 2)
 			return -EINVAL;
 
-		err = i8254_set_mode(info->timer_regbase, 0, insn->chanspec,
+		err = i8254_set_mode(info->timer_regbase, 0, chan,
 				(data[1] << 1) | I8254_BINARY);
 		if (err)
 			return err;
@@ -1489,8 +1368,9 @@ static int me4000_auto_attach(struct comedi_device *dev,
 	if (!info->plx_regbase || !dev->iobase || !info->timer_regbase)
 		return -ENODEV;
 
-	result = xilinx_download(dev);
-	if (result)
+	result = comedi_load_firmware(dev, &pcidev->dev, ME4000_FIRMWARE,
+				      me4000_xilinx_download, 0);
+	if (result < 0)
 		return result;
 
 	me4000_reset(dev);
@@ -1541,12 +1421,15 @@ static int me4000_auto_attach(struct comedi_device *dev,
 
 	if (thisboard->ao_nchan) {
 		s->type = COMEDI_SUBD_AO;
-		s->subdev_flags = SDF_WRITEABLE | SDF_COMMON | SDF_GROUND;
+		s->subdev_flags = SDF_WRITABLE | SDF_COMMON | SDF_GROUND;
 		s->n_chan = thisboard->ao_nchan;
 		s->maxdata = 0xFFFF;	/*  16 bit DAC */
 		s->range_table = &range_bipolar10;
 		s->insn_write = me4000_ao_insn_write;
-		s->insn_read = me4000_ao_insn_read;
+
+		result = comedi_alloc_subdev_readback(s);
+		if (result)
+			return result;
 	} else {
 		s->type = COMEDI_SUBD_UNUSED;
 	}
@@ -1602,11 +1485,9 @@ static int me4000_auto_attach(struct comedi_device *dev,
 
 static void me4000_detach(struct comedi_device *dev)
 {
-	if (dev->irq)
-		free_irq(dev->irq, dev);
 	if (dev->iobase)
 		me4000_reset(dev);
-	comedi_pci_disable(dev);
+	comedi_pci_detach(dev);
 }
 
 static struct comedi_driver me4000_driver = {
@@ -1651,3 +1532,4 @@ module_comedi_pci_driver(me4000_driver, me4000_pci_driver);
 MODULE_AUTHOR("Comedi http://www.comedi.org");
 MODULE_DESCRIPTION("Comedi low-level driver");
 MODULE_LICENSE("GPL");
+MODULE_FIRMWARE(ME4000_FIRMWARE);

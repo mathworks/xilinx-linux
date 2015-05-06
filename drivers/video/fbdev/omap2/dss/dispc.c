@@ -2577,9 +2577,9 @@ int dispc_ovl_setup(enum omap_plane plane, const struct omap_overlay_info *oi,
 
 	channel = dispc_ovl_get_channel_out(plane);
 
-	DSSDBG("dispc_ovl_setup %d, pa %x, pa_uv %x, sw %d, %d,%d, %dx%d -> "
-		"%dx%d, cmode %x, rot %d, mir %d, chan %d repl %d\n",
-		plane, oi->paddr, oi->p_uv_addr, oi->screen_width, oi->pos_x,
+	DSSDBG("dispc_ovl_setup %d, pa %pad, pa_uv %pad, sw %d, %d,%d, %dx%d ->"
+		" %dx%d, cmode %x, rot %d, mir %d, chan %d repl %d\n",
+		plane, &oi->paddr, &oi->p_uv_addr, oi->screen_width, oi->pos_x,
 		oi->pos_y, oi->width, oi->height, oi->out_width, oi->out_height,
 		oi->color_mode, oi->rotation, oi->mirror, channel, replication);
 
@@ -2879,19 +2879,24 @@ static bool _dispc_mgr_pclk_ok(enum omap_channel channel,
 bool dispc_mgr_timings_ok(enum omap_channel channel,
 		const struct omap_video_timings *timings)
 {
-	bool timings_ok;
+	if (!_dispc_mgr_size_ok(timings->x_res, timings->y_res))
+		return false;
 
-	timings_ok = _dispc_mgr_size_ok(timings->x_res, timings->y_res);
-
-	timings_ok &= _dispc_mgr_pclk_ok(channel, timings->pixelclock);
+	if (!_dispc_mgr_pclk_ok(channel, timings->pixelclock))
+		return false;
 
 	if (dss_mgr_is_lcd(channel)) {
-		timings_ok &= _dispc_lcd_timings_ok(timings->hsw, timings->hfp,
+		/* TODO: OMAP4+ supports interlace for LCD outputs */
+		if (timings->interlace)
+			return false;
+
+		if (!_dispc_lcd_timings_ok(timings->hsw, timings->hfp,
 				timings->hbp, timings->vsw, timings->vfp,
-				timings->vbp);
+				timings->vbp))
+			return false;
 	}
 
-	return timings_ok;
+	return true;
 }
 
 static void _dispc_mgr_set_lcd_timings(enum omap_channel channel, int hsw,
@@ -2945,13 +2950,13 @@ static void _dispc_mgr_set_lcd_timings(enum omap_channel channel, int hsw,
 		BUG();
 	}
 
-	l = dispc_read_reg(DISPC_POL_FREQ(channel));
-	l |= FLD_VAL(onoff, 17, 17);
-	l |= FLD_VAL(rf, 16, 16);
-	l |= FLD_VAL(de_level, 15, 15);
-	l |= FLD_VAL(ipc, 14, 14);
-	l |= FLD_VAL(hsync_level, 13, 13);
-	l |= FLD_VAL(vsync_level, 12, 12);
+	l = FLD_VAL(onoff, 17, 17) |
+		FLD_VAL(rf, 16, 16) |
+		FLD_VAL(de_level, 15, 15) |
+		FLD_VAL(ipc, 14, 14) |
+		FLD_VAL(hsync_level, 13, 13) |
+		FLD_VAL(vsync_level, 12, 12);
+
 	dispc_write_reg(DISPC_POL_FREQ(channel), l);
 }
 
@@ -3023,7 +3028,7 @@ static void dispc_mgr_get_lcd_divisor(enum omap_channel channel, int *lck_div,
 
 unsigned long dispc_fclk_rate(void)
 {
-	struct platform_device *dsidev;
+	struct dss_pll *pll;
 	unsigned long r = 0;
 
 	switch (dss_get_dispc_clk_source()) {
@@ -3031,12 +3036,12 @@ unsigned long dispc_fclk_rate(void)
 		r = dss_get_dispc_clk_rate();
 		break;
 	case OMAP_DSS_CLK_SRC_DSI_PLL_HSDIV_DISPC:
-		dsidev = dsi_get_dsidev_from_id(0);
-		r = dsi_get_pll_hsdiv_dispc_rate(dsidev);
+		pll = dss_pll_find("dsi0");
+		r = pll->cinfo.clkout[0];
 		break;
 	case OMAP_DSS_CLK_SRC_DSI2_PLL_HSDIV_DISPC:
-		dsidev = dsi_get_dsidev_from_id(1);
-		r = dsi_get_pll_hsdiv_dispc_rate(dsidev);
+		pll = dss_pll_find("dsi1");
+		r = pll->cinfo.clkout[0];
 		break;
 	default:
 		BUG();
@@ -3048,7 +3053,7 @@ unsigned long dispc_fclk_rate(void)
 
 unsigned long dispc_mgr_lclk_rate(enum omap_channel channel)
 {
-	struct platform_device *dsidev;
+	struct dss_pll *pll;
 	int lcd;
 	unsigned long r;
 	u32 l;
@@ -3063,12 +3068,12 @@ unsigned long dispc_mgr_lclk_rate(enum omap_channel channel)
 			r = dss_get_dispc_clk_rate();
 			break;
 		case OMAP_DSS_CLK_SRC_DSI_PLL_HSDIV_DISPC:
-			dsidev = dsi_get_dsidev_from_id(0);
-			r = dsi_get_pll_hsdiv_dispc_rate(dsidev);
+			pll = dss_pll_find("dsi0");
+			r = pll->cinfo.clkout[0];
 			break;
 		case OMAP_DSS_CLK_SRC_DSI2_PLL_HSDIV_DISPC:
-			dsidev = dsi_get_dsidev_from_id(1);
-			r = dsi_get_pll_hsdiv_dispc_rate(dsidev);
+			pll = dss_pll_find("dsi1");
+			r = pll->cinfo.clkout[0];
 			break;
 		default:
 			BUG();
@@ -3257,13 +3262,10 @@ static void dispc_dump_regs(struct seq_file *s)
 		if (i == OMAP_DSS_CHANNEL_DIGIT)
 			continue;
 
-		DUMPREG(i, DISPC_DEFAULT_COLOR);
-		DUMPREG(i, DISPC_TRANS_COLOR);
 		DUMPREG(i, DISPC_TIMING_H);
 		DUMPREG(i, DISPC_TIMING_V);
 		DUMPREG(i, DISPC_POL_FREQ);
 		DUMPREG(i, DISPC_DIVISORo);
-		DUMPREG(i, DISPC_SIZE_MGR);
 
 		DUMPREG(i, DISPC_DATA_CYCLE1);
 		DUMPREG(i, DISPC_DATA_CYCLE2);
@@ -3288,8 +3290,11 @@ static void dispc_dump_regs(struct seq_file *s)
 		DUMPREG(i, DISPC_OVL_FIFO_SIZE_STATUS);
 		DUMPREG(i, DISPC_OVL_ROW_INC);
 		DUMPREG(i, DISPC_OVL_PIXEL_INC);
+
 		if (dss_has_feature(FEAT_PRELOAD))
 			DUMPREG(i, DISPC_OVL_PRELOAD);
+		if (dss_has_feature(FEAT_MFLAG))
+			DUMPREG(i, DISPC_OVL_MFLAG_THRESHOLD);
 
 		if (i == OMAP_DSS_GFX) {
 			DUMPREG(i, DISPC_OVL_WINDOW_SKIP);
@@ -3310,10 +3315,6 @@ static void dispc_dump_regs(struct seq_file *s)
 		}
 		if (dss_has_feature(FEAT_ATTR2))
 			DUMPREG(i, DISPC_OVL_ATTRIBUTES2);
-		if (dss_has_feature(FEAT_PRELOAD))
-			DUMPREG(i, DISPC_OVL_PRELOAD);
-		if (dss_has_feature(FEAT_MFLAG))
-			DUMPREG(i, DISPC_OVL_MFLAG_THRESHOLD);
 	}
 
 #undef DISPC_REG
@@ -3656,6 +3657,7 @@ static int __init dispc_init_features(struct platform_device *pdev)
 	case OMAPDSS_VER_OMAP34xx_ES3:
 	case OMAPDSS_VER_OMAP3630:
 	case OMAPDSS_VER_AM35xx:
+	case OMAPDSS_VER_AM43xx:
 		src = &omap34xx_rev3_0_dispc_feats;
 		break;
 
@@ -3829,6 +3831,7 @@ static const struct of_device_id dispc_of_match[] = {
 	{ .compatible = "ti,omap2-dispc", },
 	{ .compatible = "ti,omap3-dispc", },
 	{ .compatible = "ti,omap4-dispc", },
+	{ .compatible = "ti,omap5-dispc", },
 	{},
 };
 
@@ -3836,9 +3839,9 @@ static struct platform_driver omap_dispchw_driver = {
 	.remove         = __exit_p(omap_dispchw_remove),
 	.driver         = {
 		.name   = "omapdss_dispc",
-		.owner  = THIS_MODULE,
 		.pm	= &dispc_pm_ops,
 		.of_match_table = dispc_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 

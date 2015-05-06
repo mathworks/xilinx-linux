@@ -522,8 +522,11 @@ struct ceph_mds_reply_dirfrag {
 	__le32 dist[];
 } __attribute__ ((packed));
 
-#define CEPH_LOCK_FCNTL    1
-#define CEPH_LOCK_FLOCK    2
+#define CEPH_LOCK_FCNTL		1
+#define CEPH_LOCK_FLOCK		2
+#define CEPH_LOCK_FCNTL_INTR    3
+#define CEPH_LOCK_FLOCK_INTR    4
+
 
 #define CEPH_LOCK_SHARED   1
 #define CEPH_LOCK_EXCL     2
@@ -549,6 +552,7 @@ struct ceph_filelock {
 
 int ceph_flags_to_mode(int flags);
 
+#define CEPH_INLINE_NONE	((__u64)-1)
 
 /* capability bits */
 #define CEPH_CAP_PIN         1  /* no specific capabilities beyond the pin */
@@ -613,6 +617,8 @@ int ceph_flags_to_mode(int flags);
 				 CEPH_CAP_LINK_SHARED |	\
 				 CEPH_CAP_FILE_SHARED |	\
 				 CEPH_CAP_XATTR_SHARED)
+#define CEPH_STAT_CAP_INLINE_DATA (CEPH_CAP_FILE_SHARED | \
+				   CEPH_CAP_FILE_RD)
 
 #define CEPH_CAP_ANY_SHARED (CEPH_CAP_AUTH_SHARED |			\
 			      CEPH_CAP_LINK_SHARED |			\
@@ -625,6 +631,8 @@ int ceph_flags_to_mode(int flags);
 			   CEPH_CAP_LINK_EXCL |		\
 			   CEPH_CAP_XATTR_EXCL |	\
 			   CEPH_CAP_FILE_EXCL)
+#define CEPH_CAP_ANY_FILE_RD (CEPH_CAP_FILE_RD | CEPH_CAP_FILE_CACHE | \
+			      CEPH_CAP_FILE_SHARED)
 #define CEPH_CAP_ANY_FILE_WR (CEPH_CAP_FILE_WR | CEPH_CAP_FILE_BUFFER |	\
 			      CEPH_CAP_FILE_EXCL)
 #define CEPH_CAP_ANY_WR   (CEPH_CAP_ANY_EXCL | CEPH_CAP_ANY_FILE_WR)

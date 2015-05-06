@@ -605,14 +605,8 @@ static int l2tp_ip6_sendmsg(struct kiocb *iocb, struct sock *sk,
 		goto out;
 	}
 
-	if (hlimit < 0) {
-		if (ipv6_addr_is_multicast(&fl6.daddr))
-			hlimit = np->mcast_hops;
-		else
-			hlimit = np->hop_limit;
-		if (hlimit < 0)
-			hlimit = ip6_dst_hoplimit(dst);
-	}
+	if (hlimit < 0)
+		hlimit = ip6_sk_dst_hoplimit(np, &fl6, dst);
 
 	if (tclass < 0)
 		tclass = np->tclass;
@@ -625,7 +619,7 @@ static int l2tp_ip6_sendmsg(struct kiocb *iocb, struct sock *sk,
 
 back_from_confirm:
 	lock_sock(sk);
-	err = ip6_append_data(sk, ip_generic_getfrag, msg->msg_iov,
+	err = ip6_append_data(sk, ip_generic_getfrag, msg,
 			      ulen, transhdrlen, hlimit, tclass, opt,
 			      &fl6, (struct rt6_info *)dst,
 			      msg->msg_flags, dontfrag);
@@ -678,7 +672,7 @@ static int l2tp_ip6_recvmsg(struct kiocb *iocb, struct sock *sk,
 		copied = len;
 	}
 
-	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (err)
 		goto done;
 
@@ -693,7 +687,7 @@ static int l2tp_ip6_recvmsg(struct kiocb *iocb, struct sock *sk,
 		lsa->l2tp_scope_id = 0;
 		lsa->l2tp_conn_id = 0;
 		if (ipv6_addr_type(&lsa->l2tp_addr) & IPV6_ADDR_LINKLOCAL)
-			lsa->l2tp_scope_id = IP6CB(skb)->iif;
+			lsa->l2tp_scope_id = inet6_iif(skb);
 	}
 
 	if (np->rxopt.all)
@@ -761,7 +755,6 @@ static struct inet_protosw l2tp_ip6_protosw = {
 	.protocol	= IPPROTO_L2TP,
 	.prot		= &l2tp_ip6_prot,
 	.ops		= &l2tp_ip6_ops,
-	.no_check	= 0,
 };
 
 static struct inet6_protocol l2tp_ip6_protocol __read_mostly = {

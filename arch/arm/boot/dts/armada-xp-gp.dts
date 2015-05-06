@@ -23,6 +23,7 @@
  */
 
 /dts-v1/;
+#include <dt-bindings/gpio/gpio.h>
 #include "armada-xp-mv78460.dtsi"
 
 / {
@@ -46,6 +47,14 @@
 		 */
 		reg = <0x00000000 0x00000000 0x00000000 0xf0000000>,
 		      <0x00000001 0x00000000 0x00000001 0x00000000>;
+	};
+
+	cpus {
+		pm_pic {
+			ctrl-gpios = <&gpio0 16 GPIO_ACTIVE_LOW>,
+				     <&gpio0 17 GPIO_ACTIVE_LOW>,
+				     <&gpio0 18 GPIO_ACTIVE_LOW>;
+		};
 	};
 
 	soc {
@@ -104,22 +113,26 @@
 
 		internal-regs {
 			serial@12000 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
 			serial@12100 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
 			serial@12200 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
 			serial@12300 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
-
+			pinctrl {
+				pinctrl-0 = <&pic_pins>;
+				pinctrl-names = "default";
+				pic_pins: pic-pins-0 {
+					marvell,pins = "mpp16", "mpp17",
+						       "mpp18";
+					marvell,function = "gpio";
+				};
+			};
 			sata@a0000 {
 				nr-ports = <2>;
 				status = "okay";

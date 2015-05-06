@@ -85,7 +85,7 @@ static int ahci_da850_probe(struct platform_device *pdev)
 
 	da850_sata_init(dev, pwrdn_reg, hpriv->mmio);
 
-	rc = ahci_platform_init_host(pdev, hpriv, &ahci_da850_port_info, 0, 0);
+	rc = ahci_platform_init_host(pdev, hpriv, &ahci_da850_port_info);
 	if (rc)
 		goto disable_resources;
 
@@ -103,7 +103,6 @@ static struct platform_driver ahci_da850_driver = {
 	.remove = ata_platform_remove_one,
 	.driver = {
 		.name = "ahci_da850",
-		.owner = THIS_MODULE,
 		.pm = &ahci_da850_pm_ops,
 	},
 };

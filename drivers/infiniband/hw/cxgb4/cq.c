@@ -51,9 +51,9 @@ static int destroy_cq(struct c4iw_rdev *rdev, struct t4_cq *cq,
 	res_wr = (struct fw_ri_res_wr *)__skb_put(skb, wr_len);
 	memset(res_wr, 0, wr_len);
 	res_wr->op_nres = cpu_to_be32(
-			FW_WR_OP(FW_RI_RES_WR) |
+			FW_WR_OP_V(FW_RI_RES_WR) |
 			V_FW_RI_RES_WR_NRES(1) |
-			FW_WR_COMPL(1));
+			FW_WR_COMPL_F);
 	res_wr->len16_pkd = cpu_to_be32(DIV_ROUND_UP(wr_len, 16));
 	res_wr->cookie = (unsigned long) &wr_wait;
 	res = res_wr->res;
@@ -121,9 +121,9 @@ static int create_cq(struct c4iw_rdev *rdev, struct t4_cq *cq,
 	res_wr = (struct fw_ri_res_wr *)__skb_put(skb, wr_len);
 	memset(res_wr, 0, wr_len);
 	res_wr->op_nres = cpu_to_be32(
-			FW_WR_OP(FW_RI_RES_WR) |
+			FW_WR_OP_V(FW_RI_RES_WR) |
 			V_FW_RI_RES_WR_NRES(1) |
-			FW_WR_COMPL(1));
+			FW_WR_COMPL_F);
 	res_wr->len16_pkd = cpu_to_be32(DIV_ROUND_UP(wr_len, 16));
 	res_wr->cookie = (unsigned long) &wr_wait;
 	res = res_wr->res;
@@ -134,7 +134,8 @@ static int create_cq(struct c4iw_rdev *rdev, struct t4_cq *cq,
 			V_FW_RI_RES_WR_IQANUS(0) |
 			V_FW_RI_RES_WR_IQANUD(1) |
 			F_FW_RI_RES_WR_IQANDST |
-			V_FW_RI_RES_WR_IQANDSTINDEX(*rdev->lldi.rxq_ids));
+			V_FW_RI_RES_WR_IQANDSTINDEX(
+				rdev->lldi.ciq_ids[cq->vector]));
 	res->u.cq.iqdroprss_to_iqesize = cpu_to_be16(
 			F_FW_RI_RES_WR_IQDROPRSS |
 			V_FW_RI_RES_WR_IQPCIECH(2) |
@@ -632,11 +633,15 @@ proc_cqe:
 		wq->sq.cidx = (uint16_t)idx;
 		PDBG("%s completing sq idx %u\n", __func__, wq->sq.cidx);
 		*cookie = wq->sq.sw_sq[wq->sq.cidx].wr_id;
+		if (c4iw_wr_log)
+			c4iw_log_wr_stats(wq, hw_cqe);
 		t4_sq_consume(wq);
 	} else {
 		PDBG("%s completing rq idx %u\n", __func__, wq->rq.cidx);
 		*cookie = wq->rq.sw_rq[wq->rq.cidx].wr_id;
 		BUG_ON(t4_rq_empty(wq));
+		if (c4iw_wr_log)
+			c4iw_log_wr_stats(wq, hw_cqe);
 		t4_rq_consume(wq);
 		goto skip_cqe;
 	}
@@ -870,6 +875,9 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 
 	rhp = to_c4iw_dev(ibdev);
 
+	if (vector >= rhp->rdev.lldi.nciq)
+		return ERR_PTR(-EINVAL);
+
 	chp = kzalloc(sizeof(*chp), GFP_KERNEL);
 	if (!chp)
 		return ERR_PTR(-ENOMEM);
@@ -891,7 +899,7 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 	/*
 	 * Make actual HW queue 2x to avoid cdix_inc overflows.
 	 */
-	hwentries = min(entries * 2, T4_MAX_IQ_SIZE);
+	hwentries = min(entries * 2, rhp->rdev.hw_queue.t4_max_iq_size);
 
 	/*
 	 * Make HW queue at least 64 entries so GTS updates aren't too
@@ -905,16 +913,11 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 	/*
 	 * memsize must be a multiple of the page size if its a user cq.
 	 */
-	if (ucontext) {
+	if (ucontext)
 		memsize = roundup(memsize, PAGE_SIZE);
-		hwentries = memsize / sizeof *chp->cq.queue;
-		while (hwentries > T4_MAX_IQ_SIZE) {
-			memsize -= PAGE_SIZE;
-			hwentries = memsize / sizeof *chp->cq.queue;
-		}
-	}
 	chp->cq.size = hwentries;
 	chp->cq.memsize = memsize;
+	chp->cq.vector = vector;
 
 	ret = create_cq(&rhp->rdev, &chp->cq,
 			ucontext ? &ucontext->uctx : &rhp->rdev.uctx);
@@ -940,7 +943,6 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 		if (!mm2)
 			goto err4;
 
-		memset(&uresp, 0, sizeof(uresp));
 		uresp.qid_mask = rhp->rdev.cqmask;
 		uresp.cqid = chp->cq.cqid;
 		uresp.size = chp->cq.size;
@@ -951,7 +953,8 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 		uresp.gts_key = ucontext->key;
 		ucontext->key += PAGE_SIZE;
 		spin_unlock(&ucontext->mmap_lock);
-		ret = ib_copy_to_udata(udata, &uresp, sizeof uresp);
+		ret = ib_copy_to_udata(udata, &uresp,
+				       sizeof(uresp) - sizeof(uresp.reserved));
 		if (ret)
 			goto err5;
 

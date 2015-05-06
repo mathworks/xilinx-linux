@@ -359,9 +359,12 @@ static int titsc_parse_dt(struct platform_device *pdev,
 	 */
 	err = of_property_read_u32(node, "ti,coordinate-readouts",
 			&ts_dev->coordinate_readouts);
-	if (err < 0)
+	if (err < 0) {
+		dev_warn(&pdev->dev, "please use 'ti,coordinate-readouts' instead\n");
 		err = of_property_read_u32(node, "ti,coordiante-readouts",
 				&ts_dev->coordinate_readouts);
+	}
+
 	if (err < 0)
 		return err;
 
@@ -515,7 +518,6 @@ static struct platform_driver ti_tsc_driver = {
 	.remove	= titsc_remove,
 	.driver	= {
 		.name   = "TI-am335x-tsc",
-		.owner	= THIS_MODULE,
 		.pm	= TITSC_PM_OPS,
 		.of_match_table = ti_tsc_dt_ids,
 	},

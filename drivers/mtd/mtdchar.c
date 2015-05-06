@@ -549,6 +549,9 @@ static int mtdchar_blkpg_ioctl(struct mtd_info *mtd,
 		if (mtd_is_partition(mtd))
 			return -EINVAL;
 
+		/* Sanitize user input */
+		p.devname[BLKPG_DEVNAMELTH - 1] = '\0';
+
 		return mtd_add_partition(mtd, p.devname, p.start, p.length);
 
 	case BLKPG_DEL_PARTITION:
@@ -568,13 +571,18 @@ static int mtdchar_write_ioctl(struct mtd_info *mtd,
 {
 	struct mtd_write_req req;
 	struct mtd_oob_ops ops;
-	void __user *usr_data, *usr_oob;
+	const void __user *usr_data, *usr_oob;
 	int ret;
 
-	if (copy_from_user(&req, argp, sizeof(req)) ||
-			!access_ok(VERIFY_READ, req.usr_data, req.len) ||
-			!access_ok(VERIFY_READ, req.usr_oob, req.ooblen))
+	if (copy_from_user(&req, argp, sizeof(req)))
 		return -EFAULT;
+
+	usr_data = (const void __user *)(uintptr_t)req.usr_data;
+	usr_oob = (const void __user *)(uintptr_t)req.usr_oob;
+	if (!access_ok(VERIFY_READ, usr_data, req.len) ||
+	    !access_ok(VERIFY_READ, usr_oob, req.ooblen))
+		return -EFAULT;
+
 	if (!mtd->_write_oob)
 		return -EOPNOTSUPP;
 
@@ -583,10 +591,7 @@ static int mtdchar_write_ioctl(struct mtd_info *mtd,
 	ops.ooblen = (size_t)req.ooblen;
 	ops.ooboffs = 0;
 
-	usr_data = (void __user *)(uintptr_t)req.usr_data;
-	usr_oob = (void __user *)(uintptr_t)req.usr_oob;
-
-	if (req.usr_data) {
+	if (usr_data) {
 		ops.datbuf = memdup_user(usr_data, ops.len);
 		if (IS_ERR(ops.datbuf))
 			return PTR_ERR(ops.datbuf);
@@ -594,7 +599,7 @@ static int mtdchar_write_ioctl(struct mtd_info *mtd,
 		ops.datbuf = NULL;
 	}
 
-	if (req.usr_oob) {
+	if (usr_oob) {
 		ops.oobbuf = memdup_user(usr_oob, ops.ooblen);
 		if (IS_ERR(ops.oobbuf)) {
 			kfree(ops.datbuf);

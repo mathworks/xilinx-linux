@@ -1015,6 +1015,8 @@
 /*
  *	REG_TPM_MODE_ENABLE
  */
+#define TX2_MON_ENABLE		     	     (1 << 7) /* Tx2 Monitor Enable */
+#define TX1_MON_ENABLE		     	     (1 << 5) /* Tx1 Monitor Enable */
 #define ONE_SHOT_MODE			     (1 << 6) /* One Shot Mode */
 #define TX_MON_DURATION(x)		     (((x) & 0xF) << 0) /* Tx Mon Duration<3:0> */
 
@@ -1374,7 +1376,7 @@
  *	REG_SMALL_LMT_OVERLOAD_THRESH
  */
 #define FORCE_PD_RESET_RX2		     (1 << 7) /* Force PD Reset Rx2 */
-#define FOR_PD_RESET_RX1			     (1 << 6) /* For PD Reset Rx1 */
+#define FORCE_PD_RESET_RX1		     (1 << 6) /* Force PD Reset Rx1 */
 #define SMALL_LMT_OVERLOAD_THRESH(x)	     (((x) & 0x3F) << 0) /* Small LMT Overload Threshold<5:0> */
 
 /*
@@ -2777,6 +2779,7 @@
 #define MAX_LPF_GAIN			24
 #define MAX_DIG_GAIN			31
 
+#define MAX_BBPLL_FREF			70000000UL /* 70 MHz */
 #define MIN_BBPLL_FREQ			715000000UL /* 715 MHz */
 #define MAX_BBPLL_FREQ			1430000000UL /* 1430 MHz */
 #define MAX_BBPLL_DIV			64
@@ -2791,6 +2794,8 @@
 #define RFPLL_MODULUS			8388593UL
 #define BBPLL_MODULUS			2088960UL
 
+#define MAX_SYNTH_FREF			80000000UL /* 80 MHz */
+#define MIN_SYNTH_FREF			10000000UL /* 10 MHz */
 #define MIN_VCO_FREQ_HZ			6000000000ULL
 #define MAX_CARRIER_FREQ_HZ		6000000000ULL
 #define MIN_CARRIER_FREQ_HZ		47000000ULL
@@ -3015,6 +3020,29 @@ struct auxadc_control {
 	u32			auxadc_decimation;
 };
 
+struct gpo_control {
+	bool gpo0_inactive_state_high_en;
+	bool gpo1_inactive_state_high_en;
+	bool gpo2_inactive_state_high_en;
+	bool gpo3_inactive_state_high_en;
+	bool gpo0_slave_rx_en;
+	bool gpo0_slave_tx_en;
+	bool gpo1_slave_rx_en;
+	bool gpo1_slave_tx_en;
+	bool gpo2_slave_rx_en;
+	bool gpo2_slave_tx_en;
+	bool gpo3_slave_rx_en;
+	bool gpo3_slave_tx_en;
+	u8 gpo0_rx_delay_us;
+	u8 gpo0_tx_delay_us;
+	u8 gpo1_rx_delay_us;
+	u8 gpo1_tx_delay_us;
+	u8 gpo2_rx_delay_us;
+	u8 gpo2_tx_delay_us;
+	u8 gpo3_rx_delay_us;
+	u8 gpo3_tx_delay_us;
+};
+
 struct tx_monitor_control {
 	bool tx_mon_track_en;
 	bool one_shot_mode_en;
@@ -3062,6 +3090,7 @@ enum ad9361_clkout {
 struct ad9361_phy_platform_data {
 	bool			rx2tx2;
 	bool			fdd;
+	bool			fdd_independent_mode;
 	bool			split_gt;
 	bool 			use_extclk;
 	bool			ensm_pin_pulse_mode;
@@ -3073,17 +3102,20 @@ struct ad9361_phy_platform_data {
 	bool			use_ext_rx_lo;
 	bool			use_ext_tx_lo;
 	bool			rx1rx2_phase_inversion_en;
+	bool			qec_tracking_slow_mode_en;
 	u8			dc_offset_update_events;
 	u8			dc_offset_attenuation_high;
 	u8			dc_offset_attenuation_low;
 	u8			rf_dc_offset_count_high;
 	u8			rf_dc_offset_count_low;
+	u8			dig_interface_tune_skipmode;
 	u32			dcxo_coarse;
 	u32			dcxo_fine;
 	u32			rf_rx_input_sel;
 	u32			rf_tx_output_sel;
 	unsigned long		rx_path_clks[NUM_RX_CLOCKS];
 	unsigned long		tx_path_clks[NUM_TX_CLOCKS];
+	u32			trx_synth_max_fref;
 	u64			rx_synth_freq;
 	u64			tx_synth_freq;
 	u32			rf_rx_bandwidth_Hz;
@@ -3103,6 +3135,7 @@ struct ad9361_phy_platform_data {
 	struct elna_control	elna_ctrl;
 	struct auxadc_control	auxadc_ctrl;
 	struct auxdac_control	auxdac_ctrl;
+	struct gpo_control	gpo_ctrl;
 	struct tx_monitor_control txmon_ctrl;
 
 	struct gpio_desc			*reset_gpio;

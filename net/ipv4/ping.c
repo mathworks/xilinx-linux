@@ -217,6 +217,8 @@ static struct sock *ping_lookup(struct net *net, struct sk_buff *skb, u16 ident)
 					     &ipv6_hdr(skb)->daddr))
 				continue;
 #endif
+		} else {
+			continue;
 		}
 
 		if (sk->sk_bound_dev_if && sk->sk_bound_dev_if != dif)
@@ -311,7 +313,7 @@ static int ping_check_bind_addr(struct sock *sk, struct inet_sock *isk,
 		if (addr->sin_addr.s_addr == htonl(INADDR_ANY))
 			chk_addr_ret = RTN_LOCAL;
 
-		if ((sysctl_ip_nonlocal_bind == 0 &&
+		if ((net->ipv4.sysctl_ip_nonlocal_bind == 0 &&
 		    isk->freebind == 0 && isk->transparent == 0 &&
 		     chk_addr_ret != RTN_LOCAL) ||
 		    chk_addr_ret == RTN_MULTICAST ||
@@ -660,7 +662,7 @@ int ping_common_sendmsg(int family, struct msghdr *msg, size_t len,
 	 *	Fetch the ICMP header provided by the userland.
 	 *	iovec is modified! The ICMP header is consumed.
 	 */
-	if (memcpy_fromiovec(user_icmph, msg->msg_iov, icmph_len))
+	if (memcpy_from_msg(user_icmph, msg, icmph_len))
 		return -EFAULT;
 
 	if (family == AF_INET) {
@@ -809,7 +811,8 @@ back_from_confirm:
 	pfh.icmph.checksum = 0;
 	pfh.icmph.un.echo.id = inet->inet_sport;
 	pfh.icmph.un.echo.sequence = user_icmph.un.echo.sequence;
-	pfh.iov = msg->msg_iov;
+	/* XXX: stripping const */
+	pfh.iov = (struct iovec *)msg->msg_iter.iov;
 	pfh.wcheck = 0;
 	pfh.family = AF_INET;
 
@@ -853,16 +856,8 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	if (flags & MSG_OOB)
 		goto out;
 
-	if (flags & MSG_ERRQUEUE) {
-		if (family == AF_INET) {
-			return ip_recv_error(sk, msg, len, addr_len);
-#if IS_ENABLED(CONFIG_IPV6)
-		} else if (family == AF_INET6) {
-			return pingv6_ops.ipv6_recv_error(sk, msg, len,
-							  addr_len);
-#endif
-		}
-	}
+	if (flags & MSG_ERRQUEUE)
+		return inet_recv_error(sk, msg, len, addr_len);
 
 	skb = skb_recv_datagram(sk, flags, noblock, &err);
 	if (!skb)
@@ -875,7 +870,7 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	}
 
 	/* Don't bother checking the checksum */
-	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (err)
 		goto done;
 
@@ -911,7 +906,7 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				sin6->sin6_flowinfo = ip6_flowinfo(ip6);
 			sin6->sin6_scope_id =
 				ipv6_iface_scope_id(&sin6->sin6_addr,
-						    IP6CB(skb)->iif);
+						    inet6_iif(skb));
 			*addr_len = sizeof(*sin6);
 		}
 
@@ -955,7 +950,7 @@ EXPORT_SYMBOL_GPL(ping_queue_rcv_skb);
  *	All we need to do is get the socket.
  */
 
-void ping_rcv(struct sk_buff *skb)
+bool ping_rcv(struct sk_buff *skb)
 {
 	struct sock *sk;
 	struct net *net = dev_net(skb->dev);
@@ -971,14 +966,17 @@ void ping_rcv(struct sk_buff *skb)
 
 	sk = ping_lookup(net, skb, ntohs(icmph->un.echo.id));
 	if (sk != NULL) {
+		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
+
 		pr_debug("rcv on socket %p\n", sk);
-		ping_queue_rcv_skb(sk, skb_get(skb));
+		if (skb2)
+			ping_queue_rcv_skb(sk, skb2);
 		sock_put(sk);
-		return;
+		return true;
 	}
 	pr_debug("no socket, dropping\n");
 
-	/* We're called from icmp_rcv(). kfree_skb() is done there. */
+	return false;
 }
 EXPORT_SYMBOL_GPL(ping_rcv);
 

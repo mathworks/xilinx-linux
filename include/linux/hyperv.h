@@ -650,6 +650,8 @@ struct vmbus_channel {
 	u8 monitor_grp;
 	u8 monitor_bit;
 
+	bool rescind; /* got rescind msg */
+
 	u32 ringbuffer_gpadlhandle;
 
 	/* Allocated memory for ring buffer */
@@ -696,6 +698,8 @@ struct vmbus_channel {
 	 * preserve the earlier behavior.
 	 */
 	u32 target_vp;
+	/* The corresponding CPUID in the guest */
+	u32 target_cpu;
 	/*
 	 * Support for sub-channels. For high performance devices,
 	 * it will be useful to have multiple sub-channels to support
@@ -732,6 +736,11 @@ struct vmbus_channel {
 	 * Support per-channel state for use by vmbus drivers.
 	 */
 	void *per_channel_state;
+	/*
+	 * To support per-cpu lookup mapping of relid to channel,
+	 * link up channels based on their CPU affinity.
+	 */
+	struct list_head percpu_list;
 };
 
 static inline void set_channel_read_state(struct vmbus_channel *c, bool state)

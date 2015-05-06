@@ -12,10 +12,10 @@ Required properties:
 	two channels per device. This node specifies the properties of each
 	DMA channel (see child node properties below).
 
-Option node properties:
-- xlnx,include-sg: Tells whether configured for Scatter-mode in
+Optional properties:
+- xlnx,include-sg: Tells configured for Scatter-mode in
 	the hardware.
-- xlnx,flush-fsync: (Optional) Tells whether which channel to Flush on Fsync.
+- xlnx,flush-fsync: Tells which channel to Flush on Frame sync.
 	It takes following values:
 	{1}, flush both channels
 	{2}, flush mm2s channel
@@ -25,7 +25,7 @@ Required child node properties:
 - compatible: It should be either "xlnx,axi-vdma-mm2s-channel" or
 	"xlnx,axi-vdma-s2mm-channel".
 - interrupts: Should contain per channel VDMA interrupts.
-- xlnx,data-width: Should contain the stream data width, take values
+- xlnx,datawidth: Should contain the stream data width, take values
 	{32,64...1024}.
 
 Optional child node properties:

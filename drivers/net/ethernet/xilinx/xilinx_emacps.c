@@ -548,6 +548,7 @@ struct net_local {
 	unsigned int enetnum;
 	unsigned int lastrxfrmscntr;
 	unsigned int has_mdio;
+	bool timerready;
 #ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
 	struct hwtstamp_config hwtstamp_config;
 	struct ptp_clock *ptp_clock;
@@ -767,6 +768,10 @@ static void xemacps_adjust_link(struct net_device *ndev)
 					__func__, phydev->speed);
 				return;
 			}
+			if (lp->timerready && (phydev->speed != SPEED_1000)) {
+				del_timer_sync(&(lp->gen_purpose_timer));
+				lp->timerready = false;
+			}
 
 			xemacps_write(lp->baseaddr, XEMACPS_NWCFG_OFFSET,
 			regval);
@@ -816,6 +821,19 @@ static int xemacps_mii_probe(struct net_device *ndev)
 		return 0;
 	}
 
+	if (lp->gmii2rgmii_phy_node) {
+		phydev = of_phy_attach(lp->ndev,
+					lp->gmii2rgmii_phy_node,
+					0, 0);
+		if (!phydev) {
+			dev_err(&lp->pdev->dev, "%s: no gmii to rgmii converter found\n",
+			ndev->name);
+			return -1;
+		}
+		lp->gmii2rgmii_phy_dev = phydev;
+	} else
+		lp->gmii2rgmii_phy_dev = NULL;
+
 	phydev = of_phy_connect(lp->ndev,
 				lp->phy_node,
 				&xemacps_adjust_link,
@@ -847,20 +865,6 @@ static int xemacps_mii_probe(struct net_device *ndev)
 
 	dev_dbg(&lp->pdev->dev, "attach [%s] phy driver\n",
 			lp->phy_dev->drv->name);
-
-	if (lp->gmii2rgmii_phy_node) {
-		phydev = of_phy_connect(lp->ndev,
-					lp->gmii2rgmii_phy_node,
-					NULL,
-					0, 0);
-		if (!phydev) {
-			dev_err(&lp->pdev->dev, "%s: no gmii to rgmii converter found\n",
-			ndev->name);
-			return -1;
-		}
-		lp->gmii2rgmii_phy_dev = phydev;
-	} else
-		lp->gmii2rgmii_phy_dev = NULL;
 
 	return 0;
 }
@@ -943,10 +947,10 @@ static void xemacps_update_hwaddr(struct net_local *lp)
 	addr[5] = (regvalh >> 8) & 0xFF;
 
 	if (is_valid_ether_addr(addr)) {
-		memcpy(lp->ndev->dev_addr, addr, sizeof(addr));
+		ether_addr_copy(lp->ndev->dev_addr, addr);
 	} else {
-		dev_info(&lp->pdev->dev, "invalid address, use assigned\n");
-		random_ether_addr(lp->ndev->dev_addr);
+		dev_info(&lp->pdev->dev, "invalid address, use random\n");
+		eth_hw_addr_random(lp->ndev);
 		dev_info(&lp->pdev->dev,
 				"MAC updated %02x:%02x:%02x:%02x:%02x:%02x\n",
 				lp->ndev->dev_addr[0], lp->ndev->dev_addr[1],
@@ -1361,6 +1365,14 @@ static int xemacps_rx(struct net_local *lp, int budget)
 		if (!(regval & XEMACPS_RXBUF_NEW_MASK))
 			break;
 
+		regval = xemacps_read(lp->baseaddr, XEMACPS_RXSR_OFFSET);
+		xemacps_write(lp->baseaddr, XEMACPS_RXSR_OFFSET, regval);
+		if (regval & XEMACPS_RXSR_HRESPNOK_MASK) {
+			dev_err(&lp->pdev->dev, "RX error 0x%x\n", regval);
+			numbdfree = 0xFFFFFFFF;
+			break;
+		}
+
 		new_skb = netdev_alloc_skb(lp->ndev, XEMACPS_RX_BUF_SIZE);
 		if (new_skb == NULL) {
 			dev_err(&lp->ndev->dev, "no memory for new sk_buff\n");
@@ -1457,16 +1469,18 @@ static int xemacps_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct net_local *lp = container_of(napi, struct net_local, napi);
 	int work_done = 0;
-	u32 regval;
+	u32 count;
 
 	spin_lock(&lp->rx_lock);
 	while (1) {
-		regval = xemacps_read(lp->baseaddr, XEMACPS_RXSR_OFFSET);
-		xemacps_write(lp->baseaddr, XEMACPS_RXSR_OFFSET, regval);
-		if (regval & XEMACPS_RXSR_HRESPNOK_MASK)
-			dev_err(&lp->pdev->dev, "RX error 0x%x\n", regval);
 
-		work_done += xemacps_rx(lp, budget - work_done);
+		count = xemacps_rx(lp, budget - work_done);
+		if (count == 0xFFFFFFFF) {
+			napi_complete(napi);
+			spin_unlock(&lp->rx_lock);
+			goto reset_hw;
+		}
+		work_done += count;
 		if (work_done >= budget)
 			break;
 
@@ -1491,6 +1505,9 @@ static int xemacps_rx_poll(struct napi_struct *napi, int budget)
 	}
 	spin_unlock(&lp->rx_lock);
 	return work_done;
+reset_hw:
+	queue_work(lp->txtimeout_handler_wq, &lp->txtimeout_reinit);
+	return 0;
 }
 
 /**
@@ -2031,6 +2048,11 @@ static int xemacps_open(struct net_device *ndev)
 
 	napi_enable(&lp->napi);
 	xemacps_init_hw(lp);
+
+	setup_timer(&(lp->gen_purpose_timer), xemacps_gen_purpose_timerhandler,
+							(unsigned long)lp);
+	lp->timerready = true;
+
 	rc = xemacps_mii_probe(ndev);
 	if (rc != 0) {
 		dev_err(&lp->pdev->dev,
@@ -2044,11 +2066,8 @@ static int xemacps_open(struct net_device *ndev)
 		goto err_pm_put;
 	}
 
-	setup_timer(&(lp->gen_purpose_timer), xemacps_gen_purpose_timerhandler,
-							(unsigned long)lp);
 	mod_timer(&(lp->gen_purpose_timer),
 		jiffies + msecs_to_jiffies(XEAMCPS_GEN_PURPOSE_TIMER_LOAD));
-
 	netif_carrier_on(ndev);
 	netif_start_queue(ndev);
 	tasklet_enable(&lp->tx_bdreclaim_tasklet);
@@ -2058,6 +2077,10 @@ static int xemacps_open(struct net_device *ndev)
 err_pm_put:
 	napi_disable(&lp->napi);
 	xemacps_reset_hw(lp);
+	if (lp->timerready) {
+		del_timer_sync(&(lp->gen_purpose_timer));
+		lp->timerready = false;
+	}
 	pm_runtime_put(&lp->pdev->dev);
 err_free_rings:
 	xemacps_descriptor_free(lp);
@@ -2079,7 +2102,8 @@ static int xemacps_close(struct net_device *ndev)
 {
 	struct net_local *lp = netdev_priv(ndev);
 
-	del_timer_sync(&(lp->gen_purpose_timer));
+	if (lp->timerready)
+		del_timer_sync(&(lp->gen_purpose_timer));
 	netif_stop_queue(ndev);
 	napi_disable(&lp->napi);
 	tasklet_disable(&lp->tx_bdreclaim_tasklet);
@@ -2543,13 +2567,13 @@ xemacps_get_wol(struct net_device *ndev, struct ethtool_wolinfo *ewol)
 	ewol->supported = WAKE_MAGIC | WAKE_ARP | WAKE_UCAST | WAKE_MCAST;
 
 	regval = xemacps_read(lp->baseaddr, XEMACPS_WOL_OFFSET);
-	if (regval | XEMACPS_WOL_MCAST_MASK)
+	if (regval & XEMACPS_WOL_MCAST_MASK)
 		ewol->wolopts |= WAKE_MCAST;
-	if (regval | XEMACPS_WOL_ARP_MASK)
+	if (regval & XEMACPS_WOL_ARP_MASK)
 		ewol->wolopts |= WAKE_ARP;
-	if (regval | XEMACPS_WOL_SPEREG1_MASK)
+	if (regval & XEMACPS_WOL_SPEREG1_MASK)
 		ewol->wolopts |= WAKE_UCAST;
-	if (regval | XEMACPS_WOL_MAGIC_MASK)
+	if (regval & XEMACPS_WOL_MAGIC_MASK)
 		ewol->wolopts |= WAKE_MAGIC;
 
 }
@@ -2805,6 +2829,7 @@ static int xemacps_probe(struct platform_device *pdev)
 	struct net_local *lp;
 	u32 regval = 0;
 	int rc = -ENXIO;
+	const u8 *mac_address;
 
 	r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	r_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
@@ -2913,7 +2938,14 @@ static int xemacps_probe(struct platform_device *pdev)
 		goto err_out_clk_dis_all;
 	}
 
-	xemacps_update_hwaddr(lp);
+	mac_address = of_get_mac_address(lp->pdev->dev.of_node);
+	if (mac_address) {
+		ether_addr_copy(lp->ndev->dev_addr, mac_address);
+		xemacps_set_hwaddr(lp);
+	} else {
+		xemacps_update_hwaddr(lp);
+	}
+
 	tasklet_init(&lp->tx_bdreclaim_tasklet, xemacps_tx_poll,
 		     (unsigned long) ndev);
 	tasklet_disable(&lp->tx_bdreclaim_tasklet);
@@ -2986,14 +3018,13 @@ static int xemacps_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-#ifdef CONFIG_PM_SLEEP
 /**
  * xemacps_suspend - Suspend event
  * @device: Pointer to device structure
  *
  * Return: 0
  */
-static int xemacps_suspend(struct device *device)
+static int __maybe_unused xemacps_suspend(struct device *device)
 {
 	struct platform_device *pdev = container_of(device,
 			struct platform_device, dev);
@@ -3014,7 +3045,7 @@ static int xemacps_suspend(struct device *device)
  *
  * Return: 0 on success, errno otherwise.
  */
-static int xemacps_resume(struct device *device)
+static int __maybe_unused xemacps_resume(struct device *device)
 {
 	struct platform_device *pdev = container_of(device,
 			struct platform_device, dev);
@@ -3037,15 +3068,13 @@ static int xemacps_resume(struct device *device)
 	netif_device_attach(ndev);
 	return 0;
 }
-#endif /* ! CONFIG_PM_SLEEP */
 
-#ifdef CONFIG_PM_RUNTIME
-static int xemacps_runtime_idle(struct device *dev)
+static int __maybe_unused xemacps_runtime_idle(struct device *dev)
 {
 	return pm_schedule_suspend(dev, 1);
 }
 
-static int xemacps_runtime_resume(struct device *device)
+static int __maybe_unused xemacps_runtime_resume(struct device *device)
 {
 	int ret;
 	struct platform_device *pdev = container_of(device,
@@ -3066,7 +3095,7 @@ static int xemacps_runtime_resume(struct device *device)
 	return 0;
 }
 
-static int xemacps_runtime_suspend(struct device *device)
+static int __maybe_unused xemacps_runtime_suspend(struct device *device)
 {
 	struct platform_device *pdev = container_of(device,
 			struct platform_device, dev);
@@ -3077,7 +3106,6 @@ static int xemacps_runtime_suspend(struct device *device)
 	clk_disable(lp->aperclk);
 	return 0;
 }
-#endif /* CONFIG_PM_RUNTIME */
 
 static const struct dev_pm_ops xemacps_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(xemacps_suspend, xemacps_resume)

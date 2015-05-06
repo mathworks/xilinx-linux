@@ -885,10 +885,10 @@ static const char *adc_mux_text[] = {
 static SOC_ENUM_SINGLE_VIRT_DECL(adc_enum, adc_mux_text);
 
 static const struct snd_kcontrol_new adcl_mux =
-	SOC_DAPM_ENUM_VIRT("ADCL Mux", adc_enum);
+	SOC_DAPM_ENUM("ADCL Mux", adc_enum);
 
 static const struct snd_kcontrol_new adcr_mux =
-	SOC_DAPM_ENUM_VIRT("ADCR Mux", adc_enum);
+	SOC_DAPM_ENUM("ADCR Mux", adc_enum);
 
 static const char *spk_src_text[] = {
 	"DAC1L", "DAC1R", "DAC2L", "DAC2R"
@@ -948,10 +948,8 @@ static const struct snd_soc_dapm_widget wm8995_dapm_widgets[] = {
 	SND_SOC_DAPM_AIF_OUT("AIF1ADC2R", "AIF1 Capture",
 		0, WM8995_POWER_MANAGEMENT_3, 10, 0),
 
-	SND_SOC_DAPM_VIRT_MUX("ADCL Mux", SND_SOC_NOPM, 1, 0,
-		&adcl_mux),
-	SND_SOC_DAPM_VIRT_MUX("ADCR Mux", SND_SOC_NOPM, 0, 0,
-		&adcr_mux),
+	SND_SOC_DAPM_MUX("ADCL Mux", SND_SOC_NOPM, 1, 0, &adcl_mux),
+	SND_SOC_DAPM_MUX("ADCR Mux", SND_SOC_NOPM, 0, 0, &adcr_mux),
 
 	SND_SOC_DAPM_ADC("DMIC2L", NULL, WM8995_POWER_MANAGEMENT_3, 5, 0),
 	SND_SOC_DAPM_ADC("DMIC2R", NULL, WM8995_POWER_MANAGEMENT_3, 4, 0),
@@ -1599,21 +1597,21 @@ static int wm8995_hw_params(struct snd_pcm_substream *substream,
 		return bclk_rate;
 
 	aif1 = 0;
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		aif1 |= (0x1 << WM8995_AIF1_WL_SHIFT);
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		aif1 |= (0x2 << WM8995_AIF1_WL_SHIFT);
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		aif1 |= (0x3 << WM8995_AIF1_WL_SHIFT);
 		break;
 	default:
 		dev_err(dai->dev, "Unsupported word length %u\n",
-			params_format(params));
+			params_width(params));
 		return -EINVAL;
 	}
 
@@ -2000,30 +1998,12 @@ static int wm8995_set_bias_level(struct snd_soc_codec *codec,
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int wm8995_suspend(struct snd_soc_codec *codec)
-{
-	wm8995_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
-static int wm8995_resume(struct snd_soc_codec *codec)
-{
-	wm8995_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-	return 0;
-}
-#else
-#define wm8995_suspend NULL
-#define wm8995_resume NULL
-#endif
-
 static int wm8995_remove(struct snd_soc_codec *codec)
 {
 	struct wm8995_priv *wm8995;
 	int i;
 
 	wm8995 = snd_soc_codec_get_drvdata(codec);
-	wm8995_set_bias_level(codec, SND_SOC_BIAS_OFF);
 
 	for (i = 0; i < ARRAY_SIZE(wm8995->supplies); ++i)
 		regulator_unregister_notifier(wm8995->supplies[i].consumer,
@@ -2097,8 +2077,6 @@ static int wm8995_probe(struct snd_soc_codec *codec)
 		goto err_reg_enable;
 	}
 
-	wm8995_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
 	/* Latch volume updates (right only; we always do left then right). */
 	snd_soc_update_bits(codec, WM8995_AIF1_DAC1_RIGHT_VOLUME,
 			    WM8995_AIF1DAC1_VU_MASK, WM8995_AIF1DAC1_VU);
@@ -2120,13 +2098,6 @@ static int wm8995_probe(struct snd_soc_codec *codec)
 			    WM8995_IN1_VU_MASK, WM8995_IN1_VU);
 
 	wm8995_update_class_w(codec);
-
-	snd_soc_add_codec_controls(codec, wm8995_snd_controls,
-			     ARRAY_SIZE(wm8995_snd_controls));
-	snd_soc_dapm_new_controls(&codec->dapm, wm8995_dapm_widgets,
-				  ARRAY_SIZE(wm8995_dapm_widgets));
-	snd_soc_dapm_add_routes(&codec->dapm, wm8995_intercon,
-				ARRAY_SIZE(wm8995_intercon));
 
 	return 0;
 
@@ -2222,10 +2193,15 @@ static struct snd_soc_dai_driver wm8995_dai[] = {
 static struct snd_soc_codec_driver soc_codec_dev_wm8995 = {
 	.probe = wm8995_probe,
 	.remove = wm8995_remove,
-	.suspend = wm8995_suspend,
-	.resume = wm8995_resume,
 	.set_bias_level = wm8995_set_bias_level,
 	.idle_bias_off = true,
+
+	.controls = wm8995_snd_controls,
+	.num_controls = ARRAY_SIZE(wm8995_snd_controls),
+	.dapm_widgets = wm8995_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(wm8995_dapm_widgets),
+	.dapm_routes = wm8995_intercon,
+	.num_dapm_routes = ARRAY_SIZE(wm8995_intercon),
 };
 
 static struct regmap_config wm8995_regmap = {

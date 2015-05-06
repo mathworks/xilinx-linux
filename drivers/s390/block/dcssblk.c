@@ -593,7 +593,7 @@ dcssblk_add_store(struct device *dev, struct device_attribute *attr, const char 
 	dev_info->start = dcssblk_find_lowest_addr(dev_info);
 	dev_info->end = dcssblk_find_highest_addr(dev_info);
 
-	dev_set_name(&dev_info->dev, dev_info->segment_name);
+	dev_set_name(&dev_info->dev, "%s", dev_info->segment_name);
 	dev_info->dev.release = dcssblk_release_segment;
 	dev_info->dev.groups = dcssblk_dev_attr_groups;
 	INIT_LIST_HEAD(&dev_info->lh);
@@ -1003,7 +1003,6 @@ static const struct dev_pm_ops dcssblk_pm_ops = {
 static struct platform_driver dcssblk_pdrv = {
 	.driver = {
 		.name	= "dcssblk",
-		.owner	= THIS_MODULE,
 		.pm	= &dcssblk_pm_ops,
 	},
 };

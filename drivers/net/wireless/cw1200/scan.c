@@ -53,9 +53,10 @@ static int cw1200_scan_start(struct cw1200_common *priv, struct wsm_scan *scan)
 
 int cw1200_hw_scan(struct ieee80211_hw *hw,
 		   struct ieee80211_vif *vif,
-		   struct cfg80211_scan_request *req)
+		   struct ieee80211_scan_request *hw_req)
 {
 	struct cw1200_common *priv = hw->priv;
+	struct cfg80211_scan_request *req = &hw_req->req;
 	struct wsm_template_frame frame = {
 		.frame_type = WSM_FRAME_TYPE_PROBE_REQUEST,
 	};
@@ -77,7 +78,7 @@ int cw1200_hw_scan(struct ieee80211_hw *hw,
 	if (req->n_ssids > WSM_SCAN_MAX_NUM_OF_SSIDS)
 		return -EINVAL;
 
-	frame.skb = ieee80211_probereq_get(hw, priv->vif, NULL, 0,
+	frame.skb = ieee80211_probereq_get(hw, priv->vif->addr, NULL, 0,
 		req->ie_len);
 	if (!frame.skb)
 		return -ENOMEM;

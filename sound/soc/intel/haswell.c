@@ -89,8 +89,6 @@ static struct snd_soc_ops haswell_rt5640_ops = {
 
 static int haswell_rtd_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct sst_pdata *pdata = dev_get_platdata(rtd->platform->dev);
 	struct sst_hsw *haswell = pdata->dsp;
 	int ret;
@@ -104,10 +102,6 @@ static int haswell_rtd_init(struct snd_soc_pcm_runtime *rtd)
 		return ret;
 	}
 
-	/* always connected */
-	snd_soc_dapm_enable_pin(dapm, "Headphones");
-	snd_soc_dapm_enable_pin(dapm, "Mic");
-
 	return 0;
 }
 
@@ -115,7 +109,7 @@ static struct snd_soc_dai_link haswell_rt5640_dais[] = {
 	/* Front End DAI links */
 	{
 		.name = "System",
-		.stream_name = "System Playback",
+		.stream_name = "System Playback/Capture",
 		.cpu_dai_name = "System Pin",
 		.platform_name = "haswell-pcm-audio",
 		.dynamic = 1,
@@ -124,6 +118,7 @@ static struct snd_soc_dai_link haswell_rt5640_dais[] = {
 		.init = haswell_rtd_init,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST, SND_SOC_DPCM_TRIGGER_POST},
 		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 	},
 	{
 		.name = "Offload0",
@@ -153,17 +148,6 @@ static struct snd_soc_dai_link haswell_rt5640_dais[] = {
 		.cpu_dai_name = "Loopback Pin",
 		.platform_name = "haswell-pcm-audio",
 		.dynamic = 0,
-		.codec_name = "snd-soc-dummy",
-		.codec_dai_name = "snd-soc-dummy-dai",
-		.trigger = {SND_SOC_DPCM_TRIGGER_POST, SND_SOC_DPCM_TRIGGER_POST},
-		.dpcm_capture = 1,
-	},
-	{
-		.name = "Capture",
-		.stream_name = "Capture",
-		.cpu_dai_name = "Capture Pin",
-		.platform_name = "haswell-pcm-audio",
-		.dynamic = 1,
 		.codec_name = "snd-soc-dummy",
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST, SND_SOC_DPCM_TRIGGER_POST},
@@ -208,21 +192,13 @@ static int haswell_audio_probe(struct platform_device *pdev)
 {
 	haswell_rt5640.dev = &pdev->dev;
 
-	return snd_soc_register_card(&haswell_rt5640);
-}
-
-static int haswell_audio_remove(struct platform_device *pdev)
-{
-	snd_soc_unregister_card(&haswell_rt5640);
-	return 0;
+	return devm_snd_soc_register_card(&pdev->dev, &haswell_rt5640);
 }
 
 static struct platform_driver haswell_audio = {
 	.probe = haswell_audio_probe,
-	.remove = haswell_audio_remove,
 	.driver = {
 		.name = "haswell-audio",
-		.owner = THIS_MODULE,
 	},
 };
 

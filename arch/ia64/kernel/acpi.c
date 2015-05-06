@@ -56,6 +56,7 @@
 
 #define PREFIX			"ACPI: "
 
+int acpi_lapic;
 unsigned int acpi_cpei_override;
 unsigned int acpi_cpei_phys_cpuid;
 
@@ -676,6 +677,8 @@ int __init early_acpi_boot_init(void)
 	if (ret < 1)
 		printk(KERN_ERR PREFIX
 		       "Error parsing MADT - no LAPIC entries\n");
+	else
+		acpi_lapic = 1;
 
 #ifdef CONFIG_SMP
 	if (available_cpus == 0) {
@@ -890,13 +893,13 @@ static int _acpi_map_lsapic(acpi_handle handle, int physid, int *pcpu)
 }
 
 /* wrapper to silence section mismatch warning */
-int __ref acpi_map_lsapic(acpi_handle handle, int physid, int *pcpu)
+int __ref acpi_map_cpu(acpi_handle handle, int physid, int *pcpu)
 {
 	return _acpi_map_lsapic(handle, physid, pcpu);
 }
-EXPORT_SYMBOL(acpi_map_lsapic);
+EXPORT_SYMBOL(acpi_map_cpu);
 
-int acpi_unmap_lsapic(int cpu)
+int acpi_unmap_cpu(int cpu)
 {
 	ia64_cpu_to_sapicid[cpu] = -1;
 	set_cpu_present(cpu, false);
@@ -907,8 +910,7 @@ int acpi_unmap_lsapic(int cpu)
 
 	return (0);
 }
-
-EXPORT_SYMBOL(acpi_unmap_lsapic);
+EXPORT_SYMBOL(acpi_unmap_cpu);
 #endif				/* CONFIG_ACPI_HOTPLUG_CPU */
 
 #ifdef CONFIG_ACPI_NUMA

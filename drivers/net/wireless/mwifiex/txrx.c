@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: generic TX/RX data handling
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -55,6 +55,7 @@ int mwifiex_handle_rx_packet(struct mwifiex_adapter *adapter,
 		return -1;
 	}
 
+	memset(rx_info, 0, sizeof(*rx_info));
 	rx_info->bss_num = priv->bss_num;
 	rx_info->bss_type = priv->bss_type;
 
@@ -62,10 +63,6 @@ int mwifiex_handle_rx_packet(struct mwifiex_adapter *adapter,
 		ret = mwifiex_process_uap_rx_packet(priv, skb);
 	else
 		ret = mwifiex_process_sta_rx_packet(priv, skb);
-
-	/* Decrement RX pending counter for each packet */
-	if (adapter->if_ops.data_complete)
-		adapter->if_ops.data_complete(adapter);
 
 	return ret;
 }
@@ -206,3 +203,34 @@ done:
 }
 EXPORT_SYMBOL_GPL(mwifiex_write_data_complete);
 
+void mwifiex_parse_tx_status_event(struct mwifiex_private *priv,
+				   void *event_body)
+{
+	struct tx_status_event *tx_status = (void *)priv->adapter->event_body;
+	struct sk_buff *ack_skb;
+	unsigned long flags;
+	struct mwifiex_txinfo *tx_info;
+
+	if (!tx_status->tx_token_id)
+		return;
+
+	spin_lock_irqsave(&priv->ack_status_lock, flags);
+	ack_skb = idr_find(&priv->ack_status_frames, tx_status->tx_token_id);
+	if (ack_skb)
+		idr_remove(&priv->ack_status_frames, tx_status->tx_token_id);
+	spin_unlock_irqrestore(&priv->ack_status_lock, flags);
+
+	if (ack_skb) {
+		tx_info = MWIFIEX_SKB_TXCB(ack_skb);
+
+		if (tx_info->flags & MWIFIEX_BUF_FLAG_EAPOL_TX_STATUS) {
+			/* consumes ack_skb */
+			skb_complete_wifi_ack(ack_skb, !tx_status->status);
+		} else {
+			cfg80211_mgmt_tx_status(priv->wdev, tx_info->cookie,
+						ack_skb->data, ack_skb->len,
+						!tx_status->status, GFP_ATOMIC);
+			dev_kfree_skb_any(ack_skb);
+		}
+	}
+}

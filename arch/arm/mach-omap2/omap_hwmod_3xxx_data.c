@@ -18,6 +18,7 @@
 #include <linux/i2c-omap.h>
 #include <linux/power/smartreflex.h>
 #include <linux/platform_data/gpio-omap.h>
+#include <linux/platform_data/hsmmc-omap.h>
 
 #include <linux/omap-dma.h>
 #include "l3_3xxx.h"
@@ -37,7 +38,6 @@
 #include "cm-regbits-34xx.h"
 
 #include "i2c.h"
-#include "mmc.h"
 #include "wd_timer.h"
 #include "serial.h"
 
@@ -490,7 +490,7 @@ static struct omap_hwmod omap3xxx_uart1_hwmod = {
 	.mpu_irqs	= omap2_uart1_mpu_irqs,
 	.sdma_reqs	= omap2_uart1_sdma_reqs,
 	.main_clk	= "uart1_fck",
-	.flags		= DEBUG_TI81XXUART1_FLAGS | HWMOD_SWSUP_SIDLE_ACT,
+	.flags		= DEBUG_TI81XXUART1_FLAGS | HWMOD_SWSUP_SIDLE,
 	.prcm		= {
 		.omap2 = {
 			.module_offs = CORE_MOD,
@@ -509,7 +509,7 @@ static struct omap_hwmod omap3xxx_uart2_hwmod = {
 	.mpu_irqs	= omap2_uart2_mpu_irqs,
 	.sdma_reqs	= omap2_uart2_sdma_reqs,
 	.main_clk	= "uart2_fck",
-	.flags		= DEBUG_TI81XXUART2_FLAGS | HWMOD_SWSUP_SIDLE_ACT,
+	.flags		= DEBUG_TI81XXUART2_FLAGS | HWMOD_SWSUP_SIDLE,
 	.prcm		= {
 		.omap2 = {
 			.module_offs = CORE_MOD,
@@ -529,7 +529,7 @@ static struct omap_hwmod omap3xxx_uart3_hwmod = {
 	.sdma_reqs	= omap2_uart3_sdma_reqs,
 	.main_clk	= "uart3_fck",
 	.flags		= DEBUG_OMAP3UART3_FLAGS | DEBUG_TI81XXUART3_FLAGS |
-				HWMOD_SWSUP_SIDLE_ACT,
+				HWMOD_SWSUP_SIDLE,
 	.prcm		= {
 		.omap2 = {
 			.module_offs = OMAP3430_PER_MOD,
@@ -559,7 +559,7 @@ static struct omap_hwmod omap36xx_uart4_hwmod = {
 	.mpu_irqs	= uart4_mpu_irqs,
 	.sdma_reqs	= uart4_sdma_reqs,
 	.main_clk	= "uart4_fck",
-	.flags		= DEBUG_OMAP3UART4_FLAGS | HWMOD_SWSUP_SIDLE_ACT,
+	.flags		= DEBUG_OMAP3UART4_FLAGS | HWMOD_SWSUP_SIDLE,
 	.prcm		= {
 		.omap2 = {
 			.module_offs = OMAP3430_PER_MOD,
@@ -1730,8 +1730,8 @@ static struct omap_hwmod omap3xxx_usbhsotg_hwmod = {
 	 * Note that musb has OTG_FORCESTDBY register that controls MSTANDBY
 	 * signal when MIDLEMODE is set to force-idle.
 	 */
-	.flags		= HWMOD_NO_OCP_AUTOIDLE | HWMOD_SWSUP_SIDLE
-				| HWMOD_FORCE_MSTANDBY,
+	.flags		= HWMOD_NO_OCP_AUTOIDLE | HWMOD_SWSUP_SIDLE |
+			  HWMOD_FORCE_MSTANDBY | HWMOD_RECONFIG_IO_CHAIN,
 };
 
 /* usb_otg_hs */
@@ -1786,12 +1786,12 @@ static struct omap_hwmod_opt_clk omap34xx_mmc1_opt_clks[] = {
 	{ .role = "dbck", .clk = "omap_32k_fck", },
 };
 
-static struct omap_mmc_dev_attr mmc1_dev_attr = {
+static struct omap_hsmmc_dev_attr mmc1_dev_attr = {
 	.flags = OMAP_HSMMC_SUPPORTS_DUAL_VOLT,
 };
 
 /* See 35xx errata 2.1.1.128 in SPRZ278F */
-static struct omap_mmc_dev_attr mmc1_pre_es3_dev_attr = {
+static struct omap_hsmmc_dev_attr mmc1_pre_es3_dev_attr = {
 	.flags = (OMAP_HSMMC_SUPPORTS_DUAL_VOLT |
 		  OMAP_HSMMC_BROKEN_MULTIBLOCK_READ),
 };
@@ -1854,7 +1854,7 @@ static struct omap_hwmod_opt_clk omap34xx_mmc2_opt_clks[] = {
 };
 
 /* See 35xx errata 2.1.1.128 in SPRZ278F */
-static struct omap_mmc_dev_attr mmc2_pre_es3_dev_attr = {
+static struct omap_hsmmc_dev_attr mmc2_pre_es3_dev_attr = {
 	.flags = OMAP_HSMMC_BROKEN_MULTIBLOCK_READ,
 };
 
@@ -2986,8 +2986,6 @@ static struct omap_hwmod_class omap3xxx_mmu_hwmod_class = {
 /* mmu isp */
 
 static struct omap_mmu_dev_attr mmu_isp_dev_attr = {
-	.da_start	= 0x0,
-	.da_end		= 0xfffff000,
 	.nr_tlb_entries = 8,
 };
 
@@ -3026,8 +3024,6 @@ static struct omap_hwmod omap3xxx_mmu_isp_hwmod = {
 /* mmu iva */
 
 static struct omap_mmu_dev_attr mmu_iva_dev_attr = {
-	.da_start	= 0x11000000,
-	.da_end		= 0xfffff000,
 	.nr_tlb_entries = 32,
 };
 
@@ -3689,12 +3685,9 @@ static struct omap_hwmod_class_sysconfig omap34xx_ssi_sysc = {
 	.rev_offs	= 0x0000,
 	.sysc_offs	= 0x0010,
 	.syss_offs	= 0x0014,
-	.sysc_flags	= (SYSC_HAS_AUTOIDLE | SYSC_HAS_EMUFREE |
-			   SYSC_HAS_MIDLEMODE | SYSC_HAS_SIDLEMODE |
-			   SYSC_HAS_SOFTRESET | SYSS_HAS_RESET_STATUS),
-	.idlemodes	= (SIDLE_FORCE | SIDLE_NO | SIDLE_SMART |
-			   SIDLE_SMART_WKUP | MSTANDBY_FORCE | MSTANDBY_NO |
-			   MSTANDBY_SMART | MSTANDBY_SMART_WKUP),
+	.sysc_flags	= (SYSC_HAS_AUTOIDLE | SYSC_HAS_MIDLEMODE |
+			   SYSC_HAS_SIDLEMODE | SYSC_HAS_SOFTRESET),
+	.idlemodes	= (SIDLE_FORCE | SIDLE_NO | SIDLE_SMART),
 	.sysc_fields	= &omap_hwmod_sysc_type1,
 };
 

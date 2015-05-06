@@ -30,6 +30,14 @@ static int __rtc_read_time(struct rtc_device *rtc, struct rtc_time *tm)
 	else {
 		memset(tm, 0, sizeof(struct rtc_time));
 		err = rtc->ops->read_time(rtc->dev.parent, tm);
+		if (err < 0) {
+			dev_err(&rtc->dev, "read_time: fail to read\n");
+			return err;
+		}
+
+		err = rtc_valid_tm(tm);
+		if (err < 0)
+			dev_err(&rtc->dev, "read_time: rtc_time isn't valid\n");
 	}
 	return err;
 }
@@ -292,7 +300,8 @@ int __rtc_read_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 		dev_dbg(&rtc->dev, "alarm rollover: %s\n", "year");
 		do {
 			alarm->time.tm_year++;
-		} while (rtc_valid_tm(&alarm->time) != 0);
+		} while (!is_leap_year(alarm->time.tm_year + 1900)
+			&& rtc_valid_tm(&alarm->time) != 0);
 		break;
 
 	default:
@@ -300,7 +309,16 @@ int __rtc_read_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	}
 
 done:
-	return 0;
+	err = rtc_valid_tm(&alarm->time);
+
+	if (err) {
+		dev_warn(&rtc->dev, "invalid alarm value: %d-%d-%d %d:%d:%d\n",
+			alarm->time.tm_year + 1900, alarm->time.tm_mon + 1,
+			alarm->time.tm_mday, alarm->time.tm_hour, alarm->time.tm_min,
+			alarm->time.tm_sec);
+	}
+
+	return err;
 }
 
 int rtc_read_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
@@ -338,6 +356,8 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 
 	/* Make sure we're not setting alarms in the past */
 	err = __rtc_read_time(rtc, &tm);
+	if (err)
+		return err;
 	rtc_tm_to_time(&tm, &now);
 	if (scheduled <= now)
 		return -ETIME;
@@ -879,11 +899,24 @@ again:
 	if (next) {
 		struct rtc_wkalrm alarm;
 		int err;
+		int retry = 3;
+
 		alarm.time = rtc_ktime_to_tm(next->expires);
 		alarm.enabled = 1;
+reprogram:
 		err = __rtc_set_alarm(rtc, &alarm);
 		if (err == -ETIME)
 			goto again;
+		else if (err) {
+			if (retry-- > 0)
+				goto reprogram;
+
+			timer = container_of(next, struct rtc_timer, node);
+			timerqueue_del(&rtc->timerqueue, &timer->node);
+			timer->enabled = 0;
+			dev_err(&rtc->dev, "__rtc_set_alarm: err=%d\n", err);
+			goto again;
+		}
 	} else
 		rtc_alarm_disable(rtc);
 

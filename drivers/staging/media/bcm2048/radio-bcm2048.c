@@ -369,13 +369,12 @@ static int bcm2048_send_command(struct bcm2048_device *bdev, unsigned int reg,
 	data[0] = reg & 0xff;
 	data[1] = value & 0xff;
 
-	if (i2c_master_send(client, data, 2) == 2) {
+	if (i2c_master_send(client, data, 2) == 2)
 		return 0;
-	} else {
-		dev_err(&bdev->client->dev, "BCM I2C error!\n");
-		dev_err(&bdev->client->dev, "Is Bluetooth up and running?\n");
-		return -EIO;
-	}
+
+	dev_err(&bdev->client->dev, "BCM I2C error!\n");
+	dev_err(&bdev->client->dev, "Is Bluetooth up and running?\n");
+	return -EIO;
 }
 
 static int bcm2048_recv_command(struct bcm2048_device *bdev, unsigned int reg,
@@ -725,8 +724,8 @@ static int bcm2048_get_fm_deemphasis(struct bcm2048_device *bdev)
 	if (!err) {
 		if (value & BCM2048_DE_EMPHASIS_SELECT)
 			return BCM2048_DE_EMPHASIS_75us;
-		else
-			return BCM2048_DE_EMPHASIS_50us;
+
+		return BCM2048_DE_EMPHASIS_50us;
 	}
 
 	return err;
@@ -1971,7 +1970,8 @@ static ssize_t bcm2048_##prop##_write(struct device *dev,		\
 	if (!bdev)							\
 		return -ENODEV;						\
 									\
-	sscanf(buf, mask, &value);					\
+	if (sscanf(buf, mask, &value) != 1)				\
+		return -EINVAL;						\
 									\
 	if (check)							\
 		return -EDOM;						\
@@ -2242,6 +2242,7 @@ static ssize_t bcm2048_fops_read(struct file *file, char __user *buf,
 	i = 0;
 	while (i < count) {
 		unsigned char tmpbuf[3];
+
 		tmpbuf[i] = bdev->rds_info.radio_text[bdev->rd_index+i+2];
 		tmpbuf[i+1] = bdev->rds_info.radio_text[bdev->rd_index+i+1];
 		tmpbuf[i+2] = ((bdev->rds_info.radio_text[bdev->rd_index+i]
@@ -2326,9 +2327,10 @@ static int bcm2048_vidioc_querycap(struct file *file, void *priv,
 	strlcpy(capability->card, BCM2048_DRIVER_CARD,
 		sizeof(capability->card));
 	snprintf(capability->bus_info, 32, "I2C: 0x%X", bdev->client->addr);
-	capability->version = BCM2048_DRIVER_VERSION;
-	capability->capabilities = V4L2_CAP_TUNER | V4L2_CAP_RADIO |
+	capability->device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO |
 					V4L2_CAP_HW_FREQ_SEEK;
+	capability->capabilities = capability->device_caps |
+		V4L2_CAP_DEVICE_CAPS;
 
 	return 0;
 }
@@ -2598,7 +2600,6 @@ static int bcm2048_i2c_driver_probe(struct i2c_client *client,
 
 	bdev = kzalloc(sizeof(*bdev), GFP_KERNEL);
 	if (!bdev) {
-		dev_dbg(&client->dev, "Failed to alloc video device.\n");
 		err = -ENOMEM;
 		goto exit;
 	}
@@ -2618,7 +2619,7 @@ static int bcm2048_i2c_driver_probe(struct i2c_client *client,
 
 	if (client->irq) {
 		err = request_irq(client->irq,
-			bcm2048_handler, IRQF_TRIGGER_FALLING | IRQF_DISABLED,
+			bcm2048_handler, IRQF_TRIGGER_FALLING,
 			client->name, bdev);
 		if (err < 0) {
 			dev_err(&client->dev, "Could not request IRQ\n");
@@ -2707,7 +2708,7 @@ static int __exit bcm2048_i2c_driver_remove(struct i2c_client *client)
  *	bcm2048_i2c_driver - i2c driver interface
  */
 static const struct i2c_device_id bcm2048_id[] = {
-	{ "bcm2048" , 0 },
+	{ "bcm2048", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(i2c, bcm2048_id);

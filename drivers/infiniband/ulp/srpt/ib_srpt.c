@@ -198,6 +198,7 @@ static void srpt_event_handler(struct ib_event_handler *handler,
 	case IB_EVENT_PKEY_CHANGE:
 	case IB_EVENT_SM_CHANGE:
 	case IB_EVENT_CLIENT_REREGISTER:
+	case IB_EVENT_GID_CHANGE:
 		/* Refresh port data asynchronously. */
 		if (event->element.port_num <= sdev->device->phys_port_cnt) {
 			sport = &sdev->port[event->element.port_num - 1];
@@ -563,7 +564,7 @@ static int srpt_refresh_port(struct srpt_port *sport)
 							 &reg_req, 0,
 							 srpt_mad_send_handler,
 							 srpt_mad_recv_handler,
-							 sport);
+							 sport, 0);
 		if (IS_ERR(sport->mad_agent)) {
 			ret = PTR_ERR(sport->mad_agent);
 			sport->mad_agent = NULL;
@@ -1707,17 +1708,17 @@ static int srpt_handle_cmd(struct srpt_rdma_ch *ch,
 
 	switch (srp_cmd->task_attr) {
 	case SRP_CMD_SIMPLE_Q:
-		cmd->sam_task_attr = MSG_SIMPLE_TAG;
+		cmd->sam_task_attr = TCM_SIMPLE_TAG;
 		break;
 	case SRP_CMD_ORDERED_Q:
 	default:
-		cmd->sam_task_attr = MSG_ORDERED_TAG;
+		cmd->sam_task_attr = TCM_ORDERED_TAG;
 		break;
 	case SRP_CMD_HEAD_OF_Q:
-		cmd->sam_task_attr = MSG_HEAD_TAG;
+		cmd->sam_task_attr = TCM_HEAD_TAG;
 		break;
 	case SRP_CMD_ACA:
-		cmd->sam_task_attr = MSG_ACA_TAG;
+		cmd->sam_task_attr = TCM_ACA_TAG;
 		break;
 	}
 
@@ -1732,7 +1733,7 @@ static int srpt_handle_cmd(struct srpt_rdma_ch *ch,
 				       sizeof(srp_cmd->lun));
 	rc = target_submit_cmd(cmd, ch->sess, srp_cmd->cdb,
 			&send_ioctx->sense_data[0], unpacked_lun, data_len,
-			MSG_SIMPLE_TAG, dir, TARGET_SCF_ACK_KREF);
+			TCM_SIMPLE_TAG, dir, TARGET_SCF_ACK_KREF);
 	if (rc != 0) {
 		ret = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 		goto send_sense;
@@ -2091,6 +2092,7 @@ static int srpt_create_ch_ib(struct srpt_rdma_ch *ch)
 	if (!qp_init)
 		goto out;
 
+retry:
 	ch->cq = ib_create_cq(sdev->device, srpt_completion, NULL, ch,
 			      ch->rq_size + srp_sq_size, 0);
 	if (IS_ERR(ch->cq)) {
@@ -2114,6 +2116,13 @@ static int srpt_create_ch_ib(struct srpt_rdma_ch *ch)
 	ch->qp = ib_create_qp(sdev->pd, qp_init);
 	if (IS_ERR(ch->qp)) {
 		ret = PTR_ERR(ch->qp);
+		if (ret == -ENOMEM) {
+			srp_sq_size /= 2;
+			if (srp_sq_size >= MIN_SRPT_SQ_SIZE) {
+				ib_destroy_cq(ch->cq);
+				goto retry;
+			}
+		}
 		printk(KERN_ERR "failed to create_qp ret= %d\n", ret);
 		goto err_destroy_cq;
 	}
@@ -3573,7 +3582,7 @@ static int srpt_parse_i_port_id(u8 i_port_id[16], const char *name)
 	int ret, rc;
 
 	p = name;
-	if (strnicmp(p, "0x", 2) == 0)
+	if (strncasecmp(p, "0x", 2) == 0)
 		p += 2;
 	ret = -EINVAL;
 	len = strlen(p);

@@ -67,17 +67,12 @@ static int sst_byt_parse_module(struct sst_dsp *dsp, struct sst_fw *fw,
 {
 	struct dma_block_info *block;
 	struct sst_module *mod;
-	struct sst_module_data block_data;
 	struct sst_module_template template;
 	int count;
 
 	memset(&template, 0, sizeof(template));
 	template.id = module->type;
 	template.entry = module->entry_point;
-	template.p.type = SST_MEM_DRAM;
-	template.p.data_type = SST_DATA_P;
-	template.s.type = SST_MEM_DRAM;
-	template.s.data_type = SST_DATA_S;
 
 	mod = sst_module_new(fw, &template, NULL);
 	if (mod == NULL)
@@ -94,19 +89,19 @@ static int sst_byt_parse_module(struct sst_dsp *dsp, struct sst_fw *fw,
 
 		switch (block->type) {
 		case SST_BYT_IRAM:
-			block_data.offset = block->ram_offset +
+			mod->offset = block->ram_offset +
 					    dsp->addr.iram_offset;
-			block_data.type = SST_MEM_IRAM;
+			mod->type = SST_MEM_IRAM;
 			break;
 		case SST_BYT_DRAM:
-			block_data.offset = block->ram_offset +
+			mod->offset = block->ram_offset +
 					    dsp->addr.dram_offset;
-			block_data.type = SST_MEM_DRAM;
+			mod->type = SST_MEM_DRAM;
 			break;
 		case SST_BYT_CACHE:
-			block_data.offset = block->ram_offset +
+			mod->offset = block->ram_offset +
 					    (dsp->addr.fw_ext - dsp->addr.lpe);
-			block_data.type = SST_MEM_CACHE;
+			mod->type = SST_MEM_CACHE;
 			break;
 		default:
 			dev_err(dsp->dev, "wrong ram type 0x%x in block0x%x\n",
@@ -114,11 +109,10 @@ static int sst_byt_parse_module(struct sst_dsp *dsp, struct sst_fw *fw,
 			return -EINVAL;
 		}
 
-		block_data.size = block->size;
-		block_data.data_type = SST_DATA_M;
-		block_data.data = (void *)block + sizeof(*block);
+		mod->size = block->size;
+		mod->data = (void *)block + sizeof(*block);
 
-		sst_module_insert_fixed_block(mod, &block_data);
+		sst_module_alloc_blocks(mod);
 
 		block = (void *)block + sizeof(*block) + block->size;
 	}
@@ -213,6 +207,13 @@ static irqreturn_t sst_byt_irq(int irq, void *context)
 static void sst_byt_boot(struct sst_dsp *sst)
 {
 	int tries = 10;
+
+	/*
+	 * save the physical address of extended firmware block in the first
+	 * 4 bytes of the mailbox
+	 */
+	memcpy_toio(sst->addr.lpe + SST_BYT_MAILBOX_OFFSET,
+	       &sst->pdata->fw_base, sizeof(u32));
 
 	/* release stall and wait to unstall */
 	sst_dsp_shim_update_bits64(sst, SST_CSR, SST_BYT_CSR_STALL, 0x0);
@@ -316,13 +317,6 @@ static int sst_byt_init(struct sst_dsp *sst, struct sst_pdata *pdata)
 		dev_err(dev, "failed to map resources\n");
 		return ret;
 	}
-
-	/*
-	 * save the physical address of extended firmware block in the first
-	 * 4 bytes of the mailbox
-	 */
-	memcpy_toio(sst->addr.lpe + SST_BYT_MAILBOX_OFFSET,
-	       &pdata->fw_base, sizeof(u32));
 
 	ret = dma_coerce_mask_and_coherent(sst->dma_dev, DMA_BIT_MASK(32));
 	if (ret)

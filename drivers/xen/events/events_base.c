@@ -246,7 +246,7 @@ static void xen_irq_info_cleanup(struct irq_info *info)
  */
 unsigned int evtchn_from_irq(unsigned irq)
 {
-	if (unlikely(WARN(irq < 0 || irq >= nr_irqs, "Invalid irq %d!\n", irq)))
+	if (unlikely(WARN(irq >= nr_irqs, "Invalid irq %d!\n", irq)))
 		return 0;
 
 	return info_for_irq(irq)->evtchn;
@@ -390,22 +390,7 @@ static void xen_irq_init(unsigned irq)
 
 static int __must_check xen_allocate_irqs_dynamic(int nvec)
 {
-	int first = 0;
-	int i, irq;
-
-#ifdef CONFIG_X86_IO_APIC
-	/*
-	 * For an HVM guest or domain 0 which see "real" (emulated or
-	 * actual respectively) GSIs we allocate dynamic IRQs
-	 * e.g. those corresponding to event channels or MSIs
-	 * etc. from the range above those "real" GSIs to avoid
-	 * collisions.
-	 */
-	if (xen_initial_domain() || xen_hvm_domain())
-		first = get_nr_irqs_gsi();
-#endif
-
-	irq = irq_alloc_descs_from(first, nvec, -1);
+	int i, irq = irq_alloc_descs(-1, 0, nvec, -1);
 
 	if (irq >= 0) {
 		for (i = 0; i < nvec; i++)
@@ -915,8 +900,8 @@ static int bind_ipi_to_irq(unsigned int ipi, unsigned int cpu)
 	return irq;
 }
 
-static int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
-					  unsigned int remote_port)
+int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
+				   unsigned int remote_port)
 {
 	struct evtchn_bind_interdomain bind_interdomain;
 	int err;
@@ -929,6 +914,7 @@ static int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
 
 	return err ? : bind_evtchn_to_irq(bind_interdomain.local_port);
 }
+EXPORT_SYMBOL_GPL(bind_interdomain_evtchn_to_irq);
 
 static int find_virq(unsigned int virq, unsigned int cpu)
 {

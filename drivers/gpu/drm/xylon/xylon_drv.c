@@ -65,7 +65,7 @@ static int xylon_drm_load(struct drm_device *dev, unsigned long flags)
 	if (IS_ERR(xdev->crtc)) {
 		DRM_ERROR("failed create xylon crtc\n");
 		ret = PTR_ERR(xdev->crtc);
-		goto err_crtc;
+		goto err_out;
 	}
 
 	xylon_drm_mode_config_init(dev);
@@ -74,20 +74,20 @@ static int xylon_drm_load(struct drm_device *dev, unsigned long flags)
 	if (IS_ERR(xdev->encoder)) {
 		DRM_ERROR("failed create xylon encoder\n");
 		ret = PTR_ERR(xdev->encoder);
-		goto err_encoder;
+		goto err_out;
 	}
 
 	xdev->connector = xylon_drm_connector_create(dev, xdev->encoder);
 	if (IS_ERR(xdev->connector)) {
 		DRM_ERROR("failed create xylon connector\n");
 		ret = PTR_ERR(xdev->connector);
-		goto err_connector;
+		goto err_out;
 	}
 
 	ret = drm_vblank_init(dev, 1);
 	if (ret) {
 		DRM_ERROR("failed initialize vblank\n");
-		goto err_vblank;
+		goto err_out;
 	}
 	dev->vblank_disable_allowed = 1;
 
@@ -120,13 +120,7 @@ err_fbdev:
 	xylon_drm_irq_uninstall(dev);
 err_irq:
 	drm_vblank_cleanup(dev);
-err_vblank:
-	xylon_drm_connector_destroy(xdev->connector);
-err_connector:
-	xylon_drm_encoder_destroy(xdev->encoder);
-err_encoder:
-	xylon_drm_crtc_destroy(xdev->crtc);
-err_crtc:
+err_out:
 	drm_mode_config_cleanup(dev);
 
 	if (ret == -EPROBE_DEFER)
@@ -284,8 +278,7 @@ static struct drm_driver xylon_drm_driver = {
 	.minor = DRIVER_MINOR,
 };
 
-#if defined(CONFIG_PM_SLEEP) || defined(CONFIG_PM_RUNTIME)
-static int xylon_drm_pm_suspend(struct device *dev)
+static int __maybe_unused xylon_drm_pm_suspend(struct device *dev)
 {
 	struct xylon_drm_device *xdev = dev_get_drvdata(dev);
 
@@ -295,7 +288,7 @@ static int xylon_drm_pm_suspend(struct device *dev)
 	return 0;
 }
 
-static int xylon_drm_pm_resume(struct device *dev)
+static int __maybe_unused xylon_drm_pm_resume(struct device *dev)
 {
 	struct xylon_drm_device *xdev = dev_get_drvdata(dev);
 
@@ -304,7 +297,6 @@ static int xylon_drm_pm_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops xylon_drm_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(xylon_drm_pm_suspend, xylon_drm_pm_resume)

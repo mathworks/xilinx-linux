@@ -10,8 +10,8 @@
  *
  */
 
-#ifndef CAN_DEV_H
-#define CAN_DEV_H
+#ifndef _CAN_DEV_H
+#define _CAN_DEV_H
 
 #include <linux/can.h>
 #include <linux/can/netlink.h>
@@ -99,6 +99,12 @@ inval_skb:
 	return 1;
 }
 
+static inline bool can_is_canfd_skb(const struct sk_buff *skb)
+{
+	/* the CAN specific type of skb is identified by its data length */
+	return skb->len == CANFD_MTU;
+}
+
 /* get data length from can_dlc with sanitized can_dlc */
 u8 can_dlc2len(u8 can_dlc);
 
@@ -121,6 +127,9 @@ void unregister_candev(struct net_device *dev);
 int can_restart_now(struct net_device *dev);
 void can_bus_off(struct net_device *dev);
 
+void can_change_state(struct net_device *dev, struct can_frame *cf,
+		      enum can_state tx_state, enum can_state rx_state);
+
 void can_put_echo_skb(struct sk_buff *skb, struct net_device *dev,
 		      unsigned int idx);
 unsigned int can_get_echo_skb(struct net_device *dev, unsigned int idx);
@@ -132,4 +141,4 @@ struct sk_buff *alloc_canfd_skb(struct net_device *dev,
 struct sk_buff *alloc_can_err_skb(struct net_device *dev,
 				  struct can_frame **cf);
 
-#endif /* CAN_DEV_H */
+#endif /* !_CAN_DEV_H */

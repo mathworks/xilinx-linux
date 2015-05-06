@@ -37,7 +37,7 @@
 
 /*
  * This is used for calculating the real page sizes
- * for FTLB or VTLB + FTLB confugrations.
+ * for FTLB or VTLB + FTLB configurations.
  */
 static inline unsigned int page_size_ftlb(unsigned int mmuextdef)
 {
@@ -116,7 +116,7 @@ extern void copy_user_highpage(struct page *to, struct page *from,
 /*
  * These are used to make use of C type-checking..
  */
-#ifdef CONFIG_64BIT_PHYS_ADDR
+#ifdef CONFIG_PHYS_ADDR_T_64BIT
   #ifdef CONFIG_CPU_MIPS32
     typedef struct { unsigned long pte_low, pte_high; } pte_t;
     #define pte_val(x)	  ((x).pte_low | ((unsigned long long)(x).pte_high << 32))
@@ -223,7 +223,8 @@ static inline int pfn_valid(unsigned long pfn)
 
 #endif
 
-#define virt_to_page(kaddr)	pfn_to_page(PFN_DOWN(virt_to_phys(kaddr)))
+#define virt_to_page(kaddr)	pfn_to_page(PFN_DOWN(virt_to_phys((void *)     \
+								  (kaddr))))
 
 extern int __virt_addr_valid(const volatile void *kaddr);
 #define virt_addr_valid(kaddr)						\

@@ -237,7 +237,8 @@ static int da9052_gpio_remove(struct platform_device *pdev)
 {
 	struct da9052_gpio *gpio = platform_get_drvdata(pdev);
 
-	return gpiochip_remove(&gpio->gp);
+	gpiochip_remove(&gpio->gp);
+	return 0;
 }
 
 static struct platform_driver da9052_gpio_driver = {
@@ -245,7 +246,6 @@ static struct platform_driver da9052_gpio_driver = {
 	.remove = da9052_gpio_remove,
 	.driver = {
 		.name	= "da9052-gpio",
-		.owner	= THIS_MODULE,
 	},
 };
 

@@ -3,6 +3,7 @@
  *	Library for filesystems writers.
  */
 
+#include <linux/blkdev.h>
 #include <linux/export.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
@@ -113,18 +114,18 @@ loff_t dcache_dir_lseek(struct file *file, loff_t offset, int whence)
 
 			spin_lock(&dentry->d_lock);
 			/* d_lock not required for cursor */
-			list_del(&cursor->d_u.d_child);
+			list_del(&cursor->d_child);
 			p = dentry->d_subdirs.next;
 			while (n && p != &dentry->d_subdirs) {
 				struct dentry *next;
-				next = list_entry(p, struct dentry, d_u.d_child);
+				next = list_entry(p, struct dentry, d_child);
 				spin_lock_nested(&next->d_lock, DENTRY_D_LOCK_NESTED);
 				if (simple_positive(next))
 					n--;
 				spin_unlock(&next->d_lock);
 				p = p->next;
 			}
-			list_add_tail(&cursor->d_u.d_child, p);
+			list_add_tail(&cursor->d_child, p);
 			spin_unlock(&dentry->d_lock);
 		}
 	}
@@ -149,7 +150,7 @@ int dcache_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct dentry *dentry = file->f_path.dentry;
 	struct dentry *cursor = file->private_data;
-	struct list_head *p, *q = &cursor->d_u.d_child;
+	struct list_head *p, *q = &cursor->d_child;
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
@@ -158,7 +159,7 @@ int dcache_readdir(struct file *file, struct dir_context *ctx)
 		list_move(q, &dentry->d_subdirs);
 
 	for (p = q->next; p != &dentry->d_subdirs; p = p->next) {
-		struct dentry *next = list_entry(p, struct dentry, d_u.d_child);
+		struct dentry *next = list_entry(p, struct dentry, d_child);
 		spin_lock_nested(&next->d_lock, DENTRY_D_LOCK_NESTED);
 		if (!simple_positive(next)) {
 			spin_unlock(&next->d_lock);
@@ -286,7 +287,7 @@ int simple_empty(struct dentry *dentry)
 	int ret = 0;
 
 	spin_lock(&dentry->d_lock);
-	list_for_each_entry(child, &dentry->d_subdirs, d_u.d_child) {
+	list_for_each_entry(child, &dentry->d_subdirs, d_child) {
 		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
 		if (simple_positive(child)) {
 			spin_unlock(&child->d_lock);
@@ -923,16 +924,19 @@ struct dentry *generic_fh_to_parent(struct super_block *sb, struct fid *fid,
 EXPORT_SYMBOL_GPL(generic_fh_to_parent);
 
 /**
- * generic_file_fsync - generic fsync implementation for simple filesystems
+ * __generic_file_fsync - generic fsync implementation for simple filesystems
+ *
  * @file:	file to synchronize
+ * @start:	start offset in bytes
+ * @end:	end offset in bytes (inclusive)
  * @datasync:	only synchronize essential metadata if true
  *
  * This is a generic implementation of the fsync method for simple
  * filesystems which track all non-inode metadata in the buffers list
  * hanging off the address_space structure.
  */
-int generic_file_fsync(struct file *file, loff_t start, loff_t end,
-		       int datasync)
+int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
+				 int datasync)
 {
 	struct inode *inode = file->f_mapping->host;
 	int err;
@@ -952,9 +956,33 @@ int generic_file_fsync(struct file *file, loff_t start, loff_t end,
 	err = sync_inode_metadata(inode, 1);
 	if (ret == 0)
 		ret = err;
+
 out:
 	mutex_unlock(&inode->i_mutex);
 	return ret;
+}
+EXPORT_SYMBOL(__generic_file_fsync);
+
+/**
+ * generic_file_fsync - generic fsync implementation for simple filesystems
+ *			with flush
+ * @file:	file to synchronize
+ * @start:	start offset in bytes
+ * @end:	end offset in bytes (inclusive)
+ * @datasync:	only synchronize essential metadata if true
+ *
+ */
+
+int generic_file_fsync(struct file *file, loff_t start, loff_t end,
+		       int datasync)
+{
+	struct inode *inode = file->f_mapping->host;
+	int err;
+
+	err = __generic_file_fsync(file, start, end, datasync);
+	if (err)
+		return err;
+	return blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
 }
 EXPORT_SYMBOL(generic_file_fsync);
 
@@ -1047,3 +1075,21 @@ struct inode *alloc_anon_inode(struct super_block *s)
 	return inode;
 }
 EXPORT_SYMBOL(alloc_anon_inode);
+
+/**
+ * simple_nosetlease - generic helper for prohibiting leases
+ * @filp: file pointer
+ * @arg: type of lease to obtain
+ * @flp: new lease supplied for insertion
+ * @priv: private data for lm_setup operation
+ *
+ * Generic helper for filesystems that do not wish to allow leases to be set.
+ * All arguments are ignored and it just returns -EINVAL.
+ */
+int
+simple_nosetlease(struct file *filp, long arg, struct file_lock **flp,
+		  void **priv)
+{
+	return -EINVAL;
+}
+EXPORT_SYMBOL(simple_nosetlease);

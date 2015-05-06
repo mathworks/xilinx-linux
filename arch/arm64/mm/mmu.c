@@ -28,10 +28,12 @@
 #include <linux/io.h>
 
 #include <asm/cputype.h>
+#include <asm/fixmap.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/sizes.h>
 #include <asm/tlb.h>
+#include <asm/memblock.h>
 #include <asm/mmu_context.h>
 
 #include "mm.h"
@@ -42,11 +44,6 @@
  */
 struct page *empty_zero_page;
 EXPORT_SYMBOL(empty_zero_page);
-
-pgprot_t pgprot_default;
-EXPORT_SYMBOL(pgprot_default);
-
-static pmdval_t prot_sect_kernel;
 
 struct cachepolicy {
 	const char	policy[16];
@@ -98,7 +95,7 @@ static int __init early_cachepolicy(char *p)
 	 */
 	asm volatile(
 	"	mrs	%0, mair_el1\n"
-	"	bfi	%0, %1, #%2, #8\n"
+	"	bfi	%0, %1, %2, #8\n"
 	"	msr	mair_el1, %0\n"
 	"	isb\n"
 	: "=&r" (tmp)
@@ -122,33 +119,6 @@ static int __init early_cachepolicy(char *p)
 }
 early_param("cachepolicy", early_cachepolicy);
 
-/*
- * Adjust the PMD section entries according to the CPU in use.
- */
-void __init init_mem_pgprot(void)
-{
-	pteval_t default_pgprot;
-	int i;
-
-	default_pgprot = PTE_ATTRINDX(MT_NORMAL);
-	prot_sect_kernel = PMD_TYPE_SECT | PMD_SECT_AF | PMD_ATTRINDX(MT_NORMAL);
-
-#ifdef CONFIG_SMP
-	/*
-	 * Mark memory with the "shared" attribute for SMP systems
-	 */
-	default_pgprot |= PTE_SHARED;
-	prot_sect_kernel |= PMD_SECT_S;
-#endif
-
-	for (i = 0; i < 16; i++) {
-		unsigned long v = pgprot_val(protection_map[i]);
-		protection_map[i] = __pgprot(v | default_pgprot);
-	}
-
-	pgprot_default = __pgprot(PTE_TYPE_PAGE | PTE_AF | default_pgprot);
-}
-
 pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 			      unsigned long size, pgprot_t vma_prot)
 {
@@ -168,7 +138,8 @@ static void __init *early_alloc(unsigned long sz)
 }
 
 static void __init alloc_init_pte(pmd_t *pmd, unsigned long addr,
-				  unsigned long end, unsigned long pfn)
+				  unsigned long end, unsigned long pfn,
+				  pgprot_t prot)
 {
 	pte_t *pte;
 
@@ -180,16 +151,27 @@ static void __init alloc_init_pte(pmd_t *pmd, unsigned long addr,
 
 	pte = pte_offset_kernel(pmd, addr);
 	do {
-		set_pte(pte, pfn_pte(pfn, PAGE_KERNEL_EXEC));
+		set_pte(pte, pfn_pte(pfn, prot));
 		pfn++;
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 }
 
 static void __init alloc_init_pmd(pud_t *pud, unsigned long addr,
-				  unsigned long end, phys_addr_t phys)
+				  unsigned long end, phys_addr_t phys,
+				  int map_io)
 {
 	pmd_t *pmd;
 	unsigned long next;
+	pmdval_t prot_sect;
+	pgprot_t prot_pte;
+
+	if (map_io) {
+		prot_sect = PROT_SECT_DEVICE_nGnRE;
+		prot_pte = __pgprot(PROT_DEVICE_nGnRE);
+	} else {
+		prot_sect = PROT_SECT_NORMAL_EXEC;
+		prot_pte = PAGE_KERNEL_EXEC;
+	}
 
 	/*
 	 * Check for initial section mappings in the pgd/pud and remove them.
@@ -205,7 +187,7 @@ static void __init alloc_init_pmd(pud_t *pud, unsigned long addr,
 		/* try section mapping first */
 		if (((addr | next | phys) & ~SECTION_MASK) == 0) {
 			pmd_t old_pmd =*pmd;
-			set_pmd(pmd, __pmd(phys | prot_sect_kernel));
+			set_pmd(pmd, __pmd(phys | prot_sect));
 			/*
 			 * Check for previous table entries created during
 			 * boot (__create_page_tables) and flush them.
@@ -213,21 +195,53 @@ static void __init alloc_init_pmd(pud_t *pud, unsigned long addr,
 			if (!pmd_none(old_pmd))
 				flush_tlb_all();
 		} else {
-			alloc_init_pte(pmd, addr, next, __phys_to_pfn(phys));
+			alloc_init_pte(pmd, addr, next, __phys_to_pfn(phys),
+				       prot_pte);
 		}
 		phys += next - addr;
 	} while (pmd++, addr = next, addr != end);
 }
 
 static void __init alloc_init_pud(pgd_t *pgd, unsigned long addr,
-				  unsigned long end, unsigned long phys)
+				  unsigned long end, phys_addr_t phys,
+				  int map_io)
 {
-	pud_t *pud = pud_offset(pgd, addr);
+	pud_t *pud;
 	unsigned long next;
 
+	if (pgd_none(*pgd)) {
+		pud = early_alloc(PTRS_PER_PUD * sizeof(pud_t));
+		pgd_populate(&init_mm, pgd, pud);
+	}
+	BUG_ON(pgd_bad(*pgd));
+
+	pud = pud_offset(pgd, addr);
 	do {
 		next = pud_addr_end(addr, end);
-		alloc_init_pmd(pud, addr, next, phys);
+
+		/*
+		 * For 4K granule only, attempt to put down a 1GB block
+		 */
+		if (!map_io && (PAGE_SHIFT == 12) &&
+		    ((addr | next | phys) & ~PUD_MASK) == 0) {
+			pud_t old_pud = *pud;
+			set_pud(pud, __pud(phys | PROT_SECT_NORMAL_EXEC));
+
+			/*
+			 * If we have an old value for a pud, it will
+			 * be pointing to a pmd table that we no longer
+			 * need (from swapper_pg_dir).
+			 *
+			 * Look up the old pmd table and free it.
+			 */
+			if (!pud_none(old_pud)) {
+				phys_addr_t table = __pa(pmd_offset(&old_pud, 0));
+				memblock_free(table, PAGE_SIZE);
+				flush_tlb_all();
+			}
+		} else {
+			alloc_init_pmd(pud, addr, next, phys, map_io);
+		}
 		phys += next - addr;
 	} while (pud++, addr = next, addr != end);
 }
@@ -236,28 +250,42 @@ static void __init alloc_init_pud(pgd_t *pgd, unsigned long addr,
  * Create the page directory entries and any necessary page tables for the
  * mapping specified by 'md'.
  */
-static void __init create_mapping(phys_addr_t phys, unsigned long virt,
-				  phys_addr_t size)
+static void __init __create_mapping(pgd_t *pgd, phys_addr_t phys,
+				    unsigned long virt, phys_addr_t size,
+				    int map_io)
 {
 	unsigned long addr, length, end, next;
-	pgd_t *pgd;
-
-	if (virt < VMALLOC_START) {
-		pr_warning("BUG: not creating mapping for 0x%016llx at 0x%016lx - outside kernel range\n",
-			   phys, virt);
-		return;
-	}
 
 	addr = virt & PAGE_MASK;
 	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
 
-	pgd = pgd_offset_k(addr);
 	end = addr + length;
 	do {
 		next = pgd_addr_end(addr, end);
-		alloc_init_pud(pgd, addr, next, phys);
+		alloc_init_pud(pgd, addr, next, phys, map_io);
 		phys += next - addr;
 	} while (pgd++, addr = next, addr != end);
+}
+
+static void __init create_mapping(phys_addr_t phys, unsigned long virt,
+				  phys_addr_t size)
+{
+	if (virt < VMALLOC_START) {
+		pr_warn("BUG: not creating mapping for %pa at 0x%016lx - outside kernel range\n",
+			&phys, virt);
+		return;
+	}
+	__create_mapping(pgd_offset_k(virt & PAGE_MASK), phys, virt, size, 0);
+}
+
+void __init create_id_mapping(phys_addr_t addr, phys_addr_t size, int map_io)
+{
+	if ((addr >> PGDIR_SHIFT) >= ARRAY_SIZE(idmap_pg_dir)) {
+		pr_warn("BUG: not creating id mapping for %pa\n", &addr);
+		return;
+	}
+	__create_mapping(&idmap_pg_dir[pgd_index(addr)],
+			 addr, addr, size, map_io);
 }
 
 static void __init map_mem(void)
@@ -270,11 +298,15 @@ static void __init map_mem(void)
 	 * create_mapping requires puds, pmds and ptes to be allocated from
 	 * memory addressable from the initial direct kernel mapping.
 	 *
-	 * The initial direct kernel mapping, located at swapper_pg_dir,
-	 * gives us PGDIR_SIZE memory starting from PHYS_OFFSET (which must be
-	 * aligned to 2MB as per Documentation/arm64/booting.txt).
+	 * The initial direct kernel mapping, located at swapper_pg_dir, gives
+	 * us PUD_SIZE (4K pages) or PMD_SIZE (64K pages) memory starting from
+	 * PHYS_OFFSET (which must be aligned to 2MB as per
+	 * Documentation/arm64/booting.txt).
 	 */
-	limit = PHYS_OFFSET + PGDIR_SIZE;
+	if (IS_ENABLED(CONFIG_ARM64_64K_PAGES))
+		limit = PHYS_OFFSET + PMD_SIZE;
+	else
+		limit = PHYS_OFFSET + PUD_SIZE;
 	memblock_set_current_limit(limit);
 
 	/* map all the memory banks */
@@ -370,6 +402,9 @@ int kern_addr_valid(unsigned long addr)
 	if (pud_none(*pud))
 		return 0;
 
+	if (pud_sect(*pud))
+		return pfn_valid(pud_pfn(*pud));
+
 	pmd = pmd_offset(pud, addr);
 	if (pmd_none(*pmd))
 		return 0;
@@ -417,7 +452,7 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 			if (!p)
 				return -ENOMEM;
 
-			set_pmd(pmd, __pmd(__pa(p) | prot_sect_kernel));
+			set_pmd(pmd, __pmd(__pa(p) | PROT_SECT_NORMAL));
 		} else
 			vmemmap_verify((pte_t *)pmd, node, addr, next);
 	} while (addr = next, addr != end);
@@ -429,3 +464,96 @@ void vmemmap_free(unsigned long start, unsigned long end)
 {
 }
 #endif	/* CONFIG_SPARSEMEM_VMEMMAP */
+
+static pte_t bm_pte[PTRS_PER_PTE] __page_aligned_bss;
+#if CONFIG_ARM64_PGTABLE_LEVELS > 2
+static pmd_t bm_pmd[PTRS_PER_PMD] __page_aligned_bss;
+#endif
+#if CONFIG_ARM64_PGTABLE_LEVELS > 3
+static pud_t bm_pud[PTRS_PER_PUD] __page_aligned_bss;
+#endif
+
+static inline pud_t * fixmap_pud(unsigned long addr)
+{
+	pgd_t *pgd = pgd_offset_k(addr);
+
+	BUG_ON(pgd_none(*pgd) || pgd_bad(*pgd));
+
+	return pud_offset(pgd, addr);
+}
+
+static inline pmd_t * fixmap_pmd(unsigned long addr)
+{
+	pud_t *pud = fixmap_pud(addr);
+
+	BUG_ON(pud_none(*pud) || pud_bad(*pud));
+
+	return pmd_offset(pud, addr);
+}
+
+static inline pte_t * fixmap_pte(unsigned long addr)
+{
+	pmd_t *pmd = fixmap_pmd(addr);
+
+	BUG_ON(pmd_none(*pmd) || pmd_bad(*pmd));
+
+	return pte_offset_kernel(pmd, addr);
+}
+
+void __init early_fixmap_init(void)
+{
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	unsigned long addr = FIXADDR_START;
+
+	pgd = pgd_offset_k(addr);
+	pgd_populate(&init_mm, pgd, bm_pud);
+	pud = pud_offset(pgd, addr);
+	pud_populate(&init_mm, pud, bm_pmd);
+	pmd = pmd_offset(pud, addr);
+	pmd_populate_kernel(&init_mm, pmd, bm_pte);
+
+	/*
+	 * The boot-ioremap range spans multiple pmds, for which
+	 * we are not preparted:
+	 */
+	BUILD_BUG_ON((__fix_to_virt(FIX_BTMAP_BEGIN) >> PMD_SHIFT)
+		     != (__fix_to_virt(FIX_BTMAP_END) >> PMD_SHIFT));
+
+	if ((pmd != fixmap_pmd(fix_to_virt(FIX_BTMAP_BEGIN)))
+	     || pmd != fixmap_pmd(fix_to_virt(FIX_BTMAP_END))) {
+		WARN_ON(1);
+		pr_warn("pmd %p != %p, %p\n",
+			pmd, fixmap_pmd(fix_to_virt(FIX_BTMAP_BEGIN)),
+			fixmap_pmd(fix_to_virt(FIX_BTMAP_END)));
+		pr_warn("fix_to_virt(FIX_BTMAP_BEGIN): %08lx\n",
+			fix_to_virt(FIX_BTMAP_BEGIN));
+		pr_warn("fix_to_virt(FIX_BTMAP_END):   %08lx\n",
+			fix_to_virt(FIX_BTMAP_END));
+
+		pr_warn("FIX_BTMAP_END:       %d\n", FIX_BTMAP_END);
+		pr_warn("FIX_BTMAP_BEGIN:     %d\n", FIX_BTMAP_BEGIN);
+	}
+}
+
+void __set_fixmap(enum fixed_addresses idx,
+			       phys_addr_t phys, pgprot_t flags)
+{
+	unsigned long addr = __fix_to_virt(idx);
+	pte_t *pte;
+
+	if (idx >= __end_of_fixed_addresses) {
+		BUG();
+		return;
+	}
+
+	pte = fixmap_pte(addr);
+
+	if (pgprot_val(flags)) {
+		set_pte(pte, pfn_pte(phys >> PAGE_SHIFT, flags));
+	} else {
+		pte_clear(&init_mm, addr, pte);
+		flush_tlb_kernel_range(addr, addr+PAGE_SIZE);
+	}
+}

@@ -38,7 +38,10 @@ struct spear_sdhci {
 
 /* sdhci ops */
 static const struct sdhci_ops sdhci_pltfm_ops = {
-	/* Nothing to do for now. */
+	.set_clock = sdhci_set_clock,
+	.set_bus_width = sdhci_set_bus_width,
+	.reset = sdhci_reset,
+	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
 #ifdef CONFIG_OF
@@ -227,7 +230,6 @@ MODULE_DEVICE_TABLE(of, sdhci_spear_id_table);
 static struct platform_driver sdhci_driver = {
 	.driver = {
 		.name	= "sdhci",
-		.owner	= THIS_MODULE,
 		.pm	= &sdhci_pm_ops,
 		.of_match_table = of_match_ptr(sdhci_spear_id_table),
 	},

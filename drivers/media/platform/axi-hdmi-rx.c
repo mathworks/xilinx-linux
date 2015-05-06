@@ -16,7 +16,6 @@
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
-#include <linux/interrupt.h>
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-event.h>
@@ -253,7 +252,7 @@ static int axi_hdmi_rx_start_streaming(struct vb2_queue *q, unsigned int count)
 	return 0;
 }
 
-static int axi_hdmi_rx_stop_streaming(struct vb2_queue *q)
+static void axi_hdmi_rx_stop_streaming(struct vb2_queue *q)
 {
 	struct axi_hdmi_rx *hdmi_rx = vb2_get_drv_priv(q);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
@@ -272,7 +271,6 @@ static int axi_hdmi_rx_stop_streaming(struct vb2_queue *q)
 	spin_unlock_irqrestore(&s->spinlock, flags);
 
 	vb2_wait_for_all_buffers(q);
-	return 0;
 }
 
 static const struct vb2_ops axi_hdmi_rx_qops = {
@@ -562,7 +560,7 @@ static int axi_hdmi_rx_s_fmt_vid_cap(struct file *file, void *priv_fh,
 
 	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	fmt.pad = ADV7611_PAD_SOURCE;
-	fmt.format.code = V4L2_MBUS_FMT_YUYV8_1X16;
+	fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
 	ret = v4l2_subdev_call(s->subdev, pad, set_fmt, NULL, &fmt);
 	if (ret)
 		return ret;
@@ -645,7 +643,7 @@ static int axi_hdmi_rx_s_input(struct file *file, void *priv_fh, unsigned int i)
 	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_SRC_SEL, i);
 
 	return v4l2_subdev_call(s->subdev, video, s_routing,
-		ADV7604_PAD_HDMI_PORT_A, 0, 0);
+		ADV76XX_PAD_HDMI_PORT_A, 0, 0);
 }
 
 static const struct v4l2_ioctl_ops axi_hdmi_rx_ioctl_ops = {
@@ -686,22 +684,12 @@ static void axi_hdmi_rx_notify(struct v4l2_subdev *sd, unsigned int notification
 	long hotplug = (long)arg;
 
 	switch (notification) {
-	case ADV7604_HOTPLUG:
+	case ADV76XX_HOTPLUG:
 		gpio_set_value_cansleep(hdmi_rx->hotplug_gpio, hotplug);
 		break;
 	default:
 		break;
 	}
-}
-
-static irqreturn_t axi_hdmi_rx_irq_handler(int irq, void *dev_id)
-{
-	struct axi_hdmi_rx *hdmi_rx = dev_id;
-
-	v4l2_subdev_call(hdmi_rx->stream.subdev, core,
-				interrupt_service_routine, 0, NULL);
-
-	return IRQ_HANDLED;
 }
 
 static int axi_hdmi_rx_nodes_register(struct axi_hdmi_rx *hdmi_rx)
@@ -718,7 +706,6 @@ static int axi_hdmi_rx_nodes_register(struct axi_hdmi_rx *hdmi_rx)
 	vdev->fops = &axi_hdmi_rx_fops;
 	vdev->release = video_device_release_empty;
 	vdev->ctrl_handler = s->subdev->ctrl_handler;
-	set_bit(V4L2_FL_USE_FH_PRIO, &vdev->flags);
 	vdev->lock = &s->lock;
 	vdev->queue = q;
 	q->lock = &s->lock;
@@ -768,7 +755,7 @@ static int axi_hdmi_rx_async_bound(struct v4l2_async_notifier *notifier,
 
 	hdmi_rx->stream.subdev = subdev;
 
-	ret = v4l2_subdev_call(subdev, video, s_routing, ADV7604_PAD_HDMI_PORT_A,
+	ret = v4l2_subdev_call(subdev, video, s_routing, ADV76XX_PAD_HDMI_PORT_A,
 		0, 0);
 	if (ret)
 		return ret;
@@ -818,12 +805,7 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 	struct device_node *ep_node;
 	struct axi_hdmi_rx *hdmi_rx;
 	struct resource *res;
-	int irq;
 	int ret;
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return -ENXIO;
 
 	hdmi_rx = devm_kzalloc(&pdev->dev, sizeof(*hdmi_rx), GFP_KERNEL);
 	if (hdmi_rx == NULL)
@@ -892,19 +874,8 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		goto err_device_unregister;
 	}
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq > 0) {
-		ret = request_threaded_irq(irq, NULL, axi_hdmi_rx_irq_handler,
-			IRQF_ONESHOT | IRQF_TRIGGER_HIGH, dev_name(&pdev->dev),
-			hdmi_rx);
-		if (ret < 0)
-			goto err_async_notifier_unregister;;
-	}
-
 	return 0;
 
-err_async_notifier_unregister:
-	v4l2_async_notifier_unregister(&hdmi_rx->notifier);
 err_device_unregister:
 	v4l2_device_unregister(&hdmi_rx->v4l2_dev);
 err_dma_cleanup_ctx:
@@ -917,10 +888,6 @@ err_dma_release_channel:
 static int axi_hdmi_rx_remove(struct platform_device *pdev)
 {
 	struct axi_hdmi_rx *hdmi_rx = platform_get_drvdata(pdev);
-	int irq = platform_get_irq(pdev, 0);
-
-	if (irq > 0)
-		free_irq(irq, hdmi_rx);
 
 	v4l2_async_notifier_unregister(&hdmi_rx->notifier);
 	video_unregister_device(&hdmi_rx->stream.vdev);

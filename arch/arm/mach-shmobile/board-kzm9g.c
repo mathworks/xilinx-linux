@@ -11,10 +11,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/delay.h>
@@ -41,15 +37,18 @@
 #include <linux/usb/r8a66597.h>
 #include <linux/usb/renesas_usbhs.h>
 #include <linux/videodev2.h>
+
 #include <sound/sh_fsi.h>
 #include <sound/simple_card.h>
-#include <mach/irqs.h>
-#include <mach/sh73a0.h>
-#include <mach/common.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <video/sh_mobile_lcdc.h>
+
+#include "common.h"
+#include "intc.h"
+#include "irqs.h"
+#include "sh73a0.h"
 
 /*
  * external GPIO
@@ -603,6 +602,8 @@ static struct platform_device fsi_ak4648_device = {
 	.name	= "asoc-simple-card",
 	.dev	= {
 		.platform_data	= &fsi2_ak4648_info,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+		.dma_mask = &fsi_ak4648_device.dev.coherent_dma_mask,
 	},
 };
 
@@ -876,8 +877,8 @@ static void __init kzm_init(void)
 	gpio_request_one(223, GPIOF_IN, NULL); /* IRQ8 */
 
 #ifdef CONFIG_CACHE_L2X0
-	/* Early BRESP enable, Shared attribute override enable, 64K*8way */
-	l2x0_init(IOMEM(0xf0100000), 0x40460000, 0x82000fff);
+	/* Shared attribute override enable, 64K*8way */
+	l2x0_init(IOMEM(0xf0100000), 0x00400000, 0xc20f0fff);
 #endif
 
 	i2c_register_board_info(0, i2c0_devices, ARRAY_SIZE(i2c0_devices));
@@ -906,7 +907,6 @@ DT_MACHINE_START(KZM9G_DT, "kzm9g")
 	.smp		= smp_ops(sh73a0_smp_ops),
 	.map_io		= sh73a0_map_io,
 	.init_early	= sh73a0_add_early_devices,
-	.nr_irqs	= NR_IRQS_LEGACY,
 	.init_irq	= sh73a0_init_irq,
 	.init_machine	= kzm_init,
 	.init_late	= shmobile_init_late,

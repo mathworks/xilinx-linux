@@ -51,7 +51,7 @@
 #include "comedi_fc.h"
 
 /*
- * PCI BAR2 Register map (devpriv->mmio)
+ * PCI BAR2 Register map (dev->mmio)
  */
 #define FIRMWARE_REV_REG			0x00
 #define FEATURES_REG_PRESENT_BIT		(1 << 15)
@@ -148,7 +148,6 @@ static const struct hpdi_board hpdi_boards[] = {
 
 struct hpdi_private {
 	void __iomem *plx9080_mmio;
-	void __iomem *mmio;
 	uint32_t *dio_buffer[NUM_DMA_BUFFERS];	/*  dma buffers */
 	/* physical addresses of dma buffers */
 	dma_addr_t dio_buffer_phys_addr[NUM_DMA_BUFFERS];
@@ -197,8 +196,8 @@ static void gsc_hpdi_drain_dma(struct comedi_device *dev, unsigned int channel)
 				size = devpriv->dio_count;
 			devpriv->dio_count -= size;
 		}
-		cfc_write_array_to_buffer(s, devpriv->desc_dio_buffer[idx],
-					  size * sizeof(uint32_t));
+		comedi_buf_write_samples(s, devpriv->desc_dio_buffer[idx],
+					 size);
 		idx++;
 		idx %= devpriv->num_dma_descriptors;
 		start = le32_to_cpu(devpriv->dma_desc[idx].pci_start_addr);
@@ -227,11 +226,11 @@ static irqreturn_t gsc_hpdi_interrupt(int irq, void *d)
 	if ((plx_status & (ICS_DMA0_A | ICS_DMA1_A | ICS_LIA)) == 0)
 		return IRQ_NONE;
 
-	hpdi_intr_status = readl(devpriv->mmio + INTERRUPT_STATUS_REG);
-	hpdi_board_status = readl(devpriv->mmio + BOARD_STATUS_REG);
+	hpdi_intr_status = readl(dev->mmio + INTERRUPT_STATUS_REG);
+	hpdi_board_status = readl(dev->mmio + BOARD_STATUS_REG);
 
 	if (hpdi_intr_status)
-		writel(hpdi_intr_status, devpriv->mmio + INTERRUPT_STATUS_REG);
+		writel(hpdi_intr_status, dev->mmio + INTERRUPT_STATUS_REG);
 
 	/*  spin lock makes sure no one else changes plx dma control reg */
 	spin_lock_irqsave(&dev->spinlock, flags);
@@ -273,7 +272,7 @@ static irqreturn_t gsc_hpdi_interrupt(int irq, void *d)
 	if (devpriv->dio_count == 0)
 		async->events |= COMEDI_CB_EOA;
 
-	cfc_handle_events(dev, s);
+	comedi_handle_events(dev, s);
 
 	return IRQ_HANDLED;
 }
@@ -294,10 +293,8 @@ static void gsc_hpdi_abort_dma(struct comedi_device *dev, unsigned int channel)
 static int gsc_hpdi_cancel(struct comedi_device *dev,
 			   struct comedi_subdevice *s)
 {
-	struct hpdi_private *devpriv = dev->private;
-
-	writel(0, devpriv->mmio + BOARD_CONTROL_REG);
-	writel(0, devpriv->mmio + INTERRUPT_CONTROL_REG);
+	writel(0, dev->mmio + BOARD_CONTROL_REG);
+	writel(0, dev->mmio + INTERRUPT_CONTROL_REG);
 
 	gsc_hpdi_abort_dma(dev, 0);
 
@@ -316,7 +313,7 @@ static int gsc_hpdi_cmd(struct comedi_device *dev,
 	if (s->io_bits)
 		return -EINVAL;
 
-	writel(RX_FIFO_RESET_BIT, devpriv->mmio + BOARD_CONTROL_REG);
+	writel(RX_FIFO_RESET_BIT, dev->mmio + BOARD_CONTROL_REG);
 
 	gsc_hpdi_abort_dma(dev, 0);
 
@@ -349,13 +346,31 @@ static int gsc_hpdi_cmd(struct comedi_device *dev,
 		devpriv->dio_count = 1;
 
 	/* clear over/under run status flags */
-	writel(RX_UNDERRUN_BIT | RX_OVERRUN_BIT,
-	       devpriv->mmio + BOARD_STATUS_REG);
+	writel(RX_UNDERRUN_BIT | RX_OVERRUN_BIT, dev->mmio + BOARD_STATUS_REG);
 
 	/* enable interrupts */
-	writel(RX_FULL_INTR, devpriv->mmio + INTERRUPT_CONTROL_REG);
+	writel(RX_FULL_INTR, dev->mmio + INTERRUPT_CONTROL_REG);
 
-	writel(RX_ENABLE_BIT, devpriv->mmio + BOARD_CONTROL_REG);
+	writel(RX_ENABLE_BIT, dev->mmio + BOARD_CONTROL_REG);
+
+	return 0;
+}
+
+static int gsc_hpdi_check_chanlist(struct comedi_device *dev,
+				   struct comedi_subdevice *s,
+				   struct comedi_cmd *cmd)
+{
+	int i;
+
+	for (i = 0; i < cmd->chanlist_len; i++) {
+		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
+
+		if (chan != i) {
+			dev_dbg(dev->class_dev,
+				"chanlist must be ch 0 to 31 in order\n");
+			return -EINVAL;
+		}
+	}
 
 	return 0;
 }
@@ -365,7 +380,6 @@ static int gsc_hpdi_cmd_test(struct comedi_device *dev,
 			     struct comedi_cmd *cmd)
 {
 	int err = 0;
-	int i;
 
 	if (s->io_bits)
 		return -EINVAL;
@@ -392,6 +406,8 @@ static int gsc_hpdi_cmd_test(struct comedi_device *dev,
 
 	/* Step 3: check if arguments are trivially valid */
 
+	err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
+
 	if (!cmd->chanlist_len || !cmd->chanlist) {
 		cmd->chanlist_len = 32;
 		err |= -EINVAL;
@@ -406,22 +422,12 @@ static int gsc_hpdi_cmd_test(struct comedi_device *dev,
 	if (err)
 		return 3;
 
-	/* step 4: fix up any arguments */
+	/* Step 4: fix up any arguments */
 
-	if (err)
-		return 4;
+	/* Step 5: check channel list if it exists */
 
-	/* step 5: complain about special chanlist considerations */
-
-	for (i = 0; i < cmd->chanlist_len; i++) {
-		if (CR_CHAN(cmd->chanlist[i]) != i) {
-			/*  XXX could support 8 or 16 channels */
-			dev_err(dev->class_dev,
-				"chanlist must be ch 0 to 31 in order");
-			err |= -EINVAL;
-			break;
-		}
-	}
+	if (cmd->chanlist && cmd->chanlist_len > 0)
+		err |= gsc_hpdi_check_chanlist(dev, s, cmd);
 
 	if (err)
 		return 5;
@@ -499,26 +505,52 @@ static int gsc_hpdi_dio_insn_config(struct comedi_device *dev,
 	return insn->n;
 }
 
+static void gsc_hpdi_free_dma(struct comedi_device *dev)
+{
+	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
+	struct hpdi_private *devpriv = dev->private;
+	int i;
+
+	if (!devpriv)
+		return;
+
+	/* free pci dma buffers */
+	for (i = 0; i < NUM_DMA_BUFFERS; i++) {
+		if (devpriv->dio_buffer[i])
+			pci_free_consistent(pcidev,
+					    DMA_BUFFER_SIZE,
+					    devpriv->dio_buffer[i],
+					    devpriv->dio_buffer_phys_addr[i]);
+	}
+	/* free dma descriptors */
+	if (devpriv->dma_desc)
+		pci_free_consistent(pcidev,
+				    sizeof(struct plx_dma_desc) *
+				    NUM_DMA_DESCRIPTORS,
+				    devpriv->dma_desc,
+				    devpriv->dma_desc_phys_addr);
+}
+
 static int gsc_hpdi_init(struct comedi_device *dev)
 {
 	struct hpdi_private *devpriv = dev->private;
 	uint32_t plx_intcsr_bits;
 
 	/* wait 10usec after reset before accessing fifos */
-	writel(BOARD_RESET_BIT, devpriv->mmio + BOARD_CONTROL_REG);
+	writel(BOARD_RESET_BIT, dev->mmio + BOARD_CONTROL_REG);
 	udelay(10);
 
 	writel(ALMOST_EMPTY_BITS(32) | ALMOST_FULL_BITS(32),
-	       devpriv->mmio + RX_PROG_ALMOST_REG);
+	       dev->mmio + RX_PROG_ALMOST_REG);
 	writel(ALMOST_EMPTY_BITS(32) | ALMOST_FULL_BITS(32),
-	       devpriv->mmio + TX_PROG_ALMOST_REG);
+	       dev->mmio + TX_PROG_ALMOST_REG);
 
-	devpriv->tx_fifo_size = readl(devpriv->mmio + TX_FIFO_SIZE_REG) &
+	devpriv->tx_fifo_size = readl(dev->mmio + TX_FIFO_SIZE_REG) &
 				FIFO_SIZE_MASK;
-	devpriv->rx_fifo_size = readl(devpriv->mmio + RX_FIFO_SIZE_REG) &
+	devpriv->rx_fifo_size = readl(dev->mmio + RX_FIFO_SIZE_REG) &
 				FIFO_SIZE_MASK;
 
-	writel(0, devpriv->mmio + INTERRUPT_CONTROL_REG);
+	writel(0, dev->mmio + INTERRUPT_CONTROL_REG);
 
 	/*  enable interrupts */
 	plx_intcsr_bits =
@@ -609,8 +641,8 @@ static int gsc_hpdi_auto_attach(struct comedi_device *dev,
 	pci_set_master(pcidev);
 
 	devpriv->plx9080_mmio = pci_ioremap_bar(pcidev, 0);
-	devpriv->mmio = pci_ioremap_bar(pcidev, 2);
-	if (!devpriv->plx9080_mmio || !devpriv->mmio) {
+	dev->mmio = pci_ioremap_bar(pcidev, 2);
+	if (!devpriv->plx9080_mmio || !dev->mmio) {
 		dev_warn(dev->class_dev, "failed to remap io memory\n");
 		return -ENOMEM;
 	}
@@ -657,7 +689,7 @@ static int gsc_hpdi_auto_attach(struct comedi_device *dev,
 	s = &dev->subdevices[0];
 	dev->read_subdev = s;
 	s->type		= COMEDI_SUBD_DIO;
-	s->subdev_flags	= SDF_READABLE | SDF_WRITEABLE | SDF_LSAMPL |
+	s->subdev_flags	= SDF_READABLE | SDF_WRITABLE | SDF_LSAMPL |
 			  SDF_CMD_READ;
 	s->n_chan	= 32;
 	s->len_chanlist	= 32;
@@ -673,9 +705,7 @@ static int gsc_hpdi_auto_attach(struct comedi_device *dev,
 
 static void gsc_hpdi_detach(struct comedi_device *dev)
 {
-	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 	struct hpdi_private *devpriv = dev->private;
-	unsigned int i;
 
 	if (dev->irq)
 		free_irq(dev->irq, dev);
@@ -684,26 +714,11 @@ static void gsc_hpdi_detach(struct comedi_device *dev)
 			writel(0, devpriv->plx9080_mmio + PLX_INTRCS_REG);
 			iounmap(devpriv->plx9080_mmio);
 		}
-		if (devpriv->mmio)
-			iounmap(devpriv->mmio);
-		/*  free pci dma buffers */
-		for (i = 0; i < NUM_DMA_BUFFERS; i++) {
-			if (devpriv->dio_buffer[i])
-				pci_free_consistent(pcidev,
-						    DMA_BUFFER_SIZE,
-						    devpriv->dio_buffer[i],
-						    devpriv->
-						    dio_buffer_phys_addr[i]);
-		}
-		/*  free dma descriptors */
-		if (devpriv->dma_desc)
-			pci_free_consistent(pcidev,
-					    sizeof(struct plx_dma_desc) *
-					    NUM_DMA_DESCRIPTORS,
-					    devpriv->dma_desc,
-					    devpriv->dma_desc_phys_addr);
+		if (dev->mmio)
+			iounmap(dev->mmio);
 	}
 	comedi_pci_disable(dev);
+	gsc_hpdi_free_dma(dev);
 }
 
 static struct comedi_driver gsc_hpdi_driver = {

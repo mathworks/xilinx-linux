@@ -57,7 +57,8 @@ struct vfio_iommu {
 	struct list_head	domain_list;
 	struct mutex		lock;
 	struct rb_root		dma_list;
-	bool v2;
+	bool			v2;
+	bool			nesting;
 };
 
 struct vfio_domain {
@@ -524,7 +525,7 @@ unwind:
 static int vfio_dma_do_map(struct vfio_iommu *iommu,
 			   struct vfio_iommu_type1_dma_map *map)
 {
-	dma_addr_t end, iova;
+	dma_addr_t iova = map->iova;
 	unsigned long vaddr = map->vaddr;
 	size_t size = map->size;
 	long npage;
@@ -533,9 +534,13 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	struct vfio_dma *dma;
 	unsigned long pfn;
 
-	end = map->iova + map->size;
+	/* Verify that none of our __u64 fields overflow */
+	if (map->size != size || map->vaddr != vaddr || map->iova != iova)
+		return -EINVAL;
 
 	mask = ((uint64_t)1 << __ffs(vfio_pgsize_bitmap(iommu))) - 1;
+
+	WARN_ON(mask & PAGE_MASK);
 
 	/* READ/WRITE from device perspective */
 	if (map->flags & VFIO_DMA_MAP_FLAG_WRITE)
@@ -543,29 +548,16 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	if (map->flags & VFIO_DMA_MAP_FLAG_READ)
 		prot |= IOMMU_READ;
 
-	if (!prot)
-		return -EINVAL; /* No READ/WRITE? */
-
-	if (vaddr & mask)
-		return -EINVAL;
-	if (map->iova & mask)
-		return -EINVAL;
-	if (!map->size || map->size & mask)
+	if (!prot || !size || (size | iova | vaddr) & mask)
 		return -EINVAL;
 
-	WARN_ON(mask & PAGE_MASK);
-
-	/* Don't allow IOVA wrap */
-	if (end && end < map->iova)
-		return -EINVAL;
-
-	/* Don't allow virtual address wrap */
-	if (vaddr + map->size && vaddr + map->size < vaddr)
+	/* Don't allow IOVA or virtual address wrap */
+	if (iova + size - 1 < iova || vaddr + size - 1 < vaddr)
 		return -EINVAL;
 
 	mutex_lock(&iommu->lock);
 
-	if (vfio_find_dma(iommu, map->iova, map->size)) {
+	if (vfio_find_dma(iommu, iova, size)) {
 		mutex_unlock(&iommu->lock);
 		return -EEXIST;
 	}
@@ -576,17 +568,17 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 		return -ENOMEM;
 	}
 
-	dma->iova = map->iova;
-	dma->vaddr = map->vaddr;
+	dma->iova = iova;
+	dma->vaddr = vaddr;
 	dma->prot = prot;
 
 	/* Insert zero-sized and grow as we map chunks of it */
 	vfio_link_dma(iommu, dma);
 
-	for (iova = map->iova; iova < end; iova += size, vaddr += size) {
+	while (size) {
 		/* Pin a contiguous chunk of memory */
-		npage = vfio_pin_pages(vaddr, (end - iova) >> PAGE_SHIFT,
-				       prot, &pfn);
+		npage = vfio_pin_pages(vaddr + dma->size,
+				       size >> PAGE_SHIFT, prot, &pfn);
 		if (npage <= 0) {
 			WARN_ON(!npage);
 			ret = (int)npage;
@@ -594,14 +586,14 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 		}
 
 		/* Map it! */
-		ret = vfio_iommu_map(iommu, iova, pfn, npage, prot);
+		ret = vfio_iommu_map(iommu, iova + dma->size, pfn, npage, prot);
 		if (ret) {
 			vfio_unpin_pages(pfn, npage, prot, true);
 			break;
 		}
 
-		size = npage << PAGE_SHIFT;
-		dma->size += size;
+		size -= npage << PAGE_SHIFT;
+		dma->size += npage << PAGE_SHIFT;
 	}
 
 	if (ret)
@@ -714,6 +706,15 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 		goto out_free;
 	}
 
+	if (iommu->nesting) {
+		int attr = 1;
+
+		ret = iommu_domain_set_attr(domain->domain, DOMAIN_ATTR_NESTING,
+					    &attr);
+		if (ret)
+			goto out_domain;
+	}
+
 	ret = iommu_attach_group(domain->domain, iommu_group);
 	if (ret)
 		goto out_domain;
@@ -722,14 +723,14 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 	list_add(&group->next, &domain->group_list);
 
 	if (!allow_unsafe_interrupts &&
-	    !iommu_domain_has_cap(domain->domain, IOMMU_CAP_INTR_REMAP)) {
+	    !iommu_capable(bus, IOMMU_CAP_INTR_REMAP)) {
 		pr_warn("%s: No interrupt remapping support.  Use the module param \"allow_unsafe_interrupts\" to enable VFIO IOMMU support on this platform\n",
 		       __func__);
 		ret = -EPERM;
 		goto out_detach;
 	}
 
-	if (iommu_domain_has_cap(domain->domain, IOMMU_CAP_CACHE_COHERENCY))
+	if (iommu_capable(bus, IOMMU_CAP_CACHE_COHERENCY))
 		domain->prot |= IOMMU_CACHE;
 
 	/*
@@ -828,17 +829,26 @@ static void *vfio_iommu_type1_open(unsigned long arg)
 {
 	struct vfio_iommu *iommu;
 
-	if (arg != VFIO_TYPE1_IOMMU && arg != VFIO_TYPE1v2_IOMMU)
-		return ERR_PTR(-EINVAL);
-
 	iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
 		return ERR_PTR(-ENOMEM);
 
+	switch (arg) {
+	case VFIO_TYPE1_IOMMU:
+		break;
+	case VFIO_TYPE1_NESTING_IOMMU:
+		iommu->nesting = true;
+	case VFIO_TYPE1v2_IOMMU:
+		iommu->v2 = true;
+		break;
+	default:
+		kfree(iommu);
+		return ERR_PTR(-EINVAL);
+	}
+
 	INIT_LIST_HEAD(&iommu->domain_list);
 	iommu->dma_list = RB_ROOT;
 	mutex_init(&iommu->lock);
-	iommu->v2 = (arg == VFIO_TYPE1v2_IOMMU);
 
 	return iommu;
 }
@@ -894,6 +904,7 @@ static long vfio_iommu_type1_ioctl(void *iommu_data,
 		switch (arg) {
 		case VFIO_TYPE1_IOMMU:
 		case VFIO_TYPE1v2_IOMMU:
+		case VFIO_TYPE1_NESTING_IOMMU:
 			return 1;
 		case VFIO_DMA_CC_IOMMU:
 			if (!iommu)

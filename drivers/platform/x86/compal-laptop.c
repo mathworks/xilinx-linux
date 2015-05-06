@@ -710,7 +710,6 @@ static int compal_remove(struct platform_device *);
 static struct platform_driver compal_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 	},
 	.probe	= compal_probe,
 	.remove	= compal_remove,
@@ -1028,7 +1027,7 @@ static int compal_probe(struct platform_device *pdev)
 		return err;
 
 	hwmon_dev = hwmon_device_register_with_groups(&pdev->dev,
-						      DRIVER_NAME, data,
+						      "compal", data,
 						      compal_hwmon_groups);
 	if (IS_ERR(hwmon_dev)) {
 		err = PTR_ERR(hwmon_dev);

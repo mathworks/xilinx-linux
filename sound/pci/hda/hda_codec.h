@@ -537,7 +537,8 @@ void __snd_hda_codec_cleanup_stream(struct hda_codec *codec, hda_nid_t nid,
 				    int do_now);
 #define snd_hda_codec_cleanup_stream(codec, nid) \
 	__snd_hda_codec_cleanup_stream(codec, nid, 0)
-unsigned int snd_hda_calc_stream_format(unsigned int rate,
+unsigned int snd_hda_calc_stream_format(struct hda_codec *codec,
+					unsigned int rate,
 					unsigned int channels,
 					unsigned int format,
 					unsigned int maxbps,
@@ -685,7 +686,5 @@ static inline void
 snd_hda_codec_load_dsp_cleanup(struct hda_codec *codec,
 				struct snd_dma_buffer *dmab) {}
 #endif
-
-#define EXPORT_SYMBOL_HDA(sym) EXPORT_SYMBOL_GPL(sym)
 
 #endif /* __SOUND_HDA_CODEC_H */

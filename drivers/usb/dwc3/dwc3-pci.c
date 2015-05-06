@@ -23,13 +23,18 @@
 #include <linux/platform_device.h>
 
 #include <linux/usb/otg.h>
-#include <linux/usb/usb_phy_gen_xceiv.h>
+#include <linux/usb/usb_phy_generic.h>
+
+#include "platform_data.h"
 
 /* FIXME define these in <linux/pci_ids.h> */
 #define PCI_VENDOR_ID_SYNOPSYS		0x16c3
 #define PCI_DEVICE_ID_SYNOPSYS_HAPSUSB3	0xabcd
 #define PCI_DEVICE_ID_INTEL_BYT		0x0f37
 #define PCI_DEVICE_ID_INTEL_MRFLD	0x119e
+#define PCI_DEVICE_ID_INTEL_BSW		0x22B7
+#define PCI_DEVICE_ID_INTEL_SPTLP	0x9d30
+#define PCI_DEVICE_ID_INTEL_SPTH	0xa130
 
 struct dwc3_pci {
 	struct device		*dev;
@@ -40,13 +45,13 @@ struct dwc3_pci {
 
 static int dwc3_pci_register_phys(struct dwc3_pci *glue)
 {
-	struct usb_phy_gen_xceiv_platform_data pdata;
+	struct usb_phy_generic_platform_data pdata;
 	struct platform_device	*pdev;
 	int			ret;
 
 	memset(&pdata, 0x00, sizeof(pdata));
 
-	pdev = platform_device_alloc("usb_phy_gen_xceiv", 0);
+	pdev = platform_device_alloc("usb_phy_generic", 0);
 	if (!pdev)
 		return -ENOMEM;
 
@@ -58,7 +63,7 @@ static int dwc3_pci_register_phys(struct dwc3_pci *glue)
 	if (ret)
 		goto err1;
 
-	pdev = platform_device_alloc("usb_phy_gen_xceiv", 1);
+	pdev = platform_device_alloc("usb_phy_generic", 1);
 	if (!pdev) {
 		ret = -ENOMEM;
 		goto err1;
@@ -99,18 +104,19 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 	struct resource		res[2];
 	struct platform_device	*dwc3;
 	struct dwc3_pci		*glue;
-	int			ret = -ENOMEM;
+	int			ret;
 	struct device		*dev = &pci->dev;
+	struct dwc3_platform_data dwc3_pdata;
+
+	memset(&dwc3_pdata, 0x00, sizeof(dwc3_pdata));
 
 	glue = devm_kzalloc(dev, sizeof(*glue), GFP_KERNEL);
-	if (!glue) {
-		dev_err(dev, "not enough memory\n");
+	if (!glue)
 		return -ENOMEM;
-	}
 
 	glue->dev = dev;
 
-	ret = pci_enable_device(pci);
+	ret = pcim_enable_device(pci);
 	if (ret) {
 		dev_err(dev, "failed to enable pci device\n");
 		return -ENODEV;
@@ -127,8 +133,7 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 	dwc3 = platform_device_alloc("dwc3", PLATFORM_DEVID_AUTO);
 	if (!dwc3) {
 		dev_err(dev, "couldn't allocate dwc3 device\n");
-		ret = -ENOMEM;
-		goto err1;
+		return -ENOMEM;
 	}
 
 	memset(res, 0x00, sizeof(struct resource) * ARRAY_SIZE(res));
@@ -142,13 +147,42 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 	res[1].name	= "dwc_usb3";
 	res[1].flags	= IORESOURCE_IRQ;
 
+	if (pci->vendor == PCI_VENDOR_ID_AMD &&
+			pci->device == PCI_DEVICE_ID_AMD_NL_USB) {
+		dwc3_pdata.has_lpm_erratum = true;
+		dwc3_pdata.lpm_nyet_threshold = 0xf;
+
+		dwc3_pdata.u2exit_lfps_quirk = true;
+		dwc3_pdata.u2ss_inp3_quirk = true;
+		dwc3_pdata.req_p1p2p3_quirk = true;
+		dwc3_pdata.del_p1p2p3_quirk = true;
+		dwc3_pdata.del_phy_power_chg_quirk = true;
+		dwc3_pdata.lfps_filter_quirk = true;
+		dwc3_pdata.rx_detect_poll_quirk = true;
+
+		dwc3_pdata.tx_de_emphasis_quirk = true;
+		dwc3_pdata.tx_de_emphasis = 1;
+
+		/*
+		 * FIXME these quirks should be removed when AMD NL
+		 * taps out
+		 */
+		dwc3_pdata.disable_scramble_quirk = true;
+		dwc3_pdata.dis_u3_susphy_quirk = true;
+		dwc3_pdata.dis_u2_susphy_quirk = true;
+	}
+
 	ret = platform_device_add_resources(dwc3, res, ARRAY_SIZE(res));
 	if (ret) {
 		dev_err(dev, "couldn't add resources to dwc3 device\n");
-		goto err1;
+		return ret;
 	}
 
 	pci_set_drvdata(pci, glue);
+
+	ret = platform_device_add_data(dwc3, &dwc3_pdata, sizeof(dwc3_pdata));
+	if (ret)
+		goto err3;
 
 	dma_set_coherent_mask(&dwc3->dev, dev->coherent_dma_mask);
 
@@ -167,9 +201,6 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 
 err3:
 	platform_device_put(dwc3);
-err1:
-	pci_disable_device(pci);
-
 	return ret;
 }
 
@@ -180,7 +211,6 @@ static void dwc3_pci_remove(struct pci_dev *pci)
 	platform_device_unregister(glue->dwc3);
 	platform_device_unregister(glue->usb2_phy);
 	platform_device_unregister(glue->usb3_phy);
-	pci_disable_device(pci);
 }
 
 static const struct pci_device_id dwc3_pci_id_table[] = {
@@ -188,8 +218,12 @@ static const struct pci_device_id dwc3_pci_id_table[] = {
 		PCI_DEVICE(PCI_VENDOR_ID_SYNOPSYS,
 				PCI_DEVICE_ID_SYNOPSYS_HAPSUSB3),
 	},
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BSW), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRFLD), },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SPTLP), },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SPTH), },
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_NL_USB), },
 	{  }	/* Terminating Entry */
 };
 MODULE_DEVICE_TABLE(pci, dwc3_pci_id_table);

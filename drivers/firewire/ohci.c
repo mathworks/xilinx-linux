@@ -282,6 +282,7 @@ static char ohci_driver_name[] = KBUILD_MODNAME;
 #define PCI_DEVICE_ID_TI_TSB82AA2	0x8025
 #define PCI_DEVICE_ID_VIA_VT630X	0x3044
 #define PCI_REV_ID_VIA_VT6306		0x46
+#define PCI_DEVICE_ID_VIA_VT6315	0x3403
 
 #define QUIRK_CYCLE_TIMER		0x1
 #define QUIRK_RESET_PACKET		0x2
@@ -333,6 +334,12 @@ static const struct {
 
 	{PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VT630X, PCI_REV_ID_VIA_VT6306,
 		QUIRK_CYCLE_TIMER | QUIRK_IR_WAKE},
+
+	{PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VT6315, 0,
+		QUIRK_CYCLE_TIMER /* FIXME: necessary? */ | QUIRK_NO_MSI},
+
+	{PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VT6315, PCI_ANY_ID,
+		QUIRK_NO_MSI},
 
 	{PCI_VENDOR_ID_VIA, PCI_ANY_ID, PCI_ANY_ID,
 		QUIRK_CYCLE_TIMER | QUIRK_NO_MSI},
@@ -682,8 +689,7 @@ static void ar_context_release(struct ar_context *ctx)
 {
 	unsigned int i;
 
-	if (ctx->buffer)
-		vm_unmap_ram(ctx->buffer, AR_BUFFERS + AR_WRAPAROUND_PAGES);
+	vunmap(ctx->buffer);
 
 	for (i = 0; i < AR_BUFFERS; i++)
 		if (ctx->pages[i]) {
@@ -1011,8 +1017,7 @@ static int ar_context_init(struct ar_context *ctx, struct fw_ohci *ohci,
 		pages[i]              = ctx->pages[i];
 	for (i = 0; i < AR_WRAPAROUND_PAGES; i++)
 		pages[AR_BUFFERS + i] = ctx->pages[i];
-	ctx->buffer = vm_map_ram(pages, AR_BUFFERS + AR_WRAPAROUND_PAGES,
-				 -1, PAGE_KERNEL);
+	ctx->buffer = vmap(pages, ARRAY_SIZE(pages), VM_MAP, PAGE_KERNEL);
 	if (!ctx->buffer)
 		goto out_of_memory;
 
@@ -3498,7 +3503,7 @@ static int ohci_flush_iso_completions(struct fw_iso_context *base)
 		}
 
 		clear_bit_unlock(0, &ctx->flushing_completions);
-		smp_mb__after_clear_bit();
+		smp_mb__after_atomic();
 	}
 
 	tasklet_enable(&ctx->context.tasklet);

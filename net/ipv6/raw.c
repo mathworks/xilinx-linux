@@ -176,7 +176,7 @@ static bool ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 		goto out;
 
 	net = dev_net(skb->dev);
-	sk = __raw_v6_lookup(net, sk, nexthdr, daddr, saddr, IP6CB(skb)->iif);
+	sk = __raw_v6_lookup(net, sk, nexthdr, daddr, saddr, inet6_iif(skb));
 
 	while (sk) {
 		int filtered;
@@ -220,7 +220,7 @@ static bool ipv6_raw_deliver(struct sk_buff *skb, int nexthdr)
 			}
 		}
 		sk = __raw_v6_lookup(net, sk_next(sk), nexthdr, daddr, saddr,
-				     IP6CB(skb)->iif);
+				     inet6_iif(skb));
 	}
 out:
 	read_unlock(&raw_v6_hashinfo.lock);
@@ -375,7 +375,7 @@ void raw6_icmp_error(struct sk_buff *skb, int nexthdr,
 		net = dev_net(skb->dev);
 
 		while ((sk = __raw_v6_lookup(net, sk, nexthdr, saddr, daddr,
-						IP6CB(skb)->iif))) {
+						inet6_iif(skb)))) {
 			rawv6_err(sk, skb, NULL, type, code,
 					inner_offset, info);
 			sk = sk_next(sk);
@@ -486,13 +486,13 @@ static int rawv6_recvmsg(struct kiocb *iocb, struct sock *sk,
 	}
 
 	if (skb_csum_unnecessary(skb)) {
-		err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+		err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	} else if (msg->msg_flags&MSG_TRUNC) {
 		if (__skb_checksum_complete(skb))
 			goto csum_copy_err;
-		err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+		err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	} else {
-		err = skb_copy_and_csum_datagram_iovec(skb, 0, msg->msg_iov);
+		err = skb_copy_and_csum_datagram_msg(skb, 0, msg);
 		if (err == -EINVAL)
 			goto csum_copy_err;
 	}
@@ -506,7 +506,7 @@ static int rawv6_recvmsg(struct kiocb *iocb, struct sock *sk,
 		sin6->sin6_addr = ipv6_hdr(skb)->saddr;
 		sin6->sin6_flowinfo = 0;
 		sin6->sin6_scope_id = ipv6_iface_scope_id(&sin6->sin6_addr,
-							  IP6CB(skb)->iif);
+							  inet6_iif(skb));
 		*addr_len = sizeof(*sin6);
 	}
 
@@ -548,7 +548,8 @@ static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 	if (!rp->checksum)
 		goto send;
 
-	if ((skb = skb_peek(&sk->sk_write_queue)) == NULL)
+	skb = skb_peek(&sk->sk_write_queue);
+	if (!skb)
 		goto out;
 
 	offset = rp->offset;
@@ -588,8 +589,7 @@ static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 	}
 
 	offset += skb_transport_offset(skb);
-	if (skb_copy_bits(skb, offset, &csum, 2))
-		BUG();
+	BUG_ON(skb_copy_bits(skb, offset, &csum, 2));
 
 	/* in case cksum was not initialized */
 	if (unlikely(csum))
@@ -601,8 +601,7 @@ static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 	if (csum == 0 && fl6->flowi6_proto == IPPROTO_UDP)
 		csum = CSUM_MANGLED_0;
 
-	if (skb_store_bits(skb, offset, &csum, 2))
-		BUG();
+	BUG_ON(skb_store_bits(skb, offset, &csum, 2));
 
 send:
 	err = ip6_push_pending_frames(sk);
@@ -673,65 +672,62 @@ error:
 	return err;
 }
 
-static int rawv6_probe_proto_opt(struct flowi6 *fl6, struct msghdr *msg)
+struct raw6_frag_vec {
+	struct msghdr *msg;
+	int hlen;
+	char c[4];
+};
+
+static int rawv6_probe_proto_opt(struct raw6_frag_vec *rfv, struct flowi6 *fl6)
 {
-	struct iovec *iov;
-	u8 __user *type = NULL;
-	u8 __user *code = NULL;
-	u8 len = 0;
-	int probed = 0;
-	int i;
-
-	if (!msg->msg_iov)
-		return 0;
-
-	for (i = 0; i < msg->msg_iovlen; i++) {
-		iov = &msg->msg_iov[i];
-		if (!iov)
-			continue;
-
-		switch (fl6->flowi6_proto) {
-		case IPPROTO_ICMPV6:
-			/* check if one-byte field is readable or not. */
-			if (iov->iov_base && iov->iov_len < 1)
-				break;
-
-			if (!type) {
-				type = iov->iov_base;
-				/* check if code field is readable or not. */
-				if (iov->iov_len > 1)
-					code = type + 1;
-			} else if (!code)
-				code = iov->iov_base;
-
-			if (type && code) {
-				if (get_user(fl6->fl6_icmp_type, type) ||
-				    get_user(fl6->fl6_icmp_code, code))
-					return -EFAULT;
-				probed = 1;
-			}
-			break;
-		case IPPROTO_MH:
-			if (iov->iov_base && iov->iov_len < 1)
-				break;
-			/* check if type field is readable or not. */
-			if (iov->iov_len > 2 - len) {
-				u8 __user *p = iov->iov_base;
-				if (get_user(fl6->fl6_mh_type, &p[2 - len]))
-					return -EFAULT;
-				probed = 1;
-			} else
-				len += iov->iov_len;
-
-			break;
-		default:
-			probed = 1;
-			break;
+	int err = 0;
+	switch (fl6->flowi6_proto) {
+	case IPPROTO_ICMPV6:
+		rfv->hlen = 2;
+		err = memcpy_from_msg(rfv->c, rfv->msg, rfv->hlen);
+		if (!err) {
+			fl6->fl6_icmp_type = rfv->c[0];
+			fl6->fl6_icmp_code = rfv->c[1];
 		}
-		if (probed)
-			break;
+		break;
+	case IPPROTO_MH:
+		rfv->hlen = 4;
+		err = memcpy_from_msg(rfv->c, rfv->msg, rfv->hlen);
+		if (!err)
+			fl6->fl6_mh_type = rfv->c[2];
 	}
-	return 0;
+	return err;
+}
+
+static int raw6_getfrag(void *from, char *to, int offset, int len, int odd,
+		       struct sk_buff *skb)
+{
+	struct raw6_frag_vec *rfv = from;
+
+	if (offset < rfv->hlen) {
+		int copy = min(rfv->hlen - offset, len);
+
+		if (skb->ip_summed == CHECKSUM_PARTIAL)
+			memcpy(to, rfv->c + offset, copy);
+		else
+			skb->csum = csum_block_add(
+				skb->csum,
+				csum_partial_copy_nocheck(rfv->c + offset,
+							  to, copy, 0),
+				odd);
+
+		odd = 0;
+		offset += copy;
+		to += copy;
+		len -= copy;
+
+		if (!len)
+			return 0;
+	}
+
+	offset -= rfv->hlen;
+
+	return ip_generic_getfrag(rfv->msg, to, offset, len, odd, skb);
 }
 
 static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
@@ -746,6 +742,7 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 	struct ipv6_txoptions *opt = NULL;
 	struct ip6_flowlabel *flowlabel = NULL;
 	struct dst_entry *dst = NULL;
+	struct raw6_frag_vec rfv;
 	struct flowi6 fl6;
 	int addr_len = msg->msg_namelen;
 	int hlimit = -1;
@@ -849,7 +846,9 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 	opt = ipv6_fixup_options(&opt_space, opt);
 
 	fl6.flowi6_proto = proto;
-	err = rawv6_probe_proto_opt(&fl6, msg);
+	rfv.msg = msg;
+	rfv.hlen = 0;
+	err = rawv6_probe_proto_opt(&rfv, &fl6);
 	if (err)
 		goto out;
 
@@ -873,14 +872,8 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 		err = PTR_ERR(dst);
 		goto out;
 	}
-	if (hlimit < 0) {
-		if (ipv6_addr_is_multicast(&fl6.daddr))
-			hlimit = np->mcast_hops;
-		else
-			hlimit = np->hop_limit;
-		if (hlimit < 0)
-			hlimit = ip6_dst_hoplimit(dst);
-	}
+	if (hlimit < 0)
+		hlimit = ip6_sk_dst_hoplimit(np, &fl6, dst);
 
 	if (tclass < 0)
 		tclass = np->tclass;
@@ -893,11 +886,12 @@ static int rawv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 
 back_from_confirm:
 	if (inet->hdrincl)
-		err = rawv6_send_hdrinc(sk, msg->msg_iov, len, &fl6, &dst, msg->msg_flags);
+		/* XXX: stripping const */
+		err = rawv6_send_hdrinc(sk, (struct iovec *)msg->msg_iter.iov, len, &fl6, &dst, msg->msg_flags);
 	else {
 		lock_sock(sk);
-		err = ip6_append_data(sk, ip_generic_getfrag, msg->msg_iov,
-			len, 0, hlimit, tclass, opt, &fl6, (struct rt6_info*)dst,
+		err = ip6_append_data(sk, raw6_getfrag, &rfv,
+			len, 0, hlimit, tclass, opt, &fl6, (struct rt6_info *)dst,
 			msg->msg_flags, dontfrag);
 
 		if (err)
@@ -910,7 +904,7 @@ done:
 	dst_release(dst);
 out:
 	fl6_sock_release(flowlabel);
-	return err<0?err:len;
+	return err < 0 ? err : len;
 do_confirm:
 	dst_confirm(dst);
 	if (!(msg->msg_flags & MSG_PROBE) || len)
@@ -1053,7 +1047,7 @@ static int do_rawv6_getsockopt(struct sock *sk, int level, int optname,
 	struct raw6_sock *rp = raw6_sk(sk);
 	int val, len;
 
-	if (get_user(len,optlen))
+	if (get_user(len, optlen))
 		return -EFAULT;
 
 	switch (optname) {
@@ -1077,7 +1071,7 @@ static int do_rawv6_getsockopt(struct sock *sk, int level, int optname,
 
 	if (put_user(len, optlen))
 		return -EFAULT;
-	if (copy_to_user(optval,&val,len))
+	if (copy_to_user(optval, &val, len))
 		return -EFAULT;
 	return 0;
 }
@@ -1328,7 +1322,6 @@ static struct inet_protosw rawv6_protosw = {
 	.protocol	= IPPROTO_IP,	/* wild card */
 	.prot		= &rawv6_prot,
 	.ops		= &inet6_sockraw_ops,
-	.no_check	= UDP_CSUM_DEFAULT,
 	.flags		= INET_PROTOSW_REUSE,
 };
 

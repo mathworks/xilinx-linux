@@ -1,5 +1,5 @@
 /*
- * Netlink inteface for IEEE 802.15.4 stack
+ * Netlink interface for IEEE 802.15.4 stack
  *
  * Copyright 2007, 2008 Siemens AG
  *
@@ -12,10 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  * Written by:
  * Sergey Lapin <slapin@ossfans.org>
  * Dmitry Eremin-Solenikov <dbaryshkov@gmail.com>
@@ -27,16 +23,18 @@
 #include <linux/if_arp.h>
 #include <net/netlink.h>
 #include <net/genetlink.h>
-#include <net/wpan-phy.h>
+#include <net/cfg802154.h>
 #include <net/af_ieee802154.h>
 #include <net/ieee802154_netdev.h>
 #include <net/rtnetlink.h> /* for rtnl_{un,}lock */
 #include <linux/nl802154.h>
 
 #include "ieee802154.h"
+#include "rdev-ops.h"
+#include "core.h"
 
 static int ieee802154_nl_fill_phy(struct sk_buff *msg, u32 portid,
-	u32 seq, int flags, struct wpan_phy *phy)
+				  u32 seq, int flags, struct wpan_phy *phy)
 {
 	void *hdr;
 	int i, pages = 0;
@@ -48,7 +46,7 @@ static int ieee802154_nl_fill_phy(struct sk_buff *msg, u32 portid,
 		return -EMSGSIZE;
 
 	hdr = genlmsg_put(msg, 0, seq, &nl802154_family, flags,
-		IEEE802154_LIST_PHY);
+			  IEEE802154_LIST_PHY);
 	if (!hdr)
 		goto out;
 
@@ -80,7 +78,8 @@ out:
 int ieee802154_list_phy(struct sk_buff *skb, struct genl_info *info)
 {
 	/* Request for interface name, index, type, IEEE address,
-	   PAN Id, short address */
+	 * PAN Id, short address
+	 */
 	struct sk_buff *msg;
 	struct wpan_phy *phy;
 	const char *name;
@@ -95,7 +94,6 @@ int ieee802154_list_phy(struct sk_buff *skb, struct genl_info *info)
 	if (name[nla_len(info->attrs[IEEE802154_ATTR_PHY_NAME]) - 1] != '\0')
 		return -EINVAL; /* phy name should be null-terminated */
 
-
 	phy = wpan_phy_find(name);
 	if (!phy)
 		return -ENODEV;
@@ -105,7 +103,7 @@ int ieee802154_list_phy(struct sk_buff *skb, struct genl_info *info)
 		goto out_dev;
 
 	rc = ieee802154_nl_fill_phy(msg, info->snd_portid, info->snd_seq,
-			0, phy);
+				    0, phy);
 	if (rc < 0)
 		goto out_free;
 
@@ -117,7 +115,6 @@ out_free:
 out_dev:
 	wpan_phy_put(phy);
 	return rc;
-
 }
 
 struct dump_phy_data {
@@ -137,10 +134,10 @@ static int ieee802154_dump_phy_iter(struct wpan_phy *phy, void *_data)
 		return 0;
 
 	rc = ieee802154_nl_fill_phy(data->skb,
-			NETLINK_CB(data->cb->skb).portid,
-			data->cb->nlh->nlmsg_seq,
-			NLM_F_MULTI,
-			phy);
+				    NETLINK_CB(data->cb->skb).portid,
+				    data->cb->nlh->nlmsg_seq,
+				    NLM_F_MULTI,
+				    phy);
 
 	if (rc < 0) {
 		data->idx--;
@@ -207,11 +204,6 @@ int ieee802154_add_iface(struct sk_buff *skb, struct genl_info *info)
 	if (!msg)
 		goto out_dev;
 
-	if (!phy->add_iface) {
-		rc = -EINVAL;
-		goto nla_put_failure;
-	}
-
 	if (info->attrs[IEEE802154_ATTR_HW_ADDR] &&
 	    nla_len(info->attrs[IEEE802154_ATTR_HW_ADDR]) !=
 			IEEE802154_ADDR_LEN) {
@@ -227,21 +219,22 @@ int ieee802154_add_iface(struct sk_buff *skb, struct genl_info *info)
 		}
 	}
 
-	dev = phy->add_iface(phy, devname, type);
+	dev = rdev_add_virtual_intf_deprecated(wpan_phy_to_rdev(phy), devname,
+					       type);
 	if (IS_ERR(dev)) {
 		rc = PTR_ERR(dev);
 		goto nla_put_failure;
 	}
+	dev_hold(dev);
 
 	if (info->attrs[IEEE802154_ATTR_HW_ADDR]) {
 		struct sockaddr addr;
 
 		addr.sa_family = ARPHRD_IEEE802154;
 		nla_memcpy(&addr.sa_data, info->attrs[IEEE802154_ATTR_HW_ADDR],
-				IEEE802154_ADDR_LEN);
+			   IEEE802154_ADDR_LEN);
 
-		/*
-		 * strangely enough, some callbacks (inetdev_event) from
+		/* strangely enough, some callbacks (inetdev_event) from
 		 * dev_set_mac_address require RTNL_LOCK
 		 */
 		rtnl_lock();
@@ -262,7 +255,7 @@ int ieee802154_add_iface(struct sk_buff *skb, struct genl_info *info)
 
 dev_unregister:
 	rtnl_lock(); /* del_iface must be called with RTNL lock */
-	phy->del_iface(phy, dev);
+	rdev_del_virtual_intf_deprecated(wpan_phy_to_rdev(phy), dev);
 	dev_put(dev);
 	rtnl_unlock();
 nla_put_failure:
@@ -293,8 +286,9 @@ int ieee802154_del_iface(struct sk_buff *skb, struct genl_info *info)
 	if (!dev)
 		return -ENODEV;
 
-	phy = ieee802154_mlme_ops(dev)->get_phy(dev);
+	phy = dev->ieee802154_ptr->wpan_phy;
 	BUG_ON(!phy);
+	get_device(&phy->dev);
 
 	rc = -EINVAL;
 	/* phy name is optional, but should be checked if it's given */
@@ -324,13 +318,8 @@ int ieee802154_del_iface(struct sk_buff *skb, struct genl_info *info)
 	if (!msg)
 		goto out_dev;
 
-	if (!phy->del_iface) {
-		rc = -EINVAL;
-		goto nla_put_failure;
-	}
-
 	rtnl_lock();
-	phy->del_iface(phy, dev);
+	rdev_del_virtual_intf_deprecated(wpan_phy_to_rdev(phy), dev);
 
 	/* We don't have device anymore */
 	dev_put(dev);

@@ -19,8 +19,7 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/namei.h>
-
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <linux/coda.h>
 #include <linux/coda_psdev.h>
@@ -102,13 +101,13 @@ static struct dentry *coda_lookup(struct inode *dir, struct dentry *entry, unsig
 	int type = 0;
 
 	if (length > CODA_MAXNAMLEN) {
-		printk(KERN_ERR "name too long: lookup, %s (%*s)\n",
+		pr_err("name too long: lookup, %s (%*s)\n",
 		       coda_i2s(dir), (int)length, name);
 		return ERR_PTR(-ENAMETOOLONG);
 	}
 
 	/* control object, create inode on the fly */
-	if (coda_isroot(dir) && coda_iscontrol(name, length)) {
+	if (is_root_inode(dir) && coda_iscontrol(name, length)) {
 		inode = coda_cnode_makectl(sb);
 		type = CODA_NOCACHE;
 	} else {
@@ -196,7 +195,7 @@ static int coda_create(struct inode *dir, struct dentry *de, umode_t mode, bool 
 	struct CodaFid newfid;
 	struct coda_vattr attrs;
 
-	if (coda_isroot(dir) && coda_iscontrol(name, length))
+	if (is_root_inode(dir) && coda_iscontrol(name, length))
 		return -EPERM;
 
 	error = venus_create(dir->i_sb, coda_i2f(dir), name, length, 
@@ -228,7 +227,7 @@ static int coda_mkdir(struct inode *dir, struct dentry *de, umode_t mode)
 	int error;
 	struct CodaFid newfid;
 
-	if (coda_isroot(dir) && coda_iscontrol(name, len))
+	if (is_root_inode(dir) && coda_iscontrol(name, len))
 		return -EPERM;
 
 	attrs.va_mode = mode;
@@ -262,7 +261,7 @@ static int coda_link(struct dentry *source_de, struct inode *dir_inode,
 	int len = de->d_name.len;
 	int error;
 
-	if (coda_isroot(dir_inode) && coda_iscontrol(name, len))
+	if (is_root_inode(dir_inode) && coda_iscontrol(name, len))
 		return -EPERM;
 
 	error = venus_link(dir_inode->i_sb, coda_i2f(inode),
@@ -288,7 +287,7 @@ static int coda_symlink(struct inode *dir_inode, struct dentry *de,
 	int symlen;
 	int error;
 
-	if (coda_isroot(dir_inode) && coda_iscontrol(name, len))
+	if (is_root_inode(dir_inode) && coda_iscontrol(name, len))
 		return -EPERM;
 
 	symlen = strlen(symname);
@@ -427,7 +426,6 @@ static int coda_venus_readdir(struct file *coda_file, struct dir_context *ctx)
 	struct coda_file_info *cfi;
 	struct coda_inode_info *cii;
 	struct file *host_file;
-	struct dentry *de;
 	struct venus_dirent *vdir;
 	unsigned long vdir_size = offsetof(struct venus_dirent, d_name);
 	unsigned int type;
@@ -439,8 +437,7 @@ static int coda_venus_readdir(struct file *coda_file, struct dir_context *ctx)
 	BUG_ON(!cfi || cfi->cfi_magic != CODA_MAGIC);
 	host_file = cfi->cfi_container;
 
-	de = coda_file->f_path.dentry;
-	cii = ITOC(de->d_inode);
+	cii = ITOC(file_inode(coda_file));
 
 	vdir = kmalloc(sizeof(*vdir), GFP_KERNEL);
 	if (!vdir) return -ENOMEM;
@@ -453,23 +450,23 @@ static int coda_venus_readdir(struct file *coda_file, struct dir_context *ctx)
 		ret = kernel_read(host_file, ctx->pos - 2, (char *)vdir,
 				  sizeof(*vdir));
 		if (ret < 0) {
-			printk(KERN_ERR "coda readdir: read dir %s failed %d\n",
-			       coda_f2s(&cii->c_fid), ret);
+			pr_err("%s: read dir %s failed %d\n",
+			       __func__, coda_f2s(&cii->c_fid), ret);
 			break;
 		}
 		if (ret == 0) break; /* end of directory file reached */
 
 		/* catch truncated reads */
 		if (ret < vdir_size || ret < vdir_size + vdir->d_namlen) {
-			printk(KERN_ERR "coda readdir: short read on %s\n",
-			       coda_f2s(&cii->c_fid));
+			pr_err("%s: short read on %s\n",
+			       __func__, coda_f2s(&cii->c_fid));
 			ret = -EBADF;
 			break;
 		}
 		/* validate whether the directory file actually makes sense */
 		if (vdir->d_reclen < vdir_size + vdir->d_namlen) {
-			printk(KERN_ERR "coda readdir: invalid dir %s\n",
-			       coda_f2s(&cii->c_fid));
+			pr_err("%s: invalid dir %s\n",
+			       __func__, coda_f2s(&cii->c_fid));
 			ret = -EBADF;
 			break;
 		}
@@ -508,7 +505,7 @@ static int coda_dentry_revalidate(struct dentry *de, unsigned int flags)
 		return -ECHILD;
 
 	inode = de->d_inode;
-	if (!inode || coda_isroot(inode))
+	if (!inode || is_root_inode(inode))
 		goto out;
 	if (is_bad_inode(inode))
 		goto bad;
@@ -589,8 +586,8 @@ int coda_revalidate_inode(struct inode *inode)
 		coda_vattr_to_iattr(inode, &attr);
 
 		if ((old_mode & S_IFMT) != (inode->i_mode & S_IFMT)) {
-			printk("Coda: inode %ld, fid %s changed type!\n",
-			       inode->i_ino, coda_f2s(&(cii->c_fid)));
+			pr_warn("inode %ld, fid %s changed type!\n",
+				inode->i_ino, coda_f2s(&(cii->c_fid)));
 		}
 
 		/* the following can happen when a local fid is replaced 

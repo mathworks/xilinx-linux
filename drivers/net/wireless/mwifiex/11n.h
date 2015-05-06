@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: 802.11n
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -63,6 +63,7 @@ int mwifiex_cmd_amsdu_aggr_ctrl(struct host_cmd_ds_command *cmd,
 				int cmd_action,
 				struct mwifiex_ds_11n_amsdu_aggr_ctrl *aa_ctrl);
 void mwifiex_del_tx_ba_stream_tbl_by_ra(struct mwifiex_private *priv, u8 *ra);
+u8 mwifiex_get_sec_chan_offset(int chan);
 
 static inline u8
 mwifiex_is_station_ampdu_allowed(struct mwifiex_private *priv,
@@ -83,6 +84,8 @@ mwifiex_is_amsdu_in_ampdu_allowed(struct mwifiex_private *priv,
 {
 	struct mwifiex_tx_ba_stream_tbl *tx_tbl;
 
+	if (is_broadcast_ether_addr(ptr->ra))
+		return false;
 	tx_tbl = mwifiex_get_ba_tbl(priv, tid, ptr->ra);
 	if (tx_tbl)
 		return tx_tbl->amsdu;
@@ -95,6 +98,8 @@ static inline u8
 mwifiex_is_ampdu_allowed(struct mwifiex_private *priv,
 			 struct mwifiex_ra_list_tbl *ptr, int tid)
 {
+	if (is_broadcast_ether_addr(ptr->ra))
+		return false;
 	if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP) {
 		return mwifiex_is_station_ampdu_allowed(priv, ptr, tid);
 	} else {
@@ -199,7 +204,7 @@ static inline int mwifiex_is_sta_11n_enabled(struct mwifiex_private *priv,
 }
 
 static inline u8
-mwifiex_tdls_peer_11n_enabled(struct mwifiex_private *priv, u8 *ra)
+mwifiex_tdls_peer_11n_enabled(struct mwifiex_private *priv, const u8 *ra)
 {
 	struct mwifiex_sta_node *node = mwifiex_get_sta_entry(priv, ra);
 	if (node)

@@ -303,21 +303,21 @@ static phys_addr_t gart_iommu_iova_to_phys(struct iommu_domain *domain,
 	return pa;
 }
 
-static int gart_iommu_domain_has_cap(struct iommu_domain *domain,
-				     unsigned long cap)
+static bool gart_iommu_capable(enum iommu_cap cap)
 {
-	return 0;
+	return false;
 }
 
-static struct iommu_ops gart_iommu_ops = {
+static const struct iommu_ops gart_iommu_ops = {
+	.capable	= gart_iommu_capable,
 	.domain_init	= gart_iommu_domain_init,
 	.domain_destroy	= gart_iommu_domain_destroy,
 	.attach_dev	= gart_iommu_attach_dev,
 	.detach_dev	= gart_iommu_detach_dev,
 	.map		= gart_iommu_map,
+	.map_sg		= default_iommu_map_sg,
 	.unmap		= gart_iommu_unmap,
 	.iova_to_phys	= gart_iommu_iova_to_phys,
-	.domain_has_cap	= gart_iommu_domain_has_cap,
 	.pgsize_bitmap	= GART_IOMMU_PGSIZES,
 };
 
@@ -396,7 +396,7 @@ static int tegra_gart_probe(struct platform_device *pdev)
 	do_gart_setup(gart, NULL);
 
 	gart_handle = gart;
-	bus_set_iommu(&platform_bus_type, &gart_iommu_ops);
+
 	return 0;
 }
 
@@ -416,7 +416,7 @@ static const struct dev_pm_ops tegra_gart_pm_ops = {
 	.resume		= tegra_gart_resume,
 };
 
-static struct of_device_id tegra_gart_of_match[] = {
+static const struct of_device_id tegra_gart_of_match[] = {
 	{ .compatible = "nvidia,tegra20-gart", },
 	{ },
 };
@@ -426,7 +426,6 @@ static struct platform_driver tegra_gart_driver = {
 	.probe		= tegra_gart_probe,
 	.remove		= tegra_gart_remove,
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "tegra-gart",
 		.pm	= &tegra_gart_pm_ops,
 		.of_match_table = tegra_gart_of_match,

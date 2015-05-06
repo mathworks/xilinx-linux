@@ -1,6 +1,6 @@
 /* virtpci.c
  *
- * Copyright © 2010 - 2013 UNISYS CORPORATION
+ * Copyright (C) 2010 - 2013 UNISYS CORPORATION
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,9 +24,11 @@
 #include "uniklog.h"
 #include "diagnostics/appos_subsystems.h"
 #include "uisutils.h"
-#include "commontypes.h"
 #include "vbuschannel.h"
 #include "vbushelper.h"
+#include <linux/types.h>
+#include <linux/io.h>
+#include <linux/uuid.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
@@ -34,11 +36,12 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/mod_devicetable.h>
-#include <linux/proc_fs.h>
 #include <linux/if_ether.h>
 #include <linux/version.h>
+#include <linux/debugfs.h>
 #include "version.h"
 #include "guestlinuxdebug.h"
+#include "timskmod.h"
 
 struct driver_private {
 	struct kobject kobj;
@@ -47,6 +50,7 @@ struct driver_private {
 	struct module_kobject *mkobj;
 	struct device_driver *driver;
 };
+
 #define to_driver(obj) container_of(obj, struct driver_private, kobj)
 
 /* bus_id went away in 2.6.30 - the size was 20 bytes, so we'll define
@@ -57,6 +61,11 @@ struct driver_private {
 #endif
 
 #define BUS_ID(x) dev_name(x)
+
+/* MAX_BUF = 4 busses x ( 32 devices/bus + 1 busline) x 80 characters
+ *         = 10,560 bytes ~ 2^14 = 16,384 bytes
+ */
+#define MAX_BUF 16384
 
 #include "virtpci.h"
 
@@ -99,17 +108,12 @@ static int virtpci_device_suspend(struct device *dev, pm_message_t state);
 static int virtpci_device_resume(struct device *dev);
 static int virtpci_device_probe(struct device *dev);
 static int virtpci_device_remove(struct device *dev);
-static ssize_t virt_proc_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *ppos);
-static ssize_t info_proc_read(struct file *file, char __user *buf,
-			      size_t len, loff_t *offset);
 
-static const struct file_operations proc_virt_fops = {
-	.write = virt_proc_write,
-};
+static ssize_t info_debugfs_read(struct file *file, char __user *buf,
+				 size_t len, loff_t *offset);
 
-static const struct file_operations proc_info_fops = {
-	.read = info_proc_read,
+static const struct file_operations debugfs_info_fops = {
+	.read = info_debugfs_read,
 };
 
 /*****************************************************/
@@ -134,7 +138,7 @@ static struct device virtpci_rootbus_device = {
 };
 
 /* filled in with info about parent chipset driver when we register with it */
-static ULTRA_VBUS_DEVICEINFO Chipset_DriverInfo;
+static struct ultra_vbus_deviceinfo chipset_driver_info;
 
 static const struct sysfs_ops virtpci_driver_sysfs_ops = {
 	.show = virtpci_driver_attr_show,
@@ -145,25 +149,19 @@ static struct kobj_type virtpci_driver_kobj_type = {
 	.sysfs_ops = &virtpci_driver_sysfs_ops,
 };
 
-static struct virtpci_dev *VpcidevListHead;
-static DEFINE_RWLOCK(VpcidevListLock);
+static struct virtpci_dev *vpcidev_list_head;
+static DEFINE_RWLOCK(vpcidev_list_lock);
 
 /* filled in with info about this driver, wrt it servicing client busses */
-static ULTRA_VBUS_DEVICEINFO Bus_DriverInfo;
+static struct ultra_vbus_deviceinfo bus_driver_info;
 
-/* virtpci_proc_dir_entry is used to create the proc entry directory
+/*****************************************************/
+/* debugfs entries                                   */
+/*****************************************************/
+/* dentry is used to create the debugfs entry directory
  * for virtpci
  */
-static struct proc_dir_entry *virtpci_proc_dir;
-/* virt_proc_entry is used to tell virtpci to add/delete vhbas/vnics/vbuses */
-static struct proc_dir_entry *virt_proc_entry;
-/* info_proc_entry is used to tell virtpci to display current info
- * kept in the driver
- */
-static struct proc_dir_entry *info_proc_entry;
-#define VIRT_PROC_ENTRY_FN "virt"
-#define INFO_PROC_ENTRY_FN "info"
-#define DIR_PROC_ENTRY "virtpci"
+static struct dentry *virtpci_debugfs_dir;
 
 struct virtpci_busdev {
 	struct device virtpci_bus_device;
@@ -174,12 +172,12 @@ struct virtpci_busdev {
 /*****************************************************/
 
 static inline
-int WAIT_FOR_IO_CHANNEL(ULTRA_IO_CHANNEL_PROTOCOL __iomem  *chanptr)
+int WAIT_FOR_IO_CHANNEL(struct spar_io_channel_protocol __iomem  *chanptr)
 {
 	int count = 120;
-	while (count > 0) {
 
-		if (ULTRA_CHANNEL_SERVER_READY(&chanptr->ChannelHeader))
+	while (count > 0) {
+		if (SPAR_CHANNEL_SERVER_READY(&chanptr->channel_header))
 			return 1;
 		UIS_THREAD_WAIT_SEC(1);
 		count--;
@@ -188,38 +186,40 @@ int WAIT_FOR_IO_CHANNEL(ULTRA_IO_CHANNEL_PROTOCOL __iomem  *chanptr)
 }
 
 /* Write the contents of <info> to the ULTRA_VBUS_CHANNEL_PROTOCOL.ChpInfo. */
-static int write_vbus_chpInfo(ULTRA_VBUS_CHANNEL_PROTOCOL *chan,
-			      ULTRA_VBUS_DEVICEINFO *info)
+static int write_vbus_chp_info(struct spar_vbus_channel_protocol *chan,
+			       struct ultra_vbus_deviceinfo *info)
 {
 	int off;
+
 	if (!chan) {
 		LOGERR("vbus channel not present");
 		return -1;
 	}
-	off = sizeof(ULTRA_CHANNEL_PROTOCOL) + chan->HdrInfo.chpInfoByteOffset;
-	if (chan->HdrInfo.chpInfoByteOffset == 0) {
-		LOGERR("vbus channel not used, because chpInfoByteOffset == 0");
+	off = sizeof(struct channel_header) + chan->hdr_info.chp_info_offset;
+	if (chan->hdr_info.chp_info_offset == 0) {
+		LOGERR("vbus channel not used, because chp_info_offset == 0");
 		return -1;
 	}
-	memcpy(((U8 *) (chan)) + off, info, sizeof(*info));
+	memcpy(((u8 *)(chan)) + off, info, sizeof(*info));
 	return 0;
 }
 
 /* Write the contents of <info> to the ULTRA_VBUS_CHANNEL_PROTOCOL.BusInfo. */
-static int write_vbus_busInfo(ULTRA_VBUS_CHANNEL_PROTOCOL *chan,
-			      ULTRA_VBUS_DEVICEINFO *info)
+static int write_vbus_bus_info(struct spar_vbus_channel_protocol *chan,
+			       struct ultra_vbus_deviceinfo *info)
 {
 	int off;
+
 	if (!chan) {
 		LOGERR("vbus channel not present");
 		return -1;
 	}
-	off = sizeof(ULTRA_CHANNEL_PROTOCOL) + chan->HdrInfo.busInfoByteOffset;
-	if (chan->HdrInfo.busInfoByteOffset == 0) {
-		LOGERR("vbus channel not used, because busInfoByteOffset == 0");
+	off = sizeof(struct channel_header) + chan->hdr_info.bus_info_offset;
+	if (chan->hdr_info.bus_info_offset == 0) {
+		LOGERR("vbus channel not used, because bus_info_offset == 0");
 		return -1;
 	}
-	memcpy(((U8 *) (chan)) + off, info, sizeof(*info));
+	memcpy(((u8 *)(chan)) + off, info, sizeof(*info));
 	return 0;
 }
 
@@ -227,23 +227,24 @@ static int write_vbus_busInfo(ULTRA_VBUS_CHANNEL_PROTOCOL *chan,
  * ULTRA_VBUS_CHANNEL_PROTOCOL.DevInfo[<devix>].
  */
 static int
-write_vbus_devInfo(ULTRA_VBUS_CHANNEL_PROTOCOL *chan,
-		   ULTRA_VBUS_DEVICEINFO *info, int devix)
+write_vbus_dev_info(struct spar_vbus_channel_protocol *chan,
+		    struct ultra_vbus_deviceinfo *info, int devix)
 {
 	int off;
+
 	if (!chan) {
 		LOGERR("vbus channel not present");
 		return -1;
 	}
 	off =
-	    (sizeof(ULTRA_CHANNEL_PROTOCOL) +
-	     chan->HdrInfo.devInfoByteOffset) +
-	    (chan->HdrInfo.deviceInfoStructBytes * devix);
-	if (chan->HdrInfo.devInfoByteOffset == 0) {
-		LOGERR("vbus channel not used, because devInfoByteOffset == 0");
+	    (sizeof(struct channel_header) +
+	     chan->hdr_info.dev_info_offset) +
+	    (chan->hdr_info.device_info_struct_bytes * devix);
+	if (chan->hdr_info.dev_info_offset == 0) {
+		LOGERR("vbus channel not used, because dev_info_offset == 0");
 		return -1;
 	}
-	memcpy(((U8 *) (chan)) + off, info, sizeof(*info));
+	memcpy(((u8 *)(chan)) + off, info, sizeof(*info));
 	return 0;
 }
 
@@ -254,13 +255,14 @@ static int add_vbus(struct add_vbus_guestpart *addparams)
 {
 	int ret;
 	struct device *vbus;
-	vbus = kzalloc(sizeof(struct device), GFP_ATOMIC);
+
+	vbus = kzalloc(sizeof(*vbus), GFP_ATOMIC);
 
 	POSTCODE_LINUX_2(VPCI_CREATE_ENTRY_PC, POSTCODE_SEVERITY_INFO);
 	if (!vbus)
 		return 0;
 
-	dev_set_name(vbus, "vbus%d", addparams->busNo);
+	dev_set_name(vbus, "vbus%d", addparams->bus_no);
 	vbus->release = virtpci_bus_release;
 	vbus->parent = &virtpci_rootbus_device;	/* root bus is parent */
 	vbus->bus = &virtpci_bus_type;	/* bus type */
@@ -277,11 +279,12 @@ static int add_vbus(struct add_vbus_guestpart *addparams)
 		POSTCODE_LINUX_2(VPCI_CREATE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
 		return 0;
 	}
-	write_vbus_chpInfo(vbus->platform_data /* chanptr */ ,
-			   &Chipset_DriverInfo);
-	write_vbus_busInfo(vbus->platform_data /* chanptr */ , &Bus_DriverInfo);
+	write_vbus_chp_info(vbus->platform_data /* chanptr */ ,
+			    &chipset_driver_info);
+	write_vbus_bus_info(vbus->platform_data /* chanptr */ ,
+			    &bus_driver_info);
 	LOGINF("Added vbus %d; device %s created successfully\n",
-	       addparams->busNo, BUS_ID(vbus));
+	       addparams->bus_no, BUS_ID(vbus));
 	POSTCODE_LINUX_2(VPCI_CREATE_EXIT_PC, POSTCODE_SEVERITY_INFO);
 	return 1;
 }
@@ -291,25 +294,14 @@ static int add_vbus(struct add_vbus_guestpart *addparams)
  */
 #define GET_SCSIADAPINFO_FROM_CHANPTR(chanptr) {			\
 	memcpy_fromio(&scsi.wwnn,					\
-		      &((ULTRA_IO_CHANNEL_PROTOCOL __iomem *)		\
+		      &((struct spar_io_channel_protocol __iomem *)	\
 			chanptr)->vhba.wwnn,				\
 		      sizeof(struct vhba_wwnn));			\
 	memcpy_fromio(&scsi.max,					\
-		      &((ULTRA_IO_CHANNEL_PROTOCOL __iomem *)		\
+		      &((struct spar_io_channel_protocol __iomem *)	\
 			chanptr)->vhba.max,				\
 		      sizeof(struct vhba_config_max));			\
 	}
-
-/* find bus device with the busid that matches - match_busid matches bus_id */
-#define GET_BUS_DEV(busno) { \
-	sprintf(busid, "vbus%d", busno); \
-	vbus = bus_find_device(&virtpci_bus_type, NULL, \
-			       (void *)busid, match_busid);	\
-	if (!vbus) { \
-		LOGERR("**** FAILED to find vbus %s\n", busid); \
-		return 0; \
-	} \
-}
 
 /* adds a vhba
  * returns 0 failure, 1 success,
@@ -323,7 +315,7 @@ static int add_vhba(struct add_virt_guestpart *addparams)
 
 	POSTCODE_LINUX_2(VPCI_CREATE_ENTRY_PC, POSTCODE_SEVERITY_INFO);
 	if (!WAIT_FOR_IO_CHANNEL
-	    ((ULTRA_IO_CHANNEL_PROTOCOL __iomem *) addparams->chanptr)) {
+	    ((struct spar_io_channel_protocol __iomem *)addparams->chanptr)) {
 		LOGERR("Timed out.  Channel not ready\n");
 		POSTCODE_LINUX_2(VPCI_CREATE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
 		return 0;
@@ -331,7 +323,14 @@ static int add_vhba(struct add_virt_guestpart *addparams)
 
 	GET_SCSIADAPINFO_FROM_CHANPTR(addparams->chanptr);
 
-	GET_BUS_DEV(addparams->busNo);
+	/* find bus device with the busid that matches match_busid */
+	sprintf(busid, "vbus%d", addparams->bus_no);
+	vbus = bus_find_device(&virtpci_bus_type, NULL,
+			       (void *)busid, match_busid);
+	if (!vbus) {
+		LOGERR("**** FAILED to find vbus %s\n", busid);
+		return 0;
+	}
 
 	LOGINF("Adding vhba wwnn:%x:%x config:%d-%d-%d-%d chanptr:%p\n",
 	       scsi.wwnn.wwnn1, scsi.wwnn.wwnn2,
@@ -345,7 +344,6 @@ static int add_vhba(struct add_virt_guestpart *addparams)
 				 POSTCODE_SEVERITY_INFO);
 	}
 	return i;
-
 }
 
 /* for CHANSOCK macaddr is AUTO-GENERATED; for normal channels,
@@ -353,18 +351,18 @@ static int add_vhba(struct add_virt_guestpart *addparams)
  */
 #define GET_NETADAPINFO_FROM_CHANPTR(chanptr) {				\
 		memcpy_fromio(net.mac_addr,				\
-		       ((ULTRA_IO_CHANNEL_PROTOCOL __iomem *)		\
-			chanptr)->vnic.macaddr,				\
+		       ((struct spar_io_channel_protocol __iomem *)	\
+		       chanptr)->vnic.macaddr,				\
 		       MAX_MACADDR_LEN);				\
 		net.num_rcv_bufs =					\
-			readl(&((ULTRA_IO_CHANNEL_PROTOCOL __iomem *)	\
-				chanptr)->vnic.num_rcv_bufs);		\
-		net.mtu = readl(&((ULTRA_IO_CHANNEL_PROTOCOL __iomem *) \
-				  chanptr)->vnic.mtu);			\
-		memcpy_fromio(&net.zoneGuid, \
-			      &((ULTRA_IO_CHANNEL_PROTOCOL __iomem *)	\
-				chanptr)->vnic.zoneGuid,		\
-			      sizeof(GUID));				\
+			readl(&((struct spar_io_channel_protocol __iomem *)\
+			      chanptr)->vnic.num_rcv_bufs);		\
+		net.mtu = readl(&((struct spar_io_channel_protocol __iomem *) \
+				chanptr)->vnic.mtu);			\
+		memcpy_fromio(&net.zone_uuid, \
+			      &((struct spar_io_channel_protocol __iomem *)\
+			      chanptr)->vnic.zone_uuid,		\
+			      sizeof(uuid_le));				\
 }
 
 /* adds a vnic
@@ -380,7 +378,7 @@ add_vnic(struct add_virt_guestpart *addparams)
 
 	POSTCODE_LINUX_2(VPCI_CREATE_ENTRY_PC, POSTCODE_SEVERITY_INFO);
 	if (!WAIT_FOR_IO_CHANNEL
-	    ((ULTRA_IO_CHANNEL_PROTOCOL __iomem *) addparams->chanptr)) {
+	    ((struct spar_io_channel_protocol __iomem *)addparams->chanptr)) {
 		LOGERR("Timed out, channel not ready\n");
 		POSTCODE_LINUX_2(VPCI_CREATE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
 		return 0;
@@ -388,16 +386,19 @@ add_vnic(struct add_virt_guestpart *addparams)
 
 	GET_NETADAPINFO_FROM_CHANPTR(addparams->chanptr);
 
-	GET_BUS_DEV(addparams->busNo);
+	/* find bus device with the busid that matches match_busid */
+	sprintf(busid, "vbus%d", addparams->bus_no);
+	vbus = bus_find_device(&virtpci_bus_type, NULL,
+			       (void *)busid, match_busid);
+	if (!vbus) {
+		LOGERR("**** FAILED to find vbus %s\n", busid);
+		return 0;
+	}
 
-	LOGINF("Adding vnic macaddr:%02x:%02x:%02x:%02x:%02x:%02x rcvbufs:%d mtu:%d chanptr:%p{%-8.8lx-%-4.4x-%-4.4x-%-2.2x%-2.2x%-2.2x%-2.2x%-2.2x%-2.2x%-2.2x%-2.2x}\n",
-	     net.mac_addr[0], net.mac_addr[1], net.mac_addr[2], net.mac_addr[3],
-	     net.mac_addr[4], net.mac_addr[5], net.num_rcv_bufs, net.mtu,
-	     addparams->chanptr, (ulong) net.zoneGuid.data1, net.zoneGuid.data2,
-	     net.zoneGuid.data3, net.zoneGuid.data4[0], net.zoneGuid.data4[1],
-	     net.zoneGuid.data4[2], net.zoneGuid.data4[3],
-	     net.zoneGuid.data4[4], net.zoneGuid.data4[5],
-	     net.zoneGuid.data4[6], net.zoneGuid.data4[7]);
+	LOGINF("Adding vnic macaddr:%02x:%02x:%02x:%02x:%02x:%02x rcvbufs:%d mtu:%d chanptr:%p%pUL\n",
+	       net.mac_addr[0], net.mac_addr[1], net.mac_addr[2],
+	       net.mac_addr[3], net.mac_addr[4], net.mac_addr[5],
+	       net.num_rcv_bufs, net.mtu, addparams->chanptr, &net.zone_uuid);
 	i = virtpci_device_add(vbus, VIRTNIC_TYPE, addparams, NULL, &net);
 	if (i) {
 		LOGINF("Added vnic macaddr:%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -419,12 +420,20 @@ delete_vbus(struct del_vbus_guestpart *delparams)
 	struct device *vbus;
 	unsigned char busid[BUS_ID_SIZE];
 
-	GET_BUS_DEV(delparams->busNo);
+	/* find bus device with the busid that matches match_busid */
+	sprintf(busid, "vbus%d", delparams->bus_no);
+	vbus = bus_find_device(&virtpci_bus_type, NULL,
+			       (void *)busid, match_busid);
+	if (!vbus) {
+		LOGERR("**** FAILED to find vbus %s\n", busid);
+		return 0;
+	}
+
 	/* ensure that bus has no devices? -- TBD */
 	LOGINF("Deleting %s\n", BUS_ID(vbus));
 	if (delete_vbus_device(vbus, NULL))
 		return 0;	/* failure */
-	LOGINF("Deleted vbus %d\n", delparams->busNo);
+	LOGINF("Deleted vbus %d\n", delparams->bus_no);
 	return 1;
 }
 
@@ -432,9 +441,9 @@ static int
 delete_vbus_device(struct device *vbus, void *data)
 {
 	int checkforroot = (data != NULL);
-	struct device *pDev = &virtpci_rootbus_device;
+	struct device *dev = &virtpci_rootbus_device;
 
-	if ((checkforroot) && match_busid(vbus, (void *) BUS_ID(pDev))) {
+	if ((checkforroot) && match_busid(vbus, (void *)BUS_ID(dev))) {
 		/* skip it - don't delete root bus */
 		LOGINF("skipping root bus\n");
 		return 0;	/* pretend no error */
@@ -592,10 +601,10 @@ static void delete_all(void)
 	struct virtpci_dev *tmpvpcidev, *nextvpcidev;
 
 	/* delete the entire vhba/vnic list in one shot */
-	write_lock_irqsave(&VpcidevListLock, flags);
-	tmpvpcidev = VpcidevListHead;
-	VpcidevListHead = NULL;
-	write_unlock_irqrestore(&VpcidevListLock, flags);
+	write_lock_irqsave(&vpcidev_list_lock, flags);
+	tmpvpcidev = vpcidev_list_head;
+	vpcidev_list_head = NULL;
+	write_unlock_irqrestore(&vpcidev_list_lock, flags);
 
 	/* delete one vhba/vnic at a time */
 	while (tmpvpcidev) {
@@ -609,24 +618,32 @@ static void delete_all(void)
 
 	/* now delete each vbus */
 	if (bus_for_each_dev
-	    (&virtpci_bus_type, NULL, (void *) 1, delete_vbus_device))
+	    (&virtpci_bus_type, NULL, (void *)1, delete_vbus_device))
 		LOGERR("delete of all vbus failed\n");
 }
 
 /* deletes all vnics or vhbas
  * returns 0 failure, 1 success,
  */
-static int delete_all_virt(VIRTPCI_DEV_TYPE devtype, struct del_vbus_guestpart *delparams)
+static int delete_all_virt(enum virtpci_dev_type devtype,
+			   struct del_vbus_guestpart *delparams)
 {
 	int i;
 	unsigned char busid[BUS_ID_SIZE];
 	struct device *vbus;
 
-	GET_BUS_DEV(delparams->busNo);
+	/* find bus device with the busid that matches match_busid */
+	sprintf(busid, "vbus%d", delparams->bus_no);
+	vbus = bus_find_device(&virtpci_bus_type, NULL,
+			       (void *)busid, match_busid);
+	if (!vbus) {
+		LOGERR("**** FAILED to find vbus %s\n", busid);
+		return 0;
+	}
 
 	if ((devtype != VIRTHBA_TYPE) && (devtype != VIRTNIC_TYPE)) {
 		LOGERR("**** FAILED to delete all devices; devtype:%d not vhba:%d or vnic:%d\n",
-		     devtype, VIRTHBA_TYPE, VIRTNIC_TYPE);
+		       devtype, VIRTHBA_TYPE, VIRTNIC_TYPE);
 		return 0;
 	}
 
@@ -696,10 +713,10 @@ virtpci_match_device(const struct pci_device_id *ids,
 {
 	while (ids->vendor || ids->subvendor || ids->class_mask) {
 		DBGINF("ids->vendor:%x dev->vendor:%x ids->device:%x dev->device:%x\n",
-		     ids->vendor, dev->vendor, ids->device, dev->device);
+		       ids->vendor, dev->vendor, ids->device, dev->device);
 
-		if ((ids->vendor == dev->vendor)
-		    && (ids->device == dev->device))
+		if ((ids->vendor == dev->vendor) &&
+		    (ids->device == dev->device))
 			return ids;
 
 		ids++;
@@ -754,15 +771,15 @@ static int virtpci_device_resume(struct device *dev)
 
 /* For a child device just created on a client bus, fill in
  * information about the driver that is controlling this device into
- * the the appropriate slot within the vbus channel of the bus
+ * the appropriate slot within the vbus channel of the bus
  * instance.
  */
-static void fix_vbus_devInfo(struct device *dev, int devNo, int devType,
-			     struct virtpci_driver *virtpcidrv)
+static void fix_vbus_dev_info(struct device *dev, int dev_no, int dev_type,
+			      struct virtpci_driver *virtpcidrv)
 {
 	struct device *vbus;
-	void *pChan;
-	ULTRA_VBUS_DEVICEINFO devInfo;
+	void *chan;
+	struct ultra_vbus_deviceinfo dev_info;
 	const char *stype;
 
 	if (!dev) {
@@ -778,12 +795,12 @@ static void fix_vbus_devInfo(struct device *dev, int devNo, int devType,
 		LOGERR("%s dev has no parent bus", __func__);
 		return;
 	}
-	pChan = vbus->platform_data;
-	if (!pChan) {
+	chan = vbus->platform_data;
+	if (!chan) {
 		LOGERR("%s dev bus has no channel", __func__);
 		return;
 	}
-	switch (devType) {
+	switch (dev_type) {
 	case PCI_DEVICE_ID_VIRTHBA:
 		stype = "vHBA";
 		break;
@@ -794,18 +811,17 @@ static void fix_vbus_devInfo(struct device *dev, int devNo, int devType,
 		stype = "unknown";
 		break;
 	}
-	BusDeviceInfo_Init(&devInfo, stype,
-			   virtpcidrv->name,
-			   virtpcidrv->version,
-			   virtpcidrv->vertag,
-			   virtpcidrv->build_date, virtpcidrv->build_time);
-	write_vbus_devInfo(pChan, &devInfo, devNo);
+	bus_device_info_init(&dev_info, stype,
+			     virtpcidrv->name,
+			     virtpcidrv->version,
+			     virtpcidrv->vertag);
+	write_vbus_dev_info(chan, &dev_info, dev_no);
 
 	/* Re-write bus+chipset info, because it is possible that this
 	* was previously written by our good counterpart, visorbus.
 	*/
-	write_vbus_chpInfo(pChan, &Chipset_DriverInfo);
-	write_vbus_busInfo(pChan, &Bus_DriverInfo);
+	write_vbus_chp_info(chan, &chipset_driver_info);
+	write_vbus_bus_info(chan, &bus_driver_info);
 }
 
 /* This function is called to query the existence of a specific device
@@ -845,13 +861,14 @@ static int virtpci_device_probe(struct device *dev)
 		 */
 		error = virtpcidrv->probe(virtpcidev, id);
 		if (!error) {
-			fix_vbus_devInfo(dev, virtpcidev->deviceNo,
-					 virtpcidev->device, virtpcidrv);
+			fix_vbus_dev_info(dev, virtpcidev->device_no,
+					  virtpcidev->device, virtpcidrv);
 			virtpcidev->mydriver = virtpcidrv;
 			POSTCODE_LINUX_2(VPCI_PROBE_EXIT_PC,
 					 POSTCODE_SEVERITY_INFO);
-		} else
+		} else {
 			put_device(dev);
+		}
 	}
 	POSTCODE_LINUX_2(VPCI_PROBE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
 	return error;		/* -ENODEV for probe failure */
@@ -864,6 +881,7 @@ static int virtpci_device_remove(struct device *dev_)
 	*/
 	struct virtpci_dev *virtpcidev = device_to_virtpci_dev(dev_);
 	struct virtpci_driver *virtpcidrv = virtpcidev->mydriver;
+
 	LOGINF("In virtpci_device_remove bus_id:%s dev_:%p virtpcidev:%p dev->driver:%p drivername:%s\n",
 	       BUS_ID(dev_), dev_, virtpcidev, dev_->driver,
 	       dev_->driver->name);	/* VERBOSE/DEBUG */
@@ -898,17 +916,20 @@ static void virtpci_bus_release(struct device *dev)
 /* Adapter functions                                 */
 /*****************************************************/
 
+/* scsi is expected to be NULL for VNIC add
+ * net is expected to be NULL for VHBA add
+ */
 static int virtpci_device_add(struct device *parentbus, int devtype,
 			      struct add_virt_guestpart *addparams,
-			      struct scsi_adap_info *scsi, /* NULL for VNIC add */
-			      struct net_adap_info *net	/* NULL for VHBA add */)
+			      struct scsi_adap_info *scsi,
+			      struct net_adap_info *net)
 {
 	struct virtpci_dev *virtpcidev = NULL;
 	struct virtpci_dev *tmpvpcidev = NULL, *prev;
 	unsigned long flags;
 	int ret;
-	ULTRA_IO_CHANNEL_PROTOCOL __iomem *pIoChan = NULL;
-	struct device *pDev;
+	struct spar_io_channel_protocol __iomem *io_chan = NULL;
+	struct device *dev;
 
 	LOGINF("virtpci_device_add parentbus:%p chanptr:%p\n", parentbus,
 	       addparams->chanptr);
@@ -917,14 +938,14 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 
 	if ((devtype != VIRTHBA_TYPE) && (devtype != VIRTNIC_TYPE)) {
 		LOGERR("**** FAILED to add device; devtype:%d not vhba:%d or vnic:%d\n",
-		     devtype, VIRTHBA_TYPE, VIRTNIC_TYPE);
+		       devtype, VIRTHBA_TYPE, VIRTNIC_TYPE);
 		POSTCODE_LINUX_3(VPCI_CREATE_FAILURE_PC, devtype,
 				 POSTCODE_SEVERITY_ERR);
 		return 0;
 	}
 
 	/* add a Virtual Device */
-	virtpcidev = kzalloc(sizeof(struct virtpci_dev), GFP_ATOMIC);
+	virtpcidev = kzalloc(sizeof(*virtpcidev), GFP_ATOMIC);
 	if (virtpcidev == NULL) {
 		LOGERR("can't add device - malloc FALLED\n");
 		POSTCODE_LINUX_2(MALLOC_FAILURE_PC, POSTCODE_SEVERITY_ERR);
@@ -941,14 +962,14 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 		virtpcidev->net = *net;
 	}
 	virtpcidev->vendor = PCI_VENDOR_ID_UNISYS;
-	virtpcidev->busNo = addparams->busNo;
-	virtpcidev->deviceNo = addparams->deviceNo;
+	virtpcidev->bus_no = addparams->bus_no;
+	virtpcidev->device_no = addparams->device_no;
 
 	virtpcidev->queueinfo.chan = addparams->chanptr;
 	virtpcidev->queueinfo.send_int_if_needed = NULL;
 
 	/* Set up safe queue... */
-	pIoChan = (ULTRA_IO_CHANNEL_PROTOCOL __iomem *)
+	io_chan = (struct spar_io_channel_protocol __iomem *)
 		virtpcidev->queueinfo.chan;
 
 	virtpcidev->intr = addparams->intr;
@@ -959,13 +980,13 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 	virtpcidev->generic_dev.release = virtpci_device_release;
 
 	dev_set_name(&virtpcidev->generic_dev, "%x:%x",
-		     addparams->busNo, addparams->deviceNo);
+		     addparams->bus_no, addparams->device_no);
 
 	/* add the vhba/vnic to virtpci device list - but check for
 	 * duplicate wwnn/macaddr first
 	 */
-	write_lock_irqsave(&VpcidevListLock, flags);
-	for (tmpvpcidev = VpcidevListHead; tmpvpcidev;
+	write_lock_irqsave(&vpcidev_list_lock, flags);
+	for (tmpvpcidev = vpcidev_list_head; tmpvpcidev;
 	     tmpvpcidev = tmpvpcidev->next) {
 		if (devtype == VIRTHBA_TYPE) {
 			if ((tmpvpcidev->scsi.wwnn.wwnn1 == scsi->wwnn.wwnn1) &&
@@ -986,7 +1007,7 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 		/* found a vhba/vnic already in the list with same
 		 * wwnn or macaddr - reject add
 		 */
-		write_unlock_irqrestore(&VpcidevListLock, flags);
+		write_unlock_irqrestore(&vpcidev_list_lock, flags);
 		kfree(virtpcidev);
 		LOGERR("**** FAILED vhba/vnic already exists in the list\n");
 		POSTCODE_LINUX_2(VPCI_CREATE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
@@ -994,26 +1015,26 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 	}
 
 	/* add it at the head */
-	if (!VpcidevListHead)
-		VpcidevListHead = virtpcidev;
-	else {
+	if (!vpcidev_list_head) {
+		vpcidev_list_head = virtpcidev;
+	} else {
 		/* insert virtpcidev at the head of our linked list of
 		 * vpcidevs
 		 */
-		virtpcidev->next = VpcidevListHead;
-		VpcidevListHead = virtpcidev;
+		virtpcidev->next = vpcidev_list_head;
+		vpcidev_list_head = virtpcidev;
 	}
 
-	write_unlock_irqrestore(&VpcidevListLock, flags);
+	write_unlock_irqrestore(&vpcidev_list_lock, flags);
 
 	/* Must transition channel to ATTACHED state BEFORE
 	 * registering the device, because polling of the channel
 	 * queues can begin at any time after device_register().
 	 */
-	pDev = &virtpcidev->generic_dev;
-	ULTRA_CHANNEL_CLIENT_TRANSITION(addparams->chanptr,
-					BUS_ID(pDev),
-					CHANNELCLI_ATTACHED, NULL);
+	dev = &virtpcidev->generic_dev;
+	SPAR_CHANNEL_CLIENT_TRANSITION(addparams->chanptr,
+				       BUS_ID(dev),
+				       CHANNELCLI_ATTACHED, NULL);
 
 	/* don't register until device has been added to
 	* list. Otherwise, a device_unregister from this function can
@@ -1033,31 +1054,32 @@ static int virtpci_device_add(struct device *parentbus, int devtype,
 	 */
 	if (ret) {
 		LOGERR("device_register returned %d\n", ret);
-		pDev = &virtpcidev->generic_dev;
-		ULTRA_CHANNEL_CLIENT_TRANSITION(addparams->chanptr,
-						BUS_ID(pDev),
-						CHANNELCLI_DETACHED, NULL);
+		dev = &virtpcidev->generic_dev;
+		SPAR_CHANNEL_CLIENT_TRANSITION(addparams->chanptr,
+					       BUS_ID(dev),
+					       CHANNELCLI_DETACHED, NULL);
 		/* remove virtpcidev, the one we just added, from the list */
-		write_lock_irqsave(&VpcidevListLock, flags);
-		for (tmpvpcidev = VpcidevListHead, prev = NULL;
+		write_lock_irqsave(&vpcidev_list_lock, flags);
+		for (tmpvpcidev = vpcidev_list_head, prev = NULL;
 		     tmpvpcidev;
 		     prev = tmpvpcidev, tmpvpcidev = tmpvpcidev->next) {
 			if (tmpvpcidev == virtpcidev) {
 				if (prev)
 					prev->next = tmpvpcidev->next;
 				else
-					VpcidevListHead = tmpvpcidev->next;
+					vpcidev_list_head = tmpvpcidev->next;
 				break;
 			}
 		}
-		write_unlock_irqrestore(&VpcidevListLock, flags);
+		write_unlock_irqrestore(&vpcidev_list_lock, flags);
 		kfree(virtpcidev);
 		return 0;
 	}
 
 	LOGINF("Added %s:%d:%d &virtpcidev->generic_dev:%p\n",
 	       (devtype == VIRTHBA_TYPE) ? "virthba" : "virtnic",
-	       addparams->busNo, addparams->deviceNo, &virtpcidev->generic_dev);
+	       addparams->bus_no, addparams->device_no,
+	       &virtpcidev->generic_dev);
 	POSTCODE_LINUX_2(VPCI_CREATE_EXIT_PC, POSTCODE_SEVERITY_INFO);
 	return 1;
 }
@@ -1081,9 +1103,9 @@ static int virtpci_device_serverdown(struct device *parentbus,
 	}
 
 	/* find the vhba or vnic in virtpci device list */
-	write_lock_irqsave(&VpcidevListLock, flags);
+	write_lock_irqsave(&vpcidev_list_lock, flags);
 
-	for (tmpvpcidev = VpcidevListHead, prevvpcidev = NULL;
+	for (tmpvpcidev = vpcidev_list_head, prevvpcidev = NULL;
 	     (tmpvpcidev && !found);
 	     prevvpcidev = tmpvpcidev, tmpvpcidev = tmpvpcidev->next) {
 		if (tmpvpcidev->devtype != devtype)
@@ -1111,7 +1133,7 @@ static int virtpci_device_serverdown(struct device *parentbus,
 		vpcidriver = tmpvpcidev->mydriver;
 		rc = vpcidriver->suspend(tmpvpcidev, 0);
 	}
-	write_unlock_irqrestore(&VpcidevListLock, flags);
+	write_unlock_irqrestore(&vpcidev_list_lock, flags);
 
 	if (!found) {
 		LOGERR("**** FAILED to find vhba/vnic in the list\n");
@@ -1140,9 +1162,9 @@ static int virtpci_device_serverup(struct device *parentbus,
 	}
 
 	/* find the vhba or vnic in virtpci device list */
-	write_lock_irqsave(&VpcidevListLock, flags);
+	write_lock_irqsave(&vpcidev_list_lock, flags);
 
-	for (tmpvpcidev = VpcidevListHead, prevvpcidev = NULL;
+	for (tmpvpcidev = vpcidev_list_head, prevvpcidev = NULL;
 	     (tmpvpcidev && !found);
 	     prevvpcidev = tmpvpcidev, tmpvpcidev = tmpvpcidev->next) {
 		if (tmpvpcidev->devtype != devtype)
@@ -1173,12 +1195,13 @@ static int virtpci_device_serverup(struct device *parentbus,
 		* ever have a bus that contains NO devices, since we
 		* would never even get here in that case.
 		*/
-		fix_vbus_devInfo(&tmpvpcidev->generic_dev, tmpvpcidev->deviceNo,
-				 tmpvpcidev->device, vpcidriver);
+		fix_vbus_dev_info(&tmpvpcidev->generic_dev,
+				  tmpvpcidev->device_no,
+				  tmpvpcidev->device, vpcidriver);
 		rc = vpcidriver->resume(tmpvpcidev);
 	}
 
-	write_unlock_irqrestore(&VpcidevListLock, flags);
+	write_unlock_irqrestore(&vpcidev_list_lock, flags);
 
 	if (!found) {
 		LOGERR("**** FAILED to find vhba/vnic in the list\n");
@@ -1219,8 +1242,8 @@ static int virtpci_device_del(struct device *parentbus,
 	* device_unregister after we release the lock; otherwise we
 	* encounter "schedule while atomic"
 	*/
-	write_lock_irqsave(&VpcidevListLock, flags);
-	for (tmpvpcidev = VpcidevListHead, prevvpcidev = NULL; tmpvpcidev;) {
+	write_lock_irqsave(&vpcidev_list_lock, flags);
+	for (tmpvpcidev = vpcidev_list_head, prevvpcidev = NULL; tmpvpcidev;) {
 		if (tmpvpcidev->devtype != devtype)
 			DEL_CONTINUE;
 
@@ -1254,7 +1277,7 @@ static int virtpci_device_del(struct device *parentbus,
 			/* not at head */
 			prevvpcidev->next = tmpvpcidev->next;
 		else
-			VpcidevListHead = tmpvpcidev->next;
+			vpcidev_list_head = tmpvpcidev->next;
 
 		/* add it to our deletelist */
 		tmpvpcidev->next = dellist;
@@ -1269,9 +1292,9 @@ static int virtpci_device_del(struct device *parentbus,
 		if (prevvpcidev)
 			tmpvpcidev = prevvpcidev->next;
 		else
-			tmpvpcidev = VpcidevListHead;
+			tmpvpcidev = vpcidev_list_head;
 	}
-	write_unlock_irqrestore(&VpcidevListLock, flags);
+	write_unlock_irqrestore(&vpcidev_list_lock, flags);
 
 	if (!all && (count == 0)) {
 		LOGERR("**** FAILED to find vhba/vnic in the list\n");
@@ -1316,6 +1339,7 @@ static ssize_t virtpci_driver_attr_show(struct kobject *kobj,
 
 	struct driver_private *dprivate = to_driver(kobj);
 	struct device_driver *driver;
+
 	if (dprivate != NULL)
 		driver = dprivate->driver;
 	else
@@ -1338,6 +1362,7 @@ static ssize_t virtpci_driver_attr_store(struct kobject *kobj,
 
 	struct driver_private *dprivate = to_driver(kobj);
 	struct device_driver *driver;
+
 	if (dprivate != NULL)
 		driver = dprivate->driver;
 	else
@@ -1406,276 +1431,89 @@ void virtpci_unregister_driver(struct virtpci_driver *drv)
 EXPORT_SYMBOL_GPL(virtpci_unregister_driver);
 
 /*****************************************************/
-/* proc filesystem functions						 */
+/* debugfs filesystem functions                      */
 /*****************************************************/
 struct print_vbus_info {
-	int *length;
+	int *str_pos;
 	char *buf;
+	size_t *len;
 };
 
 static int print_vbus(struct device *vbus, void *data)
 {
-	struct print_vbus_info *p = (struct print_vbus_info *) data;
-	int l = *(p->length);
+	struct print_vbus_info *p = (struct print_vbus_info *)data;
 
-	*(p->length) = l + sprintf(p->buf + l, "bus_id:%s\n", dev_name(vbus));
-	return 0;		/* no error */
+	*p->str_pos += scnprintf(p->buf + *p->str_pos, *p->len - *p->str_pos,
+				"bus_id:%s\n", dev_name(vbus));
+	return 0;
 }
 
-static ssize_t info_proc_read(struct file *file, char __user *buf,
-			      size_t len, loff_t *offset)
+static ssize_t info_debugfs_read(struct file *file, char __user *buf,
+				 size_t len, loff_t *offset)
 {
-	int length = 0;
+	ssize_t bytes_read = 0;
+	int str_pos = 0;
 	struct virtpci_dev *tmpvpcidev;
 	unsigned long flags;
 	struct print_vbus_info printparam;
 	char *vbuf;
-	loff_t pos = *offset;
 
-	if (pos < 0)
-		return -EINVAL;
-
-	if (pos > 0 || !len)
-		return 0;
-
+	if (len > MAX_BUF)
+		len = MAX_BUF;
 	vbuf = kzalloc(len, GFP_KERNEL);
 	if (!vbuf)
 		return -ENOMEM;
 
-	length += sprintf(vbuf + length, "CHANSOCK is not defined.\n");
-
-	length += sprintf(vbuf + length, "\n Virtual PCI Bus devices\n");
-	printparam.length = &length;
+	str_pos += scnprintf(vbuf + str_pos, len - str_pos,
+			" Virtual PCI Bus devices\n");
+	printparam.str_pos = &str_pos;
 	printparam.buf = vbuf;
+	printparam.len = &len;
 	if (bus_for_each_dev(&virtpci_bus_type, NULL,
-			     (void *) &printparam, print_vbus))
-		LOGERR("delete of all vbus failed\n");
+			     (void *)&printparam, print_vbus))
+		LOGERR("Failed to find bus\n");
 
-	length += sprintf(vbuf + length, "\n Virtual PCI devices\n");
-	read_lock_irqsave(&VpcidevListLock, flags);
-	tmpvpcidev = VpcidevListHead;
+	str_pos += scnprintf(vbuf + str_pos, len - str_pos,
+			"\n Virtual PCI devices\n");
+	read_lock_irqsave(&vpcidev_list_lock, flags);
+	tmpvpcidev = vpcidev_list_head;
 	while (tmpvpcidev) {
 		if (tmpvpcidev->devtype == VIRTHBA_TYPE) {
-			length += sprintf(vbuf + length, "[%d:%d] VHba:%08x:%08x max-config:%d-%d-%d-%d",
-				    tmpvpcidev->busNo, tmpvpcidev->deviceNo,
-				    tmpvpcidev->scsi.wwnn.wwnn1,
-				    tmpvpcidev->scsi.wwnn.wwnn2,
-				    tmpvpcidev->scsi.max.max_channel,
-				    tmpvpcidev->scsi.max.max_id,
-				    tmpvpcidev->scsi.max.max_lun,
-				    tmpvpcidev->scsi.max.cmd_per_lun);
+			str_pos += scnprintf(vbuf + str_pos, len - str_pos,
+					"[%d:%d] VHba:%08x:%08x max-config:%d-%d-%d-%d",
+					tmpvpcidev->bus_no,
+					tmpvpcidev->device_no,
+					tmpvpcidev->scsi.wwnn.wwnn1,
+					tmpvpcidev->scsi.wwnn.wwnn2,
+					tmpvpcidev->scsi.max.max_channel,
+					tmpvpcidev->scsi.max.max_id,
+					tmpvpcidev->scsi.max.max_lun,
+					tmpvpcidev->scsi.max.cmd_per_lun);
 		} else {
-			length += sprintf(vbuf + length, "[%d:%d] VNic:%02x:%02x:%02x:%02x:%02x:%02x num_rcv_bufs:%d mtu:%d",
-				    tmpvpcidev->busNo, tmpvpcidev->deviceNo,
-				    tmpvpcidev->net.mac_addr[0],
-				    tmpvpcidev->net.mac_addr[1],
-				    tmpvpcidev->net.mac_addr[2],
-				    tmpvpcidev->net.mac_addr[3],
-				    tmpvpcidev->net.mac_addr[4],
-				    tmpvpcidev->net.mac_addr[5],
-				    tmpvpcidev->net.num_rcv_bufs,
-				    tmpvpcidev->net.mtu);
+			str_pos += scnprintf(vbuf + str_pos, len - str_pos,
+					"[%d:%d] VNic:%02x:%02x:%02x:%02x:%02x:%02x num_rcv_bufs:%d mtu:%d",
+					tmpvpcidev->bus_no,
+					tmpvpcidev->device_no,
+					tmpvpcidev->net.mac_addr[0],
+					tmpvpcidev->net.mac_addr[1],
+					tmpvpcidev->net.mac_addr[2],
+					tmpvpcidev->net.mac_addr[3],
+					tmpvpcidev->net.mac_addr[4],
+					tmpvpcidev->net.mac_addr[5],
+					tmpvpcidev->net.num_rcv_bufs,
+					tmpvpcidev->net.mtu);
 		}
-		length +=
-		    sprintf(vbuf + length, " chanptr:%p\n",
-			    tmpvpcidev->queueinfo.chan);
-		tmpvpcidev = tmpvpcidev->next;
+		str_pos += scnprintf(vbuf + str_pos,
+				len - str_pos, " chanptr:%p\n",
+				tmpvpcidev->queueinfo.chan);
+				tmpvpcidev = tmpvpcidev->next;
 	}
-	read_unlock_irqrestore(&VpcidevListLock, flags);
+	read_unlock_irqrestore(&vpcidev_list_lock, flags);
 
-	length +=
-	    sprintf(vbuf + length, "\nModule build: Date:%s Time:%s\n", __DATE__,
-		    __TIME__);
-
-	length += sprintf(vbuf + length, "\n");
-	if (copy_to_user(buf, vbuf, length)) {
-		kfree(vbuf);
-		return -EFAULT;
-	}
-
+	str_pos += scnprintf(vbuf + str_pos, len - str_pos, "\n");
+	bytes_read = simple_read_from_buffer(buf, len, offset, vbuf, str_pos);
 	kfree(vbuf);
-	*offset += length;
-	return length;
-}
-
-static ssize_t virt_proc_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *ppos)
-{
-	char buf[16];
-	int type, i, action = 0xffff;
-	unsigned int busno, deviceno;
-	void __iomem *chanptr;
-	struct add_vbus_guestpart busaddparams;
-	struct add_virt_guestpart addparams;
-	struct del_vbus_guestpart busdelparams;
-	struct del_virt_guestpart delparams;
-	GUID dummyGuid = GUID0;
-#ifdef STORAGE_CHANNEL
-	U64 storagechannel;
-#endif
-
-#define PRINT_USAGE_RETURN {\
-	LOGERR("usage: 0-0-<chanptr>					==> delete vhba\n"); \
-	LOGERR("usage: 0-1-<chanptr>-<busNo>-<deviceNo>	==> add vhba\n"); \
-	LOGERR("usage: 0-f-<busNo>						==> delete all vhbas\n"); \
-	LOGERR("\n"); \
-	LOGERR("usage: 1-0-<chanptr>					==> delete vnic\n"); \
-	LOGERR("usage: 1-1-<chanptr>-<busNo>-<deviceNo>	==> add vnic\n"); \
-	LOGERR("usage: 1-f-<busNo>						==> delete all vnics\n"); \
-	LOGERR("\n"); \
-	LOGERR("usage: 6-0-<busNo>						==> delete vbus\n"); \
-	LOGERR("usage: 6-1-<busNo>						==> add vbus\n"); \
-	LOGERR("usage: 6-f								==> delete all vbuses\n"); \
-	LOGERR("usage: 98-<busNo>-<deviceNo>			==> INJECT Client delete vnic\n"); \
-	LOGERR("usage: 99-<chanptr>-<busNo>-<deviceNo>	==> INJECT Client add vnic\n"); \
-	return -EINVAL; \
-}
-
-	if (count >= ARRAY_SIZE(buf))
-		return -EINVAL;
-
-	if (copy_from_user(buf, buffer, count)) {
-		LOGERR("copy_from_user failed.\n");
-		return -EFAULT;
-	}
-
-	i = sscanf(buf, "%x-%x", &type, &action);
-	if (i < 2)
-		PRINT_USAGE_RETURN;
-
-	if (type == 0x98) {
-		/* client inject delete vnic */
-		i = sscanf(buf, "%x-%d-%d", &type, &busno, &deviceno);
-		if (i != 3)
-			PRINT_USAGE_RETURN;
-		uislib_client_inject_del_vnic(busno, deviceno);
-		return count;	/* success */
-	} else if (type == 0x99) {
-		/* client inject add vnic */
-		i = sscanf(buf, "%x-%p-%d-%d", &type, &chanptr, &busno,
-			   &deviceno);
-		if (i != 4)
-			PRINT_USAGE_RETURN;
-		if (!uislib_client_inject_add_vnic(busno, deviceno,
-						   __pa(chanptr),
-						   MIN_IO_CHANNEL_SIZE,
-						   1, /* test msg */
-						   dummyGuid, /* inst guid */
-						   NULL)) { /*interrupt info */
-			LOGERR("FAILED to inject add vnic\n");
-			return -EFAULT;
-		}
-		return count;	/* success */
-	}
-
-	if ((type != VIRTHBA_TYPE) && (type != VIRTNIC_TYPE)
-	    && (type != VIRTBUS_TYPE))
-		PRINT_USAGE_RETURN;
-
-	if (type == VIRTBUS_TYPE) {
-		i = sscanf(buf, "%x-%x-%d", &type, &action, &busno);
-		switch (action) {
-		case 0:
-			/* delete vbus */
-			if (i != 3)
-				break;
-			busdelparams.busNo = busno;
-			if (delete_vbus(&busdelparams))
-				return count;	/* success */
-			return -EFAULT;
-
-		case 1:
-			/* add vbus */
-			if (i != 3)
-				break;
-			busaddparams.chanptr = NULL;	/* NOT YET USED */
-			busaddparams.busNo = busno;
-			if (add_vbus(&busaddparams))
-				return count;	/* success */
-			return -EFAULT;
-
-		case 0xf:
-			/* delete all vbuses and all vhbas/vnics on the buses */
-			if (i != 2)
-				break;
-			delete_all();
-			return count;	/* success */
-		default:
-			break;
-		}
-		PRINT_USAGE_RETURN;
-	}
-
-	/* if (type == VIRTNIC_TYPE) or         if (type == VIRTHBA_TYPE) */
-	switch (action) {
-	case 0:
-		/* delete vhba/vnic */
-		i = sscanf(buf, "%x-%x-%p", &type, &action, &chanptr);
-		if (i != 3)
-			break;
-		delparams.chanptr = chanptr;
-		if (type == VIRTHBA_TYPE) {
-			if (delete_vhba(&delparams))
-				return count;	/* success */
-		} else {
-			if (delete_vnic(&delparams))
-				return count;	/* success */
-		}
-		return -EFAULT;
-
-	case 1:
-		/* add vhba/vnic */
-		i = sscanf(buf, "%x-%x-%p-%d-%d", &type, &action, &chanptr,
-			   &busno, &deviceno);
-		if (i != 5)
-			break;
-		addparams.chanptr = chanptr;
-		addparams.busNo = busno;
-		addparams.deviceNo = deviceno;
-		if (type == VIRTHBA_TYPE) {
-			if (add_vhba(&addparams))
-				return count;	/* success */
-		} else {
-			if (add_vnic(&addparams))
-				return count;	/* success */
-		}
-		return -EFAULT;
-
-#ifdef STORAGE_CHANNEL
-	case 2:
-		/* add vhba */
-		i = sscanf(buf, "%x-%x-%d-%d", &type, &action, &busno,
-			   &deviceno);
-		if (i != 4)
-			break;
-		storagechannel = uislib_storage_channel(0);	/* Get my storage channel */
-		/* ioremap_cache it now */
-		addparams.chanptr =
-		    (void *) ioremap_cache(storagechannel, IO_CHANNEL_SIZE);
-		if (addparams.chanptr == NULL) {
-			LOGERR("Failure to get remap storage channel.\n");
-			return -EFAULT;
-		}
-		addparams.busNo = busno;
-		addparams.deviceNo = deviceno;
-		if (type == VIRTHBA_TYPE) {
-			if (add_vhba(&addparams))
-				return count;	/* success */
-		}
-		return -EFAULT;
-#endif
-	case 0xf:
-		/* delete all vhbas/vnics */
-		i = sscanf(buf, "%x-%x-%d", &type, &action, &busno);
-		if (i != 3)
-			break;
-		busdelparams.busNo = busno;
-		delete_all_virt(type, &busdelparams);
-		return count;	/* success */
-	default:
-		break;
-	}
-	PRINT_USAGE_RETURN;
+	return bytes_read;
 }
 
 /*****************************************************/
@@ -1686,8 +1524,8 @@ static int __init virtpci_mod_init(void)
 {
 	int ret;
 
-
-	LOGINF("Module build: Date:%s Time:%s...\n", __DATE__, __TIME__);
+	if (!unisys_spar_platform)
+		return -ENODEV;
 
 	POSTCODE_LINUX_2(VPCI_CREATE_ENTRY_PC, POSTCODE_SEVERITY_INFO);
 
@@ -1702,9 +1540,8 @@ static int __init virtpci_mod_init(void)
 		return ret;
 	}
 	DBGINF("bus_register successful\n");
-	BusDeviceInfo_Init(&Bus_DriverInfo,
-			   "clientbus", "virtpci",
-			   VERSION, NULL, __DATE__, __TIME__);
+	bus_device_info_init(&bus_driver_info, "clientbus", "virtpci",
+			     VERSION, NULL);
 
 	/* create a root bus used to parent all the virtpci buses. */
 	ret = device_register(&virtpci_rootbus_device);
@@ -1717,8 +1554,8 @@ static int __init virtpci_mod_init(void)
 	}
 	DBGINF("device_register successful ret:%x\n", ret);
 
-	if (!uisctrl_register_req_handler(2, (void *) &virtpci_ctrlchan_func,
-					  &Chipset_DriverInfo)) {
+	if (!uisctrl_register_req_handler(2, (void *)&virtpci_ctrlchan_func,
+					  &chipset_driver_info)) {
 		LOGERR("uisctrl_register_req_handler ****FAILED.\n");
 		POSTCODE_LINUX_2(VPCI_CREATE_FAILURE_PC, POSTCODE_SEVERITY_ERR);
 		device_unregister(&virtpci_rootbus_device);
@@ -1727,13 +1564,11 @@ static int __init virtpci_mod_init(void)
 	}
 
 	LOGINF("successfully registered virtpci_ctrlchan_func (0x%p) as callback.\n",
-	     (void *) &virtpci_ctrlchan_func);
-	/* create the proc directories */
-	virtpci_proc_dir = proc_mkdir(DIR_PROC_ENTRY, NULL);
-	virt_proc_entry = proc_create(VIRT_PROC_ENTRY_FN, 0, virtpci_proc_dir,
-				      &proc_virt_fops);
-	info_proc_entry = proc_create(INFO_PROC_ENTRY_FN, 0, virtpci_proc_dir,
-				      &proc_info_fops);
+	       (void *)&virtpci_ctrlchan_func);
+	/* create debugfs directory and info file inside. */
+	virtpci_debugfs_dir = debugfs_create_dir("virtpci", NULL);
+	debugfs_create_file("info", S_IRUSR, virtpci_debugfs_dir,
+			    NULL, &debugfs_info_fops);
 	LOGINF("Leaving\n");
 	POSTCODE_LINUX_2(VPCI_CREATE_EXIT_PC, POSTCODE_SEVERITY_INFO);
 	return 0;
@@ -1749,18 +1584,8 @@ static void __exit virtpci_mod_exit(void)
 
 	device_unregister(&virtpci_rootbus_device);
 	bus_unregister(&virtpci_bus_type);
-
-	if (virt_proc_entry)
-		remove_proc_entry(VIRT_PROC_ENTRY_FN, virtpci_proc_dir);
-
-	if (info_proc_entry)
-		remove_proc_entry(INFO_PROC_ENTRY_FN, virtpci_proc_dir);
-
-	if (virtpci_proc_dir)
-		remove_proc_entry(DIR_PROC_ENTRY, NULL);
-
+	debugfs_remove_recursive(virtpci_debugfs_dir);
 	LOGINF("Leaving\n");
-
 }
 
 module_init(virtpci_mod_init);

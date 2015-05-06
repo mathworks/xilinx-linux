@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/acpi.h>
 #include <linux/device.h>
+#include <linux/dmi.h>
 #include <linux/slab.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -34,9 +35,8 @@ static const struct snd_soc_dapm_widget byt_rt5640_widgets[] = {
 };
 
 static const struct snd_soc_dapm_route byt_rt5640_audio_map[] = {
+	{"Headset Mic", NULL, "MICBIAS1"},
 	{"IN2P", NULL, "Headset Mic"},
-	{"IN2N", NULL, "Headset Mic"},
-	{"DMIC1", NULL, "Internal Mic"},
 	{"Headphone", NULL, "HPOL"},
 	{"Headphone", NULL, "HPOR"},
 	{"Speaker", NULL, "SPOLP"},
@@ -44,6 +44,31 @@ static const struct snd_soc_dapm_route byt_rt5640_audio_map[] = {
 	{"Speaker", NULL, "SPORP"},
 	{"Speaker", NULL, "SPORN"},
 };
+
+static const struct snd_soc_dapm_route byt_rt5640_intmic_dmic1_map[] = {
+	{"DMIC1", NULL, "Internal Mic"},
+};
+
+static const struct snd_soc_dapm_route byt_rt5640_intmic_dmic2_map[] = {
+	{"DMIC2", NULL, "Internal Mic"},
+};
+
+static const struct snd_soc_dapm_route byt_rt5640_intmic_in1_map[] = {
+	{"Internal Mic", NULL, "MICBIAS1"},
+	{"IN1P", NULL, "Internal Mic"},
+};
+
+enum {
+	BYT_RT5640_DMIC1_MAP,
+	BYT_RT5640_DMIC2_MAP,
+	BYT_RT5640_IN1_MAP,
+};
+
+#define BYT_RT5640_MAP(quirk)	((quirk) & 0xff)
+#define BYT_RT5640_DMIC_EN	BIT(16)
+
+static unsigned long byt_rt5640_quirk = BYT_RT5640_DMIC1_MAP |
+					BYT_RT5640_DMIC_EN;
 
 static const struct snd_kcontrol_new byt_rt5640_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Headphone"),
@@ -76,12 +101,41 @@ static int byt_rt5640_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static int byt_rt5640_quirk_cb(const struct dmi_system_id *id)
+{
+	byt_rt5640_quirk = (unsigned long)id->driver_data;
+	return 1;
+}
+
+static const struct dmi_system_id byt_rt5640_quirk_table[] = {
+	{
+		.callback = byt_rt5640_quirk_cb,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "T100TA"),
+		},
+		.driver_data = (unsigned long *)BYT_RT5640_IN1_MAP,
+	},
+	{
+		.callback = byt_rt5640_quirk_cb,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "DellInc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Venue 8 Pro 5830"),
+		},
+		.driver_data = (unsigned long *)(BYT_RT5640_DMIC2_MAP |
+						 BYT_RT5640_DMIC_EN),
+	},
+	{}
+};
+
 static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 {
 	int ret;
 	struct snd_soc_codec *codec = runtime->codec;
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_card *card = runtime->card;
+	const struct snd_soc_dapm_route *custom_map;
+	int num_routes;
 
 	card->dapm.idle_bias_off = true;
 
@@ -92,6 +146,31 @@ static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 		return ret;
 	}
 
+	dmi_check_system(byt_rt5640_quirk_table);
+	switch (BYT_RT5640_MAP(byt_rt5640_quirk)) {
+	case BYT_RT5640_IN1_MAP:
+		custom_map = byt_rt5640_intmic_in1_map;
+		num_routes = ARRAY_SIZE(byt_rt5640_intmic_in1_map);
+		break;
+	case BYT_RT5640_DMIC2_MAP:
+		custom_map = byt_rt5640_intmic_dmic2_map;
+		num_routes = ARRAY_SIZE(byt_rt5640_intmic_dmic2_map);
+		break;
+	default:
+		custom_map = byt_rt5640_intmic_dmic1_map;
+		num_routes = ARRAY_SIZE(byt_rt5640_intmic_dmic1_map);
+	}
+
+	ret = snd_soc_dapm_add_routes(dapm, custom_map, num_routes);
+	if (ret)
+		return ret;
+
+	if (byt_rt5640_quirk & BYT_RT5640_DMIC_EN) {
+		ret = rt5640_dmic_enable(codec, 0, 0);
+		if (ret)
+			return ret;
+	}
+
 	snd_soc_dapm_ignore_suspend(dapm, "HPOL");
 	snd_soc_dapm_ignore_suspend(dapm, "HPOR");
 
@@ -100,12 +179,6 @@ static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 	snd_soc_dapm_ignore_suspend(dapm, "SPORP");
 	snd_soc_dapm_ignore_suspend(dapm, "SPORN");
 
-	snd_soc_dapm_enable_pin(dapm, "Headset Mic");
-	snd_soc_dapm_enable_pin(dapm, "Headphone");
-	snd_soc_dapm_enable_pin(dapm, "Speaker");
-	snd_soc_dapm_enable_pin(dapm, "Internal Mic");
-
-	snd_soc_dapm_sync(dapm);
 	return ret;
 }
 
@@ -117,27 +190,13 @@ static struct snd_soc_dai_link byt_rt5640_dais[] = {
 	{
 		.name = "Baytrail Audio",
 		.stream_name = "Audio",
-		.cpu_dai_name = "Front-cpu-dai",
+		.cpu_dai_name = "baytrail-pcm-audio",
 		.codec_dai_name = "rt5640-aif1",
 		.codec_name = "i2c-10EC5640:00",
 		.platform_name = "baytrail-pcm-audio",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 			   SND_SOC_DAIFMT_CBS_CFS,
 		.init = byt_rt5640_init,
-		.ignore_suspend = 1,
-		.ops = &byt_rt5640_ops,
-	},
-	{
-		.name = "Baytrail Voice",
-		.stream_name = "Voice",
-		.cpu_dai_name = "Mic1-cpu-dai",
-		.codec_dai_name = "rt5640-aif1",
-		.codec_name = "i2c-10EC5640:00",
-		.platform_name = "baytrail-pcm-audio",
-		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-			   SND_SOC_DAIFMT_CBS_CFS,
-		.init = NULL,
-		.ignore_suspend = 1,
 		.ops = &byt_rt5640_ops,
 	},
 };
@@ -150,33 +209,22 @@ static struct snd_soc_card byt_rt5640_card = {
 	.num_dapm_widgets = ARRAY_SIZE(byt_rt5640_widgets),
 	.dapm_routes = byt_rt5640_audio_map,
 	.num_dapm_routes = ARRAY_SIZE(byt_rt5640_audio_map),
+	.fully_routed = true,
 };
 
 static int byt_rt5640_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &byt_rt5640_card;
-	struct device *dev = &pdev->dev;
 
 	card->dev = &pdev->dev;
-	dev_set_drvdata(dev, card);
-	return snd_soc_register_card(card);
-}
-
-static int byt_rt5640_remove(struct platform_device *pdev)
-{
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	snd_soc_unregister_card(card);
-
-	return 0;
+	return devm_snd_soc_register_card(&pdev->dev, card);
 }
 
 static struct platform_driver byt_rt5640_audio = {
 	.probe = byt_rt5640_probe,
-	.remove = byt_rt5640_remove,
 	.driver = {
 		.name = "byt-rt5640",
-		.owner = THIS_MODULE,
+		.pm = &snd_soc_pm_ops,
 	},
 };
 module_platform_driver(byt_rt5640_audio)

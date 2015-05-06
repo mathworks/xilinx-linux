@@ -404,7 +404,7 @@ struct via82xx {
 #endif
 };
 
-static DEFINE_PCI_DEVICE_TABLE(snd_via82xx_ids) = {
+static const struct pci_device_id snd_via82xx_ids[] = {
 	/* 0x1106, 0x3058 */
 	{ PCI_VDEVICE(VIA, PCI_DEVICE_ID_VIA_82C686_5), TYPE_CARD_VIA686, },	/* 686A */
 	/* 0x1106, 0x3059 */
@@ -1610,16 +1610,10 @@ static int snd_via8233_capture_source_info(struct snd_kcontrol *kcontrol,
 	/* formerly they were "Line" and "Mic", but it looks like that they
 	 * have nothing to do with the actual physical connections...
 	 */
-	static char *texts[2] = {
+	static const char * const texts[2] = {
 		"Input1", "Input2"
 	};
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 2;
-	if (uinfo->value.enumerated.item >= 2)
-		uinfo->value.enumerated.item = 1;
-	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 2, texts);
 }
 
 static int snd_via8233_capture_source_get(struct snd_kcontrol *kcontrol,

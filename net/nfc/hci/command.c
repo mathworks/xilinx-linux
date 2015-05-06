@@ -26,6 +26,8 @@
 
 #include "hci.h"
 
+#define MAX_FWI 4949
+
 static int nfc_hci_execute_cmd_async(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
 			       const u8 *param, size_t param_len,
 			       data_exchange_cb_t cb, void *cb_context)
@@ -37,7 +39,7 @@ static int nfc_hci_execute_cmd_async(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
 	 * for all commands?
 	 */
 	return nfc_hci_hcp_message_tx(hdev, pipe, NFC_HCI_HCP_COMMAND, cmd,
-				      param, param_len, cb, cb_context, 3000);
+				      param, param_len, cb, cb_context, MAX_FWI);
 }
 
 /*
@@ -82,7 +84,7 @@ static int nfc_hci_execute_cmd(struct nfc_hci_dev *hdev, u8 pipe, u8 cmd,
 						    NFC_HCI_HCP_COMMAND, cmd,
 						    param, param_len,
 						    nfc_hci_execute_cb, &hcp_ew,
-						    3000);
+						    MAX_FWI);
 	if (hcp_ew.exec_result < 0)
 		return hcp_ew.exec_result;
 
@@ -342,6 +344,9 @@ int nfc_hci_connect_gate(struct nfc_hci_dev *hdev, u8 dest_host, u8 dest_gate,
 	int r;
 
 	pr_debug("\n");
+
+	if (hdev->gate2pipe[dest_gate] == NFC_HCI_DO_NOT_CREATE_PIPE)
+		return 0;
 
 	if (hdev->gate2pipe[dest_gate] != NFC_HCI_INVALID_PIPE)
 		return -EADDRINUSE;

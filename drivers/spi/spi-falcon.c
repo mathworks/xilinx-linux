@@ -11,7 +11,6 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/delay.h>
-#include <linux/workqueue.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 
@@ -426,8 +425,6 @@ static int falcon_sflash_probe(struct platform_device *pdev)
 	master->unprepare_transfer_hardware = falcon_sflash_unprepare_xfer;
 	master->dev.of_node = pdev->dev.of_node;
 
-	platform_set_drvdata(pdev, priv);
-
 	ret = devm_spi_register_master(&pdev->dev, master);
 	if (ret)
 		spi_master_put(master);
@@ -444,7 +441,6 @@ static struct platform_driver falcon_sflash_driver = {
 	.probe	= falcon_sflash_probe,
 	.driver = {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = falcon_sflash_match,
 	}
 };

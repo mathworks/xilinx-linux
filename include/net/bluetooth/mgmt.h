@@ -87,7 +87,7 @@ struct mgmt_rp_read_index_list {
 #define MGMT_SETTING_CONNECTABLE	0x00000002
 #define MGMT_SETTING_FAST_CONNECTABLE	0x00000004
 #define MGMT_SETTING_DISCOVERABLE	0x00000008
-#define MGMT_SETTING_PAIRABLE		0x00000010
+#define MGMT_SETTING_BONDABLE		0x00000010
 #define MGMT_SETTING_LINK_SECURITY	0x00000020
 #define MGMT_SETTING_SSP		0x00000040
 #define MGMT_SETTING_BREDR		0x00000080
@@ -97,6 +97,7 @@ struct mgmt_rp_read_index_list {
 #define MGMT_SETTING_SECURE_CONN	0x00000800
 #define MGMT_SETTING_DEBUG_KEYS		0x00001000
 #define MGMT_SETTING_PRIVACY		0x00002000
+#define MGMT_SETTING_CONFIGURATION	0x00004000
 
 #define MGMT_OP_READ_INFO		0x0004
 #define MGMT_READ_INFO_SIZE		0
@@ -130,7 +131,7 @@ struct mgmt_cp_set_discoverable {
 
 #define MGMT_OP_SET_FAST_CONNECTABLE	0x0008
 
-#define MGMT_OP_SET_PAIRABLE		0x0009
+#define MGMT_OP_SET_BONDABLE		0x0009
 
 #define MGMT_OP_SET_LINK_SECURITY	0x000A
 
@@ -180,6 +181,12 @@ struct mgmt_cp_load_link_keys {
 	struct	mgmt_link_key_info keys[0];
 } __packed;
 #define MGMT_LOAD_LINK_KEYS_SIZE	3
+
+#define MGMT_LTK_UNAUTHENTICATED	0x00
+#define MGMT_LTK_AUTHENTICATED		0x01
+#define MGMT_LTK_P256_UNAUTH		0x02
+#define MGMT_LTK_P256_AUTH		0x03
+#define MGMT_LTK_P256_DEBUG		0x04
 
 struct mgmt_ltk_info {
 	struct mgmt_addr_info addr;
@@ -295,28 +302,28 @@ struct mgmt_cp_user_passkey_neg_reply {
 #define MGMT_READ_LOCAL_OOB_DATA_SIZE	0
 struct mgmt_rp_read_local_oob_data {
 	__u8	hash[16];
-	__u8	randomizer[16];
+	__u8	rand[16];
 } __packed;
 struct mgmt_rp_read_local_oob_ext_data {
 	__u8	hash192[16];
-	__u8	randomizer192[16];
+	__u8	rand192[16];
 	__u8	hash256[16];
-	__u8	randomizer256[16];
+	__u8	rand256[16];
 } __packed;
 
 #define MGMT_OP_ADD_REMOTE_OOB_DATA	0x0021
 struct mgmt_cp_add_remote_oob_data {
 	struct mgmt_addr_info addr;
 	__u8	hash[16];
-	__u8	randomizer[16];
+	__u8	rand[16];
 } __packed;
 #define MGMT_ADD_REMOTE_OOB_DATA_SIZE	(MGMT_ADDR_INFO_SIZE + 32)
 struct mgmt_cp_add_remote_oob_ext_data {
 	struct mgmt_addr_info addr;
 	__u8	hash192[16];
-	__u8	randomizer192[16];
+	__u8	rand192[16];
 	__u8	hash256[16];
-	__u8	randomizer256[16];
+	__u8	rand256[16];
 } __packed;
 #define MGMT_ADD_REMOTE_OOB_EXT_DATA_SIZE (MGMT_ADDR_INFO_SIZE + 64)
 
@@ -408,6 +415,97 @@ struct mgmt_cp_load_irks {
 	struct mgmt_irk_info irks[0];
 } __packed;
 #define MGMT_LOAD_IRKS_SIZE		2
+
+#define MGMT_OP_GET_CONN_INFO		0x0031
+struct mgmt_cp_get_conn_info {
+	struct mgmt_addr_info addr;
+} __packed;
+#define MGMT_GET_CONN_INFO_SIZE		MGMT_ADDR_INFO_SIZE
+struct mgmt_rp_get_conn_info {
+	struct mgmt_addr_info addr;
+	__s8	rssi;
+	__s8	tx_power;
+	__s8	max_tx_power;
+} __packed;
+
+#define MGMT_OP_GET_CLOCK_INFO		0x0032
+struct mgmt_cp_get_clock_info {
+	struct mgmt_addr_info addr;
+} __packed;
+#define MGMT_GET_CLOCK_INFO_SIZE	MGMT_ADDR_INFO_SIZE
+struct mgmt_rp_get_clock_info {
+	struct mgmt_addr_info addr;
+	__le32  local_clock;
+	__le32  piconet_clock;
+	__le16  accuracy;
+} __packed;
+
+#define MGMT_OP_ADD_DEVICE		0x0033
+struct mgmt_cp_add_device {
+	struct mgmt_addr_info addr;
+	__u8	action;
+} __packed;
+#define MGMT_ADD_DEVICE_SIZE		(MGMT_ADDR_INFO_SIZE + 1)
+
+#define MGMT_OP_REMOVE_DEVICE		0x0034
+struct mgmt_cp_remove_device {
+	struct mgmt_addr_info addr;
+} __packed;
+#define MGMT_REMOVE_DEVICE_SIZE		MGMT_ADDR_INFO_SIZE
+
+struct mgmt_conn_param {
+	struct mgmt_addr_info addr;
+	__le16 min_interval;
+	__le16 max_interval;
+	__le16 latency;
+	__le16 timeout;
+} __packed;
+
+#define MGMT_OP_LOAD_CONN_PARAM		0x0035
+struct mgmt_cp_load_conn_param {
+	__le16 param_count;
+	struct mgmt_conn_param params[0];
+} __packed;
+#define MGMT_LOAD_CONN_PARAM_SIZE	2
+
+#define MGMT_OP_READ_UNCONF_INDEX_LIST	0x0036
+#define MGMT_READ_UNCONF_INDEX_LIST_SIZE 0
+struct mgmt_rp_read_unconf_index_list {
+	__le16	num_controllers;
+	__le16	index[0];
+} __packed;
+
+#define MGMT_OPTION_EXTERNAL_CONFIG	0x00000001
+#define MGMT_OPTION_PUBLIC_ADDRESS	0x00000002
+
+#define MGMT_OP_READ_CONFIG_INFO	0x0037
+#define MGMT_READ_CONFIG_INFO_SIZE	0
+struct mgmt_rp_read_config_info {
+	__le16	manufacturer;
+	__le32	supported_options;
+	__le32	missing_options;
+} __packed;
+
+#define MGMT_OP_SET_EXTERNAL_CONFIG	0x0038
+struct mgmt_cp_set_external_config {
+	__u8 config;
+} __packed;
+#define MGMT_SET_EXTERNAL_CONFIG_SIZE	1
+
+#define MGMT_OP_SET_PUBLIC_ADDRESS	0x0039
+struct mgmt_cp_set_public_address {
+	bdaddr_t bdaddr;
+} __packed;
+#define MGMT_SET_PUBLIC_ADDRESS_SIZE	6
+
+#define MGMT_OP_START_SERVICE_DISCOVERY	0x003A
+struct mgmt_cp_start_service_discovery {
+	__u8 type;
+	__s8 rssi;
+	__le16 uuid_count;
+	__u8 uuids[0][16];
+} __packed;
+#define MGMT_START_SERVICE_DISCOVERY_SIZE 4
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
@@ -507,6 +605,7 @@ struct mgmt_ev_auth_failed {
 
 #define MGMT_DEV_FOUND_CONFIRM_NAME    0x01
 #define MGMT_DEV_FOUND_LEGACY_PAIRING  0x02
+#define MGMT_DEV_FOUND_NOT_CONNECTABLE 0x04
 
 #define MGMT_EV_DEVICE_FOUND		0x0012
 struct mgmt_ev_device_found {
@@ -563,3 +662,30 @@ struct mgmt_ev_new_csrk {
 	__u8 store_hint;
 	struct mgmt_csrk_info key;
 } __packed;
+
+#define MGMT_EV_DEVICE_ADDED		0x001a
+struct mgmt_ev_device_added {
+	struct mgmt_addr_info addr;
+	__u8 action;
+} __packed;
+
+#define MGMT_EV_DEVICE_REMOVED		0x001b
+struct mgmt_ev_device_removed {
+	struct mgmt_addr_info addr;
+} __packed;
+
+#define MGMT_EV_NEW_CONN_PARAM		0x001c
+struct mgmt_ev_new_conn_param {
+	struct mgmt_addr_info addr;
+	__u8 store_hint;
+	__le16 min_interval;
+	__le16 max_interval;
+	__le16 latency;
+	__le16 timeout;
+} __packed;
+
+#define MGMT_EV_UNCONF_INDEX_ADDED	0x001d
+
+#define MGMT_EV_UNCONF_INDEX_REMOVED	0x001e
+
+#define MGMT_EV_NEW_CONFIG_OPTIONS	0x001f

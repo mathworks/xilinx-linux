@@ -28,6 +28,13 @@
 #include <linux/cdev.h>
 #include "input-compat.h"
 
+enum evdev_clock_type {
+	EV_CLK_REAL = 0,
+	EV_CLK_MONO,
+	EV_CLK_BOOT,
+	EV_CLK_MAX
+};
+
 struct evdev {
 	int open;
 	struct input_handle handle;
@@ -49,11 +56,31 @@ struct evdev_client {
 	struct fasync_struct *fasync;
 	struct evdev *evdev;
 	struct list_head node;
-	int clkid;
+	int clk_type;
 	bool revoked;
 	unsigned int bufsize;
 	struct input_event buffer[];
 };
+
+static int evdev_set_clk_type(struct evdev_client *client, unsigned int clkid)
+{
+	switch (clkid) {
+
+	case CLOCK_REALTIME:
+		client->clk_type = EV_CLK_REAL;
+		break;
+	case CLOCK_MONOTONIC:
+		client->clk_type = EV_CLK_MONO;
+		break;
+	case CLOCK_BOOTTIME:
+		client->clk_type = EV_CLK_BOOT;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 /* flush queued events of type @type, caller must hold client->buffer_lock */
 static void __evdev_flush_queue(struct evdev_client *client, unsigned int type)
@@ -108,9 +135,11 @@ static void evdev_queue_syn_dropped(struct evdev_client *client)
 	struct input_event ev;
 	ktime_t time;
 
-	time = ktime_get();
-	if (client->clkid != CLOCK_MONOTONIC)
-		time = ktime_sub(time, ktime_get_monotonic_offset());
+	time = client->clk_type == EV_CLK_REAL ?
+			ktime_get_real() :
+			client->clk_type == EV_CLK_MONO ?
+				ktime_get() :
+				ktime_get_boottime();
 
 	ev.time = ktime_to_timeval(time);
 	ev.type = EV_SYN;
@@ -160,7 +189,7 @@ static void __pass_event(struct evdev_client *client,
 
 static void evdev_pass_values(struct evdev_client *client,
 			const struct input_value *vals, unsigned int count,
-			ktime_t mono, ktime_t real)
+			ktime_t *ev_time)
 {
 	struct evdev *evdev = client->evdev;
 	const struct input_value *v;
@@ -170,8 +199,7 @@ static void evdev_pass_values(struct evdev_client *client,
 	if (client->revoked)
 		return;
 
-	event.time = ktime_to_timeval(client->clkid == CLOCK_MONOTONIC ?
-				      mono : real);
+	event.time = ktime_to_timeval(ev_time[client->clk_type]);
 
 	/* Interrupts are disabled, just acquire the lock. */
 	spin_lock(&client->buffer_lock);
@@ -199,21 +227,22 @@ static void evdev_events(struct input_handle *handle,
 {
 	struct evdev *evdev = handle->private;
 	struct evdev_client *client;
-	ktime_t time_mono, time_real;
+	ktime_t ev_time[EV_CLK_MAX];
 
-	time_mono = ktime_get();
-	time_real = ktime_sub(time_mono, ktime_get_monotonic_offset());
+	ev_time[EV_CLK_MONO] = ktime_get();
+	ev_time[EV_CLK_REAL] = ktime_mono_to_real(ev_time[EV_CLK_MONO]);
+	ev_time[EV_CLK_BOOT] = ktime_mono_to_any(ev_time[EV_CLK_MONO],
+						 TK_OFFS_BOOT);
 
 	rcu_read_lock();
 
 	client = rcu_dereference(evdev->grab);
 
 	if (client)
-		evdev_pass_values(client, vals, count, time_mono, time_real);
+		evdev_pass_values(client, vals, count, ev_time);
 	else
 		list_for_each_entry_rcu(client, &evdev->client_list, node)
-			evdev_pass_values(client, vals, count,
-					  time_mono, time_real);
+			evdev_pass_values(client, vals, count, ev_time);
 
 	rcu_read_unlock();
 }
@@ -422,7 +451,7 @@ static int evdev_open(struct inode *inode, struct file *file)
 
  err_free_client:
 	evdev_detach_client(evdev, client);
-	kfree(client);
+	kvfree(client);
 	return error;
 }
 
@@ -629,12 +658,10 @@ static int str_to_user(const char *str, unsigned int maxlen, void __user *p)
 	return copy_to_user(p, str, len) ? -EFAULT : len;
 }
 
-#define OLD_KEY_MAX	0x1ff
 static int handle_eviocgbit(struct input_dev *dev,
 			    unsigned int type, unsigned int size,
 			    void __user *p, int compat_mode)
 {
-	static unsigned long keymax_warn_time;
 	unsigned long *bits;
 	int len;
 
@@ -652,24 +679,8 @@ static int handle_eviocgbit(struct input_dev *dev,
 	default: return -EINVAL;
 	}
 
-	/*
-	 * Work around bugs in userspace programs that like to do
-	 * EVIOCGBIT(EV_KEY, KEY_MAX) and not realize that 'len'
-	 * should be in bytes, not in bits.
-	 */
-	if (type == EV_KEY && size == OLD_KEY_MAX) {
-		len = OLD_KEY_MAX;
-		if (printk_timed_ratelimit(&keymax_warn_time, 10 * 1000))
-			pr_warning("(EVIOCGBIT): Suspicious buffer size %u, "
-				   "limiting output to %zu bytes. See "
-				   "http://userweb.kernel.org/~dtor/eviocgbit-bug.html\n",
-				   OLD_KEY_MAX,
-				   BITS_TO_LONGS(OLD_KEY_MAX) * sizeof(long));
-	}
-
 	return bits_to_user(bits, len, size, p, compat_mode);
 }
-#undef OLD_KEY_MAX
 
 static int evdev_handle_get_keycode(struct input_dev *dev, void __user *p)
 {
@@ -757,20 +768,23 @@ static int evdev_handle_set_keycode_v2(struct input_dev *dev, void __user *p)
  */
 static int evdev_handle_get_val(struct evdev_client *client,
 				struct input_dev *dev, unsigned int type,
-				unsigned long *bits, unsigned int max,
-				unsigned int size, void __user *p, int compat)
+				unsigned long *bits, unsigned int maxbit,
+				unsigned int maxlen, void __user *p,
+				int compat)
 {
 	int ret;
 	unsigned long *mem;
+	size_t len;
 
-	mem = kmalloc(sizeof(unsigned long) * max, GFP_KERNEL);
+	len = BITS_TO_LONGS(maxbit) * sizeof(unsigned long);
+	mem = kmalloc(len, GFP_KERNEL);
 	if (!mem)
 		return -ENOMEM;
 
 	spin_lock_irq(&dev->event_lock);
 	spin_lock(&client->buffer_lock);
 
-	memcpy(mem, bits, sizeof(unsigned long) * max);
+	memcpy(mem, bits, len);
 
 	spin_unlock(&dev->event_lock);
 
@@ -778,7 +792,7 @@ static int evdev_handle_get_val(struct evdev_client *client,
 
 	spin_unlock_irq(&client->buffer_lock);
 
-	ret = bits_to_user(mem, max, size, p, compat);
+	ret = bits_to_user(mem, maxbit, maxlen, p, compat);
 	if (ret < 0)
 		evdev_queue_syn_dropped(client);
 
@@ -893,10 +907,8 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 	case EVIOCSCLOCKID:
 		if (copy_from_user(&i, p, sizeof(unsigned int)))
 			return -EFAULT;
-		if (i != CLOCK_MONOTONIC && i != CLOCK_REALTIME)
-			return -EINVAL;
-		client->clkid = i;
-		return 0;
+
+		return evdev_set_clk_type(client, i);
 
 	case EVIOCGKEYCODE:
 		return evdev_handle_get_keycode(dev, p);

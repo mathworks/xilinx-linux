@@ -31,9 +31,10 @@
 #include <sound/initval.h>
 #include <sound/dmaengine_pcm.h>
 
-#include <asm/mach-jz4740/dma.h>
-
 #include "jz4740-i2s.h"
+
+#define JZ4740_DMA_TYPE_AIC_TRANSMIT 24
+#define JZ4740_DMA_TYPE_AIC_RECEIVE 25
 
 #define JZ_REG_AIC_CONF		0x00
 #define JZ_REG_AIC_CTRL		0x04
@@ -454,7 +455,6 @@ static struct platform_driver jz4740_i2s_driver = {
 	.probe = jz4740_i2s_dev_probe,
 	.driver = {
 		.name = "jz4740-i2s",
-		.owner = THIS_MODULE,
 	},
 };
 

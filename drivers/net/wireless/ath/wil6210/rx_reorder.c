@@ -1,3 +1,19 @@
+/*
+ * Copyright (c) 2014 Qualcomm Atheros, Inc.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #include "wil6210.h"
 #include "txrx.h"
 
@@ -49,10 +65,17 @@ static void wil_release_reorder_frames(struct wil6210_priv *wil,
 {
 	int index;
 
-	while (seq_less(r->head_seq_num, hseq)) {
+	/* note: this function is never called with
+	 * hseq preceding r->head_seq_num, i.e it is always true
+	 * !seq_less(hseq, r->head_seq_num)
+	 * and thus on loop exit it should be
+	 * r->head_seq_num == hseq
+	 */
+	while (seq_less(r->head_seq_num, hseq) && r->stored_mpdu_num) {
 		index = reorder_index(r, r->head_seq_num);
 		wil_release_reorder_frame(wil, r, index);
 	}
+	r->head_seq_num = hseq;
 }
 
 static void wil_reorder_release(struct wil6210_priv *wil,
@@ -75,24 +98,44 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 	int mid = wil_rxdesc_mid(d);
 	u16 seq = wil_rxdesc_seq(d);
 	struct wil_sta_info *sta = &wil->sta[cid];
-	struct wil_tid_ampdu_rx *r = sta->tid_rx[tid];
+	struct wil_tid_ampdu_rx *r;
 	u16 hseq;
 	int index;
+	unsigned long flags;
 
 	wil_dbg_txrx(wil, "MID %d CID %d TID %d Seq 0x%03x\n",
 		     mid, cid, tid, seq);
 
+	spin_lock_irqsave(&sta->tid_rx_lock, flags);
+
+	r = sta->tid_rx[tid];
 	if (!r) {
+		spin_unlock_irqrestore(&sta->tid_rx_lock, flags);
 		wil_netif_rx_any(skb, ndev);
 		return;
 	}
 
 	hseq = r->head_seq_num;
 
-	spin_lock(&r->reorder_lock);
+	/** Due to the race between WMI events, where BACK establishment
+	 * reported, and data Rx, few packets may be pass up before reorder
+	 * buffer get allocated. Catch up by pretending SSN is what we
+	 * see in the 1-st Rx packet
+	 */
+	if (r->first_time) {
+		r->first_time = false;
+		if (seq != r->head_seq_num) {
+			wil_err(wil, "Error: 1-st frame with wrong sequence"
+				" %d, should be %d. Fixing...\n", seq,
+				r->head_seq_num);
+			r->head_seq_num = seq;
+			r->ssn = seq;
+		}
+	}
 
 	/* frame with out of date sequence number */
 	if (seq_less(seq, r->head_seq_num)) {
+		r->ssn_last_drop = seq;
 		dev_kfree_skb(skb);
 		goto out;
 	}
@@ -136,13 +179,14 @@ void wil_rx_reorder(struct wil6210_priv *wil, struct sk_buff *skb)
 	wil_reorder_release(wil, r);
 
 out:
-	spin_unlock(&r->reorder_lock);
+	spin_unlock_irqrestore(&sta->tid_rx_lock, flags);
 }
 
 struct wil_tid_ampdu_rx *wil_tid_ampdu_rx_alloc(struct wil6210_priv *wil,
 						int size, u16 ssn)
 {
 	struct wil_tid_ampdu_rx *r = kzalloc(sizeof(*r), GFP_KERNEL);
+
 	if (!r)
 		return NULL;
 
@@ -157,11 +201,11 @@ struct wil_tid_ampdu_rx *wil_tid_ampdu_rx_alloc(struct wil6210_priv *wil,
 		return NULL;
 	}
 
-	spin_lock_init(&r->reorder_lock);
 	r->ssn = ssn;
 	r->head_seq_num = ssn;
 	r->buf_size = size;
 	r->stored_mpdu_num = 0;
+	r->first_time = true;
 	return r;
 }
 

@@ -304,7 +304,7 @@ static int hspi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct of_device_id hspi_of_match[] = {
+static const struct of_device_id hspi_of_match[] = {
 	{ .compatible = "renesas,hspi", },
 	{ /* sentinel */ }
 };
@@ -315,7 +315,6 @@ static struct platform_driver hspi_driver = {
 	.remove = hspi_remove,
 	.driver = {
 		.name = "sh-hspi",
-		.owner = THIS_MODULE,
 		.of_match_table = hspi_of_match,
 	},
 };

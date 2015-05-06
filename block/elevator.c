@@ -229,7 +229,9 @@ int elevator_init(struct request_queue *q, char *name)
 	}
 
 	err = e->ops.elevator_init_fn(q, e);
-	return 0;
+	if (err)
+		elevator_put(e);
+	return err;
 }
 EXPORT_SYMBOL(elevator_init);
 
@@ -537,7 +539,7 @@ void elv_bio_merged(struct request_queue *q, struct request *rq,
 		e->type->ops.elevator_bio_merged_fn(q, rq, bio);
 }
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 static void blk_pm_requeue_request(struct request *rq)
 {
 	if (rq->q->dev && !(rq->cmd_flags & REQ_PM))
@@ -728,26 +730,6 @@ int elv_may_queue(struct request_queue *q, int rw)
 
 	return ELV_MQUEUE_MAY;
 }
-
-void elv_abort_queue(struct request_queue *q)
-{
-	struct request *rq;
-
-	blk_abort_flushes(q);
-
-	while (!list_empty(&q->queue_head)) {
-		rq = list_entry_rq(q->queue_head.next);
-		rq->cmd_flags |= REQ_QUIET;
-		trace_block_rq_abort(q, rq);
-		/*
-		 * Mark this request as started so we don't trigger
-		 * any debug logic in the end I/O path.
-		 */
-		blk_start_request(rq);
-		__blk_end_request_all(rq, -EIO);
-	}
-}
-EXPORT_SYMBOL(elv_abort_queue);
 
 void elv_completed_request(struct request_queue *q, struct request *rq)
 {

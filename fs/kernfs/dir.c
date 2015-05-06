@@ -201,10 +201,14 @@ static unsigned int kernfs_name_hash(const char *name, const void *ns)
 static int kernfs_name_compare(unsigned int hash, const char *name,
 			       const void *ns, const struct kernfs_node *kn)
 {
-	if (hash != kn->hash)
-		return hash - kn->hash;
-	if (ns != kn->ns)
-		return ns - kn->ns;
+	if (hash < kn->hash)
+		return -1;
+	if (hash > kn->hash)
+		return 1;
+	if (ns < kn->ns)
+		return -1;
+	if (ns > kn->ns)
+		return 1;
 	return strcmp(name, kn->name);
 }
 
@@ -463,21 +467,10 @@ static int kernfs_dop_revalidate(struct dentry *dentry, unsigned int flags)
 		goto out_bad;
 
 	mutex_unlock(&kernfs_mutex);
-out_valid:
 	return 1;
 out_bad:
 	mutex_unlock(&kernfs_mutex);
 out_bad_unlocked:
-	/*
-	 * @dentry doesn't match the underlying kernfs node, drop the
-	 * dentry and force lookup.  If we have submounts we must allow the
-	 * vfs caches to lie about the state of the filesystem to prevent
-	 * leaks and other nasty things, so use check_submounts_and_drop()
-	 * instead of d_drop().
-	 */
-	if (check_submounts_and_drop(dentry) != 0)
-		goto out_valid;
-
 	return 0;
 }
 
@@ -714,6 +707,7 @@ struct kernfs_root *kernfs_create_root(struct kernfs_syscall_ops *scops,
 		return ERR_PTR(-ENOMEM);
 
 	ida_init(&root->ino_ida);
+	INIT_LIST_HEAD(&root->supers);
 
 	kn = __kernfs_new_node(root, "", S_IFDIR | S_IRUGO | S_IXUGO,
 			       KERNFS_DIR);
@@ -817,7 +811,7 @@ static struct dentry *kernfs_iop_lookup(struct inode *dir,
 	}
 
 	/* instantiate and hash dentry */
-	ret = d_materialise_unique(dentry, inode);
+	ret = d_splice_alias(inode, dentry);
  out_unlock:
 	mutex_unlock(&kernfs_mutex);
 	return ret;

@@ -131,6 +131,17 @@ const struct v4l2_dv_timings v4l2_dv_timings_presets[] = {
 	V4L2_DV_BT_DMT_2560X1600P75,
 	V4L2_DV_BT_DMT_2560X1600P85,
 	V4L2_DV_BT_DMT_2560X1600P120_RB,
+	V4L2_DV_BT_CEA_3840X2160P24,
+	V4L2_DV_BT_CEA_3840X2160P25,
+	V4L2_DV_BT_CEA_3840X2160P30,
+	V4L2_DV_BT_CEA_3840X2160P50,
+	V4L2_DV_BT_CEA_3840X2160P60,
+	V4L2_DV_BT_CEA_4096X2160P24,
+	V4L2_DV_BT_CEA_4096X2160P25,
+	V4L2_DV_BT_CEA_4096X2160P30,
+	V4L2_DV_BT_CEA_4096X2160P50,
+	V4L2_DV_BT_DMT_4096X2160P59_94_RB,
+	V4L2_DV_BT_CEA_4096X2160P60,
 	{ }
 };
 EXPORT_SYMBOL_GPL(v4l2_dv_timings_presets);
@@ -153,7 +164,8 @@ bool v4l2_valid_dv_timings(const struct v4l2_dv_timings *t,
 	    bt->width > cap->max_width ||
 	    bt->pixelclock < cap->min_pixelclock ||
 	    bt->pixelclock > cap->max_pixelclock ||
-	    (cap->standards && !(bt->standards & cap->standards)) ||
+	    (cap->standards && bt->standards &&
+	     !(bt->standards & cap->standards)) ||
 	    (bt->interlaced && !(caps & V4L2_DV_BT_CAP_INTERLACED)) ||
 	    (!bt->interlaced && !(caps & V4L2_DV_BT_CAP_PROGRESSIVE)))
 		return false;
@@ -599,10 +611,10 @@ struct v4l2_fract v4l2_calc_aspect_ratio(u8 hor_landscape, u8 vert_portrait)
 		aspect.denominator = 9;
 	} else if (ratio == 34) {
 		aspect.numerator = 4;
-		aspect.numerator = 3;
+		aspect.denominator = 3;
 	} else if (ratio == 68) {
 		aspect.numerator = 15;
-		aspect.numerator = 9;
+		aspect.denominator = 9;
 	} else {
 		aspect.numerator = hor_landscape + 99;
 		aspect.denominator = 100;

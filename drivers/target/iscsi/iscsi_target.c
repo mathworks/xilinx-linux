@@ -300,7 +300,7 @@ bool iscsit_check_np_match(
 		port = ntohs(sock_in->sin_port);
 	}
 
-	if ((ip_match == true) && (np->np_port == port) &&
+	if (ip_match && (np->np_port == port) &&
 	    (np->np_network_transport == network_transport))
 		return true;
 
@@ -325,7 +325,7 @@ static struct iscsi_np *iscsit_get_np(
 		}
 
 		match = iscsit_check_np_match(sockaddr, np, network_transport);
-		if (match == true) {
+		if (match) {
 			/*
 			 * Increment the np_exports reference count now to
 			 * prevent iscsit_del_np() below from being called
@@ -609,6 +609,7 @@ static int __init iscsi_target_init_module(void)
 
 	return ret;
 r2t_out:
+	iscsit_unregister_transport(&iscsi_target_transport);
 	kmem_cache_destroy(lio_r2t_cache);
 ooo_out:
 	kmem_cache_destroy(lio_ooo_cache);
@@ -943,17 +944,17 @@ int iscsit_setup_scsi_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
 	 */
 	if ((iscsi_task_attr == ISCSI_ATTR_UNTAGGED) ||
 	    (iscsi_task_attr == ISCSI_ATTR_SIMPLE))
-		sam_task_attr = MSG_SIMPLE_TAG;
+		sam_task_attr = TCM_SIMPLE_TAG;
 	else if (iscsi_task_attr == ISCSI_ATTR_ORDERED)
-		sam_task_attr = MSG_ORDERED_TAG;
+		sam_task_attr = TCM_ORDERED_TAG;
 	else if (iscsi_task_attr == ISCSI_ATTR_HEAD_OF_QUEUE)
-		sam_task_attr = MSG_HEAD_TAG;
+		sam_task_attr = TCM_HEAD_TAG;
 	else if (iscsi_task_attr == ISCSI_ATTR_ACA)
-		sam_task_attr = MSG_ACA_TAG;
+		sam_task_attr = TCM_ACA_TAG;
 	else {
 		pr_debug("Unknown iSCSI Task Attribute: 0x%02x, using"
-			" MSG_SIMPLE_TAG\n", iscsi_task_attr);
-		sam_task_attr = MSG_SIMPLE_TAG;
+			" TCM_SIMPLE_TAG\n", iscsi_task_attr);
+		sam_task_attr = TCM_SIMPLE_TAG;
 	}
 
 	cmd->iscsi_opcode	= ISCSI_OP_SCSI_CMD;
@@ -1121,7 +1122,7 @@ iscsit_get_immediate_data(struct iscsi_cmd *cmd, struct iscsi_scsi_req *hdr,
 	/*
 	 * Special case for Unsupported SAM WRITE Opcodes and ImmediateData=Yes.
 	 */
-	if (dump_payload == true)
+	if (dump_payload)
 		goto after_immediate_data;
 
 	immed_ret = iscsit_handle_immediate_data(cmd, hdr,
@@ -1811,7 +1812,7 @@ iscsit_handle_task_mgt_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
 		transport_init_se_cmd(&cmd->se_cmd,
 				      &lio_target_fabric_configfs->tf_ops,
 				      conn->sess->se_sess, 0, DMA_NONE,
-				      MSG_SIMPLE_TAG, cmd->sense_buffer + 2);
+				      TCM_SIMPLE_TAG, cmd->sense_buffer + 2);
 
 		target_get_sess_cmd(conn->sess->se_sess, &cmd->se_cmd, true);
 		sess_ref = true;
@@ -2026,10 +2027,10 @@ iscsit_process_text_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
 		goto reject;
 	}
 	if (!strncmp("=All", text_ptr, 4)) {
-		cmd->cmd_flags |= IFC_SENDTARGETS_ALL;
+		cmd->cmd_flags |= ICF_SENDTARGETS_ALL;
 	} else if (!strncmp("=iqn.", text_ptr, 5) ||
 		   !strncmp("=eui.", text_ptr, 5)) {
-		cmd->cmd_flags |= IFC_SENDTARGETS_SINGLE;
+		cmd->cmd_flags |= ICF_SENDTARGETS_SINGLE;
 	} else {
 		pr_err("Unable to locate valid SendTargets=%s value\n", text_ptr);
 		goto reject;
@@ -3414,10 +3415,10 @@ iscsit_build_sendtargets_response(struct iscsi_cmd *cmd,
 		return -ENOMEM;
 	}
 	/*
-	 * Locate pointer to iqn./eui. string for IFC_SENDTARGETS_SINGLE
+	 * Locate pointer to iqn./eui. string for ICF_SENDTARGETS_SINGLE
 	 * explicit case..
 	 */
-	if (cmd->cmd_flags & IFC_SENDTARGETS_SINGLE) {
+	if (cmd->cmd_flags & ICF_SENDTARGETS_SINGLE) {
 		text_ptr = strchr(text_in, '=');
 		if (!text_ptr) {
 			pr_err("Unable to locate '=' string in text_in:"
@@ -3433,7 +3434,7 @@ iscsit_build_sendtargets_response(struct iscsi_cmd *cmd,
 
 	spin_lock(&tiqn_lock);
 	list_for_each_entry(tiqn, &g_tiqn_list, tiqn_list) {
-		if ((cmd->cmd_flags & IFC_SENDTARGETS_SINGLE) &&
+		if ((cmd->cmd_flags & ICF_SENDTARGETS_SINGLE) &&
 		     strcmp(tiqn->tiqn, text_ptr)) {
 			continue;
 		}
@@ -3490,10 +3491,8 @@ iscsit_build_sendtargets_response(struct iscsi_cmd *cmd,
 
 				len = sprintf(buf, "TargetAddress="
 					"%s:%hu,%hu",
-					(inaddr_any == false) ?
-						np->np_ip : conn->local_ip,
-					(inaddr_any == false) ?
-						np->np_port : conn->local_port,
+					inaddr_any ? conn->local_ip : np->np_ip,
+					np->np_port,
 					tpg->tpgt);
 				len += 1;
 
@@ -3513,7 +3512,7 @@ eob:
 		if (end_of_buf)
 			break;
 
-		if (cmd->cmd_flags & IFC_SENDTARGETS_SINGLE)
+		if (cmd->cmd_flags & ICF_SENDTARGETS_SINGLE)
 			break;
 	}
 	spin_unlock(&tiqn_lock);
@@ -3711,7 +3710,6 @@ static inline void iscsit_thread_check_cpumask(
 	struct task_struct *p,
 	int mode)
 {
-	char buf[128];
 	/*
 	 * mode == 1 signals iscsi_target_tx_thread() usage.
 	 * mode == 0 signals iscsi_target_rx_thread() usage.
@@ -3730,8 +3728,6 @@ static inline void iscsit_thread_check_cpumask(
 	 * both TX and RX kthreads are scheduled to run on the
 	 * same CPU.
 	 */
-	memset(buf, 0, 128);
-	cpumask_scnprintf(buf, 128, conn->conn_cpumask);
 	set_cpus_allowed_ptr(p, conn->conn_cpumask);
 }
 
@@ -4328,8 +4324,7 @@ int iscsit_close_connection(
 	if (conn->conn_tx_hash.tfm)
 		crypto_free_hash(conn->conn_tx_hash.tfm);
 
-	if (conn->conn_cpumask)
-		free_cpumask_var(conn->conn_cpumask);
+	free_cpumask_var(conn->conn_cpumask);
 
 	kfree(conn->conn_ops);
 	conn->conn_ops = NULL;
@@ -4542,6 +4537,7 @@ static void iscsit_logout_post_handler_diffcid(
 {
 	struct iscsi_conn *l_conn;
 	struct iscsi_session *sess = conn->sess;
+	bool conn_found = false;
 
 	if (!sess)
 		return;
@@ -4550,12 +4546,13 @@ static void iscsit_logout_post_handler_diffcid(
 	list_for_each_entry(l_conn, &sess->sess_conn_list, conn_list) {
 		if (l_conn->cid == cid) {
 			iscsit_inc_conn_usage_count(l_conn);
+			conn_found = true;
 			break;
 		}
 	}
 	spin_unlock_bh(&sess->conn_lock);
 
-	if (!l_conn)
+	if (!conn_found)
 		return;
 
 	if (l_conn->sock)

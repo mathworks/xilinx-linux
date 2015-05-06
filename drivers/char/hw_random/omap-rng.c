@@ -369,10 +369,8 @@ static int omap_rng_probe(struct platform_device *pdev)
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(struct omap_rng_dev), GFP_KERNEL);
-	if (!priv) {
-		dev_err(&pdev->dev, "could not allocate memory\n");
+	if (!priv)
 		return -ENOMEM;
-	};
 
 	omap_rng_ops.priv = (unsigned long)priv;
 	platform_set_drvdata(pdev, priv);
@@ -458,7 +456,6 @@ static SIMPLE_DEV_PM_OPS(omap_rng_pm, omap_rng_suspend, omap_rng_resume);
 static struct platform_driver omap_rng_driver = {
 	.driver = {
 		.name		= "omap_rng",
-		.owner		= THIS_MODULE,
 		.pm		= OMAP_RNG_PM,
 		.of_match_table = of_match_ptr(omap_rng_of_match),
 	},

@@ -156,12 +156,13 @@ static int power_saving_thread(void *data)
 
 	while (!kthread_should_stop()) {
 		int cpu;
-		u64 expire_time;
+		unsigned long expire_time;
 
 		try_to_freeze();
 
 		/* round robin to cpus */
-		if (last_jiffies + round_robin_time * HZ < jiffies) {
+		expire_time = last_jiffies + round_robin_time * HZ;
+		if (time_before(expire_time, jiffies)) {
 			last_jiffies = jiffies;
 			round_robin_cpu(tsk_index);
 		}
@@ -200,7 +201,7 @@ static int power_saving_thread(void *data)
 					CLOCK_EVT_NOTIFY_BROADCAST_EXIT, &cpu);
 			local_irq_enable();
 
-			if (jiffies > expire_time) {
+			if (time_before(expire_time, jiffies)) {
 				do_sleep = 1;
 				break;
 			}
@@ -215,8 +216,15 @@ static int power_saving_thread(void *data)
 		 * borrow CPU time from this CPU and cause RT task use > 95%
 		 * CPU time. To make 'avoid starvation' work, takes a nap here.
 		 */
-		if (do_sleep)
+		if (unlikely(do_sleep))
 			schedule_timeout_killable(HZ * idle_pct / 100);
+
+		/* If an external event has set the need_resched flag, then
+		 * we need to deal with it, or this loop will continue to
+		 * spin without calling __mwait().
+		 */
+		if (unlikely(need_resched()))
+			schedule();
 	}
 
 	exit_round_robin(tsk_index);
@@ -342,12 +350,10 @@ static ssize_t acpi_pad_idlecpus_store(struct device *dev,
 static ssize_t acpi_pad_idlecpus_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	int n = 0;
-	n = cpumask_scnprintf(buf, PAGE_SIZE-2, to_cpumask(pad_busy_cpus_bits));
-	buf[n++] = '\n';
-	buf[n] = '\0';
-	return n;
+	return cpumap_print_to_pagebuf(false, buf,
+				       to_cpumask(pad_busy_cpus_bits));
 }
+
 static DEVICE_ATTR(idlecpus, S_IRUGO|S_IWUSR,
 	acpi_pad_idlecpus_show,
 	acpi_pad_idlecpus_store);

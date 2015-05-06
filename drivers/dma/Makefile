@@ -1,5 +1,5 @@
-ccflags-$(CONFIG_DMADEVICES_DEBUG)  := -DDEBUG
-ccflags-$(CONFIG_DMADEVICES_VDEBUG) += -DVERBOSE_DEBUG
+subdir-ccflags-$(CONFIG_DMADEVICES_DEBUG)  := -DDEBUG
+subdir-ccflags-$(CONFIG_DMADEVICES_VDEBUG) += -DVERBOSE_DEBUG
 
 obj-$(CONFIG_DMA_ENGINE) += dmaengine.o
 obj-$(CONFIG_DMA_VIRTUAL_CHANNELS) += virt-dma.o
@@ -7,7 +7,6 @@ obj-$(CONFIG_DMA_ACPI) += acpi-dma.o
 obj-$(CONFIG_DMA_OF) += of-dma.o
 
 obj-$(CONFIG_DMA_AXI_DMAC) += dma-axi-dmac.o
-obj-$(CONFIG_NET_DMA) += iovlock.o
 obj-$(CONFIG_INTEL_MID_DMAC) += intel_mid_dma.o
 obj-$(CONFIG_DMATEST) += dmatest.o
 obj-$(CONFIG_INTEL_IOATDMA) += ioat/
@@ -18,6 +17,7 @@ obj-$(CONFIG_PPC_BESTCOMM) += bestcomm/
 obj-$(CONFIG_MV_XOR) += mv_xor.o
 obj-$(CONFIG_DW_DMAC_CORE) += dw/
 obj-$(CONFIG_AT_HDMAC) += at_hdmac.o
+obj-$(CONFIG_AT_XDMAC) += at_xdmac.o
 obj-$(CONFIG_MX3_IPU) += ipu/
 obj-$(CONFIG_TXX9_DMAC) += txx9dmac.o
 obj-$(CONFIG_SH_DMAE_BASE) += sh/
@@ -48,3 +48,7 @@ obj-$(CONFIG_K3_DMA) += k3dma.o
 obj-$(CONFIG_MOXART_DMA) += moxart-dma.o
 obj-$(CONFIG_FSL_EDMA) += fsl-edma.o
 obj-$(CONFIG_QCOM_BAM_DMA) += qcom_bam_dma.o
+obj-y += xilinx/
+obj-$(CONFIG_INTEL_MIC_X100_DMA) += mic_x100_dma.o
+obj-$(CONFIG_NBPFAXI_DMA) += nbpfaxi.o
+obj-$(CONFIG_DMA_SUN6I) += sun6i-dma.o

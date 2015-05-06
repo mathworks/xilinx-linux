@@ -11,6 +11,15 @@
 #ifndef __ASM_S390_PROCESSOR_H
 #define __ASM_S390_PROCESSOR_H
 
+#define CIF_MCCK_PENDING	0	/* machine check handling is pending */
+#define CIF_ASCE		1	/* user asce needs fixup / uaccess */
+#define CIF_NOHZ_DELAY		2	/* delay HZ disable for a tick */
+
+#define _CIF_MCCK_PENDING	(1<<CIF_MCCK_PENDING)
+#define _CIF_ASCE		(1<<CIF_ASCE)
+#define _CIF_NOHZ_DELAY		(1<<CIF_NOHZ_DELAY)
+
+
 #ifndef __ASSEMBLY__
 
 #include <linux/linkage.h>
@@ -20,6 +29,23 @@
 #include <asm/ptrace.h>
 #include <asm/setup.h>
 #include <asm/runtime_instr.h>
+
+static inline void set_cpu_flag(int flag)
+{
+	S390_lowcore.cpu_flags |= (1U << flag);
+}
+
+static inline void clear_cpu_flag(int flag)
+{
+	S390_lowcore.cpu_flags &= ~(1U << flag);
+}
+
+static inline int test_cpu_flag(int flag)
+{
+	return !!(S390_lowcore.cpu_flags & (1U << flag));
+}
+
+#define arch_needs_cpu() test_cpu_flag(CIF_NOHZ_DELAY)
 
 /*
  * Default implementation of macro that returns current
@@ -91,6 +117,7 @@ struct thread_struct {
 	int ri_signum;
 #ifdef CONFIG_64BIT
 	unsigned char trap_tdb[256];	/* Transaction abort diagnose block */
+	__vector128 *vxrs;		/* Vector register save area */
 #endif
 };
 
@@ -190,12 +217,10 @@ static inline unsigned short stap(void)
  */
 static inline void cpu_relax(void)
 {
-	if (MACHINE_HAS_DIAG44)
-		asm volatile("diag 0,0,68");
 	barrier();
 }
 
-#define arch_mutex_cpu_relax()  barrier()
+#define cpu_relax_lowlatency()  barrier()
 
 static inline void psw_set_key(unsigned int key)
 {
@@ -263,7 +288,12 @@ static inline unsigned long __rewind_psw(psw_t psw, unsigned long ilc)
 	return (psw.addr - ilc) & mask;
 #endif
 }
- 
+
+/*
+ * Function to stop a processor until the next interrupt occurs
+ */
+void enabled_wait(void);
+
 /*
  * Function to drop a processor into disabled wait state
  */

@@ -25,7 +25,7 @@
 #include <engine/software.h>
 #include <engine/disp.h>
 
-#include <core/class.h>
+#include <nvif/class.h>
 
 #include "nv50.h"
 
@@ -35,17 +35,17 @@
 
 static struct nouveau_oclass
 nvf0_disp_sclass[] = {
-	{ NVF0_DISP_MAST_CLASS, &nvd0_disp_mast_ofuncs },
-	{ NVF0_DISP_SYNC_CLASS, &nvd0_disp_sync_ofuncs },
-	{ NVF0_DISP_OVLY_CLASS, &nvd0_disp_ovly_ofuncs },
-	{ NVF0_DISP_OIMM_CLASS, &nvd0_disp_oimm_ofuncs },
-	{ NVF0_DISP_CURS_CLASS, &nvd0_disp_curs_ofuncs },
+	{ GK110_DISP_CORE_CHANNEL_DMA, &nvd0_disp_core_ofuncs.base },
+	{ GK110_DISP_BASE_CHANNEL_DMA, &nvd0_disp_base_ofuncs.base },
+	{ GK104_DISP_OVERLAY_CONTROL_DMA, &nvd0_disp_ovly_ofuncs.base },
+	{ GK104_DISP_OVERLAY, &nvd0_disp_oimm_ofuncs.base },
+	{ GK104_DISP_CURSOR, &nvd0_disp_curs_ofuncs.base },
 	{}
 };
 
 static struct nouveau_oclass
-nvf0_disp_base_oclass[] = {
-	{ NVF0_DISP_CLASS, &nvd0_disp_base_ofuncs, nvd0_disp_base_omthds },
+nvf0_disp_main_oclass[] = {
+	{ GK110_DISP, &nvd0_disp_main_ofuncs },
 	{}
 };
 
@@ -68,7 +68,11 @@ nvf0_disp_ctor(struct nouveau_object *parent, struct nouveau_object *engine,
 	if (ret)
 		return ret;
 
-	nv_engine(priv)->sclass = nvf0_disp_base_oclass;
+	ret = nvkm_event_init(&nvd0_disp_chan_uevent, 1, 17, &priv->uevent);
+	if (ret)
+		return ret;
+
+	nv_engine(priv)->sclass = nvf0_disp_main_oclass;
 	nv_engine(priv)->cclass = &nv50_disp_cclass;
 	nv_subdev(priv)->intr = nvd0_disp_intr;
 	INIT_WORK(&priv->supervisor, nvd0_disp_intr_supervisor);
@@ -80,8 +84,7 @@ nvf0_disp_ctor(struct nouveau_object *parent, struct nouveau_object *engine,
 	priv->dac.sense = nv50_dac_sense;
 	priv->sor.power = nv50_sor_power;
 	priv->sor.hda_eld = nvd0_hda_eld;
-	priv->sor.hdmi = nvd0_hdmi_ctrl;
-	priv->sor.dp = &nvd0_sor_dp_func;
+	priv->sor.hdmi = nve0_hdmi_ctrl;
 	return 0;
 }
 
@@ -94,8 +97,11 @@ nvf0_disp_oclass = &(struct nv50_disp_impl) {
 		.init = _nouveau_disp_init,
 		.fini = _nouveau_disp_fini,
 	},
-	.mthd.core = &nve0_disp_mast_mthd_chan,
-	.mthd.base = &nvd0_disp_sync_mthd_chan,
+	.base.vblank = &nvd0_disp_vblank_func,
+	.base.outp =  nvd0_disp_outp_sclass,
+	.mthd.core = &nve0_disp_core_mthd_chan,
+	.mthd.base = &nvd0_disp_base_mthd_chan,
 	.mthd.ovly = &nve0_disp_ovly_mthd_chan,
 	.mthd.prev = -0x020000,
+	.head.scanoutpos = nvd0_disp_main_scanoutpos,
 }.base.base;

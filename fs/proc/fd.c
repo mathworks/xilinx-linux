@@ -53,7 +53,8 @@ static int seq_show(struct seq_file *m, void *v)
 			   (long long)file->f_pos, f_flags,
 			   real_mount(file->f_path.mnt)->mnt_id);
 		if (file->f_op->show_fdinfo)
-			ret = file->f_op->show_fdinfo(m, file);
+			file->f_op->show_fdinfo(m, file);
+		ret = seq_has_overflowed(m);
 		fput(file);
 	}
 
@@ -129,8 +130,6 @@ static int tid_fd_revalidate(struct dentry *dentry, unsigned int flags)
 		}
 		put_task_struct(task);
 	}
-
-	d_drop(dentry);
 	return 0;
 }
 
@@ -206,7 +205,7 @@ static struct dentry *proc_lookupfd_common(struct inode *dir,
 {
 	struct task_struct *task = get_proc_task(dir);
 	int result = -ENOENT;
-	unsigned fd = name_to_int(dentry);
+	unsigned fd = name_to_int(&dentry->d_name);
 
 	if (!task)
 		goto out_no_task;

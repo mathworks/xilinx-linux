@@ -57,11 +57,12 @@ struct hpsa_scsi_dev_t {
 
 };
 
-struct reply_pool {
+struct reply_queue_buffer {
 	u64 *head;
 	size_t size;
 	u8 wraparound;
 	u32 current_entry;
+	dma_addr_t busaddr;
 };
 
 #pragma pack(1)
@@ -90,6 +91,7 @@ struct bmic_controller_parameters {
 	u8   automatic_drive_slamming;
 	u8   reserved1;
 	u8   nvram_flags;
+#define HBA_MODE_ENABLED_FLAG (1 << 3)
 	u8   cache_nvram_flags;
 	u8   drive_config_flags;
 	u16  reserved2;
@@ -115,11 +117,8 @@ struct ctlr_info {
 	int 	nr_cmds; /* Number of commands allowed on this controller */
 	struct CfgTable __iomem *cfgtable;
 	int	interrupts_enabled;
-	int	major;
 	int 	max_commands;
-	int	commands_outstanding;
-	int 	max_outstanding; /* Debug */
-	int	usage_count;  /* number of opens all all minor devices */
+	atomic_t commands_outstanding;
 #	define PERF_MODE_INT	0
 #	define DOORBELL_INT	1
 #	define SIMPLE_MODE_INT	2
@@ -165,7 +164,7 @@ struct ctlr_info {
 	 */
 	u32 trans_support;
 	u32 trans_offset;
-	struct TransTable_struct *transtable;
+	struct TransTable_struct __iomem *transtable;
 	unsigned long transMethod;
 
 	/* cap concurrent passthrus at some reasonable maximum */
@@ -176,15 +175,13 @@ struct ctlr_info {
 	/*
 	 * Performant mode completion buffers
 	 */
-	u64 *reply_pool;
-	size_t reply_pool_size;
-	struct reply_pool reply_queue[MAX_REPLY_QUEUES];
+	size_t reply_queue_size;
+	struct reply_queue_buffer reply_queue[MAX_REPLY_QUEUES];
 	u8 nreply_queues;
-	dma_addr_t reply_pool_dhandle;
 	u32 *blockFetchTable;
 	u32 *ioaccel1_blockFetchTable;
 	u32 *ioaccel2_blockFetchTable;
-	u32 *ioaccel2_bft2_regs;
+	u32 __iomem *ioaccel2_bft2_regs;
 	unsigned char *hba_inquiry_data;
 	u32 driver_support;
 	u32 fw_support;
@@ -195,7 +192,7 @@ struct ctlr_info {
 	u64 last_heartbeat_timestamp;
 	u32 heartbeat_sample_interval;
 	atomic_t firmware_flash_in_progress;
-	u32 lockup_detected;
+	u32 __percpu *lockup_detected;
 	struct delayed_work monitor_ctlr_work;
 	int remove_in_progress;
 	u32 fifo_recently_full;
@@ -232,11 +229,9 @@ struct ctlr_info {
 #define CTLR_STATE_CHANGE_EVENT_AIO_CONFIG_CHANGE	(1 << 31)
 
 #define RESCAN_REQUIRED_EVENT_BITS \
-		(CTLR_STATE_CHANGE_EVENT | \
-		CTLR_ENCLOSURE_HOT_PLUG_EVENT | \
+		(CTLR_ENCLOSURE_HOT_PLUG_EVENT | \
 		CTLR_STATE_CHANGE_EVENT_PHYSICAL_DRV | \
 		CTLR_STATE_CHANGE_EVENT_LOGICAL_DRV | \
-		CTLR_STATE_CHANGE_EVENT_REDUNDANT_CNTRL | \
 		CTLR_STATE_CHANGE_EVENT_AIO_ENABLED_DISABLED | \
 		CTLR_STATE_CHANGE_EVENT_AIO_CONFIG_CHANGE)
 	spinlock_t offline_device_lock;
@@ -345,22 +340,23 @@ struct offline_device_entry {
 static void SA5_submit_command(struct ctlr_info *h,
 	struct CommandList *c)
 {
-	dev_dbg(&h->pdev->dev, "Sending %x, tag = %x\n", c->busaddr,
-		c->Header.Tag.lower);
 	writel(c->busaddr, h->vaddr + SA5_REQUEST_PORT_OFFSET);
 	(void) readl(h->vaddr + SA5_SCRATCHPAD_OFFSET);
+}
+
+static void SA5_submit_command_no_read(struct ctlr_info *h,
+	struct CommandList *c)
+{
+	writel(c->busaddr, h->vaddr + SA5_REQUEST_PORT_OFFSET);
 }
 
 static void SA5_submit_command_ioaccel2(struct ctlr_info *h,
 	struct CommandList *c)
 {
-	dev_dbg(&h->pdev->dev, "Sending %x, tag = %x\n", c->busaddr,
-		c->Header.Tag.lower);
 	if (c->cmd_type == CMD_IOACCEL2)
 		writel(c->busaddr, h->vaddr + IOACCEL2_INBOUND_POSTQ_32);
 	else
 		writel(c->busaddr, h->vaddr + SA5_REQUEST_PORT_OFFSET);
-	(void) readl(h->vaddr + SA5_SCRATCHPAD_OFFSET);
 }
 
 /*
@@ -398,8 +394,8 @@ static void SA5_performant_intr_mask(struct ctlr_info *h, unsigned long val)
 
 static unsigned long SA5_performant_completed(struct ctlr_info *h, u8 q)
 {
-	struct reply_pool *rq = &h->reply_queue[q];
-	unsigned long flags, register_value = FIFO_EMPTY;
+	struct reply_queue_buffer *rq = &h->reply_queue[q];
+	unsigned long register_value = FIFO_EMPTY;
 
 	/* msi auto clears the interrupt pending bit. */
 	if (!(h->msi_vector || h->msix_vector)) {
@@ -417,9 +413,7 @@ static unsigned long SA5_performant_completed(struct ctlr_info *h, u8 q)
 	if ((rq->head[rq->current_entry] & 1) == rq->wraparound) {
 		register_value = rq->head[rq->current_entry];
 		rq->current_entry++;
-		spin_lock_irqsave(&h->lock, flags);
-		h->commands_outstanding--;
-		spin_unlock_irqrestore(&h->lock, flags);
+		atomic_dec(&h->commands_outstanding);
 	} else {
 		register_value = FIFO_EMPTY;
 	}
@@ -437,11 +431,7 @@ static unsigned long SA5_performant_completed(struct ctlr_info *h, u8 q)
  */
 static unsigned long SA5_fifo_full(struct ctlr_info *h)
 {
-	if (h->commands_outstanding >= h->max_commands)
-		return 1;
-	else
-		return 0;
-
+	return atomic_read(&h->commands_outstanding) >= h->max_commands;
 }
 /*
  *   returns value read from hardware.
@@ -452,13 +442,9 @@ static unsigned long SA5_completed(struct ctlr_info *h,
 {
 	unsigned long register_value
 		= readl(h->vaddr + SA5_REPLY_PORT_OFFSET);
-	unsigned long flags;
 
-	if (register_value != FIFO_EMPTY) {
-		spin_lock_irqsave(&h->lock, flags);
-		h->commands_outstanding--;
-		spin_unlock_irqrestore(&h->lock, flags);
-	}
+	if (register_value != FIFO_EMPTY)
+		atomic_dec(&h->commands_outstanding);
 
 #ifdef HPSA_DEBUG
 	if (register_value != FIFO_EMPTY)
@@ -477,7 +463,6 @@ static bool SA5_intr_pending(struct ctlr_info *h)
 {
 	unsigned long register_value  =
 		readl(h->vaddr + SA5_INTR_STATUS);
-	dev_dbg(&h->pdev->dev, "intr_pending %lx\n", register_value);
 	return register_value & SA5_INTR_PENDING;
 }
 
@@ -514,8 +499,7 @@ static bool SA5_ioaccel_mode1_intr_pending(struct ctlr_info *h)
 static unsigned long SA5_ioaccel_mode1_completed(struct ctlr_info *h, u8 q)
 {
 	u64 register_value;
-	struct reply_pool *rq = &h->reply_queue[q];
-	unsigned long flags;
+	struct reply_queue_buffer *rq = &h->reply_queue[q];
 
 	BUG_ON(q >= h->nreply_queues);
 
@@ -533,9 +517,7 @@ static unsigned long SA5_ioaccel_mode1_completed(struct ctlr_info *h, u8 q)
 		wmb();
 		writel((q << 24) | rq->current_entry, h->vaddr +
 				IOACCEL_MODE1_CONSUMER_INDEX);
-		spin_lock_irqsave(&h->lock, flags);
-		h->commands_outstanding--;
-		spin_unlock_irqrestore(&h->lock, flags);
+		atomic_dec(&h->commands_outstanding);
 	}
 	return (unsigned long) register_value;
 }
@@ -566,6 +548,14 @@ static struct access_method SA5_ioaccel_mode2_access = {
 
 static struct access_method SA5_performant_access = {
 	SA5_submit_command,
+	SA5_performant_intr_mask,
+	SA5_fifo_full,
+	SA5_performant_intr_pending,
+	SA5_performant_completed,
+};
+
+static struct access_method SA5_performant_access_no_read = {
+	SA5_submit_command_no_read,
 	SA5_performant_intr_mask,
 	SA5_fifo_full,
 	SA5_performant_intr_pending,

@@ -24,11 +24,7 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 
-#include <mach/hardware.h>
 #include <asm/gpio.h>
-
-#include <mach/cpu.h>
-
 
 #include "ohci.h"
 
@@ -46,9 +42,6 @@ static const char hcd_name[] = "ohci-atmel";
 
 static struct hc_driver __read_mostly ohci_at91_hc_driver;
 static int clocked;
-static int (*orig_ohci_hub_control)(struct usb_hcd  *hcd, u16 typeReq,
-			u16 wValue, u16 wIndex, char *buf, u16 wLength);
-static int (*orig_ohci_hub_status_data)(struct usb_hcd *hcd, char *buf);
 
 extern int usb_disabled(void);
 
@@ -140,12 +133,6 @@ static int usb_hcd_at91_probe(const struct hc_driver *driver,
 	struct resource *res;
 	int irq;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_dbg(dev, "hcd probe: missing memory resource\n");
-		return -ENXIO;
-	}
-
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		dev_dbg(dev, "hcd probe: missing irq resource\n");
@@ -155,14 +142,15 @@ static int usb_hcd_at91_probe(const struct hc_driver *driver,
 	hcd = usb_create_hcd(driver, dev, "at91");
 	if (!hcd)
 		return -ENOMEM;
-	hcd->rsrc_start = res->start;
-	hcd->rsrc_len = resource_size(res);
 
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	hcd->regs = devm_ioremap_resource(dev, res);
 	if (IS_ERR(hcd->regs)) {
 		retval = PTR_ERR(hcd->regs);
 		goto err;
 	}
+	hcd->rsrc_start = res->start;
+	hcd->rsrc_len = resource_size(res);
 
 	iclk = devm_clk_get(dev, "ohci_clk");
 	if (IS_ERR(iclk)) {
@@ -262,7 +250,7 @@ static int ohci_at91_usb_get_power(struct at91_usbh_data *pdata, int port)
 static int ohci_at91_hub_status_data(struct usb_hcd *hcd, char *buf)
 {
 	struct at91_usbh_data *pdata = hcd->self.controller->platform_data;
-	int length = orig_ohci_hub_status_data(hcd, buf);
+	int length = ohci_hub_status_data(hcd, buf);
 	int port;
 
 	at91_for_each_port(port) {
@@ -340,8 +328,7 @@ static int ohci_at91_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		break;
 	}
 
-	ret = orig_ohci_hub_control(hcd, typeReq, wValue, wIndex + 1,
-				buf, wLength);
+	ret = ohci_hub_control(hcd, typeReq, wValue, wIndex + 1, buf, wLength);
 	if (ret)
 		goto out;
 
@@ -668,7 +655,6 @@ static struct platform_driver ohci_hcd_at91_driver = {
 	.resume		= ohci_hcd_at91_drv_resume,
 	.driver		= {
 		.name	= "at91_ohci",
-		.owner	= THIS_MODULE,
 		.of_match_table	= of_match_ptr(at91_ohci_dt_ids),
 	},
 };
@@ -689,9 +675,6 @@ static int __init ohci_at91_init(void)
 	 * want to encourage others to override these functions by making it
 	 * too easy.
 	 */
-
-	orig_ohci_hub_control = ohci_at91_hc_driver.hub_control;
-	orig_ohci_hub_status_data = ohci_at91_hc_driver.hub_status_data;
 
 	ohci_at91_hc_driver.hub_status_data	= ohci_at91_hub_status_data;
 	ohci_at91_hc_driver.hub_control		= ohci_at91_hub_control;

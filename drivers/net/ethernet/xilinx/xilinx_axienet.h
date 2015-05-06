@@ -396,7 +396,6 @@ struct axidma_bd {
  * @dma_err_tasklet: Tasklet structure to process Axi DMA errors
  * @tx_irq:	Axidma TX IRQ number
  * @rx_irq:	Axidma RX IRQ number
- * @temac_type:	axienet type to identify between soft and hard temac
  * @phy_type:	Phy type to identify between MII/GMII/RGMII/SGMII/1000 Base-X
  * @options:	AxiEthernet option word
  * @last_link:	Phy link state in which the PHY was negotiated earlier
@@ -424,8 +423,8 @@ struct axienet_local {
 	struct device *dev;
 
 	/* Connection to PHY device */
-	struct phy_device *phy_dev;	/* Pointer to PHY device */
-	struct device_node *phy_node;
+	struct phy_device *phy_dev, *phy_dev_int;/* Pointer to PHY device */
+	struct device_node *phy_node, *phy_node_int;
 
 	/* MDIO bus data */
 	struct mii_bus *mii_bus;	/* MII bus reference */
@@ -439,7 +438,6 @@ struct axienet_local {
 
 	int tx_irq;
 	int rx_irq;
-	u32 temac_type;
 	u32 phy_type;
 
 	u32 options;			/* Current options word */

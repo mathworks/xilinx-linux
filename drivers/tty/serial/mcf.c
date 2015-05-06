@@ -57,7 +57,6 @@ struct mcf_uart {
 	struct uart_port	port;
 	unsigned int		sigs;		/* Local copy of line sigs */
 	unsigned char		imr;		/* Local IMR mirror */
-	struct serial_rs485	rs485;		/* RS485 settings */
 };
 
 /****************************************************************************/
@@ -104,7 +103,7 @@ static void mcf_start_tx(struct uart_port *port)
 {
 	struct mcf_uart *pp = container_of(port, struct mcf_uart, port);
 
-	if (pp->rs485.flags & SER_RS485_ENABLED) {
+	if (port->rs485.flags & SER_RS485_ENABLED) {
 		/* Enable Transmitter */
 		writeb(MCFUART_UCR_TXENABLE, port->membase + MCFUART_UCR);
 		/* Manually assert RTS */
@@ -146,12 +145,6 @@ static void mcf_break_ctl(struct uart_port *port, int break_state)
 	else
 		writeb(MCFUART_UCR_CMDBREAKSTOP, port->membase + MCFUART_UCR);
 	spin_unlock_irqrestore(&port->lock, flags);
-}
-
-/****************************************************************************/
-
-static void mcf_enable_ms(struct uart_port *port)
-{
 }
 
 /****************************************************************************/
@@ -264,12 +257,12 @@ static void mcf_set_termios(struct uart_port *port, struct ktermios *termios,
 		mr2 |= MCFUART_MR2_TXCTS;
 	}
 
-	if (pp->rs485.flags & SER_RS485_ENABLED) {
+	spin_lock_irqsave(&port->lock, flags);
+	if (port->rs485.flags & SER_RS485_ENABLED) {
 		dev_dbg(port->dev, "Setting UART to RS485\n");
 		mr2 |= MCFUART_MR2_TXRTS;
 	}
 
-	spin_lock_irqsave(&port->lock, flags);
 	uart_update_timeout(port, termios->c_cflag, baud);
 	writeb(MCFUART_UCR_CMDRESETRX, port->membase + MCFUART_UCR);
 	writeb(MCFUART_UCR_CMDRESETTX, port->membase + MCFUART_UCR);
@@ -366,7 +359,7 @@ static void mcf_tx_chars(struct mcf_uart *pp)
 		pp->imr &= ~MCFUART_UIR_TXREADY;
 		writeb(pp->imr, port->membase + MCFUART_UIMR);
 		/* Disable TX to negate RTS automatically */
-		if (pp->rs485.flags & SER_RS485_ENABLED)
+		if (port->rs485.flags & SER_RS485_ENABLED)
 			writeb(MCFUART_UCR_TXDISABLE,
 				port->membase + MCFUART_UCR);
 	}
@@ -446,13 +439,11 @@ static int mcf_verify_port(struct uart_port *port, struct serial_struct *ser)
 /****************************************************************************/
 
 /* Enable or disable the RS485 support */
-static void mcf_config_rs485(struct uart_port *port, struct serial_rs485 *rs485)
+static int mcf_config_rs485(struct uart_port *port, struct serial_rs485 *rs485)
 {
 	struct mcf_uart *pp = container_of(port, struct mcf_uart, port);
-	unsigned long flags;
 	unsigned char mr1, mr2;
 
-	spin_lock_irqsave(&port->lock, flags);
 	/* Get mode registers */
 	mr1 = readb(port->membase + MCFUART_UMR);
 	mr2 = readb(port->membase + MCFUART_UMR);
@@ -466,32 +457,8 @@ static void mcf_config_rs485(struct uart_port *port, struct serial_rs485 *rs485)
 	}
 	writeb(mr1, port->membase + MCFUART_UMR);
 	writeb(mr2, port->membase + MCFUART_UMR);
-	pp->rs485 = *rs485;
-	spin_unlock_irqrestore(&port->lock, flags);
-}
+	port->rs485 = *rs485;
 
-static int mcf_ioctl(struct uart_port *port, unsigned int cmd,
-		unsigned long arg)
-{
-	switch (cmd) {
-	case TIOCSRS485: {
-		struct serial_rs485 rs485;
-		if (copy_from_user(&rs485, (struct serial_rs485 *)arg,
-				sizeof(struct serial_rs485)))
-			return -EFAULT;
-		mcf_config_rs485(port, &rs485);
-		break;
-	}
-	case TIOCGRS485: {
-		struct mcf_uart *pp = container_of(port, struct mcf_uart, port);
-		if (copy_to_user((struct serial_rs485 *)arg, &pp->rs485,
-				sizeof(struct serial_rs485)))
-			return -EFAULT;
-		break;
-	}
-	default:
-		return -ENOIOCTLCMD;
-	}
 	return 0;
 }
 
@@ -507,7 +474,6 @@ static const struct uart_ops mcf_uart_ops = {
 	.start_tx	= mcf_start_tx,
 	.stop_tx	= mcf_stop_tx,
 	.stop_rx	= mcf_stop_rx,
-	.enable_ms	= mcf_enable_ms,
 	.break_ctl	= mcf_break_ctl,
 	.startup	= mcf_startup,
 	.shutdown	= mcf_shutdown,
@@ -517,7 +483,6 @@ static const struct uart_ops mcf_uart_ops = {
 	.release_port	= mcf_release_port,
 	.config_port	= mcf_config_port,
 	.verify_port	= mcf_verify_port,
-	.ioctl		= mcf_ioctl,
 };
 
 static struct mcf_uart mcf_ports[4];
@@ -544,7 +509,8 @@ int __init early_mcf_setup(struct mcf_platform_uart *platp)
 		port->iotype = SERIAL_IO_MEM;
 		port->irq = platp[i].irq;
 		port->uartclk = MCF_BUSCLK;
-		port->flags = ASYNC_BOOT_AUTOCONF;
+		port->flags = UPF_BOOT_AUTOCONF;
+		port->rs485_config = mcf_config_rs485;
 		port->ops = &mcf_uart_ops;
 	}
 
@@ -669,7 +635,8 @@ static int mcf_probe(struct platform_device *pdev)
 		port->irq = platp[i].irq;
 		port->uartclk = MCF_BUSCLK;
 		port->ops = &mcf_uart_ops;
-		port->flags = ASYNC_BOOT_AUTOCONF;
+		port->flags = UPF_BOOT_AUTOCONF;
+		port->rs485_config = mcf_config_rs485;
 
 		uart_add_one_port(&mcf_driver, port);
 	}
@@ -700,7 +667,6 @@ static struct platform_driver mcf_platform_driver = {
 	.remove		= mcf_remove,
 	.driver		= {
 		.name	= "mcfuart",
-		.owner	= THIS_MODULE,
 	},
 };
 

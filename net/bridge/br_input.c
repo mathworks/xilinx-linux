@@ -16,6 +16,8 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/netfilter_bridge.h>
+#include <linux/neighbour.h>
+#include <net/arp.h>
 #include <linux/export.h>
 #include <linux/rculist.h>
 #include "br_private.h"
@@ -55,6 +57,60 @@ static int br_pass_frame_up(struct sk_buff *skb)
 
 	return NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN, skb, indev, NULL,
 		       netif_receive_skb);
+}
+
+static void br_do_proxy_arp(struct sk_buff *skb, struct net_bridge *br,
+			    u16 vid)
+{
+	struct net_device *dev = br->dev;
+	struct neighbour *n;
+	struct arphdr *parp;
+	u8 *arpptr, *sha;
+	__be32 sip, tip;
+
+	if (dev->flags & IFF_NOARP)
+		return;
+
+	if (!pskb_may_pull(skb, arp_hdr_len(dev))) {
+		dev->stats.tx_dropped++;
+		return;
+	}
+	parp = arp_hdr(skb);
+
+	if (parp->ar_pro != htons(ETH_P_IP) ||
+	    parp->ar_op != htons(ARPOP_REQUEST) ||
+	    parp->ar_hln != dev->addr_len ||
+	    parp->ar_pln != 4)
+		return;
+
+	arpptr = (u8 *)parp + sizeof(struct arphdr);
+	sha = arpptr;
+	arpptr += dev->addr_len;	/* sha */
+	memcpy(&sip, arpptr, sizeof(sip));
+	arpptr += sizeof(sip);
+	arpptr += dev->addr_len;	/* tha */
+	memcpy(&tip, arpptr, sizeof(tip));
+
+	if (ipv4_is_loopback(tip) ||
+	    ipv4_is_multicast(tip))
+		return;
+
+	n = neigh_lookup(&arp_tbl, &tip, dev);
+	if (n) {
+		struct net_bridge_fdb_entry *f;
+
+		if (!(n->nud_state & NUD_VALID)) {
+			neigh_release(n);
+			return;
+		}
+
+		f = __br_fdb_get(br, n->ha, vid);
+		if (f)
+			arp_send(ARPOP_REPLY, ETH_P_ARP, sip, skb->dev, tip,
+				 sha, n->ha, sha);
+
+		neigh_release(n);
+	}
 }
 
 /* note: already called with rcu_read_lock */
@@ -98,6 +154,11 @@ int br_handle_frame_finish(struct sk_buff *skb)
 	dst = NULL;
 
 	if (is_broadcast_ether_addr(dest)) {
+		if (IS_ENABLED(CONFIG_INET) &&
+		    p->flags & BR_PROXYARP &&
+		    skb->protocol == htons(ETH_P_ARP))
+			br_do_proxy_arp(skb, br, vid);
+
 		skb2 = skb;
 		unicast = false;
 	} else if (is_multicast_ether_addr(dest)) {
@@ -140,6 +201,7 @@ drop:
 	kfree_skb(skb);
 	goto out;
 }
+EXPORT_SYMBOL_GPL(br_handle_frame_finish);
 
 /* note: already called with rcu_read_lock */
 static int br_handle_local_finish(struct sk_buff *skb)
@@ -177,6 +239,8 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 	p = br_port_get_rcu(skb->dev);
 
 	if (unlikely(is_link_local_ether_addr(dest))) {
+		u16 fwd_mask = p->br->group_fwd_mask_required;
+
 		/*
 		 * See IEEE 802.1D Table 7-10 Reserved addresses
 		 *
@@ -194,7 +258,8 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 		case 0x00:	/* Bridge Group Address */
 			/* If STP is turned off,
 			   then must forward to keep loop detection */
-			if (p->br->stp_enabled == BR_NO_STP)
+			if (p->br->stp_enabled == BR_NO_STP ||
+			    fwd_mask & (1u << dest[5]))
 				goto forward;
 			break;
 
@@ -203,7 +268,8 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 
 		default:
 			/* Allow selective forwarding for most other protocols */
-			if (p->br->group_fwd_mask & (1u << dest[5]))
+			fwd_mask |= p->br->group_fwd_mask;
+			if (fwd_mask & (1u << dest[5]))
 				goto forward;
 		}
 

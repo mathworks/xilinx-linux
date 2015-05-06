@@ -25,7 +25,8 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/tegra-ahb.h>
+
+#include <soc/tegra/ahb.h>
 
 #define DRV_NAME "tegra-ahb"
 
@@ -276,7 +277,6 @@ static struct platform_driver tegra_ahb_driver = {
 	.probe = tegra_ahb_probe,
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = tegra_ahb_of_match,
 		.pm = &tegra_ahb_pm,
 	},

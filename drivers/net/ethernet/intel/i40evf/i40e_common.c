@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Virtual Function Driver
- * Copyright(c) 2013 Intel Corporation.
+ * Copyright(c) 2013 - 2014 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -11,6 +11,9 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * The full GNU General Public License is included in this distribution in
  * the file called "COPYING".
@@ -40,15 +43,14 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
 	if (hw->vendor_id == PCI_VENDOR_ID_INTEL) {
 		switch (hw->device_id) {
 		case I40E_DEV_ID_SFP_XL710:
-		case I40E_DEV_ID_SFP_X710:
 		case I40E_DEV_ID_QEMU:
 		case I40E_DEV_ID_KX_A:
 		case I40E_DEV_ID_KX_B:
 		case I40E_DEV_ID_KX_C:
-		case I40E_DEV_ID_KX_D:
 		case I40E_DEV_ID_QSFP_A:
 		case I40E_DEV_ID_QSFP_B:
 		case I40E_DEV_ID_QSFP_C:
+		case I40E_DEV_ID_10G_BASE_T:
 			hw->mac.type = I40E_MAC_XL710;
 			break;
 		case I40E_DEV_ID_VF:
@@ -74,13 +76,15 @@ i40e_status i40e_set_mac_type(struct i40e_hw *hw)
  * @mask: debug mask
  * @desc: pointer to admin queue descriptor
  * @buffer: pointer to command buffer
+ * @buf_len: max length of buffer
  *
  * Dumps debug log about adminq command with descriptor contents.
  **/
 void i40evf_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
-		   void *buffer)
+		   void *buffer, u16 buf_len)
 {
 	struct i40e_aq_desc *aq_desc = (struct i40e_aq_desc *)desc;
+	u16 len = le16_to_cpu(aq_desc->datalen);
 	u8 *aq_buffer = (u8 *)buffer;
 	u32 data[4];
 	u32 i = 0;
@@ -104,7 +108,9 @@ void i40evf_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 	if ((buffer != NULL) && (aq_desc->datalen != 0)) {
 		memset(data, 0, sizeof(data));
 		i40e_debug(hw, mask, "AQ CMD Buffer:\n");
-		for (i = 0; i < le16_to_cpu(aq_desc->datalen); i++) {
+		if (buf_len < len)
+			len = buf_len;
+		for (i = 0; i < len; i++) {
 			data[((i % 16) / 4)] |=
 				((u32)aq_buffer[i]) << (8 * (i % 4));
 			if ((i % 16) == 15) {
@@ -130,7 +136,11 @@ void i40evf_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
  **/
 bool i40evf_check_asq_alive(struct i40e_hw *hw)
 {
-	return !!(rd32(hw, hw->aq.asq.len) & I40E_PF_ATQLEN_ATQENABLE_MASK);
+	if (hw->aq.asq.len)
+		return !!(rd32(hw, hw->aq.asq.len) &
+			  I40E_PF_ATQLEN_ATQENABLE_MASK);
+	else
+		return false;
 }
 
 /**
@@ -546,6 +556,7 @@ i40e_status i40e_aq_send_msg_to_pf(struct i40e_hw *hw,
 				struct i40e_asq_cmd_details *cmd_details)
 {
 	struct i40e_aq_desc desc;
+	struct i40e_asq_cmd_details details;
 	i40e_status status;
 
 	i40evf_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_send_msg_to_pf);
@@ -560,7 +571,6 @@ i40e_status i40e_aq_send_msg_to_pf(struct i40e_hw *hw,
 		desc.datalen = cpu_to_le16(msglen);
 	}
 	if (!cmd_details) {
-		struct i40e_asq_cmd_details details;
 		memset(&details, 0, sizeof(details));
 		details.async = true;
 		cmd_details = &details;

@@ -50,9 +50,6 @@ struct blkcg {
 	struct blkcg_gq			*blkg_hint;
 	struct hlist_head		blkg_list;
 
-	/* for policies to test whether associated blkcg has changed */
-	uint64_t			id;
-
 	/* TODO: per-policy storage in blkcg */
 	unsigned int			cfq_weight;	/* belongs to cfq */
 	unsigned int			cfq_leaf_weight;
@@ -205,7 +202,7 @@ static inline struct blkcg *bio_blkcg(struct bio *bio)
  */
 static inline struct blkcg *blkcg_parent(struct blkcg *blkcg)
 {
-	return css_to_blkcg(css_parent(&blkcg->css));
+	return css_to_blkcg(blkcg->css.parent);
 }
 
 /**

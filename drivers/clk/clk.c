@@ -10,6 +10,7 @@
  */
 
 #include <linux/clk-private.h>
+#include <linux/clk/clk-conf.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -98,20 +99,31 @@ static void clk_enable_unlock(unsigned long flags)
 #include <linux/debugfs.h>
 
 static struct dentry *rootdir;
-static struct dentry *orphandir;
 static int inited = 0;
+static DEFINE_MUTEX(clk_debug_lock);
+static HLIST_HEAD(clk_debug_list);
+
+static struct hlist_head *all_lists[] = {
+	&clk_root_list,
+	&clk_orphan_list,
+	NULL,
+};
+
+static struct hlist_head *orphan_list[] = {
+	&clk_orphan_list,
+	NULL,
+};
 
 static void clk_summary_show_one(struct seq_file *s, struct clk *c, int level)
 {
 	if (!c)
 		return;
 
-	seq_printf(s, "%*s%-*s %-11d %-12d %-10lu %-11lu",
+	seq_printf(s, "%*s%-*s %11d %12d %11lu %10lu %-3d\n",
 		   level * 3 + 1, "",
 		   30 - level * 3, c->name,
 		   c->enable_count, c->prepare_count, clk_get_rate(c),
-		   clk_get_accuracy(c));
-	seq_printf(s, "\n");
+		   clk_get_accuracy(c), clk_get_phase(c));
 }
 
 static void clk_summary_show_subtree(struct seq_file *s, struct clk *c,
@@ -131,17 +143,16 @@ static void clk_summary_show_subtree(struct seq_file *s, struct clk *c,
 static int clk_summary_show(struct seq_file *s, void *data)
 {
 	struct clk *c;
+	struct hlist_head **lists = (struct hlist_head **)s->private;
 
-	seq_printf(s, "   clock                        enable_cnt  prepare_cnt  rate        accuracy\n");
-	seq_printf(s, "---------------------------------------------------------------------------------\n");
+	seq_puts(s, "   clock                         enable_cnt  prepare_cnt        rate   accuracy   phase\n");
+	seq_puts(s, "----------------------------------------------------------------------------------------\n");
 
 	clk_prepare_lock();
 
-	hlist_for_each_entry(c, &clk_root_list, child_node)
-		clk_summary_show_subtree(s, c, 0);
-
-	hlist_for_each_entry(c, &clk_orphan_list, child_node)
-		clk_summary_show_subtree(s, c, 0);
+	for (; *lists; lists++)
+		hlist_for_each_entry(c, *lists, child_node)
+			clk_summary_show_subtree(s, c, 0);
 
 	clk_prepare_unlock();
 
@@ -171,6 +182,7 @@ static void clk_dump_one(struct seq_file *s, struct clk *c, int level)
 	seq_printf(s, "\"prepare_count\": %d,", c->prepare_count);
 	seq_printf(s, "\"rate\": %lu", clk_get_rate(c));
 	seq_printf(s, "\"accuracy\": %lu", clk_get_accuracy(c));
+	seq_printf(s, "\"phase\": %d", clk_get_phase(c));
 }
 
 static void clk_dump_subtree(struct seq_file *s, struct clk *c, int level)
@@ -194,21 +206,19 @@ static int clk_dump(struct seq_file *s, void *data)
 {
 	struct clk *c;
 	bool first_node = true;
+	struct hlist_head **lists = (struct hlist_head **)s->private;
 
 	seq_printf(s, "{");
 
 	clk_prepare_lock();
 
-	hlist_for_each_entry(c, &clk_root_list, child_node) {
-		if (!first_node)
-			seq_printf(s, ",");
-		first_node = false;
-		clk_dump_subtree(s, c, 0);
-	}
-
-	hlist_for_each_entry(c, &clk_orphan_list, child_node) {
-		seq_printf(s, ",");
-		clk_dump_subtree(s, c, 0);
+	for (; *lists; lists++) {
+		hlist_for_each_entry(c, *lists, child_node) {
+			if (!first_node)
+				seq_puts(s, ",");
+			first_node = false;
+			clk_dump_subtree(s, c, 0);
+		}
 	}
 
 	clk_prepare_unlock();
@@ -230,7 +240,6 @@ static const struct file_operations clk_dump_fops = {
 	.release	= single_release,
 };
 
-/* caller must hold prepare_lock */
 static int clk_debug_create_one(struct clk *clk, struct dentry *pdentry)
 {
 	struct dentry *d;
@@ -257,6 +266,11 @@ static int clk_debug_create_one(struct clk *clk, struct dentry *pdentry)
 	if (!d)
 		goto err_out;
 
+	d = debugfs_create_u32("clk_phase", S_IRUGO, clk->dentry,
+			(u32 *)&clk->phase);
+	if (!d)
+		goto err_out;
+
 	d = debugfs_create_x32("clk_flags", S_IRUGO, clk->dentry,
 			(u32 *)&clk->flags);
 	if (!d)
@@ -277,9 +291,11 @@ static int clk_debug_create_one(struct clk *clk, struct dentry *pdentry)
 	if (!d)
 		goto err_out;
 
-	if (clk->ops->debug_init)
-		if (clk->ops->debug_init(clk->hw, clk->dentry))
+	if (clk->ops->debug_init) {
+		ret = clk->ops->debug_init(clk->hw, clk->dentry);
+		if (ret)
 			goto err_out;
+	}
 
 	ret = 0;
 	goto out;
@@ -291,28 +307,6 @@ out:
 	return ret;
 }
 
-/* caller must hold prepare_lock */
-static int clk_debug_create_subtree(struct clk *clk, struct dentry *pdentry)
-{
-	struct clk *child;
-	int ret = -EINVAL;;
-
-	if (!clk || !pdentry)
-		goto out;
-
-	ret = clk_debug_create_one(clk, pdentry);
-
-	if (ret)
-		goto out;
-
-	hlist_for_each_entry(child, &clk->children, child_node)
-		clk_debug_create_subtree(child, clk->dentry);
-
-	ret = 0;
-out:
-	return ret;
-}
-
 /**
  * clk_debug_register - add a clk node to the debugfs clk tree
  * @clk: the clk being added to the debugfs clk tree
@@ -320,39 +314,21 @@ out:
  * Dynamically adds a clk to the debugfs clk tree if debugfs has been
  * initialized.  Otherwise it bails out early since the debugfs clk tree
  * will be created lazily by clk_debug_init as part of a late_initcall.
- *
- * Caller must hold prepare_lock.  Only clk_init calls this function (so
- * far) so this is taken care.
  */
 static int clk_debug_register(struct clk *clk)
 {
-	struct clk *parent;
-	struct dentry *pdentry;
 	int ret = 0;
 
+	mutex_lock(&clk_debug_lock);
+	hlist_add_head(&clk->debug_node, &clk_debug_list);
+
 	if (!inited)
-		goto out;
+		goto unlock;
 
-	parent = clk->parent;
+	ret = clk_debug_create_one(clk, rootdir);
+unlock:
+	mutex_unlock(&clk_debug_lock);
 
-	/*
-	 * Check to see if a clk is a root clk.  Also check that it is
-	 * safe to add this clk to debugfs
-	 */
-	if (!parent)
-		if (clk->flags & CLK_IS_ROOT)
-			pdentry = rootdir;
-		else
-			pdentry = orphandir;
-	else
-		if (parent->dentry)
-			pdentry = parent->dentry;
-		else
-			goto out;
-
-	ret = clk_debug_create_subtree(clk, pdentry);
-
-out:
 	return ret;
 }
 
@@ -363,46 +339,27 @@ out:
  * Dynamically removes a clk and all it's children clk nodes from the
  * debugfs clk tree if clk->dentry points to debugfs created by
  * clk_debug_register in __clk_init.
- *
- * Caller must hold prepare_lock.
  */
 static void clk_debug_unregister(struct clk *clk)
 {
+	mutex_lock(&clk_debug_lock);
+	hlist_del_init(&clk->debug_node);
 	debugfs_remove_recursive(clk->dentry);
+	clk->dentry = NULL;
+	mutex_unlock(&clk_debug_lock);
 }
 
-/**
- * clk_debug_reparent - reparent clk node in the debugfs clk tree
- * @clk: the clk being reparented
- * @new_parent: the new clk parent, may be NULL
- *
- * Rename clk entry in the debugfs clk tree if debugfs has been
- * initialized.  Otherwise it bails out early since the debugfs clk tree
- * will be created lazily by clk_debug_init as part of a late_initcall.
- *
- * Caller must hold prepare_lock.
- */
-static void clk_debug_reparent(struct clk *clk, struct clk *new_parent)
+struct dentry *clk_debugfs_add_file(struct clk_hw *hw, char *name, umode_t mode,
+				void *data, const struct file_operations *fops)
 {
-	struct dentry *d;
-	struct dentry *new_parent_d;
+	struct dentry *d = NULL;
 
-	if (!inited)
-		return;
+	if (hw->clk->dentry)
+		d = debugfs_create_file(name, mode, hw->clk->dentry, data, fops);
 
-	if (new_parent)
-		new_parent_d = new_parent->dentry;
-	else
-		new_parent_d = orphandir;
-
-	d = debugfs_rename(clk->dentry->d_parent, clk->dentry,
-			new_parent_d, clk->name);
-	if (d)
-		clk->dentry = d;
-	else
-		pr_debug("%s: failed to rename debugfs entry for %s\n",
-				__func__, clk->name);
+	return d;
 }
+EXPORT_SYMBOL_GPL(clk_debugfs_add_file);
 
 /**
  * clk_debug_init - lazily create the debugfs clk tree visualization
@@ -426,32 +383,32 @@ static int __init clk_debug_init(void)
 	if (!rootdir)
 		return -ENOMEM;
 
-	d = debugfs_create_file("clk_summary", S_IRUGO, rootdir, NULL,
+	d = debugfs_create_file("clk_summary", S_IRUGO, rootdir, &all_lists,
 				&clk_summary_fops);
 	if (!d)
 		return -ENOMEM;
 
-	d = debugfs_create_file("clk_dump", S_IRUGO, rootdir, NULL,
+	d = debugfs_create_file("clk_dump", S_IRUGO, rootdir, &all_lists,
 				&clk_dump_fops);
 	if (!d)
 		return -ENOMEM;
 
-	orphandir = debugfs_create_dir("orphans", rootdir);
-
-	if (!orphandir)
+	d = debugfs_create_file("clk_orphan_summary", S_IRUGO, rootdir,
+				&orphan_list, &clk_summary_fops);
+	if (!d)
 		return -ENOMEM;
 
-	clk_prepare_lock();
+	d = debugfs_create_file("clk_orphan_dump", S_IRUGO, rootdir,
+				&orphan_list, &clk_dump_fops);
+	if (!d)
+		return -ENOMEM;
 
-	hlist_for_each_entry(clk, &clk_root_list, child_node)
-		clk_debug_create_subtree(clk, rootdir);
-
-	hlist_for_each_entry(clk, &clk_orphan_list, child_node)
-		clk_debug_create_subtree(clk, orphandir);
+	mutex_lock(&clk_debug_lock);
+	hlist_for_each_entry(clk, &clk_debug_list, debug_node)
+		clk_debug_create_one(clk, rootdir);
 
 	inited = 1;
-
-	clk_prepare_unlock();
+	mutex_unlock(&clk_debug_lock);
 
 	return 0;
 }
@@ -612,11 +569,6 @@ unsigned int __clk_get_enable_count(struct clk *clk)
 	return !clk ? 0 : clk->enable_count;
 }
 
-unsigned int __clk_get_prepare_count(struct clk *clk)
-{
-	return !clk ? 0 : clk->prepare_count;
-}
-
 unsigned long __clk_get_rate(struct clk *clk)
 {
 	unsigned long ret;
@@ -639,7 +591,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(__clk_get_rate);
 
-unsigned long __clk_get_accuracy(struct clk *clk)
+static unsigned long __clk_get_accuracy(struct clk *clk)
 {
 	if (!clk)
 		return 0;
@@ -745,7 +697,7 @@ struct clk *__clk_lookup(const char *name)
  */
 long __clk_mux_determine_rate(struct clk_hw *hw, unsigned long rate,
 			      unsigned long *best_parent_rate,
-			      struct clk **best_parent_p)
+			      struct clk_hw **best_parent_p)
 {
 	struct clk *clk = hw->clk, *parent, *best_parent = NULL;
 	int i, num_parents;
@@ -781,7 +733,7 @@ long __clk_mux_determine_rate(struct clk_hw *hw, unsigned long rate,
 
 out:
 	if (best_parent)
-		*best_parent_p = best_parent;
+		*best_parent_p = best_parent->hw;
 	*best_parent_rate = best;
 
 	return best;
@@ -822,6 +774,9 @@ void __clk_unprepare(struct clk *clk)
  */
 void clk_unprepare(struct clk *clk)
 {
+	if (IS_ERR_OR_NULL(clk))
+		return;
+
 	clk_prepare_lock();
 	__clk_unprepare(clk);
 	clk_prepare_unlock();
@@ -883,9 +838,6 @@ static void __clk_disable(struct clk *clk)
 	if (!clk)
 		return;
 
-	if (WARN_ON(IS_ERR(clk)))
-		return;
-
 	if (WARN_ON(clk->enable_count == 0))
 		return;
 
@@ -913,6 +865,9 @@ static void __clk_disable(struct clk *clk)
 void clk_disable(struct clk *clk)
 {
 	unsigned long flags;
+
+	if (IS_ERR_OR_NULL(clk))
+		return;
 
 	flags = clk_enable_lock();
 	__clk_disable(clk);
@@ -986,6 +941,7 @@ unsigned long __clk_round_rate(struct clk *clk, unsigned long rate)
 {
 	unsigned long parent_rate = 0;
 	struct clk *parent;
+	struct clk_hw *parent_hw;
 
 	if (!clk)
 		return 0;
@@ -994,16 +950,18 @@ unsigned long __clk_round_rate(struct clk *clk, unsigned long rate)
 	if (parent)
 		parent_rate = parent->rate;
 
-	if (clk->ops->determine_rate)
+	if (clk->ops->determine_rate) {
+		parent_hw = parent ? parent->hw : NULL;
 		return clk->ops->determine_rate(clk->hw, rate, &parent_rate,
-						&parent);
-	else if (clk->ops->round_rate)
+						&parent_hw);
+	} else if (clk->ops->round_rate)
 		return clk->ops->round_rate(clk->hw, rate, &parent_rate);
 	else if (clk->flags & CLK_SET_RATE_PARENT)
 		return __clk_round_rate(clk->parent, rate);
 	else
 		return clk->rate;
 }
+EXPORT_SYMBOL_GPL(__clk_round_rate);
 
 /**
  * clk_round_rate - round the given rate for a clk
@@ -1115,6 +1073,13 @@ long clk_get_accuracy(struct clk *clk)
 }
 EXPORT_SYMBOL_GPL(clk_get_accuracy);
 
+static unsigned long clk_recalc(struct clk *clk, unsigned long parent_rate)
+{
+	if (clk->ops->recalc_rate)
+		return clk->ops->recalc_rate(clk->hw, parent_rate);
+	return parent_rate;
+}
+
 /**
  * __clk_recalc_rates
  * @clk: first clk in the subtree
@@ -1140,10 +1105,7 @@ static void __clk_recalc_rates(struct clk *clk, unsigned long msg)
 	if (clk->parent)
 		parent_rate = clk->parent->rate;
 
-	if (clk->ops->recalc_rate)
-		clk->rate = clk->ops->recalc_rate(clk->hw, parent_rate);
-	else
-		clk->rate = parent_rate;
+	clk->rate = clk_recalc(clk, parent_rate);
 
 	/*
 	 * ignore NOTIFY_STOP and NOTIFY_BAD return values for POST_RATE_CHANGE
@@ -1285,9 +1247,6 @@ static void __clk_set_parent_after(struct clk *clk, struct clk *parent,
 		clk_disable(old_parent);
 		__clk_unprepare(old_parent);
 	}
-
-	/* update debugfs with new clk tree topology */
-	clk_debug_reparent(clk, parent);
 }
 
 static int __clk_set_parent(struct clk *clk, struct clk *parent, u8 p_index)
@@ -1342,10 +1301,7 @@ static int __clk_speculate_rates(struct clk *clk, unsigned long parent_rate)
 	unsigned long new_rate;
 	int ret = NOTIFY_DONE;
 
-	if (clk->ops->recalc_rate)
-		new_rate = clk->ops->recalc_rate(clk->hw, parent_rate);
-	else
-		new_rate = parent_rate;
+	new_rate = clk_recalc(clk, parent_rate);
 
 	/* abort rate change if a driver returns NOTIFY_BAD or NOTIFY_STOP */
 	if (clk->notifier_count)
@@ -1381,10 +1337,7 @@ static void clk_calc_subtree(struct clk *clk, unsigned long new_rate,
 		new_parent->new_child = clk;
 
 	hlist_for_each_entry(child, &clk->children, child_node) {
-		if (child->ops->recalc_rate)
-			child->new_rate = child->ops->recalc_rate(child->hw, new_rate);
-		else
-			child->new_rate = new_rate;
+		child->new_rate = clk_recalc(child, new_rate);
 		clk_calc_subtree(child, child->new_rate, NULL, 0);
 	}
 }
@@ -1397,6 +1350,7 @@ static struct clk *clk_calc_new_rates(struct clk *clk, unsigned long rate)
 {
 	struct clk *top = clk;
 	struct clk *old_parent, *parent;
+	struct clk_hw *parent_hw;
 	unsigned long best_parent_rate = 0;
 	unsigned long new_rate;
 	int p_index = 0;
@@ -1412,9 +1366,11 @@ static struct clk *clk_calc_new_rates(struct clk *clk, unsigned long rate)
 
 	/* find the closest rate and parent clk/rate */
 	if (clk->ops->determine_rate) {
+		parent_hw = parent ? parent->hw : NULL;
 		new_rate = clk->ops->determine_rate(clk->hw, rate,
 						    &best_parent_rate,
-						    &parent);
+						    &parent_hw);
+		parent = parent_hw ? parent_hw->clk : NULL;
 	} else if (clk->ops->round_rate) {
 		new_rate = clk->ops->round_rate(clk->hw, rate,
 						&best_parent_rate);
@@ -1502,6 +1458,7 @@ static struct clk *clk_propagate_rate_change(struct clk *clk, unsigned long even
 static void clk_change_rate(struct clk *clk)
 {
 	struct clk *child;
+	struct hlist_node *tmp;
 	unsigned long old_rate;
 	unsigned long best_parent_rate = 0;
 	bool skip_set_rate = false;
@@ -1532,15 +1489,16 @@ static void clk_change_rate(struct clk *clk)
 	if (!skip_set_rate && clk->ops->set_rate)
 		clk->ops->set_rate(clk->hw, clk->new_rate, best_parent_rate);
 
-	if (clk->ops->recalc_rate)
-		clk->rate = clk->ops->recalc_rate(clk->hw, best_parent_rate);
-	else
-		clk->rate = best_parent_rate;
+	clk->rate = clk_recalc(clk, best_parent_rate);
 
 	if (clk->notifier_count && old_rate != clk->rate)
 		__clk_notify(clk, POST_RATE_CHANGE, old_rate, clk->rate);
 
-	hlist_for_each_entry(child, &clk->children, child_node) {
+	/*
+	 * Use safe iteration, as change_rate can actually swap parents
+	 * for certain clock types.
+	 */
+	hlist_for_each_entry_safe(child, tmp, &clk->children, child_node) {
 		/* Skip children who will be reparented to another clock */
 		if (child->new_parent && child->new_parent != clk)
 			continue;
@@ -1659,7 +1617,7 @@ static struct clk *__clk_init_parent(struct clk *clk)
 
 	if (clk->num_parents == 1) {
 		if (IS_ERR_OR_NULL(clk->parent))
-			ret = clk->parent = __clk_lookup(clk->parent_names[0]);
+			clk->parent = __clk_lookup(clk->parent_names[0]);
 		ret = clk->parent;
 		goto out;
 	}
@@ -1693,7 +1651,6 @@ out:
 void __clk_reparent(struct clk *clk, struct clk *new_parent)
 {
 	clk_reparent(clk, new_parent);
-	clk_debug_reparent(clk, new_parent);
 	__clk_recalc_accuracies(clk);
 	__clk_recalc_rates(clk, POST_RATE_CHANGE);
 }
@@ -1723,9 +1680,6 @@ int clk_set_parent(struct clk *clk, struct clk *parent)
 
 	if (!clk)
 		return 0;
-
-	if (!clk->ops)
-		return -EINVAL;
 
 	/* verify ops for for multi-parent clks */
 	if ((clk->num_parents > 1) && (!clk->ops->set_parent))
@@ -1779,6 +1733,77 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(clk_set_parent);
+
+/**
+ * clk_set_phase - adjust the phase shift of a clock signal
+ * @clk: clock signal source
+ * @degrees: number of degrees the signal is shifted
+ *
+ * Shifts the phase of a clock signal by the specified
+ * degrees. Returns 0 on success, -EERROR otherwise.
+ *
+ * This function makes no distinction about the input or reference
+ * signal that we adjust the clock signal phase against. For example
+ * phase locked-loop clock signal generators we may shift phase with
+ * respect to feedback clock signal input, but for other cases the
+ * clock phase may be shifted with respect to some other, unspecified
+ * signal.
+ *
+ * Additionally the concept of phase shift does not propagate through
+ * the clock tree hierarchy, which sets it apart from clock rates and
+ * clock accuracy. A parent clock phase attribute does not have an
+ * impact on the phase attribute of a child clock.
+ */
+int clk_set_phase(struct clk *clk, int degrees)
+{
+	int ret = 0;
+
+	if (!clk)
+		goto out;
+
+	/* sanity check degrees */
+	degrees %= 360;
+	if (degrees < 0)
+		degrees += 360;
+
+	clk_prepare_lock();
+
+	if (!clk->ops->set_phase)
+		goto out_unlock;
+
+	ret = clk->ops->set_phase(clk->hw, degrees);
+
+	if (!ret)
+		clk->phase = degrees;
+
+out_unlock:
+	clk_prepare_unlock();
+
+out:
+	return ret;
+}
+
+/**
+ * clk_get_phase - return the phase shift of a clock signal
+ * @clk: clock signal source
+ *
+ * Returns the phase shift of a clock node in degrees, otherwise returns
+ * -EERROR.
+ */
+int clk_get_phase(struct clk *clk)
+{
+	int ret = 0;
+
+	if (!clk)
+		goto out;
+
+	clk_prepare_lock();
+	ret = clk->phase;
+	clk_prepare_unlock();
+
+out:
+	return ret;
+}
 
 /**
  * __clk_init - initialize the data structures in a struct clk
@@ -1899,6 +1924,16 @@ int __clk_init(struct device *dev, struct clk *clk)
 		clk->accuracy = 0;
 
 	/*
+	 * Set clk's phase.
+	 * Since a phase is by definition relative to its parent, just
+	 * query the current clock phase, or just assume it's in phase.
+	 */
+	if (clk->ops->get_phase)
+		clk->phase = clk->ops->get_phase(clk->hw);
+	else
+		clk->phase = 0;
+
+	/*
 	 * Set clk's rate.  The preferred method is to use .recalc_rate.  For
 	 * simple clocks and lazy developers the default fallback is to use the
 	 * parent's rate.  If a clock doesn't have a parent (or is orphaned)
@@ -1912,7 +1947,6 @@ int __clk_init(struct device *dev, struct clk *clk)
 	else
 		clk->rate = 0;
 
-	clk_debug_register(clk);
 	/*
 	 * walk the list of orphan clocks and reparent any that are children of
 	 * this clock
@@ -1946,6 +1980,9 @@ int __clk_init(struct device *dev, struct clk *clk)
 	kref_init(&clk->ref);
 out:
 	clk_prepare_unlock();
+
+	if (!ret)
+		clk_debug_register(clk);
 
 	return ret;
 }
@@ -2129,14 +2166,16 @@ void clk_unregister(struct clk *clk)
 {
 	unsigned long flags;
 
-       if (!clk || WARN_ON_ONCE(IS_ERR(clk)))
-               return;
+	if (!clk || WARN_ON_ONCE(IS_ERR(clk)))
+		return;
+
+	clk_debug_unregister(clk);
 
 	clk_prepare_lock();
 
 	if (clk->ops == &clk_nodrv_ops) {
 		pr_err("%s: unregistered clock: %s\n", __func__, clk->name);
-		goto out;
+		return;
 	}
 	/*
 	 * Assign empty clock ops for consumers that might still hold
@@ -2155,16 +2194,13 @@ void clk_unregister(struct clk *clk)
 			clk_set_parent(child, NULL);
 	}
 
-	clk_debug_unregister(clk);
-
 	hlist_del_init(&clk->child_node);
 
 	if (clk->prepare_count)
 		pr_warn("%s: unregistering prepared clock: %s\n",
 					__func__, clk->name);
-
 	kref_put(&clk->ref, __clk_release);
-out:
+
 	clk_prepare_unlock();
 }
 EXPORT_SYMBOL_GPL(clk_unregister);
@@ -2242,14 +2278,17 @@ int __clk_get(struct clk *clk)
 
 void __clk_put(struct clk *clk)
 {
+	struct module *owner;
+
 	if (!clk || WARN_ON_ONCE(IS_ERR(clk)))
 		return;
 
 	clk_prepare_lock();
+	owner = clk->owner;
 	kref_put(&clk->ref, __clk_release);
 	clk_prepare_unlock();
 
-	module_put(clk->owner);
+	module_put(owner);
 }
 
 /***        clk rate change notifiers        ***/
@@ -2427,6 +2466,7 @@ int of_clk_add_provider(struct device_node *np,
 			void *data)
 {
 	struct of_clk_provider *cp;
+	int ret;
 
 	cp = kzalloc(sizeof(struct of_clk_provider), GFP_KERNEL);
 	if (!cp)
@@ -2441,7 +2481,11 @@ int of_clk_add_provider(struct device_node *np,
 	mutex_unlock(&of_clk_mutex);
 	pr_debug("Added clock from %s\n", np->full_name);
 
-	return 0;
+	ret = of_clk_set_defaults(np, true);
+	if (ret < 0)
+		of_clk_del_provider(np);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(of_clk_add_provider);
 
@@ -2618,7 +2662,10 @@ void __init of_clk_init(const struct of_device_id *matches)
 		list_for_each_entry_safe(clk_provider, next,
 					&clk_provider_list, node) {
 			if (force || parent_ready(clk_provider->np)) {
+
 				clk_provider->clk_init_cb(clk_provider->np);
+				of_clk_set_defaults(clk_provider->np, true);
+
 				list_del(&clk_provider->node);
 				kfree(clk_provider);
 				is_init_done = true;
@@ -2633,7 +2680,6 @@ void __init of_clk_init(const struct of_device_id *matches)
 		 */
 		if (!is_init_done)
 			force = true;
-
 	}
 }
 #endif

@@ -24,6 +24,7 @@
 
 #include "drmP.h"
 #include "radeon.h"
+#include "radeon_asic.h"
 #include "rv770d.h"
 #include "r600_dpm.h"
 #include "rv770_dpm.h"
@@ -2328,12 +2329,6 @@ void rv770_get_engine_memory_ss(struct radeon_device *rdev)
 						       ASIC_INTERNAL_ENGINE_SS, 0);
 	pi->mclk_ss = radeon_atombios_get_asic_ss_info(rdev, &ss,
 						       ASIC_INTERNAL_MEMORY_SS, 0);
-
-	/* disable ss, causes hangs on some cayman boards */
-	if (rdev->family == CHIP_CAYMAN) {
-		pi->sclk_ss = false;
-		pi->mclk_ss = false;
-	}
 
 	if (pi->sclk_ss || pi->mclk_ss)
 		pi->dynamic_ss = true;

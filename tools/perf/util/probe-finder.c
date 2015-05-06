@@ -26,7 +26,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -282,6 +281,7 @@ static int convert_variable_type(Dwarf_Die *vr_die,
 	struct probe_trace_arg_ref **ref_ptr = &tvar->ref;
 	Dwarf_Die type;
 	char buf[16];
+	char sbuf[STRERR_BUFSIZE];
 	int bsize, boffs, total;
 	int ret;
 
@@ -368,7 +368,7 @@ formatted:
 		if (ret >= 16)
 			ret = -E2BIG;
 		pr_warning("Failed to convert variable type: %s\n",
-			   strerror(-ret));
+			   strerror_r(-ret, sbuf, sizeof(sbuf)));
 		return ret;
 	}
 	tvar->type = strdup(buf);
@@ -573,14 +573,13 @@ static int find_variable(Dwarf_Die *sc_die, struct probe_finder *pf)
 	if (!die_find_variable_at(sc_die, pf->pvar->var, pf->addr, &vr_die)) {
 		/* Search again in global variables */
 		if (!die_find_variable_at(&pf->cu_die, pf->pvar->var, 0, &vr_die))
+			pr_warning("Failed to find '%s' in this function.\n",
+				   pf->pvar->var);
 			ret = -ENOENT;
 	}
 	if (ret >= 0)
 		ret = convert_variable(&vr_die, pf);
 
-	if (ret < 0)
-		pr_warning("Failed to find '%s' in this function.\n",
-			   pf->pvar->var);
 	return ret;
 }
 
@@ -610,14 +609,18 @@ static int convert_to_trace_point(Dwarf_Die *sp_die, Dwfl_Module *mod,
 		return -EINVAL;
 	}
 
-	/* Get an appropriate symbol from symtab */
-	symbol = dwfl_module_addrsym(mod, paddr, &sym, NULL);
+	symbol = dwarf_diename(sp_die);
 	if (!symbol) {
-		pr_warning("Failed to find symbol at 0x%lx\n",
-			   (unsigned long)paddr);
-		return -ENOENT;
+		/* Try to get the symbol name from symtab */
+		symbol = dwfl_module_addrsym(mod, paddr, &sym, NULL);
+		if (!symbol) {
+			pr_warning("Failed to find symbol at 0x%lx\n",
+				   (unsigned long)paddr);
+			return -ENOENT;
+		}
+		eaddr = sym.st_value;
 	}
-	tp->offset = (unsigned long)(paddr - sym.st_value);
+	tp->offset = (unsigned long)(paddr - eaddr);
 	tp->address = (unsigned long)paddr;
 	tp->symbol = strdup(symbol);
 	if (!tp->symbol)
@@ -781,10 +784,12 @@ static int find_lazy_match_lines(struct intlist *list,
 	size_t line_len;
 	ssize_t len;
 	int count = 0, linenum = 1;
+	char sbuf[STRERR_BUFSIZE];
 
 	fp = fopen(fname, "r");
 	if (!fp) {
-		pr_warning("Failed to open %s: %s\n", fname, strerror(errno));
+		pr_warning("Failed to open %s: %s\n", fname,
+			   strerror_r(errno, sbuf, sizeof(sbuf)));
 		return -errno;
 	}
 
@@ -984,8 +989,24 @@ static int debuginfo__find_probes(struct debuginfo *dbg,
 	int ret = 0;
 
 #if _ELFUTILS_PREREQ(0, 142)
+	Elf *elf;
+	GElf_Ehdr ehdr;
+	GElf_Shdr shdr;
+
 	/* Get the call frame information from this dwarf */
-	pf->cfi = dwarf_getcfi_elf(dwarf_getelf(dbg->dbg));
+	elf = dwarf_getelf(dbg->dbg);
+	if (elf == NULL)
+		return -EINVAL;
+
+	if (gelf_getehdr(elf, &ehdr) == NULL)
+		return -EINVAL;
+
+	if (elf_section_by_name(elf, &ehdr, &shdr, ".eh_frame", NULL) &&
+	    shdr.sh_type == SHT_PROGBITS) {
+		pf->cfi = dwarf_getcfi_elf(elf);
+	} else {
+		pf->cfi = dwarf_getcfi(dbg->dbg);
+	}
 #endif
 
 	off = 0;
@@ -1281,7 +1302,11 @@ out:
 	return ret;
 }
 
-/* Find available variables at given probe point */
+/*
+ * Find available variables at given probe point
+ * Return the number of found probe points. Return 0 if there is no
+ * matched probe point. Return <0 if an error occurs.
+ */
 int debuginfo__find_available_vars_at(struct debuginfo *dbg,
 				      struct perf_probe_event *pev,
 				      struct variable_list **vls,

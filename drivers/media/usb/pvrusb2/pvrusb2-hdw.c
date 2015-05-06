@@ -2910,7 +2910,7 @@ static void pvr2_subdev_update(struct pvr2_hdw *hdw)
 			v4l2_std_id vs;
 			vs = hdw->std_mask_cur;
 			v4l2_device_call_all(&hdw->v4l2_dev, 0,
-					     core, s_std, vs);
+					     video, s_std, vs);
 			pvr2_hdw_cx25840_vbi_hack(hdw);
 		}
 		hdw->tuner_signal_stale = !0;
@@ -2966,7 +2966,7 @@ static void pvr2_subdev_update(struct pvr2_hdw *hdw)
 		memset(&fmt, 0, sizeof(fmt));
 		fmt.width = hdw->res_hor_val;
 		fmt.height = hdw->res_ver_val;
-		fmt.code = V4L2_MBUS_FMT_FIXED;
+		fmt.code = MEDIA_BUS_FMT_FIXED;
 		pvr2_trace(PVR2_TRACE_CHIPS, "subdev v4l2 set_size(%dx%d)",
 			   fmt.width, fmt.height);
 		v4l2_device_call_all(&hdw->v4l2_dev, 0, video, s_mbus_fmt, &fmt);

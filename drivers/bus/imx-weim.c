@@ -162,7 +162,9 @@ static int __init weim_parse_dt(struct platform_device *pdev,
 		}
 	}
 
-	ret = of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);
+	ret = of_platform_populate(pdev->dev.of_node,
+				   of_default_bus_match_table,
+				   NULL, &pdev->dev);
 	if (ret)
 		dev_err(&pdev->dev, "%s fail to create devices.\n",
 			pdev->dev.of_node->full_name);
@@ -204,7 +206,6 @@ static int __init weim_probe(struct platform_device *pdev)
 static struct platform_driver weim_driver = {
 	.driver = {
 		.name		= "imx-weim",
-		.owner		= THIS_MODULE,
 		.of_match_table	= weim_id_table,
 	},
 };

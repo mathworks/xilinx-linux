@@ -299,7 +299,7 @@ static void set_config_filename(const char *config_filename)
 	int size;
 
 	size = snprintf(menu_backtitle, sizeof(menu_backtitle),
-	                "%s - %s", config_filename, rootmenu.prompt->text);
+			"%s - %s", config_filename, rootmenu.prompt->text);
 	if (size >= sizeof(menu_backtitle))
 		menu_backtitle[sizeof(menu_backtitle)-1] = '\0';
 	set_dialog_backtitle(menu_backtitle);
@@ -330,10 +330,10 @@ static void set_subtitle(void)
 	list_for_each_entry(sp, &trail, entries) {
 		if (sp->text) {
 			if (pos) {
-				pos->next = xcalloc(sizeof(*pos), 1);
+				pos->next = xcalloc(1, sizeof(*pos));
 				pos = pos->next;
 			} else {
-				subtitles = pos = xcalloc(sizeof(*pos), 1);
+				subtitles = pos = xcalloc(1, sizeof(*pos));
 			}
 			pos->text = sp->text;
 		}
@@ -1034,4 +1034,3 @@ int main(int ac, char **av)
 
 	return res;
 }
-

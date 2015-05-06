@@ -280,8 +280,8 @@ static int camif_prepare_addr(struct camif_vp *vp, struct vb2_buffer *vb,
 		return -EINVAL;
 	}
 
-	pr_debug("DMA address: y: %#x  cb: %#x cr: %#x\n",
-		 paddr->y, paddr->cb, paddr->cr);
+	pr_debug("DMA address: y: %pad  cb: %pad cr: %pad\n",
+		 &paddr->y, &paddr->cb, &paddr->cr);
 
 	return 0;
 }
@@ -435,10 +435,10 @@ static int start_streaming(struct vb2_queue *vq, unsigned int count)
 	return 0;
 }
 
-static int stop_streaming(struct vb2_queue *vq)
+static void stop_streaming(struct vb2_queue *vq)
 {
 	struct camif_vp *vp = vb2_get_drv_priv(vq);
-	return camif_stop_capture(vp);
+	camif_stop_capture(vp);
 }
 
 static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *pfmt,
@@ -1172,7 +1172,6 @@ int s3c_camif_register_video_node(struct camif_dev *camif, int idx)
 		goto err_vd_rel;
 
 	video_set_drvdata(vfd, vp);
-	set_bit(V4L2_FL_USE_FH_PRIO, &vfd->flags);
 
 	v4l2_ctrl_handler_init(&vp->ctrl_handler, 1);
 	ctrl = v4l2_ctrl_new_std(&vp->ctrl_handler, &s3c_camif_video_ctrl_ops,
@@ -1219,11 +1218,11 @@ void s3c_camif_unregister_video_node(struct camif_dev *camif, int idx)
 }
 
 /* Media bus pixel formats supported at the camif input */
-static const enum v4l2_mbus_pixelcode camif_mbus_formats[] = {
-	V4L2_MBUS_FMT_YUYV8_2X8,
-	V4L2_MBUS_FMT_YVYU8_2X8,
-	V4L2_MBUS_FMT_UYVY8_2X8,
-	V4L2_MBUS_FMT_VYUY8_2X8,
+static const u32 camif_mbus_formats[] = {
+	MEDIA_BUS_FMT_YUYV8_2X8,
+	MEDIA_BUS_FMT_YVYU8_2X8,
+	MEDIA_BUS_FMT_UYVY8_2X8,
+	MEDIA_BUS_FMT_VYUY8_2X8,
 };
 
 /*
@@ -1231,7 +1230,7 @@ static const enum v4l2_mbus_pixelcode camif_mbus_formats[] = {
  */
 
 static int s3c_camif_subdev_enum_mbus_code(struct v4l2_subdev *sd,
-					struct v4l2_subdev_fh *fh,
+					struct v4l2_subdev_pad_config *cfg,
 					struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index >= ARRAY_SIZE(camif_mbus_formats))
@@ -1242,14 +1241,14 @@ static int s3c_camif_subdev_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int s3c_camif_subdev_get_fmt(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_fh *fh,
+				    struct v4l2_subdev_pad_config *cfg,
 				    struct v4l2_subdev_format *fmt)
 {
 	struct camif_dev *camif = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *mf = &fmt->format;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(fh, fmt->pad);
+		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
 		fmt->format = *mf;
 		return 0;
 	}
@@ -1271,6 +1270,7 @@ static int s3c_camif_subdev_get_fmt(struct v4l2_subdev *sd,
 	}
 
 	mutex_unlock(&camif->lock);
+	mf->field = V4L2_FIELD_NONE;
 	mf->colorspace = V4L2_COLORSPACE_JPEG;
 	return 0;
 }
@@ -1308,7 +1308,7 @@ static void __camif_subdev_try_format(struct camif_dev *camif,
 }
 
 static int s3c_camif_subdev_set_fmt(struct v4l2_subdev *sd,
-				    struct v4l2_subdev_fh *fh,
+				    struct v4l2_subdev_pad_config *cfg,
 				    struct v4l2_subdev_format *fmt)
 {
 	struct camif_dev *camif = v4l2_get_subdevdata(sd);
@@ -1319,6 +1319,7 @@ static int s3c_camif_subdev_set_fmt(struct v4l2_subdev *sd,
 	v4l2_dbg(1, debug, sd, "pad%d: code: 0x%x, %ux%u\n",
 		 fmt->pad, mf->code, mf->width, mf->height);
 
+	mf->field = V4L2_FIELD_NONE;
 	mf->colorspace = V4L2_COLORSPACE_JPEG;
 	mutex_lock(&camif->lock);
 
@@ -1335,7 +1336,7 @@ static int s3c_camif_subdev_set_fmt(struct v4l2_subdev *sd,
 	__camif_subdev_try_format(camif, mf, fmt->pad);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(fh, fmt->pad);
+		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
 		*mf = fmt->format;
 		mutex_unlock(&camif->lock);
 		return 0;
@@ -1374,7 +1375,7 @@ static int s3c_camif_subdev_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int s3c_camif_subdev_get_selection(struct v4l2_subdev *sd,
-					  struct v4l2_subdev_fh *fh,
+					  struct v4l2_subdev_pad_config *cfg,
 					  struct v4l2_subdev_selection *sel)
 {
 	struct camif_dev *camif = v4l2_get_subdevdata(sd);
@@ -1387,7 +1388,7 @@ static int s3c_camif_subdev_get_selection(struct v4l2_subdev *sd,
 		return -EINVAL;
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
-		sel->r = *v4l2_subdev_get_try_crop(fh, sel->pad);
+		sel->r = *v4l2_subdev_get_try_crop(sd, cfg, sel->pad);
 		return 0;
 	}
 
@@ -1461,7 +1462,7 @@ static void __camif_try_crop(struct camif_dev *camif, struct v4l2_rect *r)
 }
 
 static int s3c_camif_subdev_set_selection(struct v4l2_subdev *sd,
-					  struct v4l2_subdev_fh *fh,
+					  struct v4l2_subdev_pad_config *cfg,
 					  struct v4l2_subdev_selection *sel)
 {
 	struct camif_dev *camif = v4l2_get_subdevdata(sd);
@@ -1475,7 +1476,7 @@ static int s3c_camif_subdev_set_selection(struct v4l2_subdev *sd,
 	__camif_try_crop(camif, &sel->r);
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_get_try_crop(fh, sel->pad) = sel->r;
+		*v4l2_subdev_get_try_crop(sd, cfg, sel->pad) = sel->r;
 	} else {
 		unsigned long flags;
 		unsigned int i;

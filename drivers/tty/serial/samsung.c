@@ -47,11 +47,30 @@
 
 #include <asm/irq.h>
 
-#ifdef CONFIG_SAMSUNG_CLOCK
-#include <plat/clock.h>
-#endif
-
 #include "samsung.h"
+
+#if	defined(CONFIG_SERIAL_SAMSUNG_DEBUG) &&	\
+	defined(CONFIG_DEBUG_LL) &&		\
+	!defined(MODULE)
+
+extern void printascii(const char *);
+
+__printf(1, 2)
+static void dbg(const char *fmt, ...)
+{
+	va_list va;
+	char buff[256];
+
+	va_start(va, fmt);
+	vscnprintf(buff, sizeof(buff), fmt, va);
+	va_end(va);
+
+	printascii(buff);
+}
+
+#else
+#define dbg(fmt, ...) do { if (0) no_printk(fmt, ##__VA_ARGS__); } while (0)
+#endif
 
 /* UART name and device definitions */
 
@@ -180,16 +199,14 @@ static void s3c24xx_serial_stop_rx(struct uart_port *port)
 	}
 }
 
-static void s3c24xx_serial_enable_ms(struct uart_port *port)
-{
-}
-
-static inline struct s3c24xx_uart_info *s3c24xx_port_to_info(struct uart_port *port)
+static inline struct s3c24xx_uart_info
+	*s3c24xx_port_to_info(struct uart_port *port)
 {
 	return to_ourport(port)->info;
 }
 
-static inline struct s3c2410_uartcfg *s3c24xx_port_to_cfg(struct uart_port *port)
+static inline struct s3c2410_uartcfg
+	*s3c24xx_port_to_cfg(struct uart_port *port)
 {
 	struct s3c24xx_uart_port *ourport;
 
@@ -222,7 +239,7 @@ s3c24xx_serial_rx_chars(int irq, void *dev_id)
 	struct uart_port *port = &ourport->port;
 	unsigned int ufcon, ch, flag, ufstat, uerstat;
 	unsigned long flags;
-	int max_count = 64;
+	int max_count = port->fifosize;
 
 	spin_lock_irqsave(&port->lock, flags);
 
@@ -296,14 +313,14 @@ s3c24xx_serial_rx_chars(int irq, void *dev_id)
 		uart_insert_char(port, uerstat, S3C2410_UERSTAT_OVERRUN,
 				 ch, flag);
 
- ignore_char:
+ignore_char:
 		continue;
 	}
 
 	spin_unlock_irqrestore(&port->lock, flags);
 	tty_flip_buffer_push(&port->state->port);
 
- out:
+out:
 	return IRQ_HANDLED;
 }
 
@@ -313,7 +330,7 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 	struct uart_port *port = &ourport->port;
 	struct circ_buf *xmit = &port->state->xmit;
 	unsigned long flags;
-	int count = 256;
+	int count = port->fifosize;
 
 	spin_lock_irqsave(&port->lock, flags);
 
@@ -353,7 +370,7 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 	if (uart_circ_empty(xmit))
 		s3c24xx_serial_stop_tx(port);
 
- out:
+out:
 	spin_unlock_irqrestore(&port->lock, flags);
 	return IRQ_HANDLED;
 }
@@ -468,8 +485,8 @@ static int s3c24xx_serial_startup(struct uart_port *port)
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 	int ret;
 
-	dbg("s3c24xx_serial_startup: port=%p (%08lx,%p)\n",
-	    port->mapbase, port->membase);
+	dbg("s3c24xx_serial_startup: port=%p (%08llx,%p)\n",
+	    port, (unsigned long long)port->mapbase, port->membase);
 
 	rx_enabled(port) = 1;
 
@@ -504,7 +521,7 @@ static int s3c24xx_serial_startup(struct uart_port *port)
 
 	return ret;
 
- err:
+err:
 	s3c24xx_serial_shutdown(port);
 	return ret;
 }
@@ -514,8 +531,8 @@ static int s3c64xx_serial_startup(struct uart_port *port)
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 	int ret;
 
-	dbg("s3c64xx_serial_startup: port=%p (%08lx,%p)\n",
-	    port->mapbase, port->membase);
+	dbg("s3c64xx_serial_startup: port=%p (%08llx,%p)\n",
+	    port, (unsigned long long)port->mapbase, port->membase);
 
 	wr_regl(port, S3C64XX_UINTM, 0xf);
 
@@ -544,11 +561,15 @@ static void s3c24xx_serial_pm(struct uart_port *port, unsigned int level,
 			      unsigned int old)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
+	int timeout = 10000;
 
 	ourport->pm_level = level;
 
 	switch (level) {
 	case 3:
+		while (--timeout && !s3c24xx_serial_txempty_nofifo(port))
+			udelay(100);
+
 		if (!IS_ERR(ourport->baudclk))
 			clk_disable_unprepare(ourport->baudclk);
 
@@ -826,8 +847,8 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 	 */
 	port->read_status_mask = S3C2410_UERSTAT_OVERRUN;
 	if (termios->c_iflag & INPCK)
-		port->read_status_mask |= S3C2410_UERSTAT_FRAME | S3C2410_UERSTAT_PARITY;
-
+		port->read_status_mask |= S3C2410_UERSTAT_FRAME |
+			S3C2410_UERSTAT_PARITY;
 	/*
 	 * Which character status flags should we ignore?
 	 */
@@ -929,7 +950,6 @@ static struct uart_ops s3c24xx_serial_ops = {
 	.stop_tx	= s3c24xx_serial_stop_tx,
 	.start_tx	= s3c24xx_serial_start_tx,
 	.stop_rx	= s3c24xx_serial_stop_rx,
-	.enable_ms	= s3c24xx_serial_enable_ms,
 	.break_ctl	= s3c24xx_serial_break_ctl,
 	.startup	= s3c24xx_serial_startup,
 	.shutdown	= s3c24xx_serial_shutdown,
@@ -955,10 +975,13 @@ static struct uart_driver s3c24xx_uart_drv = {
 	.minor		= S3C24XX_SERIAL_MINOR,
 };
 
-static struct s3c24xx_uart_port s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS] = {
+#define __PORT_LOCK_UNLOCKED(i) \
+	__SPIN_LOCK_UNLOCKED(s3c24xx_serial_ports[i].port.lock)
+static struct s3c24xx_uart_port
+s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS] = {
 	[0] = {
 		.port = {
-			.lock		= __SPIN_LOCK_UNLOCKED(s3c24xx_serial_ports[0].port.lock),
+			.lock		= __PORT_LOCK_UNLOCKED(0),
 			.iotype		= UPIO_MEM,
 			.uartclk	= 0,
 			.fifosize	= 16,
@@ -969,7 +992,7 @@ static struct s3c24xx_uart_port s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS
 	},
 	[1] = {
 		.port = {
-			.lock		= __SPIN_LOCK_UNLOCKED(s3c24xx_serial_ports[1].port.lock),
+			.lock		= __PORT_LOCK_UNLOCKED(1),
 			.iotype		= UPIO_MEM,
 			.uartclk	= 0,
 			.fifosize	= 16,
@@ -982,7 +1005,7 @@ static struct s3c24xx_uart_port s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS
 
 	[2] = {
 		.port = {
-			.lock		= __SPIN_LOCK_UNLOCKED(s3c24xx_serial_ports[2].port.lock),
+			.lock		= __PORT_LOCK_UNLOCKED(2),
 			.iotype		= UPIO_MEM,
 			.uartclk	= 0,
 			.fifosize	= 16,
@@ -995,7 +1018,7 @@ static struct s3c24xx_uart_port s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS
 #if CONFIG_SERIAL_SAMSUNG_UARTS > 3
 	[3] = {
 		.port = {
-			.lock		= __SPIN_LOCK_UNLOCKED(s3c24xx_serial_ports[3].port.lock),
+			.lock		= __PORT_LOCK_UNLOCKED(3),
 			.iotype		= UPIO_MEM,
 			.uartclk	= 0,
 			.fifosize	= 16,
@@ -1006,6 +1029,7 @@ static struct s3c24xx_uart_port s3c24xx_serial_ports[CONFIG_SERIAL_SAMSUNG_UARTS
 	}
 #endif
 };
+#undef __PORT_LOCK_UNLOCKED
 
 /* s3c24xx_serial_resetport
  *
@@ -1088,11 +1112,12 @@ static int s3c24xx_serial_cpufreq_transition(struct notifier_block *nb,
 		s3c24xx_serial_set_termios(uport, termios, NULL);
 	}
 
- exit:
+exit:
 	return 0;
 }
 
-static inline int s3c24xx_serial_cpufreq_register(struct s3c24xx_uart_port *port)
+static inline int
+s3c24xx_serial_cpufreq_register(struct s3c24xx_uart_port *port)
 {
 	port->freq_transition.notifier_call = s3c24xx_serial_cpufreq_transition;
 
@@ -1100,19 +1125,22 @@ static inline int s3c24xx_serial_cpufreq_register(struct s3c24xx_uart_port *port
 					 CPUFREQ_TRANSITION_NOTIFIER);
 }
 
-static inline void s3c24xx_serial_cpufreq_deregister(struct s3c24xx_uart_port *port)
+static inline void
+s3c24xx_serial_cpufreq_deregister(struct s3c24xx_uart_port *port)
 {
 	cpufreq_unregister_notifier(&port->freq_transition,
 				    CPUFREQ_TRANSITION_NOTIFIER);
 }
 
 #else
-static inline int s3c24xx_serial_cpufreq_register(struct s3c24xx_uart_port *port)
+static inline int
+s3c24xx_serial_cpufreq_register(struct s3c24xx_uart_port *port)
 {
 	return 0;
 }
 
-static inline void s3c24xx_serial_cpufreq_deregister(struct s3c24xx_uart_port *port)
+static inline void
+s3c24xx_serial_cpufreq_deregister(struct s3c24xx_uart_port *port)
 {
 }
 #endif
@@ -1160,7 +1188,7 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 		return -EINVAL;
 	}
 
-	dbg("resource %p (%lx..%lx)\n", res, res->start, res->end);
+	dbg("resource %pR)\n", res);
 
 	port->membase = devm_ioremap(port->dev, res->start, resource_size(res));
 	if (!port->membase) {
@@ -1203,32 +1231,14 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 		wr_regl(port, S3C64XX_UINTSP, 0xf);
 	}
 
-	dbg("port: map=%08x, mem=%08x, irq=%d (%d,%d), clock=%ld\n",
-	    port->mapbase, port->membase, port->irq,
+	dbg("port: map=%pa, mem=%p, irq=%d (%d,%d), clock=%u\n",
+	    &port->mapbase, port->membase, port->irq,
 	    ourport->rx_irq, ourport->tx_irq, port->uartclk);
 
 	/* reset the fifos (and setup the uart) */
 	s3c24xx_serial_resetport(port, cfg);
 	return 0;
 }
-
-#ifdef CONFIG_SAMSUNG_CLOCK
-static ssize_t s3c24xx_serial_show_clksrc(struct device *dev,
-					  struct device_attribute *attr,
-					  char *buf)
-{
-	struct uart_port *port = s3c24xx_dev_to_port(dev);
-	struct s3c24xx_uart_port *ourport = to_ourport(port);
-
-	if (IS_ERR(ourport->baudclk))
-		return -EINVAL;
-
-	return snprintf(buf, PAGE_SIZE, "* %s\n",
-			ourport->baudclk->name ?: "(null)");
-}
-
-static DEVICE_ATTR(clock_source, S_IRUGO, s3c24xx_serial_show_clksrc, NULL);
-#endif
 
 /* Device driver serial port probe */
 
@@ -1251,12 +1261,20 @@ static inline struct s3c24xx_serial_drv_data *s3c24xx_get_driver_data(
 
 static int s3c24xx_serial_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
 	struct s3c24xx_uart_port *ourport;
+	int index = probe_index;
 	int ret;
 
-	dbg("s3c24xx_serial_probe(%p) %d\n", pdev, probe_index);
+	if (np) {
+		ret = of_alias_get_id(np, "serial");
+		if (ret >= 0)
+			index = ret;
+	}
 
-	ourport = &s3c24xx_serial_ports[probe_index];
+	dbg("s3c24xx_serial_probe(%p) %d\n", pdev, index);
+
+	ourport = &s3c24xx_serial_ports[index];
 
 	ourport->drv_data = s3c24xx_get_driver_data(pdev);
 	if (!ourport->drv_data) {
@@ -1270,9 +1288,14 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 			dev_get_platdata(&pdev->dev) :
 			ourport->drv_data->def_cfg;
 
-	ourport->port.fifosize = (ourport->info->fifosize) ?
-		ourport->info->fifosize :
-		ourport->drv_data->fifosize[probe_index];
+	if (np)
+		of_property_read_u32(np,
+			"samsung,uart-fifosize", &ourport->port.fifosize);
+
+	if (ourport->drv_data->fifosize[index])
+		ourport->port.fifosize = ourport->drv_data->fifosize[index];
+	else if (ourport->info->fifosize)
+		ourport->port.fifosize = ourport->info->fifosize;
 
 	probe_index++;
 
@@ -1280,7 +1303,7 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 
 	ret = s3c24xx_serial_init_port(ourport, pdev);
 	if (ret < 0)
-		goto probe_err;
+		return ret;
 
 	if (!s3c24xx_uart_drv.state) {
 		ret = uart_register_driver(&s3c24xx_uart_drv);
@@ -1301,20 +1324,11 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	 */
 	clk_disable_unprepare(ourport->clk);
 
-#ifdef CONFIG_SAMSUNG_CLOCK
-	ret = device_create_file(&pdev->dev, &dev_attr_clock_source);
-	if (ret < 0)
-		dev_err(&pdev->dev, "failed to add clock source attr.\n");
-#endif
-
 	ret = s3c24xx_serial_cpufreq_register(ourport);
 	if (ret < 0)
 		dev_err(&pdev->dev, "failed to add cpufreq notifier\n");
 
 	return 0;
-
- probe_err:
-	return ret;
 }
 
 static int s3c24xx_serial_remove(struct platform_device *dev)
@@ -1323,9 +1337,6 @@ static int s3c24xx_serial_remove(struct platform_device *dev)
 
 	if (port) {
 		s3c24xx_serial_cpufreq_deregister(to_ourport(port));
-#ifdef CONFIG_SAMSUNG_CLOCK
-		device_remove_file(&dev->dev, &dev_attr_clock_source);
-#endif
 		uart_remove_one_port(&s3c24xx_uart_drv, port);
 	}
 
@@ -1514,8 +1525,8 @@ s3c24xx_serial_get_options(struct uart_port *port, int *baud,
 		case S3C2410_LCON_CS7:
 			*bits = 7;
 			break;
-		default:
 		case S3C2410_LCON_CS8:
+		default:
 			*bits = 8;
 			break;
 		}
@@ -1689,9 +1700,7 @@ static struct s3c24xx_serial_drv_data s3c2440_serial_drv_data = {
 #define S3C2440_SERIAL_DRV_DATA (kernel_ulong_t)NULL
 #endif
 
-#if defined(CONFIG_CPU_S3C6400) || defined(CONFIG_CPU_S3C6410) || \
-	defined(CONFIG_CPU_S5P6440) || defined(CONFIG_CPU_S5P6450) || \
-	defined(CONFIG_CPU_S5PC100)
+#if defined(CONFIG_CPU_S3C6400) || defined(CONFIG_CPU_S3C6410)
 static struct s3c24xx_serial_drv_data s3c6400_serial_drv_data = {
 	.info = &(struct s3c24xx_uart_info) {
 		.name		= "Samsung S3C6400 UART",
@@ -1748,32 +1757,43 @@ static struct s3c24xx_serial_drv_data s5pv210_serial_drv_data = {
 #endif
 
 #if defined(CONFIG_ARCH_EXYNOS)
+#define EXYNOS_COMMON_SERIAL_DRV_DATA				\
+	.info = &(struct s3c24xx_uart_info) {			\
+		.name		= "Samsung Exynos UART",	\
+		.type		= PORT_S3C6400,			\
+		.has_divslot	= 1,				\
+		.rx_fifomask	= S5PV210_UFSTAT_RXMASK,	\
+		.rx_fifoshift	= S5PV210_UFSTAT_RXSHIFT,	\
+		.rx_fifofull	= S5PV210_UFSTAT_RXFULL,	\
+		.tx_fifofull	= S5PV210_UFSTAT_TXFULL,	\
+		.tx_fifomask	= S5PV210_UFSTAT_TXMASK,	\
+		.tx_fifoshift	= S5PV210_UFSTAT_TXSHIFT,	\
+		.def_clk_sel	= S3C2410_UCON_CLKSEL0,		\
+		.num_clks	= 1,				\
+		.clksel_mask	= 0,				\
+		.clksel_shift	= 0,				\
+	},							\
+	.def_cfg = &(struct s3c2410_uartcfg) {			\
+		.ucon		= S5PV210_UCON_DEFAULT,		\
+		.ufcon		= S5PV210_UFCON_DEFAULT,	\
+		.has_fracval	= 1,				\
+	}							\
+
 static struct s3c24xx_serial_drv_data exynos4210_serial_drv_data = {
-	.info = &(struct s3c24xx_uart_info) {
-		.name		= "Samsung Exynos4 UART",
-		.type		= PORT_S3C6400,
-		.has_divslot	= 1,
-		.rx_fifomask	= S5PV210_UFSTAT_RXMASK,
-		.rx_fifoshift	= S5PV210_UFSTAT_RXSHIFT,
-		.rx_fifofull	= S5PV210_UFSTAT_RXFULL,
-		.tx_fifofull	= S5PV210_UFSTAT_TXFULL,
-		.tx_fifomask	= S5PV210_UFSTAT_TXMASK,
-		.tx_fifoshift	= S5PV210_UFSTAT_TXSHIFT,
-		.def_clk_sel	= S3C2410_UCON_CLKSEL0,
-		.num_clks	= 1,
-		.clksel_mask	= 0,
-		.clksel_shift	= 0,
-	},
-	.def_cfg = &(struct s3c2410_uartcfg) {
-		.ucon		= S5PV210_UCON_DEFAULT,
-		.ufcon		= S5PV210_UFCON_DEFAULT,
-		.has_fracval	= 1,
-	},
+	EXYNOS_COMMON_SERIAL_DRV_DATA,
 	.fifosize = { 256, 64, 16, 16 },
 };
+
+static struct s3c24xx_serial_drv_data exynos5433_serial_drv_data = {
+	EXYNOS_COMMON_SERIAL_DRV_DATA,
+	.fifosize = { 64, 256, 16, 256 },
+};
+
 #define EXYNOS4210_SERIAL_DRV_DATA ((kernel_ulong_t)&exynos4210_serial_drv_data)
+#define EXYNOS5433_SERIAL_DRV_DATA ((kernel_ulong_t)&exynos5433_serial_drv_data)
 #else
 #define EXYNOS4210_SERIAL_DRV_DATA (kernel_ulong_t)NULL
+#define EXYNOS5433_SERIAL_DRV_DATA (kernel_ulong_t)NULL
 #endif
 
 static struct platform_device_id s3c24xx_serial_driver_ids[] = {
@@ -1795,6 +1815,9 @@ static struct platform_device_id s3c24xx_serial_driver_ids[] = {
 	}, {
 		.name		= "exynos4210-uart",
 		.driver_data	= EXYNOS4210_SERIAL_DRV_DATA,
+	}, {
+		.name		= "exynos5433-uart",
+		.driver_data	= EXYNOS5433_SERIAL_DRV_DATA,
 	},
 	{ },
 };
@@ -1814,6 +1837,8 @@ static const struct of_device_id s3c24xx_uart_dt_match[] = {
 		.data = (void *)S5PV210_SERIAL_DRV_DATA },
 	{ .compatible = "samsung,exynos4210-uart",
 		.data = (void *)EXYNOS4210_SERIAL_DRV_DATA },
+	{ .compatible = "samsung,exynos5433-uart",
+		.data = (void *)EXYNOS5433_SERIAL_DRV_DATA },
 	{},
 };
 MODULE_DEVICE_TABLE(of, s3c24xx_uart_dt_match);
@@ -1825,7 +1850,6 @@ static struct platform_driver samsung_serial_driver = {
 	.id_table	= s3c24xx_serial_driver_ids,
 	.driver		= {
 		.name	= "samsung-uart",
-		.owner	= THIS_MODULE,
 		.pm	= SERIAL_SAMSUNG_PM_OPS,
 		.of_match_table	= of_match_ptr(s3c24xx_uart_dt_match),
 	},

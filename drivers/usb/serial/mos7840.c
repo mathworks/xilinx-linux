@@ -1181,10 +1181,7 @@ static void mos7840_close(struct usb_serial_port *port)
 	/* Freeing Write URBs */
 	for (j = 0; j < NUM_URBS; ++j) {
 		if (mos7840_port->write_urb_pool[j]) {
-			if (mos7840_port->write_urb_pool[j]->transfer_buffer)
-				kfree(mos7840_port->write_urb_pool[j]->
-				      transfer_buffer);
-
+			kfree(mos7840_port->write_urb_pool[j]->transfer_buffer);
 			usb_free_urb(mos7840_port->write_urb_pool[j]);
 		}
 	}
@@ -1907,7 +1904,7 @@ static void mos7840_change_port_settings(struct tty_struct *tty,
 
 	if (mos7840_port->read_urb_busy == false) {
 		mos7840_port->read_urb_busy = true;
-		status = usb_submit_urb(mos7840_port->read_urb, GFP_ATOMIC);
+		status = usb_submit_urb(mos7840_port->read_urb, GFP_KERNEL);
 		if (status) {
 			dev_dbg(&port->dev, "usb_submit_urb(read bulk) failed, status = %d\n",
 			    status);
@@ -1971,7 +1968,7 @@ static void mos7840_set_termios(struct tty_struct *tty,
 
 	if (mos7840_port->read_urb_busy == false) {
 		mos7840_port->read_urb_busy = true;
-		status = usb_submit_urb(mos7840_port->read_urb, GFP_ATOMIC);
+		status = usb_submit_urb(mos7840_port->read_urb, GFP_KERNEL);
 		if (status) {
 			dev_dbg(&port->dev, "usb_submit_urb(read bulk) failed, status = %d\n",
 			    status);

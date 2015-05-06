@@ -62,6 +62,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
+#include <linux/of_mdio.h>
 #include <linux/of_irq.h>
 #include <linux/of_net.h>
 
@@ -343,9 +344,7 @@ struct emac_priv {
 	u32 multicast_hash_cnt[EMAC_NUM_MULTICAST_BITS];
 	u32 rx_addr_type;
 	const char *phy_id;
-#ifdef CONFIG_OF
 	struct device_node *phy_node;
-#endif
 	struct phy_device *phydev;
 	spinlock_t lock;
 	/*platform specific members*/
@@ -922,6 +921,16 @@ static void emac_int_disable(struct emac_priv *priv)
 		if (priv->int_disable)
 			priv->int_disable();
 
+		/* NOTE: Rx Threshold and Misc interrupts are not enabled */
+
+		/* ack rxen only then a new pulse will be generated */
+		emac_write(EMAC_DM646X_MACEOIVECTOR,
+			EMAC_DM646X_MAC_EOI_C0_RXEN);
+
+		/* ack txen- only then a new pulse will be generated */
+		emac_write(EMAC_DM646X_MACEOIVECTOR,
+			EMAC_DM646X_MAC_EOI_C0_TXEN);
+
 		local_irq_restore(flags);
 
 	} else {
@@ -951,15 +960,6 @@ static void emac_int_enable(struct emac_priv *priv)
 		 * register */
 
 		/* NOTE: Rx Threshold and Misc interrupts are not enabled */
-
-		/* ack rxen only then a new pulse will be generated */
-		emac_write(EMAC_DM646X_MACEOIVECTOR,
-			EMAC_DM646X_MAC_EOI_C0_RXEN);
-
-		/* ack txen- only then a new pulse will be generated */
-		emac_write(EMAC_DM646X_MACEOIVECTOR,
-			EMAC_DM646X_MAC_EOI_C0_TXEN);
-
 	} else {
 		/* Set DM644x control registers for interrupt control */
 		emac_ctrl_write(EMAC_CTRL_EWCTL, 0x1);
@@ -1537,7 +1537,13 @@ static int emac_dev_open(struct net_device *ndev)
 	int i = 0;
 	struct emac_priv *priv = netdev_priv(ndev);
 
-	pm_runtime_get(&priv->pdev->dev);
+	ret = pm_runtime_get_sync(&priv->pdev->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&priv->pdev->dev);
+		dev_err(&priv->pdev->dev, "%s: failed to get_sync(%d)\n",
+			__func__, ret);
+		return ret;
+	}
 
 	netif_carrier_off(ndev);
 	for (cnt = 0; cnt < ETH_ALEN; cnt++)
@@ -1567,7 +1573,6 @@ static int emac_dev_open(struct net_device *ndev)
 	while ((res = platform_get_resource(priv->pdev, IORESOURCE_IRQ,
 					    res_num))) {
 		for (irq_num = res->start; irq_num <= res->end; irq_num++) {
-			dev_err(emac_dev, "Request IRQ %d\n", irq_num);
 			if (request_irq(irq_num, emac_irq, 0, ndev->name,
 					ndev)) {
 				dev_err(emac_dev,
@@ -1597,8 +1602,20 @@ static int emac_dev_open(struct net_device *ndev)
 	cpdma_ctlr_start(priv->dma);
 
 	priv->phydev = NULL;
+
+	if (priv->phy_node) {
+		priv->phydev = of_phy_connect(ndev, priv->phy_node,
+					      &emac_adjust_link, 0, 0);
+		if (!priv->phydev) {
+			dev_err(emac_dev, "could not connect to phy %s\n",
+				priv->phy_node->full_name);
+			ret = -ENODEV;
+			goto err;
+		}
+	}
+
 	/* use the first phy on the bus if pdata did not give us a phy id */
-	if (!priv->phy_id) {
+	if (!priv->phydev && !priv->phy_id) {
 		struct device *phy;
 
 		phy = bus_find_device(&mdio_bus_type, NULL, NULL,
@@ -1607,7 +1624,7 @@ static int emac_dev_open(struct net_device *ndev)
 			priv->phy_id = dev_name(phy);
 	}
 
-	if (priv->phy_id && *priv->phy_id) {
+	if (!priv->phydev && priv->phy_id && *priv->phy_id) {
 		priv->phydev = phy_connect(ndev, priv->phy_id,
 					   &emac_adjust_link,
 					   PHY_INTERFACE_MODE_MII);
@@ -1628,7 +1645,9 @@ static int emac_dev_open(struct net_device *ndev)
 			"(mii_bus:phy_addr=%s, id=%x)\n",
 			priv->phydev->drv->name, dev_name(&priv->phydev->dev),
 			priv->phydev->phy_id);
-	} else {
+	}
+
+	if (!priv->phydev) {
 		/* No PHY , fix the link, speed and duplex settings */
 		dev_notice(emac_dev, "no phy, defaulting to 100/full\n");
 		priv->link = 1;
@@ -1725,6 +1744,15 @@ static struct net_device_stats *emac_dev_getnetstats(struct net_device *ndev)
 	struct emac_priv *priv = netdev_priv(ndev);
 	u32 mac_control;
 	u32 stats_clear_mask;
+	int err;
+
+	err = pm_runtime_get_sync(&priv->pdev->dev);
+	if (err < 0) {
+		pm_runtime_put_noidle(&priv->pdev->dev);
+		dev_err(&priv->pdev->dev, "%s: failed to get_sync(%d)\n",
+			__func__, err);
+		return &ndev->stats;
+	}
 
 	/* update emac hardware stats and reset the registers*/
 
@@ -1766,6 +1794,8 @@ static struct net_device_stats *emac_dev_getnetstats(struct net_device *ndev)
 
 	ndev->stats.tx_fifo_errors += emac_read(EMAC_TXUNDERRUN);
 	emac_write(EMAC_TXUNDERRUN, stats_clear_mask);
+
+	pm_runtime_put(&priv->pdev->dev);
 
 	return &ndev->stats;
 }
@@ -1860,12 +1890,11 @@ davinci_emac_of_get_pdata(struct platform_device *pdev, struct emac_priv *priv)
 static int davinci_emac_probe(struct platform_device *pdev)
 {
 	int rc = 0;
-	struct resource *res;
+	struct resource *res, *res_ctrl;
 	struct net_device *ndev;
 	struct emac_priv *priv;
 	unsigned long hw_ram_addr;
 	struct emac_platform_data *pdata;
-	struct device *emac_dev;
 	struct cpdma_params dma_params;
 	struct clk *emac_clk;
 	unsigned long emac_bus_frequency;
@@ -1878,6 +1907,7 @@ static int davinci_emac_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 	emac_bus_frequency = clk_get_rate(emac_clk);
+	devm_clk_put(&pdev->dev, emac_clk);
 
 	/* TODO: Probe PHY here if possible */
 
@@ -1911,7 +1941,6 @@ static int davinci_emac_probe(struct platform_device *pdev)
 	priv->coal_intvl = 0;
 	priv->bus_freq_mhz = (u32)(emac_bus_frequency / 1000000);
 
-	emac_dev = &ndev->dev;
 	/* Get EMAC platform data */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	priv->emac_base_phys = res->start + pdata->ctrl_reg_offset;
@@ -1920,17 +1949,26 @@ static int davinci_emac_probe(struct platform_device *pdev)
 		rc = PTR_ERR(priv->remap_addr);
 		goto no_pdata;
 	}
+
+	res_ctrl = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (res_ctrl) {
+		priv->ctrl_base =
+			devm_ioremap_resource(&pdev->dev, res_ctrl);
+		if (IS_ERR(priv->ctrl_base))
+			goto no_pdata;
+	} else {
+		priv->ctrl_base = priv->remap_addr + pdata->ctrl_mod_reg_offset;
+	}
+
 	priv->emac_base = priv->remap_addr + pdata->ctrl_reg_offset;
 	ndev->base_addr = (unsigned long)priv->remap_addr;
-
-	priv->ctrl_base = priv->remap_addr + pdata->ctrl_mod_reg_offset;
 
 	hw_ram_addr = pdata->hw_ram_addr;
 	if (!hw_ram_addr)
 		hw_ram_addr = (u32 __force)res->start + pdata->ctrl_ram_offset;
 
 	memset(&dma_params, 0, sizeof(dma_params));
-	dma_params.dev			= emac_dev;
+	dma_params.dev			= &pdev->dev;
 	dma_params.dmaregs		= priv->emac_base;
 	dma_params.rxthresh		= priv->emac_base + 0x120;
 	dma_params.rxfree		= priv->emac_base + 0x140;
@@ -1980,8 +2018,17 @@ static int davinci_emac_probe(struct platform_device *pdev)
 	}
 
 	ndev->netdev_ops = &emac_netdev_ops;
-	SET_ETHTOOL_OPS(ndev, &ethtool_ops);
+	ndev->ethtool_ops = &ethtool_ops;
 	netif_napi_add(ndev, &priv->napi, emac_poll, EMAC_POLL_WEIGHT);
+
+	pm_runtime_enable(&pdev->dev);
+	rc = pm_runtime_get_sync(&pdev->dev);
+	if (rc < 0) {
+		pm_runtime_put_noidle(&pdev->dev);
+		dev_err(&pdev->dev, "%s: failed to get_sync(%d)\n",
+			__func__, rc);
+		goto no_cpdma_chan;
+	}
 
 	/* register the network device */
 	SET_NETDEV_DEV(ndev, &pdev->dev);
@@ -1989,18 +2036,17 @@ static int davinci_emac_probe(struct platform_device *pdev)
 	if (rc) {
 		dev_err(&pdev->dev, "error in register_netdev\n");
 		rc = -ENODEV;
+		pm_runtime_put(&pdev->dev);
 		goto no_cpdma_chan;
 	}
 
 
 	if (netif_msg_probe(priv)) {
-		dev_notice(emac_dev, "DaVinci EMAC Probe found device "\
+		dev_notice(&pdev->dev, "DaVinci EMAC Probe found device "
 			   "(regs: %p, irq: %d)\n",
 			   (void *)priv->emac_base_phys, ndev->irq);
 	}
-
-	pm_runtime_enable(&pdev->dev);
-	pm_runtime_resume(&pdev->dev);
+	pm_runtime_put(&pdev->dev);
 
 	return 0;
 
@@ -2074,9 +2120,14 @@ static const struct emac_platform_data am3517_emac_data = {
 	.hw_ram_addr		= 0x01e20000,
 };
 
+static const struct emac_platform_data dm816_emac_data = {
+	.version		= EMAC_VERSION_2,
+};
+
 static const struct of_device_id davinci_emac_of_match[] = {
 	{.compatible = "ti,davinci-dm6467-emac", },
 	{.compatible = "ti,am3517-emac", .data = &am3517_emac_data, },
+	{.compatible = "ti,dm816-emac", .data = &dm816_emac_data, },
 	{},
 };
 MODULE_DEVICE_TABLE(of, davinci_emac_of_match);
@@ -2086,7 +2137,6 @@ MODULE_DEVICE_TABLE(of, davinci_emac_of_match);
 static struct platform_driver davinci_emac_driver = {
 	.driver = {
 		.name	 = "davinci_emac",
-		.owner	 = THIS_MODULE,
 		.pm	 = &davinci_emac_pm_ops,
 		.of_match_table = of_match_ptr(davinci_emac_of_match),
 	},

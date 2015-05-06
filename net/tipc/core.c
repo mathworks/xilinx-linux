@@ -35,11 +35,10 @@
  */
 
 #include "core.h"
-#include "ref.h"
 #include "name_table.h"
 #include "subscr.h"
 #include "config.h"
-#include "port.h"
+#include "socket.h"
 
 #include <linux/module.h>
 
@@ -80,13 +79,12 @@ struct sk_buff *tipc_buf_acquire(u32 size)
  */
 static void tipc_core_stop(void)
 {
-	tipc_handler_stop();
 	tipc_net_stop();
 	tipc_bearer_cleanup();
 	tipc_netlink_stop();
 	tipc_subscr_stop();
 	tipc_nametbl_stop();
-	tipc_ref_table_stop();
+	tipc_sk_ref_table_stop();
 	tipc_socket_stop();
 	tipc_unregister_sysctl();
 }
@@ -100,11 +98,7 @@ static int tipc_core_start(void)
 
 	get_random_bytes(&tipc_random, sizeof(tipc_random));
 
-	err = tipc_handler_start();
-	if (err)
-		goto out_handler;
-
-	err = tipc_ref_table_init(tipc_max_ports, tipc_random);
+	err = tipc_sk_ref_table_init(tipc_max_ports, tipc_random);
 	if (err)
 		goto out_reftbl;
 
@@ -144,10 +138,8 @@ out_socket:
 out_netlink:
 	tipc_nametbl_stop();
 out_nametbl:
-	tipc_ref_table_stop();
+	tipc_sk_ref_table_stop();
 out_reftbl:
-	tipc_handler_stop();
-out_handler:
 	return err;
 }
 
@@ -161,10 +153,11 @@ static int __init tipc_init(void)
 	tipc_max_ports = CONFIG_TIPC_PORTS;
 	tipc_net_id = 4711;
 
-	sysctl_tipc_rmem[0] = CONN_OVERLOAD_LIMIT >> 4 << TIPC_LOW_IMPORTANCE;
-	sysctl_tipc_rmem[1] = CONN_OVERLOAD_LIMIT >> 4 <<
+	sysctl_tipc_rmem[0] = TIPC_CONN_OVERLOAD_LIMIT >> 4 <<
+			      TIPC_LOW_IMPORTANCE;
+	sysctl_tipc_rmem[1] = TIPC_CONN_OVERLOAD_LIMIT >> 4 <<
 			      TIPC_CRITICAL_IMPORTANCE;
-	sysctl_tipc_rmem[2] = CONN_OVERLOAD_LIMIT;
+	sysctl_tipc_rmem[2] = TIPC_CONN_OVERLOAD_LIMIT;
 
 	res = tipc_core_start();
 	if (res)

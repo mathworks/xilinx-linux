@@ -52,7 +52,12 @@
  */
 	.macro	get_fs	ad, sp
 	GET_CURRENT(\ad,\sp)
+#if THREAD_CURRENT_DS > 1020
+	addi	\ad, \ad, TASK_THREAD
+	l32i	\ad, \ad, THREAD_CURRENT_DS - TASK_THREAD
+#else
 	l32i	\ad, \ad, THREAD_CURRENT_DS
+#endif
 	.endm
 
 /*
@@ -315,7 +320,7 @@ __asm__ __volatile__(					\
 ({								\
 	long __gu_err, __gu_val;				\
 	__get_user_size(__gu_val,(ptr),(size),__gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;			\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;						\
 })
 
@@ -325,7 +330,7 @@ __asm__ __volatile__(					\
 	const __typeof__(*(ptr)) *__gu_addr = (ptr);			\
 	if (access_ok(VERIFY_READ,__gu_addr,size))			\
 		__get_user_size(__gu_val,__gu_addr,(size),__gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;				\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;				\
 	__gu_err;							\
 })
 

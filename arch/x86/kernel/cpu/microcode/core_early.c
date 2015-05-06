@@ -17,9 +17,11 @@
  *	2 of the License, or (at your option) any later version.
  */
 #include <linux/module.h>
+#include <asm/microcode.h>
 #include <asm/microcode_intel.h>
 #include <asm/microcode_amd.h>
 #include <asm/processor.h>
+#include <asm/cmdline.h>
 
 #define QCHAR(a, b, c, d) ((a) + ((b) << 8) + ((c) << 16) + ((d) << 24))
 #define CPUID_INTEL1 QCHAR('G', 'e', 'n', 'u')
@@ -72,9 +74,32 @@ static int x86_family(void)
 	return x86;
 }
 
+static bool __init check_loader_disabled_bsp(void)
+{
+#ifdef CONFIG_X86_32
+	const char *cmdline = (const char *)__pa_nodebug(boot_command_line);
+	const char *opt	    = "dis_ucode_ldr";
+	const char *option  = (const char *)__pa_nodebug(opt);
+	bool *res = (bool *)__pa_nodebug(&dis_ucode_ldr);
+
+#else /* CONFIG_X86_64 */
+	const char *cmdline = boot_command_line;
+	const char *option  = "dis_ucode_ldr";
+	bool *res = &dis_ucode_ldr;
+#endif
+
+	if (cmdline_find_option_bool(cmdline, option))
+		*res = true;
+
+	return *res;
+}
+
 void __init load_ucode_bsp(void)
 {
 	int vendor, x86;
+
+	if (check_loader_disabled_bsp())
+		return;
 
 	if (!have_cpuid_p())
 		return;
@@ -96,9 +121,21 @@ void __init load_ucode_bsp(void)
 	}
 }
 
+static bool check_loader_disabled_ap(void)
+{
+#ifdef CONFIG_X86_32
+	return *((bool *)__pa_nodebug(&dis_ucode_ldr));
+#else
+	return dis_ucode_ldr;
+#endif
+}
+
 void load_ucode_ap(void)
 {
 	int vendor, x86;
+
+	if (check_loader_disabled_ap())
+		return;
 
 	if (!have_cpuid_p())
 		return;
@@ -138,4 +175,25 @@ int __init save_microcode_in_initrd(void)
 	}
 
 	return 0;
+}
+
+void reload_early_microcode(void)
+{
+	int vendor, x86;
+
+	vendor = x86_vendor();
+	x86 = x86_family();
+
+	switch (vendor) {
+	case X86_VENDOR_INTEL:
+		if (x86 >= 6)
+			reload_ucode_intel();
+		break;
+	case X86_VENDOR_AMD:
+		if (x86 >= 0x10)
+			reload_ucode_amd();
+		break;
+	default:
+		break;
+	}
 }

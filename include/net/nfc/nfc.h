@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2011 Instituto Nokia de Tecnologia
+ * Copyright (C) 2014 Marvell International Ltd.
  *
  * Authors:
  *    Lauro Ramos Venancio <lauro.venancio@openbossa.org>
@@ -87,6 +88,7 @@ struct nfc_ops {
 #define NFC_TARGET_IDX_ANY -1
 #define NFC_MAX_GT_LEN 48
 #define NFC_ATR_RES_GT_OFFSET 15
+#define NFC_ATR_REQ_GT_OFFSET 14
 
 /**
  * struct nfc_target - NFC target descriptiom
@@ -263,5 +265,8 @@ void nfc_driver_failure(struct nfc_dev *dev, int err);
 int nfc_add_se(struct nfc_dev *dev, u32 se_idx, u16 type);
 int nfc_remove_se(struct nfc_dev *dev, u32 se_idx);
 struct nfc_se *nfc_find_se(struct nfc_dev *dev, u32 se_idx);
+
+void nfc_send_to_raw_sock(struct nfc_dev *dev, struct sk_buff *skb,
+			  u8 payload_type, u8 direction);
 
 #endif /* __NET_NFC_H */

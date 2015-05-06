@@ -517,7 +517,7 @@ static int rndis_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
 				 u8 key_index, bool unicast, bool multicast);
 
 static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
-					u8 *mac, struct station_info *sinfo);
+			     const u8 *mac, struct station_info *sinfo);
 
 static int rndis_dump_station(struct wiphy *wiphy, struct net_device *dev,
 			       int idx, u8 *mac, struct station_info *sinfo);
@@ -2022,9 +2022,10 @@ static bool rndis_bss_info_update(struct usbnet *usbdev,
 	capability = le16_to_cpu(fixed->capabilities);
 	beacon_interval = le16_to_cpu(fixed->beacon_interval);
 
-	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid->mac,
-		timestamp, capability, beacon_interval, ie, ie_len, signal,
-		GFP_KERNEL);
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel,
+				  CFG80211_BSS_FTYPE_UNKNOWN, bssid->mac,
+				  timestamp, capability, beacon_interval,
+				  ie, ie_len, signal, GFP_KERNEL);
 	cfg80211_put_bss(priv->wdev.wiphy, bss);
 
 	return (bss != NULL);
@@ -2490,7 +2491,7 @@ static void rndis_fill_station_info(struct usbnet *usbdev,
 }
 
 static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
-					u8 *mac, struct station_info *sinfo)
+			     const u8 *mac, struct station_info *sinfo)
 {
 	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
 	struct usbnet *usbdev = priv->usbdev;
@@ -2711,9 +2712,10 @@ static void rndis_wlan_craft_connected_bss(struct usbnet *usbdev, u8 *bssid,
 		bssid, (u32)timestamp, capability, beacon_period, ie_len,
 		ssid.essid, signal);
 
-	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid,
-		timestamp, capability, beacon_period, ie_buf, ie_len,
-		signal, GFP_KERNEL);
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel,
+				  CFG80211_BSS_FTYPE_UNKNOWN, bssid,
+				  timestamp, capability, beacon_period,
+				  ie_buf, ie_len, signal, GFP_KERNEL);
 	cfg80211_put_bss(priv->wdev.wiphy, bss);
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2012 Samsung Electronics Co., Ltd.
+ * Copyright (c) 2011-2014 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * EXYNOS - Power Management support
@@ -15,169 +15,95 @@
 
 #include <linux/init.h>
 #include <linux/suspend.h>
-#include <linux/syscore_ops.h>
+#include <linux/cpu_pm.h>
 #include <linux/io.h>
-#include <linux/irqchip/arm-gic.h>
 #include <linux/err.h>
-#include <linux/clk.h>
 
-#include <asm/cacheflush.h>
-#include <asm/hardware/cache-l2x0.h>
+#include <asm/firmware.h>
 #include <asm/smp_scu.h>
 #include <asm/suspend.h>
 
-#include <plat/cpu.h>
 #include <plat/pm-common.h>
-#include <plat/pll.h>
-#include <plat/regs-srom.h>
-
-#include <mach/map.h>
 
 #include "common.h"
+#include "exynos-pmu.h"
 #include "regs-pmu.h"
+#include "regs-sys.h"
 
-/**
- * struct exynos_wkup_irq - Exynos GIC to PMU IRQ mapping
- * @hwirq: Hardware IRQ signal of the GIC
- * @mask: Mask in PMU wake-up mask register
- */
-struct exynos_wkup_irq {
-	unsigned int hwirq;
-	u32 mask;
-};
-
-static struct sleep_save exynos5_sys_save[] = {
-	SAVE_ITEM(EXYNOS5_SYS_I2C_CFG),
-};
-
-static struct sleep_save exynos_core_save[] = {
-	/* SROM side */
-	SAVE_ITEM(S5P_SROM_BW),
-	SAVE_ITEM(S5P_SROM_BC0),
-	SAVE_ITEM(S5P_SROM_BC1),
-	SAVE_ITEM(S5P_SROM_BC2),
-	SAVE_ITEM(S5P_SROM_BC3),
-};
-
-/*
- * GIC wake-up support
- */
-
-static u32 exynos_irqwake_intmask = 0xffffffff;
-
-static const struct exynos_wkup_irq exynos4_wkup_irq[] = {
-	{ 76, BIT(1) }, /* RTC alarm */
-	{ 77, BIT(2) }, /* RTC tick */
-	{ /* sentinel */ },
-};
-
-static const struct exynos_wkup_irq exynos5250_wkup_irq[] = {
-	{ 75, BIT(1) }, /* RTC alarm */
-	{ 76, BIT(2) }, /* RTC tick */
-	{ /* sentinel */ },
-};
-
-static int exynos_irq_set_wake(struct irq_data *data, unsigned int state)
+static inline void __iomem *exynos_boot_vector_addr(void)
 {
-	const struct exynos_wkup_irq *wkup_irq;
-
-	if (soc_is_exynos5250())
-		wkup_irq = exynos5250_wkup_irq;
-	else
-		wkup_irq = exynos4_wkup_irq;
-
-	while (wkup_irq->mask) {
-		if (wkup_irq->hwirq == data->hwirq) {
-			if (!state)
-				exynos_irqwake_intmask |= wkup_irq->mask;
-			else
-				exynos_irqwake_intmask &= ~wkup_irq->mask;
-			return 0;
-		}
-		++wkup_irq;
-	}
-
-	return -ENOENT;
+	if (samsung_rev() == EXYNOS4210_REV_1_1)
+		return pmu_base_addr + S5P_INFORM7;
+	else if (samsung_rev() == EXYNOS4210_REV_1_0)
+		return sysram_base_addr + 0x24;
+	return pmu_base_addr + S5P_INFORM0;
 }
+
+static inline void __iomem *exynos_boot_vector_flag(void)
+{
+	if (samsung_rev() == EXYNOS4210_REV_1_1)
+		return pmu_base_addr + S5P_INFORM6;
+	else if (samsung_rev() == EXYNOS4210_REV_1_0)
+		return sysram_base_addr + 0x20;
+	return pmu_base_addr + S5P_INFORM1;
+}
+
+#define S5P_CHECK_AFTR  0xFCBA0D10
 
 /* For Cortex-A9 Diagnostic and Power control register */
 static unsigned int save_arm_register[2];
 
-static int exynos_cpu_suspend(unsigned long arg)
+void exynos_cpu_save_register(void)
 {
-#ifdef CONFIG_CACHE_L2X0
-	outer_flush_all();
-#endif
+	unsigned long tmp;
 
-	if (soc_is_exynos5250())
-		flush_cache_all();
+	/* Save Power control register */
+	asm ("mrc p15, 0, %0, c15, c0, 0"
+	     : "=r" (tmp) : : "cc");
 
-	/* issue the standby signal into the pm unit. */
-	cpu_do_idle();
+	save_arm_register[0] = tmp;
 
-	pr_info("Failed to suspend the system\n");
-	return 1; /* Aborting suspend */
+	/* Save Diagnostic register */
+	asm ("mrc p15, 0, %0, c15, c0, 1"
+	     : "=r" (tmp) : : "cc");
+
+	save_arm_register[1] = tmp;
 }
 
-static void exynos_pm_prepare(void)
+void exynos_cpu_restore_register(void)
 {
-	unsigned int tmp;
+	unsigned long tmp;
 
-	/* Set wake-up mask registers */
-	__raw_writel(exynos_get_eint_wake_mask(), S5P_EINT_WAKEUP_MASK);
-	__raw_writel(exynos_irqwake_intmask & ~(1 << 31), S5P_WAKEUP_MASK);
+	/* Restore Power control register */
+	tmp = save_arm_register[0];
 
-	s3c_pm_do_save(exynos_core_save, ARRAY_SIZE(exynos_core_save));
+	asm volatile ("mcr p15, 0, %0, c15, c0, 0"
+		      : : "r" (tmp)
+		      : "cc");
 
-	if (soc_is_exynos5250()) {
-		s3c_pm_do_save(exynos5_sys_save, ARRAY_SIZE(exynos5_sys_save));
-		/* Disable USE_RETENTION of JPEG_MEM_OPTION */
-		tmp = __raw_readl(EXYNOS5_JPEG_MEM_OPTION);
-		tmp &= ~EXYNOS5_OPTION_USE_RETENTION;
-		__raw_writel(tmp, EXYNOS5_JPEG_MEM_OPTION);
-	}
+	/* Restore Diagnostic register */
+	tmp = save_arm_register[1];
 
-	/* Set value of power down register for sleep mode */
-
-	exynos_sys_powerdown_conf(SYS_SLEEP);
-	__raw_writel(S5P_CHECK_SLEEP, S5P_INFORM1);
-
-	/* ensure at least INFORM0 has the resume address */
-
-	__raw_writel(virt_to_phys(exynos_cpu_resume), S5P_INFORM0);
+	asm volatile ("mcr p15, 0, %0, c15, c0, 1"
+		      : : "r" (tmp)
+		      : "cc");
 }
 
-static int exynos_pm_suspend(void)
+void exynos_pm_central_suspend(void)
 {
 	unsigned long tmp;
 
 	/* Setting Central Sequence Register for power down mode */
-
-	tmp = __raw_readl(S5P_CENTRAL_SEQ_CONFIGURATION);
+	tmp = pmu_raw_readl(S5P_CENTRAL_SEQ_CONFIGURATION);
 	tmp &= ~S5P_CENTRAL_LOWPWR_CFG;
-	__raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
+	pmu_raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
 
 	/* Setting SEQ_OPTION register */
-
-	tmp = (S5P_USE_STANDBY_WFI0 | S5P_USE_STANDBY_WFE0);
-	__raw_writel(tmp, S5P_CENTRAL_SEQ_OPTION);
-
-	if (!soc_is_exynos5250()) {
-		/* Save Power control register */
-		asm ("mrc p15, 0, %0, c15, c0, 0"
-		     : "=r" (tmp) : : "cc");
-		save_arm_register[0] = tmp;
-
-		/* Save Diagnostic register */
-		asm ("mrc p15, 0, %0, c15, c0, 1"
-		     : "=r" (tmp) : : "cc");
-		save_arm_register[1] = tmp;
-	}
-
-	return 0;
+	pmu_raw_writel(S5P_USE_STANDBY_WFI0 | S5P_USE_STANDBY_WFE0,
+		       S5P_CENTRAL_SEQ_OPTION);
 }
 
-static void exynos_pm_resume(void)
+int exynos_pm_central_resume(void)
 {
 	unsigned long tmp;
 
@@ -187,135 +113,66 @@ static void exynos_pm_resume(void)
 	 * S5P_CENTRAL_LOWPWR_CFG bit will not be set automatically
 	 * in this situation.
 	 */
-	tmp = __raw_readl(S5P_CENTRAL_SEQ_CONFIGURATION);
+	tmp = pmu_raw_readl(S5P_CENTRAL_SEQ_CONFIGURATION);
 	if (!(tmp & S5P_CENTRAL_LOWPWR_CFG)) {
 		tmp |= S5P_CENTRAL_LOWPWR_CFG;
-		__raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
+		pmu_raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
 		/* clear the wakeup state register */
-		__raw_writel(0x0, S5P_WAKEUP_STAT);
+		pmu_raw_writel(0x0, S5P_WAKEUP_STAT);
 		/* No need to perform below restore code */
-		goto early_wakeup;
-	}
-	if (!soc_is_exynos5250()) {
-		/* Restore Power control register */
-		tmp = save_arm_register[0];
-		asm volatile ("mcr p15, 0, %0, c15, c0, 0"
-			      : : "r" (tmp)
-			      : "cc");
-
-		/* Restore Diagnostic register */
-		tmp = save_arm_register[1];
-		asm volatile ("mcr p15, 0, %0, c15, c0, 1"
-			      : : "r" (tmp)
-			      : "cc");
+		return -1;
 	}
 
-	/* For release retention */
-
-	__raw_writel((1 << 28), S5P_PAD_RET_MAUDIO_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_GPIO_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_UART_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_MMCA_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_MMCB_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_EBIA_OPTION);
-	__raw_writel((1 << 28), S5P_PAD_RET_EBIB_OPTION);
-
-	if (soc_is_exynos5250())
-		s3c_pm_do_restore(exynos5_sys_save,
-			ARRAY_SIZE(exynos5_sys_save));
-
-	s3c_pm_do_restore_core(exynos_core_save, ARRAY_SIZE(exynos_core_save));
-
-	if (IS_ENABLED(CONFIG_SMP) && !soc_is_exynos5250())
-		scu_enable(S5P_VA_SCU);
-
-early_wakeup:
-
-	/* Clear SLEEP mode set in INFORM1 */
-	__raw_writel(0x0, S5P_INFORM1);
-
-	return;
+	return 0;
 }
 
-static struct syscore_ops exynos_pm_syscore_ops = {
-	.suspend	= exynos_pm_suspend,
-	.resume		= exynos_pm_resume,
-};
+/* Ext-GIC nIRQ/nFIQ is the only wakeup source in AFTR */
+static void exynos_set_wakeupmask(long mask)
+{
+	pmu_raw_writel(mask, S5P_WAKEUP_MASK);
+}
 
-/*
- * Suspend Ops
- */
+static void exynos_cpu_set_boot_vector(long flags)
+{
+	__raw_writel(virt_to_phys(exynos_cpu_resume),
+		     exynos_boot_vector_addr());
+	__raw_writel(flags, exynos_boot_vector_flag());
+}
 
-static int exynos_suspend_enter(suspend_state_t state)
+static int exynos_aftr_finisher(unsigned long flags)
 {
 	int ret;
 
-	s3c_pm_debug_init();
+	exynos_set_wakeupmask(0x0000ff3e);
+	/* Set value of power down register for aftr mode */
+	exynos_sys_powerdown_conf(SYS_AFTR);
 
-	S3C_PMDBG("%s: suspending the system...\n", __func__);
-
-	S3C_PMDBG("%s: wakeup masks: %08x,%08x\n", __func__,
-			exynos_irqwake_intmask, exynos_get_eint_wake_mask());
-
-	if (exynos_irqwake_intmask == -1U
-	    && exynos_get_eint_wake_mask() == -1U) {
-		pr_err("%s: No wake-up sources!\n", __func__);
-		pr_err("%s: Aborting sleep\n", __func__);
-		return -EINVAL;
+	ret = call_firmware_op(do_idle, FW_DO_IDLE_AFTR);
+	if (ret == -ENOSYS) {
+		if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9)
+			exynos_cpu_save_register();
+		exynos_cpu_set_boot_vector(S5P_CHECK_AFTR);
+		cpu_do_idle();
 	}
 
-	s3c_pm_save_uarts();
-	exynos_pm_prepare();
-	flush_cache_all();
-	s3c_pm_check_store();
-
-	ret = cpu_suspend(0, exynos_cpu_suspend);
-	if (ret)
-		return ret;
-
-	s3c_pm_restore_uarts();
-
-	S3C_PMDBG("%s: wakeup stat: %08x\n", __func__,
-			__raw_readl(S5P_WAKEUP_STAT));
-
-	s3c_pm_check_restore();
-
-	S3C_PMDBG("%s: resuming the system...\n", __func__);
-
-	return 0;
+	return 1;
 }
 
-static int exynos_suspend_prepare(void)
+void exynos_enter_aftr(void)
 {
-	s3c_pm_check_prepare();
+	cpu_pm_enter();
 
-	return 0;
-}
+	exynos_pm_central_suspend();
 
-static void exynos_suspend_finish(void)
-{
-	s3c_pm_check_cleanup();
-}
+	cpu_suspend(0, exynos_aftr_finisher);
 
-static const struct platform_suspend_ops exynos_suspend_ops = {
-	.enter		= exynos_suspend_enter,
-	.prepare	= exynos_suspend_prepare,
-	.finish		= exynos_suspend_finish,
-	.valid		= suspend_valid_only_mem,
-};
+	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9) {
+		scu_enable(S5P_VA_SCU);
+		if (call_firmware_op(resume) == -ENOSYS)
+			exynos_cpu_restore_register();
+	}
 
-void __init exynos_pm_init(void)
-{
-	u32 tmp;
+	exynos_pm_central_resume();
 
-	/* Platform-specific GIC callback */
-	gic_arch_extn.irq_set_wake = exynos_irq_set_wake;
-
-	/* All wakeup disable */
-	tmp = __raw_readl(S5P_WAKEUP_MASK);
-	tmp |= ((0xFF << 8) | (0x1F << 1));
-	__raw_writel(tmp, S5P_WAKEUP_MASK);
-
-	register_syscore_ops(&exynos_pm_syscore_ops);
-	suspend_set_ops(&exynos_suspend_ops);
+	cpu_pm_exit();
 }

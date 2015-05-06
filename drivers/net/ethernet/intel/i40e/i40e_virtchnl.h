@@ -79,6 +79,7 @@ enum i40e_virtchnl_ops {
 	I40E_VIRTCHNL_OP_CONFIG_PROMISCUOUS_MODE,
 	I40E_VIRTCHNL_OP_GET_STATS,
 	I40E_VIRTCHNL_OP_FCOE,
+	I40E_VIRTCHNL_OP_CONFIG_RSS,
 /* PF sends status change events to vfs using
  * the following op.
  */
@@ -340,10 +341,6 @@ struct i40e_virtchnl_pf_event {
 
 	int severity;
 };
-
-/* The following are TBD, not necessary for LAN functionality.
- * I40E_VIRTCHNL_OP_FCOE
- */
 
 /* VF reset states - these are written into the RSTAT register:
  * I40E_VFGEN_RSTAT1 on the PF

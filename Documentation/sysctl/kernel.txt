@@ -54,8 +54,9 @@ show up in /proc/sys/kernel:
 - overflowuid
 - panic
 - panic_on_oops
-- panic_on_unrecovered_nmi
 - panic_on_stackoverflow
+- panic_on_unrecovered_nmi
+- panic_on_warn
 - pid_max
 - powersave-nap               [ PPC only ]
 - printk
@@ -75,8 +76,10 @@ show up in /proc/sys/kernel:
 - shmall
 - shmmax                      [ sysv ipc ]
 - shmmni
+- softlockup_all_cpu_backtrace
 - stop-a                      [ SPARC only ]
 - sysrq                       ==> Documentation/sysrq.txt
+- sysctl_writes_strict
 - tainted
 - threads-max
 - unknown_nmi_panic
@@ -113,10 +116,12 @@ set during run time.
 
 auto_msgmni:
 
-Enables/Disables automatic recomputing of msgmni upon memory add/remove
-or upon ipc namespace creation/removal (see the msgmni description
-above). Echoing "1" into this file enables msgmni automatic recomputing.
-Echoing "0" turns it off. auto_msgmni default value is 1.
+This variable has no effect and may be removed in future kernel
+releases. Reading it always returns 0.
+Up to Linux 3.17, it enabled/disabled automatic recomputing of msgmni
+upon memory add/remove or upon ipc namespace creation/removal.
+Echoing "1" into this file enabled msgmni automatic recomputing.
+Echoing "0" turned it off. auto_msgmni default value was 1.
 
 
 ==============================================================
@@ -188,6 +193,8 @@ core_pattern is used to specify a core dumpfile pattern name.
 	%%	output one '%'
 	%p	pid
 	%P	global pid (init PID namespace)
+	%i	tid
+	%I	global tid (init PID namespace)
 	%u	uid
 	%g	gid
 	%d	dump mode, matches PR_SET_DUMPABLE and
@@ -523,19 +530,6 @@ the recommended setting is 60.
 
 ==============================================================
 
-panic_on_unrecovered_nmi:
-
-The default Linux behaviour on an NMI of either memory or unknown is
-to continue operation. For many environments such as scientific
-computing it is preferable that the box is taken out and the error
-dealt with than an uncorrected parity/ECC error get propagated.
-
-A small number of systems do generate NMI's for bizarre random reasons
-such as power management so the default is off. That sysctl works like
-the existing panic controls already in that directory.
-
-==============================================================
-
 panic_on_oops:
 
 Controls the kernel's behaviour when an oops or BUG is encountered.
@@ -556,6 +550,30 @@ This file shows up if CONFIG_DEBUG_STACKOVERFLOW is enabled.
 0: try to continue operation.
 
 1: panic immediately.
+
+==============================================================
+
+panic_on_unrecovered_nmi:
+
+The default Linux behaviour on an NMI of either memory or unknown is
+to continue operation. For many environments such as scientific
+computing it is preferable that the box is taken out and the error
+dealt with than an uncorrected parity/ECC error get propagated.
+
+A small number of systems do generate NMI's for bizarre random reasons
+such as power management so the default is off. That sysctl works like
+the existing panic controls already in that directory.
+
+==============================================================
+
+panic_on_warn:
+
+Calls panic() in the WARN() path when set to 1.  This is useful to avoid
+a kernel rebuild when attempting to kdump at the location of a WARN().
+
+0: only WARN(), default behaviour.
+
+1: call panic() after printing out WARN() location.
 
 ==============================================================
 
@@ -762,6 +780,42 @@ without users and with a dead originative process will be destroyed.
 
 ==============================================================
 
+sysctl_writes_strict:
+
+Control how file position affects the behavior of updating sysctl values
+via the /proc/sys interface:
+
+  -1 - Legacy per-write sysctl value handling, with no printk warnings.
+       Each write syscall must fully contain the sysctl value to be
+       written, and multiple writes on the same sysctl file descriptor
+       will rewrite the sysctl value, regardless of file position.
+   0 - (default) Same behavior as above, but warn about processes that
+       perform writes to a sysctl file descriptor when the file position
+       is not 0.
+   1 - Respect file position when writing sysctl strings. Multiple writes
+       will append to the sysctl value buffer. Anything past the max length
+       of the sysctl value buffer will be ignored. Writes to numeric sysctl
+       entries must always be at file position 0 and the value must be
+       fully contained in the buffer sent in the write syscall.
+
+==============================================================
+
+softlockup_all_cpu_backtrace:
+
+This value controls the soft lockup detector thread's behavior
+when a soft lockup condition is detected as to whether or not
+to gather further debug information. If enabled, each cpu will
+be issued an NMI and instructed to capture stack trace.
+
+This feature is only applicable for architectures which support
+NMI.
+
+0: do nothing. This is the default behavior.
+
+1: on detection capture more debug information.
+
+==============================================================
+
 tainted:
 
 Non-zero if the kernel has been tainted.  Numeric values, which
@@ -788,6 +842,7 @@ can be ORed together:
 4096 - An out-of-tree module has been loaded.
 8192 - An unsigned module has been loaded in a kernel supporting module
        signature.
+16384 - A soft lockup has previously occurred on the system.
 
 ==============================================================
 

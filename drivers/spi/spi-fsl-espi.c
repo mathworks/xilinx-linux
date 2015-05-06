@@ -8,19 +8,19 @@
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
  */
-#include <linux/module.h>
 #include <linux/delay.h>
-#include <linux/irq.h>
-#include <linux/spi/spi.h>
-#include <linux/platform_device.h>
+#include <linux/err.h>
 #include <linux/fsl_devices.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
-#include <linux/interrupt.h>
-#include <linux/err.h>
+#include <linux/platform_device.h>
+#include <linux/spi/spi.h>
 #include <sysdev/fsl_soc.h>
 
 #include "spi-fsl-lib.h"
@@ -348,7 +348,7 @@ static void fsl_espi_cmd_trans(struct spi_message *m,
 	}
 
 	espi_trans->tx_buf = local_buf;
-	espi_trans->rx_buf = local_buf + espi_trans->n_tx;
+	espi_trans->rx_buf = local_buf;
 	fsl_espi_do_trans(m, espi_trans);
 
 	espi_trans->actual_length = espi_trans->len;
@@ -397,7 +397,7 @@ static void fsl_espi_rw_trans(struct spi_message *m,
 		espi_trans->n_rx = trans_len;
 		espi_trans->len = trans_len + n_tx;
 		espi_trans->tx_buf = local_buf;
-		espi_trans->rx_buf = local_buf + n_tx;
+		espi_trans->rx_buf = local_buf;
 		fsl_espi_do_trans(m, espi_trans);
 
 		memcpy(rx_buf + pos, espi_trans->rx_buf + n_tx, trans_len);
@@ -411,7 +411,8 @@ static void fsl_espi_rw_trans(struct spi_message *m,
 	kfree(local_buf);
 }
 
-static void fsl_espi_do_one_msg(struct spi_message *m)
+static int fsl_espi_do_one_msg(struct spi_master *master,
+			       struct spi_message *m)
 {
 	struct spi_transfer *t;
 	u8 *rx_buf = NULL;
@@ -441,8 +442,8 @@ static void fsl_espi_do_one_msg(struct spi_message *m)
 
 	m->actual_length = espi_trans.actual_length;
 	m->status = espi_trans.status;
-	if (m->complete)
-		m->complete(m->context);
+	spi_finalize_current_message(master);
+	return 0;
 }
 
 static int fsl_espi_setup(struct spi_device *spi)
@@ -452,16 +453,16 @@ static int fsl_espi_setup(struct spi_device *spi)
 	int retval;
 	u32 hw_mode;
 	u32 loop_mode;
-	struct spi_mpc8xxx_cs *cs = spi->controller_state;
+	struct spi_mpc8xxx_cs *cs = spi_get_ctldata(spi);
 
 	if (!spi->max_speed_hz)
 		return -EINVAL;
 
 	if (!cs) {
-		cs = kzalloc(sizeof *cs, GFP_KERNEL);
+		cs = kzalloc(sizeof(*cs), GFP_KERNEL);
 		if (!cs)
 			return -ENOMEM;
-		spi->controller_state = cs;
+		spi_set_ctldata(spi, cs);
 	}
 
 	mpc8xxx_spi = spi_master_get_devdata(spi->master);
@@ -494,6 +495,14 @@ static int fsl_espi_setup(struct spi_device *spi)
 		return retval;
 	}
 	return 0;
+}
+
+static void fsl_espi_cleanup(struct spi_device *spi)
+{
+	struct spi_mpc8xxx_cs *cs = spi_get_ctldata(spi);
+
+	kfree(cs);
+	spi_set_ctldata(spi, NULL);
 }
 
 void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
@@ -579,6 +588,38 @@ static void fsl_espi_remove(struct mpc8xxx_spi *mspi)
 	iounmap(mspi->reg_base);
 }
 
+static int fsl_espi_suspend(struct spi_master *master)
+{
+	struct mpc8xxx_spi *mpc8xxx_spi;
+	struct fsl_espi_reg *reg_base;
+	u32 regval;
+
+	mpc8xxx_spi = spi_master_get_devdata(master);
+	reg_base = mpc8xxx_spi->reg_base;
+
+	regval = mpc8xxx_spi_read_reg(&reg_base->mode);
+	regval &= ~SPMODE_ENABLE;
+	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+
+	return 0;
+}
+
+static int fsl_espi_resume(struct spi_master *master)
+{
+	struct mpc8xxx_spi *mpc8xxx_spi;
+	struct fsl_espi_reg *reg_base;
+	u32 regval;
+
+	mpc8xxx_spi = spi_master_get_devdata(master);
+	reg_base = mpc8xxx_spi->reg_base;
+
+	regval = mpc8xxx_spi_read_reg(&reg_base->mode);
+	regval |= SPMODE_ENABLE;
+	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+
+	return 0;
+}
+
 static struct spi_master * fsl_espi_probe(struct device *dev,
 		struct resource *mem, unsigned int irq)
 {
@@ -586,8 +627,10 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
 	struct spi_master *master;
 	struct mpc8xxx_spi *mpc8xxx_spi;
 	struct fsl_espi_reg *reg_base;
-	u32 regval;
-	int i, ret = 0;
+	struct device_node *nc;
+	const __be32 *prop;
+	u32 regval, csmode;
+	int i, len, ret = 0;
 
 	master = spi_alloc_master(dev, sizeof(struct mpc8xxx_spi));
 	if (!master) {
@@ -597,15 +640,16 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
 
 	dev_set_drvdata(dev, master);
 
-	ret = mpc8xxx_spi_probe(dev, mem, irq);
-	if (ret)
-		goto err_probe;
+	mpc8xxx_spi_probe(dev, mem, irq);
 
 	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 16);
 	master->setup = fsl_espi_setup;
+	master->cleanup = fsl_espi_cleanup;
+	master->transfer_one_message = fsl_espi_do_one_msg;
+	master->prepare_transfer_hardware = fsl_espi_resume;
+	master->unprepare_transfer_hardware = fsl_espi_suspend;
 
 	mpc8xxx_spi = spi_master_get_devdata(master);
-	mpc8xxx_spi->spi_do_one_msg = fsl_espi_do_one_msg;
 	mpc8xxx_spi->spi_remove = fsl_espi_remove;
 
 	mpc8xxx_spi->reg_base = ioremap(mem->start, resource_size(mem));
@@ -634,8 +678,32 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
 	mpc8xxx_spi_write_reg(&reg_base->event, 0xffffffff);
 
 	/* Init eSPI CS mode register */
-	for (i = 0; i < pdata->max_chipselect; i++)
-		mpc8xxx_spi_write_reg(&reg_base->csmode[i], CSMODE_INIT_VAL);
+	for_each_available_child_of_node(master->dev.of_node, nc) {
+		/* get chip select */
+		prop = of_get_property(nc, "reg", &len);
+		if (!prop || len < sizeof(*prop))
+			continue;
+		i = be32_to_cpup(prop);
+		if (i < 0 || i >= pdata->max_chipselect)
+			continue;
+
+		csmode = CSMODE_INIT_VAL;
+		/* check if CSBEF is set in device tree */
+		prop = of_get_property(nc, "fsl,csbef", &len);
+		if (prop && len >= sizeof(*prop)) {
+			csmode &= ~(CSMODE_BEF(0xf));
+			csmode |= CSMODE_BEF(be32_to_cpup(prop));
+		}
+		/* check if CSAFT is set in device tree */
+		prop = of_get_property(nc, "fsl,csaft", &len);
+		if (prop && len >= sizeof(*prop)) {
+			csmode &= ~(CSMODE_AFT(0xf));
+			csmode |= CSMODE_AFT(be32_to_cpup(prop));
+		}
+		mpc8xxx_spi_write_reg(&reg_base->csmode[i], csmode);
+
+		dev_info(dev, "cs=%d, init_csmode=0x%x\n", i, csmode);
+	}
 
 	/* Enable SPI interface */
 	regval = pdata->initial_spmode | SPMODE_INIT_VAL | SPMODE_ENABLE;
@@ -727,13 +795,7 @@ static int of_fsl_espi_remove(struct platform_device *dev)
 static int of_fsl_espi_suspend(struct device *dev)
 {
 	struct spi_master *master = dev_get_drvdata(dev);
-	struct mpc8xxx_spi *mpc8xxx_spi;
-	struct fsl_espi_reg *reg_base;
-	u32 regval;
 	int ret;
-
-	mpc8xxx_spi = spi_master_get_devdata(master);
-	reg_base = mpc8xxx_spi->reg_base;
 
 	ret = spi_master_suspend(master);
 	if (ret) {
@@ -741,11 +803,7 @@ static int of_fsl_espi_suspend(struct device *dev)
 		return ret;
 	}
 
-	regval = mpc8xxx_spi_read_reg(&reg_base->mode);
-	regval &= ~SPMODE_ENABLE;
-	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
-
-	return 0;
+	return fsl_espi_suspend(master);
 }
 
 static int of_fsl_espi_resume(struct device *dev)
@@ -792,7 +850,6 @@ MODULE_DEVICE_TABLE(of, of_fsl_espi_match);
 static struct platform_driver fsl_espi_driver = {
 	.driver = {
 		.name = "fsl_espi",
-		.owner = THIS_MODULE,
 		.of_match_table = of_fsl_espi_match,
 		.pm = &espi_pm,
 	},

@@ -37,7 +37,7 @@
 #define CDNS_UART_MINOR		0	/* works best with devtmpfs */
 #define CDNS_UART_NR_PORTS	2
 #define CDNS_UART_FIFO_SIZE	64	/* FIFO size */
-#define CDNS_UART_REGISTER_SPACE	0xFFF
+#define CDNS_UART_REGISTER_SPACE	0x1000
 
 #define cdns_uart_readl(offset)		ioread32(port->membase + offset)
 #define cdns_uart_writel(val, offset)	iowrite32(val, port->membase + offset)
@@ -637,10 +637,12 @@ static void cdns_uart_set_termios(struct uart_port *port,
 
 	spin_lock_irqsave(&port->lock, flags);
 
-	/* Empty the receive FIFO 1st before making changes */
-	while ((cdns_uart_readl(CDNS_UART_SR_OFFSET) &
-		 CDNS_UART_SR_RXEMPTY) != CDNS_UART_SR_RXEMPTY) {
-		cdns_uart_readl(CDNS_UART_FIFO_OFFSET);
+	/* Wait for the transmit FIFO to empty before making changes */
+	if (!(cdns_uart_readl(CDNS_UART_CR_OFFSET) & CDNS_UART_CR_TX_DIS)) {
+		while (!(cdns_uart_readl(CDNS_UART_SR_OFFSET) &
+				CDNS_UART_SR_TXEMPTY)) {
+			cpu_relax();
+		}
 	}
 
 	/* Disable the TX and RX to set baud rate */
@@ -924,7 +926,7 @@ static unsigned int cdns_uart_get_mctrl(struct uart_port *port)
 
 static void cdns_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	unsigned int val;
+	u32 val;
 
 	val = cdns_uart_readl(CDNS_UART_MODEMCR_OFFSET);
 
@@ -1008,7 +1010,7 @@ static struct uart_ops cdns_uart_ops = {
 #endif
 };
 
-static struct uart_port cdns_uart_port[2];
+static struct uart_port cdns_uart_port[CDNS_UART_NR_PORTS];
 
 /**
  * cdns_uart_get_port - Configure the port from platform device resource info
@@ -1036,7 +1038,6 @@ static struct uart_port *cdns_uart_get_port(int id)
 	/* At this point, we've got an empty uart_port struct, initialize it */
 	spin_lock_init(&port->lock);
 	port->membase	= NULL;
-	port->iobase	= 1; /* mark port in use */
 	port->irq	= 0;
 	port->type	= PORT_UNKNOWN;
 	port->iotype	= UPIO_MEM32;
@@ -1070,6 +1071,25 @@ static void cdns_uart_console_putchar(struct uart_port *port, int ch)
 	cdns_uart_console_wait_tx(port);
 	cdns_uart_writel(ch, CDNS_UART_FIFO_OFFSET);
 }
+
+static void cdns_early_write(struct console *con, const char *s, unsigned n)
+{
+	struct earlycon_device *dev = con->data;
+
+	uart_console_write(&dev->port, s, n, cdns_uart_console_putchar);
+}
+
+static int __init cdns_early_console_setup(struct earlycon_device *device,
+					   const char *opt)
+{
+	if (!device->port.membase)
+		return -ENODEV;
+
+	device->con->write = cdns_early_write;
+
+	return 0;
+}
+EARLYCON_DECLARE(cdns, cdns_early_console_setup);
 
 /**
  * cdns_uart_console_write - perform write operation
@@ -1132,7 +1152,7 @@ static int __init cdns_uart_console_setup(struct console *co, char *options)
 	if (co->index < 0 || co->index >= CDNS_UART_NR_PORTS)
 		return -EINVAL;
 
-	if (!port->mapbase) {
+	if (!port->membase) {
 		pr_debug("console on ttyPS%i not present\n", co->index);
 		return -ENODEV;
 	}
@@ -1304,9 +1324,9 @@ static SIMPLE_DEV_PM_OPS(cdns_uart_dev_pm_ops, cdns_uart_suspend,
  */
 static int cdns_uart_probe(struct platform_device *pdev)
 {
-	int rc, id;
+	int rc, id, irq;
 	struct uart_port *port;
-	struct resource *res, *res2;
+	struct resource *res;
 	struct cdns_uart *cdns_uart_data;
 
 	cdns_uart_data = devm_kzalloc(&pdev->dev, sizeof(*cdns_uart_data),
@@ -1353,9 +1373,9 @@ static int cdns_uart_probe(struct platform_device *pdev)
 		goto err_out_clk_disable;
 	}
 
-	res2 = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!res2) {
-		rc = -ENODEV;
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0) {
+		rc = -ENXIO;
 		goto err_out_clk_disable;
 	}
 
@@ -1384,7 +1404,7 @@ static int cdns_uart_probe(struct platform_device *pdev)
 		 * and triggers invocation of the config_port() entry point.
 		 */
 		port->mapbase = res->start;
-		port->irq = res2->start;
+		port->irq = irq;
 		port->dev = &pdev->dev;
 		port->uartclk = clk_get_rate(cdns_uart_data->uartclk);
 		port->private_data = cdns_uart_data;

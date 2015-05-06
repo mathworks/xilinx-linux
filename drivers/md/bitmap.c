@@ -72,6 +72,19 @@ __acquires(bitmap->lock)
 	/* this page has not been allocated yet */
 
 	spin_unlock_irq(&bitmap->lock);
+	/* It is possible that this is being called inside a
+	 * prepare_to_wait/finish_wait loop from raid5c:make_request().
+	 * In general it is not permitted to sleep in that context as it
+	 * can cause the loop to spin freely.
+	 * That doesn't apply here as we can only reach this point
+	 * once with any loop.
+	 * When this function completes, either bp[page].map or
+	 * bp[page].hijacked.  In either case, this function will
+	 * abort before getting to this point again.  So there is
+	 * no risk of a free-spin, and so it is safe to assert
+	 * that sleeping here is allowed.
+	 */
+	sched_annotate_sleep();
 	mappage = kzalloc(PAGE_SIZE, GFP_NOIO);
 	spin_lock_irq(&bitmap->lock);
 
@@ -669,17 +682,13 @@ static inline unsigned long file_page_offset(struct bitmap_storage *store,
 /*
  * return a pointer to the page in the filemap that contains the given bit
  *
- * this lookup is complicated by the fact that the bitmap sb might be exactly
- * 1 page (e.g., x86) or less than 1 page -- so the bitmap might start on page
- * 0 or page 1
  */
 static inline struct page *filemap_get_page(struct bitmap_storage *store,
 					    unsigned long chunk)
 {
 	if (file_page_index(store, chunk) >= store->file_pages)
 		return NULL;
-	return store->filemap[file_page_index(store, chunk)
-			      - file_page_index(store, 0)];
+	return store->filemap[file_page_index(store, chunk)];
 }
 
 static int bitmap_storage_alloc(struct bitmap_storage *store,
@@ -883,7 +892,6 @@ void bitmap_unplug(struct bitmap *bitmap)
 {
 	unsigned long i;
 	int dirty, need_write;
-	int wait = 0;
 
 	if (!bitmap || !bitmap->storage.filemap ||
 	    test_bit(BITMAP_STALE, &bitmap->flags))
@@ -901,16 +909,13 @@ void bitmap_unplug(struct bitmap *bitmap)
 			clear_page_attr(bitmap, i, BITMAP_PAGE_PENDING);
 			write_page(bitmap, bitmap->storage.filemap[i], 0);
 		}
-		if (dirty)
-			wait = 1;
 	}
-	if (wait) { /* if any writes were performed, we need to wait on them */
-		if (bitmap->storage.file)
-			wait_event(bitmap->write_wait,
-				   atomic_read(&bitmap->pending_writes)==0);
-		else
-			md_super_wait(bitmap->mddev);
-	}
+	if (bitmap->storage.file)
+		wait_event(bitmap->write_wait,
+			   atomic_read(&bitmap->pending_writes)==0);
+	else
+		md_super_wait(bitmap->mddev);
+
 	if (test_bit(BITMAP_WRITE_ERROR, &bitmap->flags))
 		bitmap_file_kick(bitmap);
 }

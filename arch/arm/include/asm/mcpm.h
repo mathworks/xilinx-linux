@@ -20,7 +20,12 @@
  * to consider dynamic allocation.
  */
 #define MAX_CPUS_PER_CLUSTER	4
+
+#ifdef CONFIG_MCPM_QUAD_CLUSTER
+#define MAX_NR_CLUSTERS		4
+#else
 #define MAX_NR_CLUSTERS		2
+#endif
 
 #ifndef __ASSEMBLY__
 
@@ -98,14 +103,14 @@ int mcpm_cpu_power_up(unsigned int cpu, unsigned int cluster);
  * previously in which case the caller should take appropriate action.
  *
  * On success, the CPU is not guaranteed to be truly halted until
- * mcpm_cpu_power_down_finish() subsequently returns non-zero for the
+ * mcpm_wait_for_cpu_powerdown() subsequently returns non-zero for the
  * specified cpu.  Until then, other CPUs should make sure they do not
  * trash memory the target CPU might be executing/accessing.
  */
 void mcpm_cpu_power_down(void);
 
 /**
- * mcpm_cpu_power_down_finish - wait for a specified CPU to halt, and
+ * mcpm_wait_for_cpu_powerdown - wait for a specified CPU to halt, and
  *	make sure it is powered off
  *
  * @cpu: CPU number within given cluster
@@ -127,7 +132,7 @@ void mcpm_cpu_power_down(void);
  *	- zero if the CPU is in a safely parked state
  *	- nonzero otherwise (e.g., timeout)
  */
-int mcpm_cpu_power_down_finish(unsigned int cpu, unsigned int cluster);
+int mcpm_wait_for_cpu_powerdown(unsigned int cpu, unsigned int cluster);
 
 /**
  * mcpm_cpu_suspend - bring the calling CPU in a suspended state
@@ -171,7 +176,7 @@ int mcpm_cpu_powered_up(void);
 struct mcpm_platform_ops {
 	int (*power_up)(unsigned int cpu, unsigned int cluster);
 	void (*power_down)(void);
-	int (*power_down_finish)(unsigned int cpu, unsigned int cluster);
+	int (*wait_for_powerdown)(unsigned int cpu, unsigned int cluster);
 	void (*suspend)(u64);
 	void (*powered_up)(void);
 };
@@ -208,16 +213,47 @@ struct sync_struct {
 	struct mcpm_sync_struct clusters[MAX_NR_CLUSTERS];
 };
 
-extern unsigned long sync_phys;	/* physical address of *mcpm_sync */
-
 void __mcpm_cpu_going_down(unsigned int cpu, unsigned int cluster);
 void __mcpm_cpu_down(unsigned int cpu, unsigned int cluster);
 void __mcpm_outbound_leave_critical(unsigned int cluster, int state);
 bool __mcpm_outbound_enter_critical(unsigned int this_cpu, unsigned int cluster);
 int __mcpm_cluster_state(unsigned int cluster);
 
+/**
+ * mcpm_sync_init - Initialize the cluster synchronization support
+ *
+ * @power_up_setup: platform specific function invoked during very
+ * 		    early CPU/cluster bringup stage.
+ *
+ * This prepares memory used by vlocks and the MCPM state machine used
+ * across CPUs that may have their caches active or inactive. Must be
+ * called only after a successful call to mcpm_platform_register().
+ *
+ * The power_up_setup argument is a pointer to assembly code called when
+ * the MMU and caches are still disabled during boot  and no stack space is
+ * available. The affinity level passed to that code corresponds to the
+ * resource that needs to be initialized (e.g. 1 for cluster level, 0 for
+ * CPU level).  Proper exclusion mechanisms are already activated at that
+ * point.
+ */
 int __init mcpm_sync_init(
 	void (*power_up_setup)(unsigned int affinity_level));
+
+/**
+ * mcpm_loopback - make a run through the MCPM low-level code
+ *
+ * @cache_disable: pointer to function performing cache disabling
+ *
+ * This exercises the MCPM machinery by soft resetting the CPU and branching
+ * to the MCPM low-level entry code before returning to the caller.
+ * The @cache_disable function must do the necessary cache disabling to
+ * let the regular kernel init code turn it back on as if the CPU was
+ * hotplugged in. The MCPM state machine is set as if the cluster was
+ * initialized meaning the power_up_setup callback passed to mcpm_sync_init()
+ * will be invoked for all affinity levels. This may be useful to initialize
+ * some resources such as enabling the CCI that requires the cache to be off, or simply for testing purposes.
+ */
+int __init mcpm_loopback(void (*cache_disable)(void));
 
 void __init mcpm_smp_set_ops(void);
 

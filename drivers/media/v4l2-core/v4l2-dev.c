@@ -194,7 +194,7 @@ static void v4l2_device_release(struct device *cd)
 	mutex_unlock(&videodev_lock);
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
-	if (v4l2_dev && v4l2_dev->mdev &&
+	if (v4l2_dev->mdev &&
 	    vdev->vfl_type != VFL_TYPE_SUBDEV)
 		media_device_unregister_entity(&vdev->entity);
 #endif
@@ -207,7 +207,7 @@ static void v4l2_device_release(struct device *cd)
 	 * TODO: In the long run all drivers that use v4l2_device should use the
 	 * v4l2_device release callback. This check will then be unnecessary.
 	 */
-	if (v4l2_dev && v4l2_dev->release == NULL)
+	if (v4l2_dev->release == NULL)
 		v4l2_dev = NULL;
 
 	/* Release video_device and perform other
@@ -335,7 +335,7 @@ static unsigned int v4l2_poll(struct file *filp, struct poll_table_struct *poll)
 		return DEFAULT_POLLMASK;
 	if (video_is_registered(vdev))
 		res = vdev->fops->poll(filp, poll);
-	if (vdev->debug)
+	if (vdev->debug > 2)
 		printk(KERN_DEBUG "%s: poll: %08x\n",
 			video_device_node_name(vdev), res);
 	return res;
@@ -360,27 +360,22 @@ static long v4l2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		 * hack but it will have to do for those drivers that are not
 		 * yet converted to use unlocked_ioctl.
 		 *
-		 * There are two options: if the driver implements struct
-		 * v4l2_device, then the lock defined there is used to
-		 * serialize the ioctls. Otherwise the v4l2 core lock defined
-		 * below is used. This lock is really bad since it serializes
-		 * completely independent devices.
+		 * All drivers implement struct v4l2_device, so we use the
+		 * lock defined there to serialize the ioctls.
 		 *
-		 * Both variants suffer from the same problem: if the driver
-		 * sleeps, then it blocks all ioctls since the lock is still
-		 * held. This is very common for VIDIOC_DQBUF since that
-		 * normally waits for a frame to arrive. As a result any other
-		 * ioctl calls will proceed very, very slowly since each call
-		 * will have to wait for the VIDIOC_QBUF to finish. Things that
-		 * should take 0.01s may now take 10-20 seconds.
+		 * However, if the driver sleeps, then it blocks all ioctls
+		 * since the lock is still held. This is very common for
+		 * VIDIOC_DQBUF since that normally waits for a frame to arrive.
+		 * As a result any other ioctl calls will proceed very, very
+		 * slowly since each call will have to wait for the VIDIOC_QBUF
+		 * to finish. Things that should take 0.01s may now take 10-20
+		 * seconds.
 		 *
 		 * The workaround is to *not* take the lock for VIDIOC_DQBUF.
 		 * This actually works OK for videobuf-based drivers, since
 		 * videobuf will take its own internal lock.
 		 */
-		static DEFINE_MUTEX(v4l2_ioctl_mutex);
-		struct mutex *m = vdev->v4l2_dev ?
-			&vdev->v4l2_dev->ioctl_lock : &v4l2_ioctl_mutex;
+		struct mutex *m = &vdev->v4l2_dev->ioctl_lock;
 
 		if (cmd != VIDIOC_DQBUF && mutex_lock_interruptible(m))
 			return -ERESTARTSYS;
@@ -563,20 +558,18 @@ static void determine_valid_ioctls(struct video_device *vdev)
 	/* vfl_type and vfl_dir independent ioctls */
 
 	SET_VALID_IOCTL(ops, VIDIOC_QUERYCAP, vidioc_querycap);
-	if (ops->vidioc_g_priority ||
-			test_bit(V4L2_FL_USE_FH_PRIO, &vdev->flags))
+	if (ops->vidioc_g_priority)
 		set_bit(_IOC_NR(VIDIOC_G_PRIORITY), valid_ioctls);
-	if (ops->vidioc_s_priority ||
-			test_bit(V4L2_FL_USE_FH_PRIO, &vdev->flags))
+	if (ops->vidioc_s_priority)
 		set_bit(_IOC_NR(VIDIOC_S_PRIORITY), valid_ioctls);
-	SET_VALID_IOCTL(ops, VIDIOC_STREAMON, vidioc_streamon);
-	SET_VALID_IOCTL(ops, VIDIOC_STREAMOFF, vidioc_streamoff);
 	/* Note: the control handler can also be passed through the filehandle,
 	   and that can't be tested here. If the bit for these control ioctls
 	   is set, then the ioctl is valid. But if it is 0, then it can still
 	   be valid if the filehandle passed the control handler. */
 	if (vdev->ctrl_handler || ops->vidioc_queryctrl)
 		set_bit(_IOC_NR(VIDIOC_QUERYCTRL), valid_ioctls);
+	if (vdev->ctrl_handler || ops->vidioc_query_ext_ctrl)
+		set_bit(_IOC_NR(VIDIOC_QUERY_EXT_CTRL), valid_ioctls);
 	if (vdev->ctrl_handler || ops->vidioc_g_ctrl || ops->vidioc_g_ext_ctrls)
 		set_bit(_IOC_NR(VIDIOC_G_CTRL), valid_ioctls);
 	if (vdev->ctrl_handler || ops->vidioc_s_ctrl || ops->vidioc_s_ext_ctrls)
@@ -684,6 +677,8 @@ static void determine_valid_ioctls(struct video_device *vdev)
 		SET_VALID_IOCTL(ops, VIDIOC_DQBUF, vidioc_dqbuf);
 		SET_VALID_IOCTL(ops, VIDIOC_CREATE_BUFS, vidioc_create_bufs);
 		SET_VALID_IOCTL(ops, VIDIOC_PREPARE_BUF, vidioc_prepare_buf);
+		SET_VALID_IOCTL(ops, VIDIOC_STREAMON, vidioc_streamon);
+		SET_VALID_IOCTL(ops, VIDIOC_STREAMOFF, vidioc_streamoff);
 	}
 
 	if (is_vid || is_vbi) {
@@ -938,12 +933,11 @@ int __video_register_device(struct video_device *vdev, int type, int nr,
 			name_base, nr, video_device_node_name(vdev));
 
 	/* Increase v4l2_device refcount */
-	if (vdev->v4l2_dev)
-		v4l2_device_get(vdev->v4l2_dev);
+	v4l2_device_get(vdev->v4l2_dev);
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	/* Part 5: Register the entity. */
-	if (vdev->v4l2_dev && vdev->v4l2_dev->mdev &&
+	if (vdev->v4l2_dev->mdev &&
 	    vdev->vfl_type != VFL_TYPE_SUBDEV) {
 		vdev->entity.type = MEDIA_ENT_T_DEVNODE_V4L;
 		vdev->entity.name = vdev->name;

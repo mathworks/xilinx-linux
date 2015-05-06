@@ -33,9 +33,6 @@
 #include <asm/edac.h>
 #include "edac_core.h"
 #include "edac_module.h"
-
-#define CREATE_TRACE_POINTS
-#define TRACE_INCLUDE_PATH ../../include/ras
 #include <ras/ras_event.h>
 
 /* lock to memory controller's control array */
@@ -128,27 +125,27 @@ static void edac_mc_dump_mci(struct mem_ctl_info *mci)
 
 #endif				/* CONFIG_EDAC_DEBUG */
 
-/*
- * keep those in sync with the enum mem_type
- */
-const char *edac_mem_types[] = {
-	"Empty csrow",
-	"Reserved csrow type",
-	"Unknown csrow type",
-	"Fast page mode RAM",
-	"Extended data out RAM",
-	"Burst Extended data out RAM",
-	"Single data rate SDRAM",
-	"Registered single data rate SDRAM",
-	"Double data rate SDRAM",
-	"Registered Double data rate SDRAM",
-	"Rambus DRAM",
-	"Unbuffered DDR2 RAM",
-	"Fully buffered DDR2",
-	"Registered DDR2 RAM",
-	"Rambus XDR",
-	"Unbuffered DDR3 RAM",
-	"Registered DDR3 RAM",
+const char * const edac_mem_types[] = {
+	[MEM_EMPTY]	= "Empty csrow",
+	[MEM_RESERVED]	= "Reserved csrow type",
+	[MEM_UNKNOWN]	= "Unknown csrow type",
+	[MEM_FPM]	= "Fast page mode RAM",
+	[MEM_EDO]	= "Extended data out RAM",
+	[MEM_BEDO]	= "Burst Extended data out RAM",
+	[MEM_SDR]	= "Single data rate SDRAM",
+	[MEM_RDR]	= "Registered single data rate SDRAM",
+	[MEM_DDR]	= "Double data rate SDRAM",
+	[MEM_RDDR]	= "Registered Double data rate SDRAM",
+	[MEM_RMBS]	= "Rambus DRAM",
+	[MEM_DDR2]	= "Unbuffered DDR2 RAM",
+	[MEM_FB_DDR2]	= "Fully buffered DDR2",
+	[MEM_RDDR2]	= "Registered DDR2 RAM",
+	[MEM_XDR]	= "Rambus XDR",
+	[MEM_DDR3]	= "Unbuffered DDR3 RAM",
+	[MEM_RDDR3]	= "Registered DDR3 RAM",
+	[MEM_LRDDR3]	= "Load-Reduced DDR3 RAM",
+	[MEM_DDR4]	= "Unbuffered DDR4 RAM",
+	[MEM_RDDR4]	= "Registered DDR4 RAM",
 };
 EXPORT_SYMBOL_GPL(edac_mem_types);
 
@@ -1018,7 +1015,7 @@ static void edac_ce_error(struct mem_ctl_info *mci,
 	}
 	edac_inc_ce_error(mci, enable_per_layer_report, pos, error_count);
 
-	if (mci->scrub_mode & SCRUB_SW_SRC) {
+	if (mci->scrub_mode == SCRUB_SW_SRC) {
 		/*
 			* Some memory controllers (called MCs below) can remap
 			* memory so that it is still available at a different

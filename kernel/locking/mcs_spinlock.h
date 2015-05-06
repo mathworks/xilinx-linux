@@ -27,7 +27,7 @@ struct mcs_spinlock {
 #define arch_mcs_spin_lock_contended(l)					\
 do {									\
 	while (!(smp_load_acquire(l)))					\
-		arch_mutex_cpu_relax();					\
+		cpu_relax_lowlatency();					\
 } while (0)
 #endif
 
@@ -56,9 +56,6 @@ do {									\
  * If the lock has already been acquired, then this will proceed to spin
  * on this node->locked until the previous lock holder sets the node->locked
  * in mcs_spin_unlock().
- *
- * We don't inline mcs_spin_lock() so that perf can correctly account for the
- * time spent in this lock function.
  */
 static inline
 void mcs_spin_lock(struct mcs_spinlock **lock, struct mcs_spinlock *node)
@@ -104,7 +101,7 @@ void mcs_spin_unlock(struct mcs_spinlock **lock, struct mcs_spinlock *node)
 			return;
 		/* Wait until the next pointer is set */
 		while (!(next = ACCESS_ONCE(node->next)))
-			arch_mutex_cpu_relax();
+			cpu_relax_lowlatency();
 	}
 
 	/* Pass lock to next waiter. */
@@ -118,12 +115,13 @@ void mcs_spin_unlock(struct mcs_spinlock **lock, struct mcs_spinlock *node)
  * mutex_lock()/rwsem_down_{read,write}() etc.
  */
 
-struct optimistic_spin_queue {
-	struct optimistic_spin_queue *next, *prev;
+struct optimistic_spin_node {
+	struct optimistic_spin_node *next, *prev;
 	int locked; /* 1 if lock acquired */
+	int cpu; /* encoded CPU # value */
 };
 
-extern bool osq_lock(struct optimistic_spin_queue **lock);
-extern void osq_unlock(struct optimistic_spin_queue **lock);
+extern bool osq_lock(struct optimistic_spin_queue *lock);
+extern void osq_unlock(struct optimistic_spin_queue *lock);
 
 #endif /* __LINUX_MCS_SPINLOCK_H */

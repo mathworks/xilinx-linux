@@ -940,7 +940,7 @@ static void insert_leaf_info(struct hlist_head *head, struct leaf_info *new)
 			last = li;
 		}
 		if (last)
-			hlist_add_after_rcu(&last->hlist, &new->hlist);
+			hlist_add_behind_rcu(&new->hlist, &last->hlist);
 		else
 			hlist_add_before_rcu(&new->hlist, &li->hlist);
 	}
@@ -1143,8 +1143,9 @@ static struct list_head *fib_insert_node(struct trie *t, u32 key, int plen)
 			put_child(tp, cindex, (struct rt_trie_node *)tn);
 		} else {
 			rcu_assign_pointer(t->trie, (struct rt_trie_node *)tn);
-			tp = tn;
 		}
+
+		tp = tn;
 	}
 
 	if (tp && tp->pos + tp->bits > 32)

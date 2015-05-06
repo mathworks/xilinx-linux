@@ -2687,7 +2687,6 @@ MODULE_DEVICE_TABLE(of, fore200e_sba_match);
 static struct platform_driver fore200e_sba_driver = {
 	.driver = {
 		.name = "fore_200e",
-		.owner = THIS_MODULE,
 		.of_match_table = fore200e_sba_match,
 	},
 	.probe		= fore200e_sba_probe,
@@ -2780,7 +2779,7 @@ static struct pci_driver fore200e_pca_driver = {
 
 static int __init fore200e_module_init(void)
 {
-	int err;
+	int err = 0;
 
 	printk(FORE200E "FORE Systems 200E-series ATM driver - version " FORE200E_VERSION "\n");
 

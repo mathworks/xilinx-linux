@@ -15,6 +15,7 @@
 #include <linux/bug.h>
 #include <linux/compiler.h>
 #include <linux/context_tracking.h>
+#include <linux/cpu_pm.h>
 #include <linux/kexec.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -89,6 +90,7 @@ extern asmlinkage void handle_mt(void);
 extern asmlinkage void handle_dsp(void);
 extern asmlinkage void handle_mcheck(void);
 extern asmlinkage void handle_reserved(void);
+extern void tlb_do_page_fault_0(void);
 
 void (*board_be_init)(void);
 int (*board_be_handler)(struct pt_regs *regs, int is_fixup);
@@ -370,9 +372,6 @@ void __noreturn die(const char *str, struct pt_regs *regs)
 {
 	static int die_counter;
 	int sig = SIGSEGV;
-#ifdef CONFIG_MIPS_MT_SMTC
-	unsigned long dvpret;
-#endif /* CONFIG_MIPS_MT_SMTC */
 
 	oops_enter();
 
@@ -382,13 +381,7 @@ void __noreturn die(const char *str, struct pt_regs *regs)
 
 	console_verbose();
 	raw_spin_lock_irq(&die_lock);
-#ifdef CONFIG_MIPS_MT_SMTC
-	dvpret = dvpe();
-#endif /* CONFIG_MIPS_MT_SMTC */
 	bust_spinlocks(1);
-#ifdef CONFIG_MIPS_MT_SMTC
-	mips_mt_regdump(dvpret);
-#endif /* CONFIG_MIPS_MT_SMTC */
 
 	printk("%s[#%d]:\n", str, ++die_counter);
 	show_registers(regs);
@@ -712,10 +705,12 @@ int process_fpemu_return(int sig, void __user *fault_addr)
 		si.si_addr = fault_addr;
 		si.si_signo = sig;
 		if (sig == SIGSEGV) {
+			down_read(&current->mm->mmap_sem);
 			if (find_vma(current->mm, (unsigned long)fault_addr))
 				si.si_code = SEGV_ACCERR;
 			else
 				si.si_code = SEGV_MAPERR;
+			up_read(&current->mm->mmap_sem);
 		} else {
 			si.si_code = BUS_ADRERR;
 		}
@@ -727,6 +722,50 @@ int process_fpemu_return(int sig, void __user *fault_addr)
 	} else {
 		return 0;
 	}
+}
+
+static int simulate_fp(struct pt_regs *regs, unsigned int opcode,
+		       unsigned long old_epc, unsigned long old_ra)
+{
+	union mips_instruction inst = { .word = opcode };
+	void __user *fault_addr = NULL;
+	int sig;
+
+	/* If it's obviously not an FP instruction, skip it */
+	switch (inst.i_format.opcode) {
+	case cop1_op:
+	case cop1x_op:
+	case lwc1_op:
+	case ldc1_op:
+	case swc1_op:
+	case sdc1_op:
+		break;
+
+	default:
+		return -1;
+	}
+
+	/*
+	 * do_ri skipped over the instruction via compute_return_epc, undo
+	 * that for the FPU emulator.
+	 */
+	regs->cp0_epc = old_epc;
+	regs->regs[31] = old_ra;
+
+	/* Save the FP context to struct thread_struct */
+	lose_fpu(1);
+
+	/* Run the emulator */
+	sig = fpu_emulator_cop1Handler(regs, &current->thread.fpu, 1,
+				       &fault_addr);
+
+	/* If something went wrong, signal */
+	process_fpemu_return(sig, fault_addr);
+
+	/* Restore the hardware register state */
+	own_fpu(1);
+
+	return 0;
 }
 
 /*
@@ -1021,6 +1060,9 @@ asmlinkage void do_ri(struct pt_regs *regs)
 
 		if (status < 0)
 			status = simulate_sync(regs, opcode);
+
+		if (status < 0)
+			status = simulate_fp(regs, opcode, old_epc, old31);
 	}
 
 	if (status < 0)
@@ -1094,13 +1136,19 @@ static int default_cu2_call(struct notifier_block *nfb, unsigned long action,
 
 static int enable_restore_fp_context(int msa)
 {
-	int err, was_fpu_owner;
+	int err, was_fpu_owner, prior_msa;
 
 	if (!used_math()) {
 		/* First time FP context user. */
+		preempt_disable();
 		err = init_fpu();
-		if (msa && !err)
+		if (msa && !err) {
 			enable_msa();
+			_init_msa_upper();
+			set_thread_flag(TIF_USEDMSA);
+			set_thread_flag(TIF_MSA_CTX_LIVE);
+		}
+		preempt_enable();
 		if (!err)
 			set_used_math();
 		return err;
@@ -1140,10 +1188,11 @@ static int enable_restore_fp_context(int msa)
 	 * This task is using or has previously used MSA. Thus we require
 	 * that Status.FR == 1.
 	 */
+	preempt_disable();
 	was_fpu_owner = is_fpu_owner();
-	err = own_fpu(0);
+	err = own_fpu_inatomic(0);
 	if (err)
-		return err;
+		goto out;
 
 	enable_msa();
 	write_msa_csr(current->thread.fpu.msacsr);
@@ -1152,13 +1201,43 @@ static int enable_restore_fp_context(int msa)
 	/*
 	 * If this is the first time that the task is using MSA and it has
 	 * previously used scalar FP in this time slice then we already nave
-	 * FP context which we shouldn't clobber.
+	 * FP context which we shouldn't clobber. We do however need to clear
+	 * the upper 64b of each vector register so that this task has no
+	 * opportunity to see data left behind by another.
 	 */
-	if (!test_and_set_thread_flag(TIF_MSA_CTX_LIVE) && was_fpu_owner)
-		return 0;
+	prior_msa = test_and_set_thread_flag(TIF_MSA_CTX_LIVE);
+	if (!prior_msa && was_fpu_owner) {
+		_init_msa_upper();
 
-	/* We need to restore the vector context. */
-	restore_msa(current);
+		goto out;
+	}
+
+	if (!prior_msa) {
+		/*
+		 * Restore the least significant 64b of each vector register
+		 * from the existing scalar FP context.
+		 */
+		_restore_fp(current);
+
+		/*
+		 * The task has not formerly used MSA, so clear the upper 64b
+		 * of each vector register such that it cannot see data left
+		 * behind by another task.
+		 */
+		_init_msa_upper();
+	} else {
+		/* We need to restore the vector context. */
+		restore_msa(current);
+
+		/* Restore the scalar FP control & status register */
+		if (!was_fpu_owner)
+			write_32bit_cp1_register(CP1_STATUS,
+						 current->thread.fpu.fcr31);
+	}
+
+out:
+	preempt_enable();
+
 	return 0;
 }
 
@@ -1349,12 +1428,19 @@ asmlinkage void do_mcheck(struct pt_regs *regs)
 	show_regs(regs);
 
 	if (multi_match) {
-		printk("Index	: %0x\n", read_c0_index());
-		printk("Pagemask: %0x\n", read_c0_pagemask());
-		printk("EntryHi : %0*lx\n", field, read_c0_entryhi());
-		printk("EntryLo0: %0*lx\n", field, read_c0_entrylo0());
-		printk("EntryLo1: %0*lx\n", field, read_c0_entrylo1());
-		printk("\n");
+		pr_err("Index	: %0x\n", read_c0_index());
+		pr_err("Pagemask: %0x\n", read_c0_pagemask());
+		pr_err("EntryHi : %0*lx\n", field, read_c0_entryhi());
+		pr_err("EntryLo0: %0*lx\n", field, read_c0_entrylo0());
+		pr_err("EntryLo1: %0*lx\n", field, read_c0_entrylo1());
+		pr_err("Wired   : %0x\n", read_c0_wired());
+		pr_err("Pagegrain: %0x\n", read_c0_pagegrain());
+		if (cpu_has_htw) {
+			pr_err("PWField : %0*lx\n", field, read_c0_pwfield());
+			pr_err("PWSize  : %0*lx\n", field, read_c0_pwsize());
+			pr_err("PWCtl   : %0x\n", read_c0_pwctl());
+		}
+		pr_err("\n");
 		dump_tlb_all();
 	}
 
@@ -1759,19 +1845,6 @@ static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
 		extern char rollback_except_vec_vi;
 		char *vec_start = using_rollback_handler() ?
 			&rollback_except_vec_vi : &except_vec_vi;
-#ifdef CONFIG_MIPS_MT_SMTC
-		/*
-		 * We need to provide the SMTC vectored interrupt handler
-		 * not only with the address of the handler, but with the
-		 * Status.IM bit to be masked before going there.
-		 */
-		extern char except_vec_vi_mori;
-#if defined(CONFIG_CPU_MICROMIPS) || defined(CONFIG_CPU_BIG_ENDIAN)
-		const int mori_offset = &except_vec_vi_mori - vec_start + 2;
-#else
-		const int mori_offset = &except_vec_vi_mori - vec_start;
-#endif
-#endif /* CONFIG_MIPS_MT_SMTC */
 #if defined(CONFIG_CPU_MICROMIPS) || defined(CONFIG_CPU_BIG_ENDIAN)
 		const int lui_offset = &except_vec_vi_lui - vec_start + 2;
 		const int ori_offset = &except_vec_vi_ori - vec_start + 2;
@@ -1795,12 +1868,6 @@ static void *set_vi_srs_handler(int n, vi_handler_t addr, int srs)
 #else
 				handler_len);
 #endif
-#ifdef CONFIG_MIPS_MT_SMTC
-		BUG_ON(n > 7);	/* Vector index %d exceeds SMTC maximum. */
-
-		h = (u16 *)(b + mori_offset);
-		*h = (0x100 << n);
-#endif /* CONFIG_MIPS_MT_SMTC */
 		h = (u16 *)(b + lui_offset);
 		*h = (handler >> 16) & 0xffff;
 		h = (u16 *)(b + ori_offset);
@@ -1865,32 +1932,16 @@ static int __init ulri_disable(char *s)
 }
 __setup("noulri", ulri_disable);
 
-void per_cpu_trap_init(bool is_boot_cpu)
+/* configure STATUS register */
+static void configure_status(void)
 {
-	unsigned int cpu = smp_processor_id();
-	unsigned int status_set = ST0_CU0;
-	unsigned int hwrena = cpu_hwrena_impl_bits;
-#ifdef CONFIG_MIPS_MT_SMTC
-	int secondaryTC = 0;
-	int bootTC = (cpu == 0);
-
-	/*
-	 * Only do per_cpu_trap_init() for first TC of Each VPE.
-	 * Note that this hack assumes that the SMTC init code
-	 * assigns TCs consecutively and in ascending order.
-	 */
-
-	if (((read_c0_tcbind() & TCBIND_CURTC) != 0) &&
-	    ((read_c0_tcbind() & TCBIND_CURVPE) == cpu_data[cpu - 1].vpe_id))
-		secondaryTC = 1;
-#endif /* CONFIG_MIPS_MT_SMTC */
-
 	/*
 	 * Disable coprocessors and select 32-bit or 64-bit addressing
 	 * and the 16/32 or 32/32 FPR register model.  Reset the BEV
 	 * flag that some firmware may have left set and the TS bit (for
 	 * IP27).  Set XX for ISA IV code to work.
 	 */
+	unsigned int status_set = ST0_CU0;
 #ifdef CONFIG_64BIT
 	status_set |= ST0_FR|ST0_KX|ST0_SX|ST0_UX;
 #endif
@@ -1901,6 +1952,12 @@ void per_cpu_trap_init(bool is_boot_cpu)
 
 	change_c0_status(ST0_CU|ST0_MX|ST0_RE|ST0_FR|ST0_BEV|ST0_TS|ST0_KX|ST0_SX|ST0_UX,
 			 status_set);
+}
+
+/* configure HWRENA register */
+static void configure_hwrena(void)
+{
+	unsigned int hwrena = cpu_hwrena_impl_bits;
 
 	if (cpu_has_mips_r2)
 		hwrena |= 0x0000000f;
@@ -1910,11 +1967,10 @@ void per_cpu_trap_init(bool is_boot_cpu)
 
 	if (hwrena)
 		write_c0_hwrena(hwrena);
+}
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	if (!secondaryTC) {
-#endif /* CONFIG_MIPS_MT_SMTC */
-
+static void configure_exception_vector(void)
+{
 	if (cpu_has_veic || cpu_has_vint) {
 		unsigned long sr = set_c0_status(ST0_BEV);
 		write_c0_ebase(ebase);
@@ -1930,6 +1986,16 @@ void per_cpu_trap_init(bool is_boot_cpu)
 		} else
 			set_c0_cause(CAUSEF_IV);
 	}
+}
+
+void per_cpu_trap_init(bool is_boot_cpu)
+{
+	unsigned int cpu = smp_processor_id();
+
+	configure_status();
+	configure_hwrena();
+
+	configure_exception_vector();
 
 	/*
 	 * Before R2 both interrupt numbers were fixed to 7, so on R2 only:
@@ -1949,10 +2015,6 @@ void per_cpu_trap_init(bool is_boot_cpu)
 		cp0_perfcount_irq = -1;
 	}
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	}
-#endif /* CONFIG_MIPS_MT_SMTC */
-
 	if (!cpu_data[cpu].asid_cache)
 		cpu_data[cpu].asid_cache = ASID_FIRST_VERSION;
 
@@ -1961,23 +2023,10 @@ void per_cpu_trap_init(bool is_boot_cpu)
 	BUG_ON(current->mm);
 	enter_lazy_tlb(&init_mm, current);
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	if (bootTC) {
-#endif /* CONFIG_MIPS_MT_SMTC */
 		/* Boot CPU's cache setup in setup_arch(). */
 		if (!is_boot_cpu)
 			cpu_cache_init();
 		tlb_init();
-#ifdef CONFIG_MIPS_MT_SMTC
-	} else if (!secondaryTC) {
-		/*
-		 * First TC in non-boot VPE must do subset of tlb_init()
-		 * for MMU countrol registers.
-		 */
-		write_c0_pagemask(PM_DEFAULT_MASK);
-		write_c0_wired(0);
-	}
-#endif /* CONFIG_MIPS_MT_SMTC */
 	TLBMISS_HANDLER_SETUP();
 }
 
@@ -2157,6 +2206,12 @@ void __init trap_init(void)
 		set_except_vector(15, handle_fpe);
 
 	set_except_vector(16, handle_ftlb);
+
+	if (cpu_has_rixiex) {
+		set_except_vector(19, tlb_do_page_fault_0);
+		set_except_vector(20, tlb_do_page_fault_0);
+	}
+
 	set_except_vector(21, handle_msa);
 	set_except_vector(22, handle_mdmx);
 
@@ -2185,3 +2240,32 @@ void __init trap_init(void)
 
 	cu2_notifier(default_cu2_call, 0x80000000);	/* Run last  */
 }
+
+static int trap_pm_notifier(struct notifier_block *self, unsigned long cmd,
+			    void *v)
+{
+	switch (cmd) {
+	case CPU_PM_ENTER_FAILED:
+	case CPU_PM_EXIT:
+		configure_status();
+		configure_hwrena();
+		configure_exception_vector();
+
+		/* Restore register with CPU number for TLB handlers */
+		TLBMISS_HANDLER_RESTORE();
+
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block trap_pm_notifier_block = {
+	.notifier_call = trap_pm_notifier,
+};
+
+static int __init trap_pm_init(void)
+{
+	return cpu_pm_register_notifier(&trap_pm_notifier_block);
+}
+arch_initcall(trap_pm_init);

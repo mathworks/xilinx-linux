@@ -1,7 +1,7 @@
 /*
  * rcar_du_vgacon.c  --  R-Car Display Unit VGA Connector
  *
- * Copyright (C) 2013 Renesas Corporation
+ * Copyright (C) 2013-2014 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
  *
@@ -25,21 +25,14 @@ static int rcar_du_vga_connector_get_modes(struct drm_connector *connector)
 	return 0;
 }
 
-static int rcar_du_vga_connector_mode_valid(struct drm_connector *connector,
-					    struct drm_display_mode *mode)
-{
-	return MODE_OK;
-}
-
 static const struct drm_connector_helper_funcs connector_helper_funcs = {
 	.get_modes = rcar_du_vga_connector_get_modes,
-	.mode_valid = rcar_du_vga_connector_mode_valid,
 	.best_encoder = rcar_du_connector_best_encoder,
 };
 
 static void rcar_du_vga_connector_destroy(struct drm_connector *connector)
 {
-	drm_sysfs_connector_remove(connector);
+	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
 }
 
@@ -59,6 +52,7 @@ static const struct drm_connector_funcs connector_funcs = {
 int rcar_du_vga_connector_init(struct rcar_du_device *rcdu,
 			       struct rcar_du_encoder *renc)
 {
+	struct drm_encoder *encoder = rcar_encoder_to_drm_encoder(renc);
 	struct rcar_du_connector *rcon;
 	struct drm_connector *connector;
 	int ret;
@@ -77,7 +71,7 @@ int rcar_du_vga_connector_init(struct rcar_du_device *rcdu,
 		return ret;
 
 	drm_connector_helper_add(connector, &connector_helper_funcs);
-	ret = drm_sysfs_connector_add(connector);
+	ret = drm_connector_register(connector);
 	if (ret < 0)
 		return ret;
 
@@ -85,11 +79,11 @@ int rcar_du_vga_connector_init(struct rcar_du_device *rcdu,
 	drm_object_property_set_value(&connector->base,
 		rcdu->ddev->mode_config.dpms_property, DRM_MODE_DPMS_OFF);
 
-	ret = drm_mode_connector_attach_encoder(connector, &renc->encoder);
+	ret = drm_mode_connector_attach_encoder(connector, encoder);
 	if (ret < 0)
 		return ret;
 
-	connector->encoder = &renc->encoder;
+	connector->encoder = encoder;
 	rcon->encoder = renc;
 
 	return 0;

@@ -12,10 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  * Written by:
  * Sergey Lapin <slapin@ossfans.org>
  * Dmitry Eremin-Solenikov <dbaryshkov@gmail.com>
@@ -96,7 +92,7 @@ out:
 }
 
 static int raw_connect(struct sock *sk, struct sockaddr *uaddr,
-			int addr_len)
+		       int addr_len)
 {
 	return -ENOTSUPP;
 }
@@ -106,8 +102,8 @@ static int raw_disconnect(struct sock *sk, int flags)
 	return 0;
 }
 
-static int raw_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
-		       size_t size)
+static int raw_sendmsg(struct kiocb *iocb, struct sock *sk,
+		       struct msghdr *msg, size_t size)
 {
 	struct net_device *dev;
 	unsigned int mtu;
@@ -145,7 +141,7 @@ static int raw_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	hlen = LL_RESERVED_SPACE(dev);
 	tlen = dev->needed_tailroom;
 	skb = sock_alloc_send_skb(sk, hlen + tlen + size,
-			msg->msg_flags & MSG_DONTWAIT, &err);
+				  msg->msg_flags & MSG_DONTWAIT, &err);
 	if (!skb)
 		goto out_dev;
 
@@ -154,7 +150,7 @@ static int raw_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	skb_reset_mac_header(skb);
 	skb_reset_network_header(skb);
 
-	err = memcpy_fromiovec(skb_put(skb, size), msg->msg_iov, size);
+	err = memcpy_from_msg(skb_put(skb, size), msg, size);
 	if (err < 0)
 		goto out_skb;
 
@@ -195,7 +191,7 @@ static int raw_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		copied = len;
 	}
 
-	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	err = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (err)
 		goto done;
 
@@ -225,7 +221,6 @@ static int raw_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	return NET_RX_SUCCESS;
 }
 
-
 void ieee802154_raw_deliver(struct net_device *dev, struct sk_buff *skb)
 {
 	struct sock *sk;
@@ -235,7 +230,6 @@ void ieee802154_raw_deliver(struct net_device *dev, struct sk_buff *skb)
 		bh_lock_sock(sk);
 		if (!sk->sk_bound_dev_if ||
 		    sk->sk_bound_dev_if == dev->ifindex) {
-
 			struct sk_buff *clone;
 
 			clone = skb_clone(skb, GFP_ATOMIC);
@@ -248,13 +242,13 @@ void ieee802154_raw_deliver(struct net_device *dev, struct sk_buff *skb)
 }
 
 static int raw_getsockopt(struct sock *sk, int level, int optname,
-		    char __user *optval, int __user *optlen)
+			  char __user *optval, int __user *optlen)
 {
 	return -EOPNOTSUPP;
 }
 
 static int raw_setsockopt(struct sock *sk, int level, int optname,
-		    char __user *optval, unsigned int optlen)
+			  char __user *optval, unsigned int optlen)
 {
 	return -EOPNOTSUPP;
 }
@@ -274,4 +268,3 @@ struct proto ieee802154_raw_prot = {
 	.getsockopt	= raw_getsockopt,
 	.setsockopt	= raw_setsockopt,
 };
-

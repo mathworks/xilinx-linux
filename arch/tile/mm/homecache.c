@@ -152,12 +152,10 @@ void flush_remote(unsigned long cache_pfn, unsigned long cache_control,
 	cpumask_scnprintf(cache_buf, sizeof(cache_buf), &cache_cpumask_copy);
 	cpumask_scnprintf(tlb_buf, sizeof(tlb_buf), &tlb_cpumask_copy);
 
-	pr_err("hv_flush_remote(%#llx, %#lx, %p [%s],"
-	       " %#lx, %#lx, %#lx, %p [%s], %p, %d) = %d\n",
+	pr_err("hv_flush_remote(%#llx, %#lx, %p [%s], %#lx, %#lx, %#lx, %p [%s], %p, %d) = %d\n",
 	       cache_pa, cache_control, cache_cpumask, cache_buf,
 	       (unsigned long)tlb_va, tlb_length, tlb_pgsize,
-	       tlb_cpumask, tlb_buf,
-	       asids, asidcount, rc);
+	       tlb_cpumask, tlb_buf, asids, asidcount, rc);
 	panic("Unsafe to continue.");
 }
 
@@ -417,7 +415,7 @@ void __homecache_free_pages(struct page *page, unsigned int order)
 	if (put_page_testzero(page)) {
 		homecache_change_page_home(page, order, PAGE_HOME_HASH);
 		if (order == 0) {
-			free_hot_cold_page(page, 0);
+			free_hot_cold_page(page, false);
 		} else {
 			init_page_count(page);
 			__free_pages(page, order);

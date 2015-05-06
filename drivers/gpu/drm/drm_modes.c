@@ -278,7 +278,7 @@ struct drm_display_mode *drm_cvt_mode(struct drm_device *dev, int hdisplay,
 		hblank = drm_mode->hdisplay * hblank_percentage /
 			 (100 * HV_FACTOR - hblank_percentage);
 		hblank -= hblank % (2 * CVT_H_GRANULARITY);
-		/* 14. find the total pixes per line */
+		/* 14. find the total pixels per line */
 		drm_mode->htotal = drm_mode->hdisplay + hblank;
 		drm_mode->hsync_end = drm_mode->hdisplay + hblank / 2;
 		drm_mode->hsync_start = drm_mode->hsync_end -
@@ -914,7 +914,7 @@ EXPORT_SYMBOL(drm_mode_equal_no_clocks_no_stereo);
  *
  * This function is a helper which can be used to validate modes against size
  * limitations of the DRM device/connector. If a mode is too big its status
- * memeber is updated with the appropriate validation failure code. The list
+ * member is updated with the appropriate validation failure code. The list
  * itself is not changed.
  */
 void drm_mode_validate_size(struct drm_device *dev,
@@ -1013,6 +1013,7 @@ EXPORT_SYMBOL(drm_mode_sort);
 /**
  * drm_mode_connector_list_update - update the mode list for the connector
  * @connector: the connector to update
+ * @merge_type_bits: whether to merge or overright type bits.
  *
  * This moves the modes from the @connector probed_modes list
  * to the actual mode list. It compares the probed mode against the current
@@ -1021,7 +1022,8 @@ EXPORT_SYMBOL(drm_mode_sort);
  * This is just a helper functions doesn't validate any modes itself and also
  * doesn't prune any invalid modes. Callers need to do that themselves.
  */
-void drm_mode_connector_list_update(struct drm_connector *connector)
+void drm_mode_connector_list_update(struct drm_connector *connector,
+				    bool merge_type_bits)
 {
 	struct drm_display_mode *mode;
 	struct drm_display_mode *pmode, *pt;
@@ -1039,7 +1041,10 @@ void drm_mode_connector_list_update(struct drm_connector *connector)
 				/* if equal delete the probed mode */
 				mode->status = pmode->status;
 				/* Merge type bits together */
-				mode->type |= pmode->type;
+				if (merge_type_bits)
+					mode->type |= pmode->type;
+				else
+					mode->type = pmode->type;
 				list_del(&pmode->head);
 				drm_mode_destroy(connector->dev, pmode);
 				break;
@@ -1069,7 +1074,7 @@ EXPORT_SYMBOL(drm_mode_connector_list_update);
  *	<xres>x<yres>[M][R][-<bpp>][@<refresh>][i][m][eDd]
  *
  * The intermediate drm_cmdline_mode structure is required to store additional
- * options from the command line modline like the force-enabel/disable flag.
+ * options from the command line modline like the force-enable/disable flag.
  *
  * Returns:
  * True if a valid modeline has been parsed, false otherwise.
@@ -1254,6 +1259,7 @@ drm_mode_create_from_cmdline_mode(struct drm_device *dev,
 	if (!mode)
 		return NULL;
 
+	mode->type |= DRM_MODE_TYPE_USERDEF;
 	drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V);
 	return mode;
 }

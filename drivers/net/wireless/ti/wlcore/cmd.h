@@ -31,8 +31,6 @@ struct acx_header;
 
 int wl1271_cmd_send(struct wl1271 *wl, u16 id, void *buf, size_t len,
 		    size_t res_len);
-int wlcore_cmd_send_failsafe(struct wl1271 *wl, u16 id, void *buf, size_t len,
-			     size_t res_len, unsigned long valid_rets);
 int wl12xx_cmd_role_enable(struct wl1271 *wl, u8 *addr, u8 role_type,
 			   u8 *role_id);
 int wl12xx_cmd_role_disable(struct wl1271 *wl, u8 *role_id);
@@ -64,7 +62,8 @@ int wl1271_cmd_build_ps_poll(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 int wl12xx_cmd_build_probe_req(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 			       u8 role_id, u8 band,
 			       const u8 *ssid, size_t ssid_len,
-			       const u8 *ie, size_t ie_len, bool sched_scan);
+			       const u8 *ie, size_t ie_len, const u8 *common_ie,
+			       size_t common_ie_len, bool sched_scan);
 struct sk_buff *wl1271_cmd_build_ap_probe_req(struct wl1271 *wl,
 					      struct wl12xx_vif *wlvif,
 					      struct sk_buff *skb);
@@ -169,6 +168,9 @@ enum wl1271_commands {
 
 	/* start of 18xx specific commands */
 	CMD_DFS_CHANNEL_CONFIG		= 60,
+	CMD_SMART_CONFIG_START		= 61,
+	CMD_SMART_CONFIG_STOP		= 62,
+	CMD_SMART_CONFIG_SET_GROUP_KEY	= 63,
 
 	MAX_COMMAND_ID = 0xFFFF,
 };

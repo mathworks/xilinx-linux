@@ -144,6 +144,12 @@ enum ocfs2_unlock_action {
 						     * before the upconvert
 						     * has completed */
 
+#define OCFS2_LOCK_NONBLOCK_FINISHED (0x00001000) /* NONBLOCK cluster
+						   * lock has already
+						   * returned, do not block
+						   * dc thread from
+						   * downconverting */
+
 struct ocfs2_lock_res_ops;
 
 typedef void (*ocfs2_lock_callback)(int status, unsigned long data);
@@ -422,6 +428,7 @@ struct ocfs2_super
 	struct inode			*osb_tl_inode;
 	struct buffer_head		*osb_tl_bh;
 	struct delayed_work		osb_truncate_log_wq;
+	atomic_t			osb_tl_disable;
 	/*
 	 * How many clusters in our truncate log.
 	 * It must be protected by osb_tl_inode->i_mutex.

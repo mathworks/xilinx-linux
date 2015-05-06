@@ -64,6 +64,9 @@ static int __wlcore_cmd_send(struct wl1271 *wl, u16 id, void *buf,
 		     id != CMD_STOP_FWLOGGER))
 		return -EIO;
 
+	if (WARN_ON_ONCE(len < sizeof(*cmd)))
+		return -EIO;
+
 	cmd = buf;
 	cmd->id = cpu_to_le16(id);
 	cmd->status = 0;
@@ -128,8 +131,9 @@ static int __wlcore_cmd_send(struct wl1271 *wl, u16 id, void *buf,
  * send command to fw and return cmd status on success
  * valid_rets contains a bitmap of allowed error codes
  */
-int wlcore_cmd_send_failsafe(struct wl1271 *wl, u16 id, void *buf, size_t len,
-			     size_t res_len, unsigned long valid_rets)
+static int wlcore_cmd_send_failsafe(struct wl1271 *wl, u16 id, void *buf,
+				    size_t len, size_t res_len,
+				    unsigned long valid_rets)
 {
 	int ret = __wlcore_cmd_send(wl, id, buf, len, res_len);
 
@@ -150,7 +154,6 @@ fail:
 	wl12xx_queue_recovery_work(wl);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(wl1271_cmd_send);
 
 /*
  * wrapper for wlcore_cmd_send that accept only CMD_STATUS_SUCCESS
@@ -165,6 +168,7 @@ int wl1271_cmd_send(struct wl1271 *wl, u16 id, void *buf, size_t len,
 		return ret;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(wl1271_cmd_send);
 
 /*
  * Poll the mailbox event field until any of the bits in the mask is set or a
@@ -372,9 +376,9 @@ void wl12xx_free_link(struct wl1271 *wl, struct wl12xx_vif *wlvif, u8 *hlid)
 	wl1271_tx_reset_link_queues(wl, *hlid);
 	wl->links[*hlid].wlvif = NULL;
 
-	if (wlvif->bss_type == BSS_TYPE_STA_BSS ||
-	    (wlvif->bss_type == BSS_TYPE_AP_BSS &&
-	     *hlid == wlvif->ap.bcast_hlid)) {
+	if (wlvif->bss_type == BSS_TYPE_AP_BSS &&
+	    *hlid == wlvif->ap.bcast_hlid) {
+		u32 sqn_padding = WL1271_TX_SQN_POST_RECOVERY_PADDING;
 		/*
 		 * save the total freed packets in the wlvif, in case this is
 		 * recovery or suspend
@@ -385,9 +389,11 @@ void wl12xx_free_link(struct wl1271 *wl, struct wl12xx_vif *wlvif, u8 *hlid)
 		 * increment the initial seq number on recovery to account for
 		 * transmitted packets that we haven't yet got in the FW status
 		 */
+		if (wlvif->encryption_type == KEY_GEM)
+			sqn_padding = WL1271_TX_SQN_POST_RECOVERY_PADDING_GEM;
+
 		if (test_bit(WL1271_FLAG_RECOVERY_IN_PROGRESS, &wl->flags))
-			wlvif->total_freed_pkts +=
-					WL1271_TX_SQN_POST_RECOVERY_PADDING;
+			wlvif->total_freed_pkts += sqn_padding;
 	}
 
 	wl->links[*hlid].total_freed_pkts = 0;
@@ -889,6 +895,9 @@ int wlcore_cmd_configure_failsafe(struct wl1271 *wl, u16 id, void *buf,
 
 	wl1271_debug(DEBUG_CMD, "cmd configure (%d)", id);
 
+	if (WARN_ON_ONCE(len < sizeof(*acx)))
+		return -EIO;
+
 	acx->id = cpu_to_le16(id);
 
 	/* payload length, does not include any headers */
@@ -1124,7 +1133,8 @@ out:
 int wl12xx_cmd_build_probe_req(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 			       u8 role_id, u8 band,
 			       const u8 *ssid, size_t ssid_len,
-			       const u8 *ie, size_t ie_len, bool sched_scan)
+			       const u8 *ie0, size_t ie0_len, const u8 *ie1,
+			       size_t ie1_len, bool sched_scan)
 {
 	struct ieee80211_vif *vif = wl12xx_wlvif_to_vif(wlvif);
 	struct sk_buff *skb;
@@ -1135,14 +1145,16 @@ int wl12xx_cmd_build_probe_req(struct wl1271 *wl, struct wl12xx_vif *wlvif,
 
 	wl1271_debug(DEBUG_SCAN, "build probe request band %d", band);
 
-	skb = ieee80211_probereq_get(wl->hw, vif, ssid, ssid_len,
-				     ie_len);
+	skb = ieee80211_probereq_get(wl->hw, vif->addr, ssid, ssid_len,
+				     ie0_len + ie1_len);
 	if (!skb) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	if (ie_len)
-		memcpy(skb_put(skb, ie_len), ie, ie_len);
+	if (ie0_len)
+		memcpy(skb_put(skb, ie0_len), ie0, ie0_len);
+	if (ie1_len)
+		memcpy(skb_put(skb, ie1_len), ie1, ie1_len);
 
 	if (sched_scan &&
 	    (wl->quirks & WLCORE_QUIRK_DUAL_PROBE_TMPL)) {

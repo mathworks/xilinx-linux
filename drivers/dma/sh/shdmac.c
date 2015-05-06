@@ -18,31 +18,32 @@
  *
  */
 
+#include <linux/delay.h>
+#include <linux/dmaengine.h>
+#include <linux/err.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/kdebug.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/slab.h>
-#include <linux/interrupt.h>
-#include <linux/dmaengine.h>
-#include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/sh_dma.h>
-#include <linux/notifier.h>
-#include <linux/kdebug.h>
-#include <linux/spinlock.h>
 #include <linux/rculist.h>
+#include <linux/sh_dma.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #include "../dmaengine.h"
 #include "shdma.h"
 
-/* DMA register */
-#define SAR	0x00
-#define DAR	0x04
-#define TCR	0x08
-#define CHCR	0x0C
-#define DMAOR	0x40
+/* DMA registers */
+#define SAR	0x00	/* Source Address Register */
+#define DAR	0x04	/* Destination Address Register */
+#define TCR	0x08	/* Transfer Count Register */
+#define CHCR	0x0C	/* Channel Control Register */
+#define DMAOR	0x40	/* DMA Operation Register */
 
 #define TEND	0x18 /* USB-DMAC */
 
@@ -238,9 +239,8 @@ static void dmae_init(struct sh_dmae_chan *sh_chan)
 {
 	/*
 	 * Default configuration for dual address memory-memory transfer.
-	 * 0x400 represents auto-request.
 	 */
-	u32 chcr = DM_INC | SM_INC | 0x400 | log2size_to_chcr(sh_chan,
+	u32 chcr = DM_INC | SM_INC | RS_AUTO | log2size_to_chcr(sh_chan,
 						   LOG2_DEFAULT_XFER_SIZE);
 	sh_chan->xmit_shift = calc_xmit_shift(sh_chan, chcr);
 	chcr_write(sh_chan, chcr);
@@ -572,7 +572,6 @@ err_no_irq:
 
 static void sh_dmae_chan_remove(struct sh_dmae_device *shdev)
 {
-	struct dma_device *dma_dev = &shdev->shdma_dev.dma_dev;
 	struct shdma_chan *schan;
 	int i;
 
@@ -581,7 +580,6 @@ static void sh_dmae_chan_remove(struct sh_dmae_device *shdev)
 
 		shdma_chan_remove(schan);
 	}
-	dma_dev->chancnt = 0;
 }
 
 static void sh_dmae_shutdown(struct platform_device *pdev)
@@ -925,7 +923,6 @@ static int sh_dmae_remove(struct platform_device *pdev)
 
 static struct platform_driver sh_dmae_driver = {
 	.driver 	= {
-		.owner	= THIS_MODULE,
 		.pm	= &sh_dmae_pm,
 		.name	= SH_DMAE_DRV_NAME,
 		.of_match_table = sh_dmae_of_match,

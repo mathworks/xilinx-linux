@@ -100,7 +100,7 @@ enum xcan_reg {
 #define XCAN_INTR_ALL		(XCAN_IXR_TXOK_MASK | XCAN_IXR_BSOFF_MASK |\
 				 XCAN_IXR_WKUP_MASK | XCAN_IXR_SLP_MASK | \
 				 XCAN_IXR_RXNEMP_MASK | XCAN_IXR_ERROR_MASK | \
-				 XCAN_IXR_ARBLST_MASK | XCAN_IXR_RXOK_MASK)
+				 XCAN_IXR_ARBLST_MASK)
 
 /* CAN register bit shift - XCAN_<REG>_<BIT>_SHIFT */
 #define XCAN_BTR_SJW_SHIFT		7  /* Synchronous jump width */
@@ -300,7 +300,8 @@ static int xcan_set_bittiming(struct net_device *ndev)
 static int xcan_chip_start(struct net_device *ndev)
 {
 	struct xcan_priv *priv = netdev_priv(ndev);
-	u32 err, reg_msr, reg_sr_mask;
+	u32 reg_msr, reg_sr_mask;
+	int err;
 	unsigned long timeout;
 
 	/* Check if it is in reset mode */
@@ -508,10 +509,11 @@ static int xcan_rx(struct net_device *ndev)
 			cf->can_id |= CAN_RTR_FLAG;
 	}
 
-	if (!(id_xcan & XCAN_IDR_SRR_MASK)) {
-		data[0] = priv->read_reg(priv, XCAN_RXFIFO_DW1_OFFSET);
-		data[1] = priv->read_reg(priv, XCAN_RXFIFO_DW2_OFFSET);
+	/* DW1/DW2 must always be read to remove message from RXFIFO */
+	data[0] = priv->read_reg(priv, XCAN_RXFIFO_DW1_OFFSET);
+	data[1] = priv->read_reg(priv, XCAN_RXFIFO_DW2_OFFSET);
 
+	if (!(cf->can_id & CAN_RTR_FLAG)) {
 		/* Change Xilinx CAN data format to socketCAN data format */
 		if (cf->can_dlc > 0)
 			*(__be32 *)(cf->data) = cpu_to_be32(data[0]);
@@ -709,15 +711,7 @@ static int xcan_rx_poll(struct napi_struct *napi, int quota)
 
 	isr = priv->read_reg(priv, XCAN_ISR_OFFSET);
 	while ((isr & XCAN_IXR_RXNEMP_MASK) && (work_done < quota)) {
-		if (isr & XCAN_IXR_RXOK_MASK) {
-			priv->write_reg(priv, XCAN_ICR_OFFSET,
-				XCAN_IXR_RXOK_MASK);
-			work_done += xcan_rx(ndev);
-		} else {
-			priv->write_reg(priv, XCAN_ICR_OFFSET,
-				XCAN_IXR_RXNEMP_MASK);
-			break;
-		}
+		work_done += xcan_rx(ndev);
 		priv->write_reg(priv, XCAN_ICR_OFFSET, XCAN_IXR_RXNEMP_MASK);
 		isr = priv->read_reg(priv, XCAN_ISR_OFFSET);
 	}
@@ -728,7 +722,7 @@ static int xcan_rx_poll(struct napi_struct *napi, int quota)
 	if (work_done < quota) {
 		napi_complete(napi);
 		ier = priv->read_reg(priv, XCAN_IER_OFFSET);
-		ier |= (XCAN_IXR_RXOK_MASK | XCAN_IXR_RXNEMP_MASK);
+		ier |= XCAN_IXR_RXNEMP_MASK;
 		priv->write_reg(priv, XCAN_IER_OFFSET, ier);
 	}
 	return work_done;
@@ -800,9 +794,9 @@ static irqreturn_t xcan_interrupt(int irq, void *dev_id)
 	}
 
 	/* Check for the type of receive interrupt and Processing it */
-	if (isr & (XCAN_IXR_RXNEMP_MASK | XCAN_IXR_RXOK_MASK)) {
+	if (isr & XCAN_IXR_RXNEMP_MASK) {
 		ier = priv->read_reg(priv, XCAN_IER_OFFSET);
-		ier &= ~(XCAN_IXR_RXNEMP_MASK | XCAN_IXR_RXOK_MASK);
+		ier &= ~XCAN_IXR_RXNEMP_MASK;
 		priv->write_reg(priv, XCAN_IER_OFFSET, ier);
 		napi_schedule(&priv->napi);
 	}
@@ -961,6 +955,7 @@ static const struct net_device_ops xcan_netdev_ops = {
 	.ndo_open	= xcan_open,
 	.ndo_stop	= xcan_close,
 	.ndo_start_xmit	= xcan_start_xmit,
+	.ndo_change_mtu	= can_change_mtu,
 };
 
 /**
@@ -1194,7 +1189,6 @@ static struct platform_driver xcan_driver = {
 	.probe = xcan_probe,
 	.remove	= xcan_remove,
 	.driver	= {
-		.owner = THIS_MODULE,
 		.name = DRIVER_NAME,
 		.pm = &xcan_dev_pm_ops,
 		.of_match_table	= xcan_of_match,

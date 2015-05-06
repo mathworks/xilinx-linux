@@ -220,19 +220,9 @@ static inline struct v4l2_subdev *to_sd(struct v4l2_ctrl *ctrl)
 	return &container_of(ctrl->handler, struct adv7842_state, hdl)->sd;
 }
 
-static inline unsigned hblanking(const struct v4l2_bt_timings *t)
-{
-	return V4L2_DV_BT_BLANKING_WIDTH(t);
-}
-
 static inline unsigned htotal(const struct v4l2_bt_timings *t)
 {
 	return V4L2_DV_BT_FRAME_WIDTH(t);
-}
-
-static inline unsigned vblanking(const struct v4l2_bt_timings *t)
-{
-	return V4L2_DV_BT_BLANKING_HEIGHT(t);
 }
 
 static inline unsigned vtotal(const struct v4l2_bt_timings *t)
@@ -1128,7 +1118,7 @@ static void set_rgb_quantization_range(struct v4l2_subdev *sd)
 		/* Receiving DVI-D signal
 		 * ADV7842 selects RGB limited range regardless of
 		 * input format (CE/IT) in automatic mode */
-		if (state->timings.bt.standards & V4L2_DV_BT_STD_CEA861) {
+		if (state->timings.bt.flags & V4L2_DV_FL_IS_CE_VIDEO) {
 			/* RGB limited range (16-235) */
 			io_write_and_or(sd, 0x02, 0x0f, 0x00);
 		} else {
@@ -1435,6 +1425,8 @@ static int adv7842_query_dv_timings(struct v4l2_subdev *sd,
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
 
+	memset(timings, 0, sizeof(struct v4l2_dv_timings));
+
 	/* SDP block */
 	if (state->mode == ADV7842_MODE_SDP)
 		return -ENODATA;
@@ -1483,7 +1475,7 @@ static int adv7842_query_dv_timings(struct v4l2_subdev *sd,
 					hdmi_read(sd, 0x2d)) / 2;
 			bt->il_vsync = ((hdmi_read(sd, 0x30) & 0x1f) * 256 +
 					hdmi_read(sd, 0x31)) / 2;
-			bt->vbackporch = ((hdmi_read(sd, 0x34) & 0x1f) * 256 +
+			bt->il_vbackporch = ((hdmi_read(sd, 0x34) & 0x1f) * 256 +
 					hdmi_read(sd, 0x35)) / 2;
 		}
 		adv7842_fill_optional_dv_timings_fields(sd, timings);
@@ -1875,12 +1867,12 @@ static int adv7842_s_routing(struct v4l2_subdev *sd,
 }
 
 static int adv7842_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
-				 enum v4l2_mbus_pixelcode *code)
+				 u32 *code)
 {
 	if (index)
 		return -EINVAL;
 	/* Good enough for now */
-	*code = V4L2_MBUS_FMT_FIXED;
+	*code = MEDIA_BUS_FMT_FIXED;
 	return 0;
 }
 
@@ -1891,7 +1883,7 @@ static int adv7842_g_mbus_fmt(struct v4l2_subdev *sd,
 
 	fmt->width = state->timings.bt.width;
 	fmt->height = state->timings.bt.height;
-	fmt->code = V4L2_MBUS_FMT_FIXED;
+	fmt->code = MEDIA_BUS_FMT_FIXED;
 	fmt->field = V4L2_FIELD_NONE;
 
 	if (state->mode == ADV7842_MODE_SDP) {
@@ -1908,7 +1900,8 @@ static int adv7842_g_mbus_fmt(struct v4l2_subdev *sd,
 		return 0;
 	}
 
-	if (state->timings.bt.standards & V4L2_DV_BT_STD_CEA861) {
+	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+	if (state->timings.bt.flags & V4L2_DV_FL_IS_CE_VIDEO) {
 		fmt->colorspace = (state->timings.bt.height <= 576) ?
 			V4L2_COLORSPACE_SMPTE170M : V4L2_COLORSPACE_REC709;
 	}
@@ -2006,6 +1999,7 @@ static int adv7842_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 	if (irq_status[5] & 0x08) {
 		v4l2_dbg(1, debug, sd, "%s: irq %s mode\n", __func__,
 			 (io_read(sd, 0x65) & 0x08) ? "HDMI" : "DVI");
+		set_rgb_quantization_range(sd);
 		if (handled)
 			*handled = true;
 	}
@@ -2025,18 +2019,7 @@ static int adv7842_get_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
 	struct adv7842_state *state = to_state(sd);
 	u8 *data = NULL;
 
-	if (edid->pad > ADV7842_EDID_PORT_VGA)
-		return -EINVAL;
-	if (edid->blocks == 0)
-		return -EINVAL;
-	if (edid->blocks > 2)
-		return -EINVAL;
-	if (edid->start_block > 1)
-		return -EINVAL;
-	if (edid->start_block == 1)
-		edid->blocks = 1;
-	if (!edid->edid)
-		return -EINVAL;
+	memset(edid->reserved, 0, sizeof(edid->reserved));
 
 	switch (edid->pad) {
 	case ADV7842_EDID_PORT_A:
@@ -2051,12 +2034,23 @@ static int adv7842_get_edid(struct v4l2_subdev *sd, struct v4l2_edid *edid)
 	default:
 		return -EINVAL;
 	}
+
+	if (edid->start_block == 0 && edid->blocks == 0) {
+		edid->blocks = data ? 2 : 0;
+		return 0;
+	}
+
 	if (!data)
 		return -ENODATA;
 
-	memcpy(edid->edid,
-	       data + edid->start_block * 128,
-	       edid->blocks * 128);
+	if (edid->start_block >= 2)
+		return -EINVAL;
+
+	if (edid->start_block + edid->blocks > 2)
+		edid->blocks = 2 - edid->start_block;
+
+	memcpy(edid->edid, data + edid->start_block * 128, edid->blocks * 128);
+
 	return 0;
 }
 
@@ -2065,12 +2059,16 @@ static int adv7842_set_edid(struct v4l2_subdev *sd, struct v4l2_edid *e)
 	struct adv7842_state *state = to_state(sd);
 	int err = 0;
 
+	memset(e->reserved, 0, sizeof(e->reserved));
+
 	if (e->pad > ADV7842_EDID_PORT_VGA)
 		return -EINVAL;
 	if (e->start_block != 0)
 		return -EINVAL;
-	if (e->blocks > 2)
+	if (e->blocks > 2) {
+		e->blocks = 2;
 		return -E2BIG;
+	}
 
 	/* todo, per edid */
 	state->aspect_ratio = v4l2_calc_aspect_ratio(e->edid[0x15],
@@ -2614,6 +2612,12 @@ static int adv7842_core_init(struct v4l2_subdev *sd)
 
 	disable_input(sd);
 
+	/*
+	 * Disable I2C access to internal EDID ram from HDMI DDC ports
+	 * Disable auto edid enable when leaving powerdown mode
+	 */
+	rep_write_and_or(sd, 0x77, 0xd3, 0x20);
+
 	/* power */
 	io_write(sd, 0x0c, 0x42);   /* Power up part and power down VDP */
 	io_write(sd, 0x15, 0x80);   /* Power up pads */
@@ -2693,9 +2697,6 @@ static int adv7842_core_init(struct v4l2_subdev *sd)
 	select_input(sd, pdata->vid_std_select);
 
 	enable_input(sd);
-
-	/* disable I2C access to internal EDID ram from HDMI DDC ports */
-	rep_write_and_or(sd, 0x77, 0xf3, 0x00);
 
 	if (pdata->hpa_auto) {
 		/* HPA auto, HPA 0.5s after Edid set and Cable detect */
@@ -2873,8 +2874,6 @@ static const struct v4l2_ctrl_ops adv7842_ctrl_ops = {
 
 static const struct v4l2_subdev_core_ops adv7842_core_ops = {
 	.log_status = adv7842_log_status,
-	.g_std = adv7842_g_std,
-	.s_std = adv7842_s_std,
 	.ioctl = adv7842_ioctl,
 	.interrupt_service_routine = adv7842_isr,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -2884,6 +2883,8 @@ static const struct v4l2_subdev_core_ops adv7842_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops adv7842_video_ops = {
+	.g_std = adv7842_g_std,
+	.s_std = adv7842_s_std,
 	.s_routing = adv7842_s_routing,
 	.querystd = adv7842_querystd,
 	.g_input_status = adv7842_g_input_status,

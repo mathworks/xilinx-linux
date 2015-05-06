@@ -16,10 +16,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -47,10 +43,11 @@
 #include <linux/regulator/fixed.h>
 #include <linux/regulator/machine.h>
 #include <linux/smsc911x.h>
-#include <linux/sh_intc.h>
+#include <linux/sh_clk.h>
 #include <linux/tca6416_keypad.h>
 #include <linux/usb/renesas_usbhs.h>
 #include <linux/dma-mapping.h>
+
 #include <video/sh_mobile_hdmi.h>
 #include <video/sh_mobile_lcdc.h>
 #include <media/sh_mobile_ceu.h>
@@ -58,15 +55,15 @@
 #include <media/soc_camera_platform.h>
 #include <sound/sh_fsi.h>
 #include <sound/simple_card.h>
-
-#include <mach/common.h>
-#include <mach/irqs.h>
-#include <mach/sh7372.h>
-
 #include <asm/mach/arch.h>
 #include <asm/mach-types.h>
 
+#include "common.h"
+#include "intc.h"
+#include "irqs.h"
+#include "pm-rmobile.h"
 #include "sh-gpio.h"
+#include "sh7372.h"
 
 /*
  * Address	Interface		BusWidth	note
@@ -523,6 +520,8 @@ static struct platform_device fsi_hdmi_device = {
 	.id	= 1,
 	.dev	= {
 		.platform_data	= &fsi2_hdmi_info,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+		.dma_mask = &fsi_hdmi_device.dev.coherent_dma_mask,
 	},
 };
 
@@ -919,6 +918,8 @@ static struct platform_device fsi_ak4643_device = {
 	.name	= "asoc-simple-card",
 	.dev	= {
 		.platform_data	= &fsi2_ak4643_info,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+		.dma_mask = &fsi_ak4643_device.dev.coherent_dma_mask,
 	},
 };
 
@@ -1148,7 +1149,7 @@ static struct soc_camera_platform_info camera_info = {
 	.format_name = "UYVY",
 	.format_depth = 16,
 	.format = {
-		.code = V4L2_MBUS_FMT_UYVY8_2X8,
+		.code = MEDIA_BUS_FMT_UYVY8_2X8,
 		.colorspace = V4L2_COLORSPACE_SMPTE170M,
 		.field = V4L2_FIELD_NONE,
 		.width = 640,
@@ -1416,7 +1417,7 @@ static const struct pinctrl_map mackerel_pinctrl_map[] = {
 #define USCCR1		IOMEM(0xE6058144)
 static void __init mackerel_init(void)
 {
-	struct pm_domain_device domain_devices[] = {
+	static struct pm_domain_device domain_devices[] __initdata = {
 		{ "A4LC", &lcdc_device, },
 		{ "A4LC", &hdmi_lcdc_device, },
 		{ "A4LC", &meram_device, },

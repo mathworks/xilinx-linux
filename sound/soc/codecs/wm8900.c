@@ -640,16 +640,16 @@ static int wm8900_hw_params(struct snd_pcm_substream *substream,
 
 	reg = snd_soc_read(codec, WM8900_REG_AUDIO1) & ~0x60;
 
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		reg |= 0x20;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		reg |= 0x40;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		reg |= 0x60;
 		break;
 	default:
@@ -1209,16 +1209,8 @@ static int wm8900_probe(struct snd_soc_codec *codec)
 	return 0;
 }
 
-/* power down chip */
-static int wm8900_remove(struct snd_soc_codec *codec)
-{
-	wm8900_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
 static struct snd_soc_codec_driver soc_codec_dev_wm8900 = {
 	.probe =	wm8900_probe,
-	.remove =	wm8900_remove,
 	.suspend =	wm8900_suspend,
 	.resume =	wm8900_resume,
 	.set_bias_level = wm8900_set_bias_level,

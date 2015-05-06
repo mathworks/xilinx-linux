@@ -31,6 +31,7 @@
 
 #include <asm/fpsimd.h>
 #include <asm/hw_breakpoint.h>
+#include <asm/pgtable-hwdef.h>
 #include <asm/ptrace.h>
 #include <asm/types.h>
 
@@ -79,6 +80,7 @@ struct thread_struct {
 	unsigned long		tp_value;
 	struct fpsimd_state	fpsimd_state;
 	unsigned long		fault_address;	/* fault info */
+	unsigned long		fault_code;	/* ESR_EL1 value */
 	struct debug_info	debug;		/* debugging */
 };
 
@@ -122,12 +124,13 @@ struct task_struct;
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
 
-/* Prepare to copy thread state - unlazy all lazy status */
-#define prepare_to_copy(tsk)	do { } while (0)
-
 unsigned long get_wchan(struct task_struct *p);
 
-#define cpu_relax()			barrier()
+static inline void cpu_relax(void) {
+	barrier();
+	asm volatile("yield");
+}
+#define cpu_relax_lowlatency()                cpu_relax()
 
 /* Thread switching */
 extern struct task_struct *cpu_switch_to(struct task_struct *prev,
@@ -136,8 +139,8 @@ extern struct task_struct *cpu_switch_to(struct task_struct *prev,
 #define task_pt_regs(p) \
 	((struct pt_regs *)(THREAD_START_SP + task_stack_page(p)) - 1)
 
-#define KSTK_EIP(tsk)	task_pt_regs(tsk)->pc
-#define KSTK_ESP(tsk)	task_pt_regs(tsk)->sp
+#define KSTK_EIP(tsk)	((unsigned long)task_pt_regs(tsk)->pc)
+#define KSTK_ESP(tsk)	user_stack_pointer(task_pt_regs(tsk))
 
 /*
  * Prefetching support

@@ -29,6 +29,7 @@
 #include <linux/spi/ads7846.h>
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/mtd/sharpsl.h>
+#include <linux/memblock.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -445,7 +446,7 @@ static void __init poodle_init(void)
 
 	ret = platform_add_devices(devices, ARRAY_SIZE(devices));
 	if (ret)
-		pr_warning("poodle: Unable to register LoCoMo device\n");
+		pr_warn("poodle: Unable to register LoCoMo device\n");
 
 	pxa_set_fb_info(&poodle_locomo_device.dev, &poodle_fb_info);
 	pxa_set_udc_info(&udc_info);
@@ -456,13 +457,10 @@ static void __init poodle_init(void)
 	poodle_init_spi();
 }
 
-static void __init fixup_poodle(struct tag *tags, char **cmdline,
-				struct meminfo *mi)
+static void __init fixup_poodle(struct tag *tags, char **cmdline)
 {
 	sharpsl_save_param();
-	mi->nr_banks=1;
-	mi->bank[0].start = 0xa0000000;
-	mi->bank[0].size = (32*1024*1024);
+	memblock_add(0xa0000000, SZ_32M);
 }
 
 MACHINE_START(POODLE, "SHARP Poodle")

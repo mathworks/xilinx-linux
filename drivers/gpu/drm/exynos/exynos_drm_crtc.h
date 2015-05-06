@@ -15,10 +15,7 @@
 #ifndef _EXYNOS_DRM_CRTC_H_
 #define _EXYNOS_DRM_CRTC_H_
 
-struct drm_device;
-struct drm_crtc;
-struct exynos_drm_manager;
-struct exynos_drm_overlay;
+#include "exynos_drm_drv.h"
 
 int exynos_drm_crtc_create(struct exynos_drm_manager *manager);
 int exynos_drm_crtc_enable_vblank(struct drm_device *dev, int pipe);
@@ -31,5 +28,16 @@ void exynos_drm_crtc_plane_mode_set(struct drm_crtc *crtc,
 void exynos_drm_crtc_plane_commit(struct drm_crtc *crtc, int zpos);
 void exynos_drm_crtc_plane_enable(struct drm_crtc *crtc, int zpos);
 void exynos_drm_crtc_plane_disable(struct drm_crtc *crtc, int zpos);
+
+/* This function gets pipe value to crtc device matched with out_type. */
+int exynos_drm_crtc_get_pipe_from_type(struct drm_device *drm_dev,
+					unsigned int out_type);
+
+/*
+ * This function calls the crtc device(manager)'s te_handler() callback
+ * to trigger to transfer video image at the tearing effect synchronization
+ * signal.
+ */
+void exynos_drm_crtc_te_handler(struct drm_crtc *crtc);
 
 #endif

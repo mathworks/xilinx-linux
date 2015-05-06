@@ -161,7 +161,7 @@ static const struct iio_chan_spec st_accel_16bit_channels[] = {
 	IIO_CHAN_SOFT_TIMESTAMP(3)
 };
 
-static const struct st_sensors st_accel_sensors[] = {
+static const struct st_sensor_settings st_accel_sensors_settings[] = {
 	{
 		.wai = ST_ACCEL_1_WAI_EXP,
 		.sensors_supported = {
@@ -393,6 +393,9 @@ static int st_accel_read_raw(struct iio_dev *indio_dev,
 		*val = 0;
 		*val2 = adata->current_fullscale->gain;
 		return IIO_VAL_INT_PLUS_MICRO;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		*val = adata->odr;
+		return IIO_VAL_INT;
 	default:
 		return -EINVAL;
 	}
@@ -410,6 +413,13 @@ static int st_accel_write_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_SCALE:
 		err = st_sensors_set_fullscale_by_gain(indio_dev, val2);
 		break;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		if (val2)
+			return -EINVAL;
+		mutex_lock(&indio_dev->mlock);
+		err = st_sensors_set_odr(indio_dev, val);
+		mutex_unlock(&indio_dev->mlock);
+		return err;
 	default:
 		return -EINVAL;
 	}
@@ -417,14 +427,12 @@ static int st_accel_write_raw(struct iio_dev *indio_dev,
 	return err;
 }
 
-static ST_SENSOR_DEV_ATTR_SAMP_FREQ();
 static ST_SENSORS_DEV_ATTR_SAMP_FREQ_AVAIL();
 static ST_SENSORS_DEV_ATTR_SCALE_AVAIL(in_accel_scale_available);
 
 static struct attribute *st_accel_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	&iio_dev_attr_in_accel_scale_available.dev_attr.attr,
-	&iio_dev_attr_sampling_frequency.dev_attr.attr,
 	NULL,
 };
 
@@ -449,8 +457,7 @@ static const struct iio_trigger_ops st_accel_trigger_ops = {
 #define ST_ACCEL_TRIGGER_OPS NULL
 #endif
 
-int st_accel_common_probe(struct iio_dev *indio_dev,
-				struct st_sensors_platform_data *plat_data)
+int st_accel_common_probe(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *adata = iio_priv(indio_dev);
 	int irq = adata->get_irq_data_ready(indio_dev);
@@ -459,25 +466,28 @@ int st_accel_common_probe(struct iio_dev *indio_dev,
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &accel_info;
 
+	st_sensors_power_enable(indio_dev);
+
 	err = st_sensors_check_device_support(indio_dev,
-				ARRAY_SIZE(st_accel_sensors), st_accel_sensors);
+					ARRAY_SIZE(st_accel_sensors_settings),
+					st_accel_sensors_settings);
 	if (err < 0)
 		return err;
 
 	adata->num_data_channels = ST_ACCEL_NUMBER_DATA_CHANNELS;
-	adata->multiread_bit = adata->sensor->multi_read_bit;
-	indio_dev->channels = adata->sensor->ch;
+	adata->multiread_bit = adata->sensor_settings->multi_read_bit;
+	indio_dev->channels = adata->sensor_settings->ch;
 	indio_dev->num_channels = ST_SENSORS_NUMBER_ALL_CHANNELS;
 
 	adata->current_fullscale = (struct st_sensor_fullscale_avl *)
-						&adata->sensor->fs.fs_avl[0];
-	adata->odr = adata->sensor->odr.odr_avl[0].hz;
+					&adata->sensor_settings->fs.fs_avl[0];
+	adata->odr = adata->sensor_settings->odr.odr_avl[0].hz;
 
-	if (!plat_data)
-		plat_data =
+	if (!adata->dev->platform_data)
+		adata->dev->platform_data =
 			(struct st_sensors_platform_data *)&default_accel_pdata;
 
-	err = st_sensors_init_sensor(indio_dev, plat_data);
+	err = st_sensors_init_sensor(indio_dev, adata->dev->platform_data);
 	if (err < 0)
 		return err;
 
@@ -496,6 +506,9 @@ int st_accel_common_probe(struct iio_dev *indio_dev,
 	if (err)
 		goto st_accel_device_register_error;
 
+	dev_info(&indio_dev->dev, "registered accelerometer %s\n",
+		 indio_dev->name);
+
 	return 0;
 
 st_accel_device_register_error:
@@ -511,6 +524,8 @@ EXPORT_SYMBOL(st_accel_common_probe);
 void st_accel_common_remove(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *adata = iio_priv(indio_dev);
+
+	st_sensors_power_disable(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	if (adata->get_irq_data_ready(indio_dev) > 0)

@@ -55,6 +55,17 @@
 #define SDMMC_BUFADDR		0x098
 #define SDMMC_CDTHRCTL		0x100
 #define SDMMC_DATA(x)		(x)
+/*
+* Registers to support idmac 64-bit address mode
+*/
+#define SDMMC_DBADDRL		0x088
+#define SDMMC_DBADDRU		0x08c
+#define SDMMC_IDSTS64		0x090
+#define SDMMC_IDINTEN64		0x094
+#define SDMMC_DSCADDRL		0x098
+#define SDMMC_DSCADDRU		0x09c
+#define SDMMC_BUFADDRL		0x0A0
+#define SDMMC_BUFADDRU		0x0A4
 
 /*
  * Data offset is difference according to Version
@@ -99,6 +110,7 @@
 #define SDMMC_INT_HLE			BIT(12)
 #define SDMMC_INT_FRUN			BIT(11)
 #define SDMMC_INT_HTO			BIT(10)
+#define SDMMC_INT_VOLT_SWITCH		BIT(10) /* overloads bit 10! */
 #define SDMMC_INT_DRTO			BIT(9)
 #define SDMMC_INT_RTO			BIT(8)
 #define SDMMC_INT_DCRC			BIT(7)
@@ -113,6 +125,7 @@
 /* Command register defines */
 #define SDMMC_CMD_START			BIT(31)
 #define SDMMC_CMD_USE_HOLD_REG	BIT(29)
+#define SDMMC_CMD_VOLT_SWITCH		BIT(28)
 #define SDMMC_CMD_CCS_EXP		BIT(23)
 #define SDMMC_CMD_CEATA_RD		BIT(22)
 #define SDMMC_CMD_UPD_CLK		BIT(21)
@@ -129,6 +142,8 @@
 #define SDMMC_CMD_INDX(n)		((n) & 0x1F)
 /* Status register defines */
 #define SDMMC_GET_FCNT(x)		(((x)>>17) & 0x1FFF)
+#define SDMMC_STATUS_DMA_REQ		BIT(31)
+#define SDMMC_STATUS_BUSY		BIT(9)
 /* FIFOTH register defines */
 #define SDMMC_SET_FIFOTH(m, r, t)	(((m) & 0x7) << 28 | \
 					 ((r) & 0xFFF) << 16 | \
@@ -149,6 +164,10 @@
 #define SDMMC_GET_VERID(x)		((x) & 0xFFFF)
 /* Card read threshold */
 #define SDMMC_SET_RD_THLD(v, x)		(((v) & 0x1FFF) << 16 | (x))
+#define SDMMC_UHS_18V			BIT(0)
+/* All ctrl reset bits */
+#define SDMMC_CTRL_ALL_RESET_FLAGS \
+	(SDMMC_CTRL_RESET | SDMMC_CTRL_FIFO_RESET | SDMMC_CTRL_DMA_RESET)
 
 /* Register access macros */
 #define mci_readl(dev, reg)			\
@@ -195,7 +214,6 @@ extern int dw_mci_resume(struct dw_mci *host);
  * @mmc: The mmc_host representing this slot.
  * @host: The MMC controller this slot is using.
  * @quirks: Slot-level quirks (DW_MCI_SLOT_QUIRK_XXX)
- * @wp_gpio: If gpio_is_valid() we'll use this to read write protect.
  * @ctype: Card type for this slot.
  * @mrq: mmc_request currently being processed or waiting to be
  *	processed, or NULL when the slot is idle.
@@ -207,14 +225,13 @@ extern int dw_mci_resume(struct dw_mci *host);
  *	with CONFIG_MMC_CLKGATE.
  * @flags: Random state bits associated with the slot.
  * @id: Number of this slot.
- * @last_detect_state: Most recently observed card detect state.
+ * @sdio_id: Number of this slot in the SDIO interrupt registers.
  */
 struct dw_mci_slot {
 	struct mmc_host		*mmc;
 	struct dw_mci		*host;
 
 	int			quirks;
-	int			wp_gpio;
 
 	u32			ctype;
 
@@ -228,7 +245,7 @@ struct dw_mci_slot {
 #define DW_MMC_CARD_PRESENT	0
 #define DW_MMC_CARD_NEED_INIT	1
 	int			id;
-	int			last_detect_state;
+	int			sdio_id;
 };
 
 struct dw_mci_tuning_data {

@@ -1,8 +1,12 @@
 Renesas R-Car sound
 
 Required properties:
-- compatible			: "renesas,rcar_sound-gen1" if generation1
+- compatible			: "renesas,rcar_sound-<soctype>", fallbacks
+				  "renesas,rcar_sound-gen1" if generation1, and
 				  "renesas,rcar_sound-gen2" if generation2
+				  Examples with soctypes are:
+				    - "renesas,rcar_sound-r8a7790" (R-Car H2)
+				    - "renesas,rcar_sound-r8a7791" (R-Car M2-W)
 - reg				: Should contain the register physical address.
 				  required register is
 				   SRU/ADG/SSI      if generation1
@@ -13,6 +17,9 @@ Required properties:
 - rcar_sound,src		: Should contain SRC feature.
 				  The number of SRC subnode should be same as HW.
 				  see below for detail.
+- rcar_sound,dvc		: Should contain DVC feature.
+				  The number of DVC subnode should be same as HW.
+				  see below for detail.
 - rcar_sound,dai		: DAI contents.
 				  The number of DAI subnode should be same as HW.
 				  see below for detail.
@@ -20,6 +27,8 @@ Required properties:
 SSI subnode properties:
 - interrupts			: Should contain SSI interrupt for PIO transfer
 - shared-pin			: if shared clock pin
+- pio-transfer			: use PIO transfer mode
+- no-busif			: BUSIF is not ussed when [mem -> SSI] via DMA case
 
 SRC subnode properties:
 no properties at this point
@@ -30,13 +39,18 @@ DAI subnode properties:
 
 Example:
 
-rcar_sound: rcar_sound@0xffd90000 {
+rcar_sound: rcar_sound@ec500000 {
 	#sound-dai-cells = <1>;
-	compatible = "renesas,rcar_sound-gen2";
+	compatible = "renesas,rcar_sound-r8a7791", "renesas,rcar_sound-gen2";
 	reg =	<0 0xec500000 0 0x1000>, /* SCU */
 		<0 0xec5a0000 0 0x100>,  /* ADG */
 		<0 0xec540000 0 0x1000>, /* SSIU */
 		<0 0xec541000 0 0x1280>; /* SSI */
+
+	rcar_sound,dvc {
+		dvc0: dvc@0 { };
+		dvc1: dvc@1 { };
+	};
 
 	rcar_sound,src {
 		src0: src@0 { };

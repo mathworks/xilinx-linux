@@ -1809,9 +1809,10 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 
 	switch (qc->dev->class) {
 	case ATA_DEV_ATA:
+	case ATA_DEV_ZAC:
 		if (err & ATA_ICRC)
 			qc->err_mask |= AC_ERR_ATA_BUS;
-		if (err & ATA_UNC)
+		if (err & (ATA_UNC | ATA_AMNF))
 			qc->err_mask |= AC_ERR_MEDIA;
 		if (err & ATA_IDNF)
 			qc->err_mask |= AC_ERR_INVALID;
@@ -2388,6 +2389,7 @@ const char *ata_get_cmd_descript(u8 command)
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(ata_get_cmd_descript);
 
 /**
  *	ata_eh_link_report - report error handling to user
@@ -2556,11 +2558,12 @@ static void ata_eh_link_report(struct ata_link *link)
 		}
 
 		if (cmd->command != ATA_CMD_PACKET &&
-		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_IDNF |
-				     ATA_ABORTED)))
-			ata_dev_err(qc->dev, "error: { %s%s%s%s}\n",
+		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_AMNF |
+				     ATA_IDNF | ATA_ABORTED)))
+			ata_dev_err(qc->dev, "error: { %s%s%s%s%s}\n",
 			  res->feature & ATA_ICRC ? "ICRC " : "",
 			  res->feature & ATA_UNC ? "UNC " : "",
+			  res->feature & ATA_AMNF ? "AMNF " : "",
 			  res->feature & ATA_IDNF ? "IDNF " : "",
 			  res->feature & ATA_ABORTED ? "ABRT " : "");
 #endif
@@ -3791,7 +3794,8 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 				struct ata_eh_context *ehc = &link->eh_context;
 				unsigned long tmp;
 
-				if (dev->class != ATA_DEV_ATA)
+				if (dev->class != ATA_DEV_ATA &&
+				    dev->class != ATA_DEV_ZAC)
 					continue;
 				if (!(ehc->i.dev_action[dev->devno] &
 				      ATA_EH_PARK))
@@ -3872,7 +3876,8 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 
 		/* retry flush if necessary */
 		ata_for_each_dev(dev, link, ALL) {
-			if (dev->class != ATA_DEV_ATA)
+			if (dev->class != ATA_DEV_ATA &&
+			    dev->class != ATA_DEV_ZAC)
 				continue;
 			rc = ata_eh_maybe_retry_flush(dev);
 			if (rc)

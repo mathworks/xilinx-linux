@@ -47,9 +47,13 @@ MODULE_PARM_DESC(static_hdmi_pcm, "Don't restrict PCM parameters per ELD info");
 
 #define is_haswell(codec)  ((codec)->vendor_id == 0x80862807)
 #define is_broadwell(codec)    ((codec)->vendor_id == 0x80862808)
-#define is_haswell_plus(codec) (is_haswell(codec) || is_broadwell(codec))
+#define is_skylake(codec) ((codec)->vendor_id == 0x80862809)
+#define is_haswell_plus(codec) (is_haswell(codec) || is_broadwell(codec) \
+					|| is_skylake(codec))
 
 #define is_valleyview(codec) ((codec)->vendor_id == 0x80862882)
+#define is_cherryview(codec) ((codec)->vendor_id == 0x80862883)
+#define is_valleyview_plus(codec) (is_valleyview(codec) || is_cherryview(codec))
 
 struct hdmi_spec_per_cvt {
 	hda_nid_t cvt_nid;
@@ -648,7 +652,8 @@ static int get_channel_allocation_order(int ca)
  *
  * TODO: it could select the wrong CA from multiple candidates.
 */
-static int hdmi_channel_allocation(struct hdmi_eld *eld, int channels)
+static int hdmi_channel_allocation(struct hda_codec *codec,
+				   struct hdmi_eld *eld, int channels)
 {
 	int i;
 	int ca = 0;
@@ -694,7 +699,7 @@ static int hdmi_channel_allocation(struct hdmi_eld *eld, int channels)
 	}
 
 	snd_print_channel_allocation(eld->info.spk_alloc, buf, sizeof(buf));
-	snd_printdd("HDMI: select CA 0x%x for %d-channel allocation: %s\n",
+	codec_dbg(codec, "HDMI: select CA 0x%x for %d-channel allocation: %s\n",
 		    ca, channels, buf);
 
 	return ca;
@@ -1127,15 +1132,11 @@ static void hdmi_setup_audio_infoframe(struct hda_codec *codec,
 					    AMP_OUT_UNMUTE);
 
 	eld = &per_pin->sink_eld;
-	if (!eld->monitor_present) {
-		hdmi_set_channel_count(codec, per_pin->cvt_nid, channels);
-		return;
-	}
 
 	if (!non_pcm && per_pin->chmap_set)
 		ca = hdmi_manual_channel_allocation(channels, per_pin->chmap);
 	else
-		ca = hdmi_channel_allocation(eld, channels);
+		ca = hdmi_channel_allocation(codec, eld, channels);
 	if (ca < 0)
 		ca = 0;
 
@@ -1164,15 +1165,21 @@ static void hdmi_setup_audio_infoframe(struct hda_codec *codec,
 
 static bool hdmi_present_sense(struct hdmi_spec_per_pin *per_pin, int repoll);
 
-static void jack_callback(struct hda_codec *codec, struct hda_jack_tbl *jack)
+static void check_presence_and_report(struct hda_codec *codec, hda_nid_t nid)
 {
 	struct hdmi_spec *spec = codec->spec;
-	int pin_idx = pin_nid_to_pin_index(codec, jack->nid);
+	int pin_idx = pin_nid_to_pin_index(codec, nid);
+
 	if (pin_idx < 0)
 		return;
-
 	if (hdmi_present_sense(get_pin(spec, pin_idx), 1))
 		snd_hda_jack_report_sync(codec);
+}
+
+static void jack_callback(struct hda_codec *codec,
+			  struct hda_jack_callback *jack)
+{
+	check_presence_and_report(codec, jack->tbl->nid);
 }
 
 static void hdmi_intrinsic_event(struct hda_codec *codec, unsigned int res)
@@ -1191,7 +1198,7 @@ static void hdmi_intrinsic_event(struct hda_codec *codec, unsigned int res)
 		codec->addr, jack->nid, dev_entry, !!(res & AC_UNSOL_RES_IA),
 		!!(res & AC_UNSOL_RES_PD), !!(res & AC_UNSOL_RES_ELDV));
 
-	jack_callback(codec, jack);
+	check_presence_and_report(codec, jack->nid);
 }
 
 static void hdmi_non_intrinsic_event(struct hda_codec *codec, unsigned int res)
@@ -1462,7 +1469,7 @@ static int hdmi_pcm_open(struct hda_pcm_stream *hinfo,
 			    mux_idx);
 
 	/* configure unused pins to choose other converters */
-	if (is_haswell_plus(codec) || is_valleyview(codec))
+	if (is_haswell_plus(codec) || is_valleyview_plus(codec))
 		intel_not_share_assigned_cvt(codec, per_pin->pin_nid, mux_idx);
 
 	snd_hda_spdif_ctls_assign(codec, pin_idx, per_cvt->cvt_nid);
@@ -1561,13 +1568,13 @@ static bool hdmi_present_sense(struct hdmi_spec_per_pin *per_pin, int repoll)
 			eld->eld_valid = false;
 		else {
 			memset(&eld->info, 0, sizeof(struct parsed_hdmi_eld));
-			if (snd_hdmi_parse_eld(&eld->info, eld->eld_buffer,
+			if (snd_hdmi_parse_eld(codec, &eld->info, eld->eld_buffer,
 						    eld->eld_size) < 0)
 				eld->eld_valid = false;
 		}
 
 		if (eld->eld_valid) {
-			snd_hdmi_show_eld(&eld->info);
+			snd_hdmi_show_eld(codec, &eld->info);
 			update_eld = true;
 		}
 		else if (repoll) {
@@ -1578,19 +1585,22 @@ static bool hdmi_present_sense(struct hdmi_spec_per_pin *per_pin, int repoll)
 		}
 	}
 
-	if (pin_eld->eld_valid && !eld->eld_valid) {
-		update_eld = true;
+	if (pin_eld->eld_valid != eld->eld_valid)
 		eld_changed = true;
-	}
+
+	if (pin_eld->eld_valid && !eld->eld_valid)
+		update_eld = true;
+
 	if (update_eld) {
 		bool old_eld_valid = pin_eld->eld_valid;
 		pin_eld->eld_valid = eld->eld_valid;
-		eld_changed = pin_eld->eld_size != eld->eld_size ||
+		if (pin_eld->eld_size != eld->eld_size ||
 			      memcmp(pin_eld->eld_buffer, eld->eld_buffer,
-				     eld->eld_size) != 0;
-		if (eld_changed)
+				     eld->eld_size) != 0) {
 			memcpy(pin_eld->eld_buffer, eld->eld_buffer,
 			       eld->eld_size);
+			eld_changed = true;
+		}
 		pin_eld->eld_size = eld->eld_size;
 		pin_eld->info = eld->info;
 
@@ -1598,10 +1608,19 @@ static bool hdmi_present_sense(struct hdmi_spec_per_pin *per_pin, int repoll)
 		 * Re-setup pin and infoframe. This is needed e.g. when
 		 * - sink is first plugged-in (infoframe is not set up if !monitor_present)
 		 * - transcoder can change during stream playback on Haswell
+		 *   and this can make HW reset converter selection on a pin.
 		 */
-		if (eld->eld_valid && !old_eld_valid && per_pin->setup)
+		if (eld->eld_valid && !old_eld_valid && per_pin->setup) {
+			if (is_haswell_plus(codec) ||
+				is_valleyview_plus(codec)) {
+				intel_verify_pin_cvt_connect(codec, per_pin);
+				intel_not_share_assigned_cvt(codec, pin_nid,
+							per_pin->mux_idx);
+			}
+
 			hdmi_setup_audio_infoframe(codec, per_pin,
 						   per_pin->non_pcm);
+		}
 	}
 
 	if (eld_changed)
@@ -1774,7 +1793,7 @@ static int generic_hdmi_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
 	bool non_pcm;
 	int pinctl;
 
-	if (is_haswell_plus(codec) || is_valleyview(codec)) {
+	if (is_haswell_plus(codec) || is_valleyview_plus(codec)) {
 		/* Verify pin:cvt selections to avoid silent audio after S3.
 		 * After S3, the audio driver restores pin:cvt selections
 		 * but this can happen before gfx is ready and such selection
@@ -2157,7 +2176,7 @@ static int generic_hdmi_init(struct hda_codec *codec)
 		hda_nid_t pin_nid = per_pin->pin_nid;
 
 		hdmi_init_pin(codec, pin_nid);
-		snd_hda_jack_detect_enable_callback(codec, pin_nid, pin_nid,
+		snd_hda_jack_detect_enable_callback(codec, pin_nid,
 			codec->jackpoll_interval > 0 ? jack_callback : NULL);
 	}
 	return 0;
@@ -2200,7 +2219,7 @@ static int generic_hdmi_resume(struct hda_codec *codec)
 	struct hdmi_spec *spec = codec->spec;
 	int pin_idx;
 
-	generic_hdmi_init(codec);
+	codec->patch_ops.init(codec);
 	snd_hda_codec_resume_amp(codec);
 	snd_hda_codec_resume_cache(codec);
 
@@ -2325,9 +2344,8 @@ static int patch_generic_hdmi(struct hda_codec *codec)
 		intel_haswell_fixup_enable_dp12(codec);
 	}
 
-	if (is_haswell(codec) || is_valleyview(codec)) {
+	if (is_haswell_plus(codec) || is_valleyview_plus(codec))
 		codec->depop_delay = 0;
-	}
 
 	if (hdmi_parse_codec(codec) < 0) {
 		codec->spec = NULL;
@@ -2421,7 +2439,7 @@ static int simple_playback_init(struct hda_codec *codec)
 	if (get_wcaps(codec, pin) & AC_WCAP_OUT_AMP)
 		snd_hda_codec_write(codec, pin, 0, AC_VERB_SET_AMP_GAIN_MUTE,
 				    AMP_OUT_UNMUTE);
-	snd_hda_jack_detect_enable(codec, pin, pin);
+	snd_hda_jack_detect_enable(codec, pin);
 	return 0;
 }
 
@@ -3324,6 +3342,7 @@ static const struct hda_codec_preset snd_hda_preset_hdmi[] = {
 { .id = 0x10de001a, .name = "GPU 1a HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de001b, .name = "GPU 1b HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de001c, .name = "GPU 1c HDMI/DP",	.patch = patch_nvhdmi },
+{ .id = 0x10de0028, .name = "Tegra12x HDMI",	.patch = patch_nvhdmi },
 { .id = 0x10de0040, .name = "GPU 40 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de0041, .name = "GPU 41 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de0042, .name = "GPU 42 HDMI/DP",	.patch = patch_nvhdmi },
@@ -3332,7 +3351,9 @@ static const struct hda_codec_preset snd_hda_preset_hdmi[] = {
 { .id = 0x10de0051, .name = "GPU 51 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de0060, .name = "GPU 60 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de0067, .name = "MCP67 HDMI",	.patch = patch_nvhdmi_2ch },
+{ .id = 0x10de0070, .name = "GPU 70 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de0071, .name = "GPU 71 HDMI/DP",	.patch = patch_nvhdmi },
+{ .id = 0x10de0072, .name = "GPU 72 HDMI/DP",	.patch = patch_nvhdmi },
 { .id = 0x10de8001, .name = "MCP73 HDMI",	.patch = patch_nvhdmi_2ch },
 { .id = 0x11069f80, .name = "VX900 HDMI/DP",	.patch = patch_via_hdmi },
 { .id = 0x11069f81, .name = "VX900 HDMI/DP",	.patch = patch_via_hdmi },
@@ -3347,8 +3368,10 @@ static const struct hda_codec_preset snd_hda_preset_hdmi[] = {
 { .id = 0x80862806, .name = "PantherPoint HDMI", .patch = patch_generic_hdmi },
 { .id = 0x80862807, .name = "Haswell HDMI",	.patch = patch_generic_hdmi },
 { .id = 0x80862808, .name = "Broadwell HDMI",	.patch = patch_generic_hdmi },
+{ .id = 0x80862809, .name = "Skylake HDMI",	.patch = patch_generic_hdmi },
 { .id = 0x80862880, .name = "CedarTrail HDMI",	.patch = patch_generic_hdmi },
 { .id = 0x80862882, .name = "Valleyview2 HDMI",	.patch = patch_generic_hdmi },
+{ .id = 0x80862883, .name = "Braswell HDMI",	.patch = patch_generic_hdmi },
 { .id = 0x808629fb, .name = "Crestline HDMI",	.patch = patch_generic_hdmi },
 {} /* terminator */
 };
@@ -3380,6 +3403,7 @@ MODULE_ALIAS("snd-hda-codec-id:10de0019");
 MODULE_ALIAS("snd-hda-codec-id:10de001a");
 MODULE_ALIAS("snd-hda-codec-id:10de001b");
 MODULE_ALIAS("snd-hda-codec-id:10de001c");
+MODULE_ALIAS("snd-hda-codec-id:10de0028");
 MODULE_ALIAS("snd-hda-codec-id:10de0040");
 MODULE_ALIAS("snd-hda-codec-id:10de0041");
 MODULE_ALIAS("snd-hda-codec-id:10de0042");
@@ -3388,7 +3412,9 @@ MODULE_ALIAS("snd-hda-codec-id:10de0044");
 MODULE_ALIAS("snd-hda-codec-id:10de0051");
 MODULE_ALIAS("snd-hda-codec-id:10de0060");
 MODULE_ALIAS("snd-hda-codec-id:10de0067");
+MODULE_ALIAS("snd-hda-codec-id:10de0070");
 MODULE_ALIAS("snd-hda-codec-id:10de0071");
+MODULE_ALIAS("snd-hda-codec-id:10de0072");
 MODULE_ALIAS("snd-hda-codec-id:10de8001");
 MODULE_ALIAS("snd-hda-codec-id:11069f80");
 MODULE_ALIAS("snd-hda-codec-id:11069f81");
@@ -3404,8 +3430,10 @@ MODULE_ALIAS("snd-hda-codec-id:80862805");
 MODULE_ALIAS("snd-hda-codec-id:80862806");
 MODULE_ALIAS("snd-hda-codec-id:80862807");
 MODULE_ALIAS("snd-hda-codec-id:80862808");
+MODULE_ALIAS("snd-hda-codec-id:80862809");
 MODULE_ALIAS("snd-hda-codec-id:80862880");
 MODULE_ALIAS("snd-hda-codec-id:80862882");
+MODULE_ALIAS("snd-hda-codec-id:80862883");
 MODULE_ALIAS("snd-hda-codec-id:808629fb");
 
 MODULE_LICENSE("GPL");

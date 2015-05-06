@@ -78,27 +78,24 @@ MLX4_EN_PARM_INT(inline_thold, MAX_INLINE,
 #define MAX_PFC_TX     0xff
 #define MAX_PFC_RX     0xff
 
-int en_print(const char *level, const struct mlx4_en_priv *priv,
-	     const char *format, ...)
+void en_print(const char *level, const struct mlx4_en_priv *priv,
+	      const char *format, ...)
 {
 	va_list args;
 	struct va_format vaf;
-	int i;
 
 	va_start(args, format);
 
 	vaf.fmt = format;
 	vaf.va = &args;
 	if (priv->registered)
-		i = printk("%s%s: %s: %pV",
-			   level, DRV_NAME, priv->dev->name, &vaf);
+		printk("%s%s: %s: %pV",
+		       level, DRV_NAME, priv->dev->name, &vaf);
 	else
-		i = printk("%s%s: %s: Port %d: %pV",
-			   level, DRV_NAME, dev_name(&priv->mdev->pdev->dev),
-			   priv->port, &vaf);
+		printk("%s%s: %s: Port %d: %pV",
+		       level, DRV_NAME, dev_name(&priv->mdev->pdev->dev),
+		       priv->port, &vaf);
 	va_end(args);
-
-	return i;
 }
 
 void mlx4_en_update_loopback_state(struct net_device *dev,
@@ -129,11 +126,13 @@ static int mlx4_en_get_profile(struct mlx4_en_dev *mdev)
 	int i;
 
 	params->udp_rss = udp_rss;
-	params->num_tx_rings_p_up = min_t(int, num_online_cpus(),
-			MLX4_EN_MAX_TX_RING_P_UP);
+	params->num_tx_rings_p_up = mlx4_low_memory_profile() ?
+		MLX4_EN_MIN_TX_RING_P_UP :
+		min_t(int, num_online_cpus(), MLX4_EN_MAX_TX_RING_P_UP);
+
 	if (params->udp_rss && !(mdev->dev->caps.flags
 					& MLX4_DEV_CAP_FLAG_UDP_RSS)) {
-		mlx4_warn(mdev, "UDP RSS is not supported on this device.\n");
+		mlx4_warn(mdev, "UDP RSS is not supported on this device\n");
 		params->udp_rss = 0;
 	}
 	for (i = 1; i <= MLX4_MAX_PORTS; i++) {
@@ -222,15 +221,12 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 {
 	struct mlx4_en_dev *mdev;
 	int i;
-	int err;
 
 	printk_once(KERN_INFO "%s", mlx4_en_version);
 
 	mdev = kzalloc(sizeof(*mdev), GFP_KERNEL);
-	if (!mdev) {
-		err = -ENOMEM;
+	if (!mdev)
 		goto err_free_res;
-	}
 
 	if (mlx4_pd_alloc(dev, &mdev->priv_pdn))
 		goto err_free_dev;
@@ -251,8 +247,7 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 
 	mdev->LSO_support = !!(dev->caps.flags & (1 << 15));
 	if (!mdev->LSO_support)
-		mlx4_warn(mdev, "LSO not supported, please upgrade to later "
-				"FW version to enable LSO\n");
+		mlx4_warn(mdev, "LSO not supported, please upgrade to later FW version to enable LSO\n");
 
 	if (mlx4_mr_alloc(mdev->dev, mdev->priv_pdn, 0, ~0ull,
 			 MLX4_PERM_LOCAL_WRITE |  MLX4_PERM_LOCAL_READ,
@@ -266,9 +261,8 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 	}
 
 	/* Build device profile according to supplied module parameters */
-	err = mlx4_en_get_profile(mdev);
-	if (err) {
-		mlx4_err(mdev, "Bad module parameters, aborting.\n");
+	if (mlx4_en_get_profile(mdev)) {
+		mlx4_err(mdev, "Bad module parameters, aborting\n");
 		goto err_mr;
 	}
 
@@ -288,10 +282,8 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 	 * Note: we cannot use the shared workqueue because of deadlocks caused
 	 *       by the rtnl lock */
 	mdev->workqueue = create_singlethread_workqueue("mlx4_en");
-	if (!mdev->workqueue) {
-		err = -ENOMEM;
+	if (!mdev->workqueue)
 		goto err_mr;
-	}
 
 	/* At this stage all non-port specific tasks are complete:
 	 * mark the card state as up */

@@ -15,7 +15,6 @@
 #include <linux/delay.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/bootmem.h>
 #include <linux/irq.h>
 #include <linux/of_pci.h>
 
@@ -698,7 +697,7 @@ static void __init fixup_nec_usb2(void)
 {
 	struct device_node *nec;
 
-	for (nec = NULL; (nec = of_find_node_by_name(nec, "usb")) != NULL;) {
+	for_each_node_by_name(nec, "usb") {
 		struct pci_controller *hose;
 		u32 data;
 		const u32 *prop;

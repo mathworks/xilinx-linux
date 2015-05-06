@@ -11,7 +11,6 @@
 #include <linux/rcupdate.h>
 #include <linux/lockref.h>
 
-struct nameidata;
 struct path;
 struct vfsmount;
 
@@ -55,6 +54,7 @@ struct qstr {
 #define QSTR_INIT(n,l) { { { .len = l } }, .name = n }
 #define hashlen_hash(hashlen) ((u32) (hashlen))
 #define hashlen_len(hashlen)  ((u32)((hashlen) >> 32))
+#define hashlen_create(hash,len) (((u64)(len)<<32)|(u32)(hash))
 
 struct dentry_stat_t {
 	long nr_dentry;
@@ -124,15 +124,15 @@ struct dentry {
 	void *d_fsdata;			/* fs-specific data */
 
 	struct list_head d_lru;		/* LRU list */
+	struct list_head d_child;	/* child of parent list */
+	struct list_head d_subdirs;	/* our children */
 	/*
-	 * d_child and d_rcu can share memory
+	 * d_alias and d_rcu can share memory
 	 */
 	union {
-		struct list_head d_child;	/* child of parent list */
+		struct hlist_node d_alias;	/* inode alias list */
 	 	struct rcu_head d_rcu;
 	} d_u;
-	struct list_head d_subdirs;	/* our children */
-	struct hlist_node d_alias;	/* inode alias list */
 };
 
 /*
@@ -225,17 +225,11 @@ struct dentry_operations {
 
 extern seqlock_t rename_lock;
 
-static inline int dname_external(const struct dentry *dentry)
-{
-	return dentry->d_name.name != dentry->d_iname;
-}
-
 /*
  * These are the low-level FS interfaces to the dcache..
  */
 extern void d_instantiate(struct dentry *, struct inode *);
 extern struct dentry * d_instantiate_unique(struct dentry *, struct inode *);
-extern struct dentry * d_materialise_unique(struct dentry *, struct inode *);
 extern int d_instantiate_no_diralias(struct dentry *, struct inode *);
 extern void __d_drop(struct dentry *dentry);
 extern void d_drop(struct dentry *dentry);
@@ -249,10 +243,11 @@ extern struct dentry * d_splice_alias(struct inode *, struct dentry *);
 extern struct dentry * d_add_ci(struct dentry *, struct inode *, struct qstr *);
 extern struct dentry *d_find_any_alias(struct inode *inode);
 extern struct dentry * d_obtain_alias(struct inode *);
+extern struct dentry * d_obtain_root(struct inode *);
 extern void shrink_dcache_sb(struct super_block *);
 extern void shrink_dcache_parent(struct dentry *);
 extern void shrink_dcache_for_umount(struct super_block *);
-extern int d_invalidate(struct dentry *);
+extern void d_invalidate(struct dentry *);
 
 /* only used at mount-time */
 extern struct dentry * d_make_root(struct inode *);
@@ -267,7 +262,6 @@ extern void d_prune_aliases(struct inode *);
 
 /* test whether we have any submounts in a subdir tree */
 extern int have_submounts(struct dentry *);
-extern int check_submounts_and_drop(struct dentry *);
 
 /*
  * This adds the entry to the hash queues.

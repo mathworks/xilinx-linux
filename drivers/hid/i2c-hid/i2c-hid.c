@@ -137,6 +137,7 @@ struct i2c_hid {
 						   * descriptor. */
 	unsigned int		bufsize;	/* i2c buffer size */
 	char			*inbuf;		/* Input buffer */
+	char			*rawbuf;	/* Raw Input buffer */
 	char			*cmdbuf;	/* Command buffer */
 	char			*argsbuf;	/* Command arguments buffer */
 
@@ -369,7 +370,7 @@ static int i2c_hid_hwreset(struct i2c_client *client)
 static void i2c_hid_get_input(struct i2c_hid *ihid)
 {
 	int ret, ret_size;
-	int size = le16_to_cpu(ihid->hdesc.wMaxInputLength);
+	int size = ihid->bufsize;
 
 	ret = i2c_master_recv(ihid->client, ihid->inbuf, size);
 	if (ret != size) {
@@ -437,7 +438,7 @@ static void i2c_hid_init_report(struct hid_report *report, u8 *buffer,
 			report->id, buffer, size))
 		return;
 
-	i2c_hid_dbg(ihid, "report (len=%d): %*ph\n", size, size, ihid->inbuf);
+	i2c_hid_dbg(ihid, "report (len=%d): %*ph\n", size, size, buffer);
 
 	ret_size = buffer[0] | (buffer[1] << 8);
 
@@ -504,9 +505,11 @@ static void i2c_hid_find_max_report(struct hid_device *hid, unsigned int type,
 static void i2c_hid_free_buffers(struct i2c_hid *ihid)
 {
 	kfree(ihid->inbuf);
+	kfree(ihid->rawbuf);
 	kfree(ihid->argsbuf);
 	kfree(ihid->cmdbuf);
 	ihid->inbuf = NULL;
+	ihid->rawbuf = NULL;
 	ihid->cmdbuf = NULL;
 	ihid->argsbuf = NULL;
 	ihid->bufsize = 0;
@@ -522,10 +525,11 @@ static int i2c_hid_alloc_buffers(struct i2c_hid *ihid, size_t report_size)
 		       report_size; /* report */
 
 	ihid->inbuf = kzalloc(report_size, GFP_KERNEL);
+	ihid->rawbuf = kzalloc(report_size, GFP_KERNEL);
 	ihid->argsbuf = kzalloc(args_len, GFP_KERNEL);
 	ihid->cmdbuf = kzalloc(sizeof(union command) + args_len, GFP_KERNEL);
 
-	if (!ihid->inbuf || !ihid->argsbuf || !ihid->cmdbuf) {
+	if (!ihid->inbuf || !ihid->rawbuf || !ihid->argsbuf || !ihid->cmdbuf) {
 		i2c_hid_free_buffers(ihid);
 		return -ENOMEM;
 	}
@@ -552,12 +556,12 @@ static int i2c_hid_get_raw_report(struct hid_device *hid,
 
 	ret = i2c_hid_get_report(client,
 			report_type == HID_FEATURE_REPORT ? 0x03 : 0x01,
-			report_number, ihid->inbuf, ask_count);
+			report_number, ihid->rawbuf, ask_count);
 
 	if (ret < 0)
 		return ret;
 
-	ret_count = ihid->inbuf[0] | (ihid->inbuf[1] << 8);
+	ret_count = ihid->rawbuf[0] | (ihid->rawbuf[1] << 8);
 
 	if (ret_count <= 2)
 		return 0;
@@ -566,7 +570,7 @@ static int i2c_hid_get_raw_report(struct hid_device *hid,
 
 	/* The query buffer contains the size, dropping it in the reply */
 	count = min(count, ret_count - 2);
-	memcpy(buf, ihid->inbuf + 2, count);
+	memcpy(buf, ihid->rawbuf + 2, count);
 
 	return count;
 }
@@ -702,12 +706,7 @@ static int i2c_hid_start(struct hid_device *hid)
 
 static void i2c_hid_stop(struct hid_device *hid)
 {
-	struct i2c_client *client = hid->driver_data;
-	struct i2c_hid *ihid = i2c_get_clientdata(client);
-
 	hid->claimed = 0;
-
-	i2c_hid_free_buffers(ihid);
 }
 
 static int i2c_hid_open(struct hid_device *hid)
@@ -807,34 +806,18 @@ static int i2c_hid_fetch_hid_descriptor(struct i2c_hid *ihid)
 	unsigned int dsize;
 	int ret;
 
-	/* Fetch the length of HID description, retrieve the 4 first bytes:
+	/* i2c hid fetch using a fixed descriptor size (30 bytes) */
+	i2c_hid_dbg(ihid, "Fetching the HID descriptor\n");
+	ret = i2c_hid_command(client, &hid_descr_cmd, ihid->hdesc_buffer,
+				sizeof(struct i2c_hid_desc));
+	if (ret) {
+		dev_err(&client->dev, "hid_descr_cmd failed\n");
+		return -ENODEV;
+	}
+
+	/* Validate the length of HID descriptor, the 4 first bytes:
 	 * bytes 0-1 -> length
 	 * bytes 2-3 -> bcdVersion (has to be 1.00) */
-	ret = i2c_hid_command(client, &hid_descr_cmd, ihid->hdesc_buffer, 4);
-
-	i2c_hid_dbg(ihid, "%s, ihid->hdesc_buffer: %4ph\n", __func__,
-			ihid->hdesc_buffer);
-
-	if (ret) {
-		dev_err(&client->dev,
-			"unable to fetch the size of HID descriptor (ret=%d)\n",
-			ret);
-		return -ENODEV;
-	}
-
-	dsize = le16_to_cpu(hdesc->wHIDDescLength);
-	/*
-	 * the size of the HID descriptor should at least contain
-	 * its size and the bcdVersion (4 bytes), and should not be greater
-	 * than sizeof(struct i2c_hid_desc) as we directly fill this struct
-	 * through i2c_hid_command.
-	 */
-	if (dsize < 4 || dsize > sizeof(struct i2c_hid_desc)) {
-		dev_err(&client->dev, "weird size of HID descriptor (%u)\n",
-			dsize);
-		return -ENODEV;
-	}
-
 	/* check bcdVersion == 1.0 */
 	if (le16_to_cpu(hdesc->bcdVersion) != 0x0100) {
 		dev_err(&client->dev,
@@ -843,17 +826,14 @@ static int i2c_hid_fetch_hid_descriptor(struct i2c_hid *ihid)
 		return -ENODEV;
 	}
 
-	i2c_hid_dbg(ihid, "Fetching the HID descriptor\n");
-
-	ret = i2c_hid_command(client, &hid_descr_cmd, ihid->hdesc_buffer,
-				dsize);
-	if (ret) {
-		dev_err(&client->dev, "hid_descr_cmd Fail\n");
+	/* Descriptor length should be 30 bytes as per the specification */
+	dsize = le16_to_cpu(hdesc->wHIDDescLength);
+	if (dsize != sizeof(struct i2c_hid_desc)) {
+		dev_err(&client->dev, "weird size of HID descriptor (%u)\n",
+			dsize);
 		return -ENODEV;
 	}
-
 	i2c_hid_dbg(ihid, "HID Descriptor: %*ph\n", dsize, ihid->hdesc_buffer);
-
 	return 0;
 }
 
@@ -1073,21 +1053,29 @@ static int i2c_hid_remove(struct i2c_client *client)
 static int i2c_hid_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
+	struct i2c_hid *ihid = i2c_get_clientdata(client);
+	struct hid_device *hid = ihid->hid;
+	int ret = 0;
 
 	disable_irq(client->irq);
 	if (device_may_wakeup(&client->dev))
 		enable_irq_wake(client->irq);
 
+	if (hid->driver && hid->driver->suspend)
+		ret = hid->driver->suspend(hid, PMSG_SUSPEND);
+
 	/* Save some power */
 	i2c_hid_set_power(client, I2C_HID_PWR_SLEEP);
 
-	return 0;
+	return ret;
 }
 
 static int i2c_hid_resume(struct device *dev)
 {
 	int ret;
 	struct i2c_client *client = to_i2c_client(dev);
+	struct i2c_hid *ihid = i2c_get_clientdata(client);
+	struct hid_device *hid = ihid->hid;
 
 	enable_irq(client->irq);
 	ret = i2c_hid_hwreset(client);
@@ -1097,11 +1085,16 @@ static int i2c_hid_resume(struct device *dev)
 	if (device_may_wakeup(&client->dev))
 		disable_irq_wake(client->irq);
 
+	if (hid->driver && hid->driver->reset_resume) {
+		ret = hid->driver->reset_resume(hid);
+		return ret;
+	}
+
 	return 0;
 }
 #endif
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 static int i2c_hid_runtime_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);

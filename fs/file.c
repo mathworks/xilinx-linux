@@ -44,15 +44,10 @@ static void *alloc_fdmem(size_t size)
 	return vmalloc(size);
 }
 
-static void free_fdmem(void *ptr)
-{
-	is_vmalloc_addr(ptr) ? vfree(ptr) : kfree(ptr);
-}
-
 static void __free_fdtable(struct fdtable *fdt)
 {
-	free_fdmem(fdt->fd);
-	free_fdmem(fdt->open_fds);
+	kvfree(fdt->fd);
+	kvfree(fdt->open_fds);
 	kfree(fdt);
 }
 
@@ -130,7 +125,7 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 	return fdt;
 
 out_arr:
-	free_fdmem(fdt->fd);
+	kvfree(fdt->fd);
 out_fdt:
 	kfree(fdt);
 out:
@@ -372,7 +367,7 @@ static struct fdtable *close_files(struct files_struct * files)
 				struct file * file = xchg(&fdt->fd[i], NULL);
 				if (file) {
 					filp_close(file, files);
-					cond_resched();
+					cond_resched_rcu_qs();
 				}
 			}
 			i++;
@@ -755,6 +750,7 @@ bool get_close_on_exec(unsigned int fd)
 
 static int do_dup2(struct files_struct *files,
 	struct file *file, unsigned fd, unsigned flags)
+__releases(&files->file_lock)
 {
 	struct file *tofree;
 	struct fdtable *fdt;
@@ -873,7 +869,7 @@ SYSCALL_DEFINE1(dup, unsigned int, fildes)
 	struct file *file = fget_raw(fildes);
 
 	if (file) {
-		ret = get_unused_fd();
+		ret = get_unused_fd_flags(0);
 		if (ret >= 0)
 			fd_install(ret, file);
 		else

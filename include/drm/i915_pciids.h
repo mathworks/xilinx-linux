@@ -223,14 +223,57 @@
 	_INTEL_BDW_D(gt, 0x160A, info), /* Server */ \
 	_INTEL_BDW_D(gt, 0x160D, info) /* Workstation */
 
-#define INTEL_BDW_M_IDS(info) \
+#define INTEL_BDW_GT12M_IDS(info) \
 	_INTEL_BDW_M_IDS(1, info), \
-	_INTEL_BDW_M_IDS(2, info), \
+	_INTEL_BDW_M_IDS(2, info)
+
+#define INTEL_BDW_GT12D_IDS(info) \
+	_INTEL_BDW_D_IDS(1, info), \
+	_INTEL_BDW_D_IDS(2, info)
+
+#define INTEL_BDW_GT3M_IDS(info) \
 	_INTEL_BDW_M_IDS(3, info)
 
-#define INTEL_BDW_D_IDS(info) \
-	_INTEL_BDW_D_IDS(1, info), \
-	_INTEL_BDW_D_IDS(2, info), \
+#define INTEL_BDW_GT3D_IDS(info) \
 	_INTEL_BDW_D_IDS(3, info)
+
+#define INTEL_BDW_RSVDM_IDS(info) \
+	_INTEL_BDW_M_IDS(4, info)
+
+#define INTEL_BDW_RSVDD_IDS(info) \
+	_INTEL_BDW_D_IDS(4, info)
+
+#define INTEL_BDW_M_IDS(info) \
+	INTEL_BDW_GT12M_IDS(info), \
+	INTEL_BDW_GT3M_IDS(info), \
+	INTEL_BDW_RSVDM_IDS(info)
+
+#define INTEL_BDW_D_IDS(info) \
+	INTEL_BDW_GT12D_IDS(info), \
+	INTEL_BDW_GT3D_IDS(info), \
+	INTEL_BDW_RSVDD_IDS(info)
+
+#define INTEL_CHV_IDS(info) \
+	INTEL_VGA_DEVICE(0x22b0, info), \
+	INTEL_VGA_DEVICE(0x22b1, info), \
+	INTEL_VGA_DEVICE(0x22b2, info), \
+	INTEL_VGA_DEVICE(0x22b3, info)
+
+#define INTEL_SKL_IDS(info) \
+	INTEL_VGA_DEVICE(0x1916, info), /* ULT GT2 */ \
+	INTEL_VGA_DEVICE(0x1906, info), /* ULT GT1 */ \
+	INTEL_VGA_DEVICE(0x1926, info), /* ULT GT3 */ \
+	INTEL_VGA_DEVICE(0x1921, info), /* ULT GT2F */ \
+	INTEL_VGA_DEVICE(0x190E, info), /* ULX GT1 */ \
+	INTEL_VGA_DEVICE(0x191E, info), /* ULX GT2 */ \
+	INTEL_VGA_DEVICE(0x1912, info), /* DT  GT2 */ \
+	INTEL_VGA_DEVICE(0x1902, info), /* DT  GT1 */ \
+	INTEL_VGA_DEVICE(0x191B, info), /* Halo GT2 */ \
+	INTEL_VGA_DEVICE(0x192B, info), /* Halo GT3 */ \
+	INTEL_VGA_DEVICE(0x190B, info), /* Halo GT1 */ \
+	INTEL_VGA_DEVICE(0x191A, info), /* SRV GT2 */ \
+	INTEL_VGA_DEVICE(0x192A, info), /* SRV GT3 */ \
+	INTEL_VGA_DEVICE(0x190A, info), /* SRV GT1 */ \
+	INTEL_VGA_DEVICE(0x191D, info)  /* WKS GT2 */
 
 #endif /* _I915_PCIIDS_H */

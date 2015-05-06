@@ -190,7 +190,7 @@ static void add_session_id(struct cryp_ctx *ctx)
 static irqreturn_t cryp_interrupt_handler(int irq, void *param)
 {
 	struct cryp_ctx *ctx;
-	int i;
+	int count;
 	struct cryp_device_data *device_data;
 
 	if (param == NULL) {
@@ -215,12 +215,11 @@ static irqreturn_t cryp_interrupt_handler(int irq, void *param)
 	if (cryp_pending_irq_src(device_data,
 				 CRYP_IRQ_SRC_OUTPUT_FIFO)) {
 		if (ctx->outlen / ctx->blocksize > 0) {
-			for (i = 0; i < ctx->blocksize / 4; i++) {
-				*(ctx->outdata) = readl_relaxed(
-						&device_data->base->dout);
-				ctx->outdata += 4;
-				ctx->outlen -= 4;
-			}
+			count = ctx->blocksize / 4;
+
+			readsl(&device_data->base->dout, ctx->outdata, count);
+			ctx->outdata += count;
+			ctx->outlen -= count;
 
 			if (ctx->outlen == 0) {
 				cryp_disable_irq_src(device_data,
@@ -230,12 +229,12 @@ static irqreturn_t cryp_interrupt_handler(int irq, void *param)
 	} else if (cryp_pending_irq_src(device_data,
 					CRYP_IRQ_SRC_INPUT_FIFO)) {
 		if (ctx->datalen / ctx->blocksize > 0) {
-			for (i = 0 ; i < ctx->blocksize / 4; i++) {
-				writel_relaxed(ctx->indata,
-						&device_data->base->din);
-				ctx->indata += 4;
-				ctx->datalen -= 4;
-			}
+			count = ctx->blocksize / 4;
+
+			writesl(&device_data->base->din, ctx->indata, count);
+
+			ctx->indata += count;
+			ctx->datalen -= count;
 
 			if (ctx->datalen == 0)
 				cryp_disable_irq_src(device_data,
@@ -1689,6 +1688,7 @@ static void ux500_cryp_shutdown(struct platform_device *pdev)
 
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int ux500_cryp_suspend(struct device *dev)
 {
 	int ret;
@@ -1769,6 +1769,7 @@ static int ux500_cryp_resume(struct device *dev)
 
 	return ret;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(ux500_cryp_pm, ux500_cryp_suspend, ux500_cryp_resume);
 
@@ -1782,7 +1783,6 @@ static struct platform_driver cryp_driver = {
 	.remove = ux500_cryp_remove,
 	.shutdown = ux500_cryp_shutdown,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name  = "cryp1",
 		.of_match_table = ux500_cryp_match,
 		.pm    = &ux500_cryp_pm,
@@ -1811,7 +1811,7 @@ module_exit(ux500_cryp_mod_fini);
 module_param(cryp_mode, int, 0);
 
 MODULE_DESCRIPTION("Driver for ST-Ericsson UX500 CRYP crypto engine.");
-MODULE_ALIAS("aes-all");
-MODULE_ALIAS("des-all");
+MODULE_ALIAS_CRYPTO("aes-all");
+MODULE_ALIAS_CRYPTO("des-all");
 
 MODULE_LICENSE("GPL");

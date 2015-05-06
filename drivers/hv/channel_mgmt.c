@@ -149,6 +149,7 @@ static struct vmbus_channel *alloc_channel(void)
 	spin_lock_init(&channel->sc_lock);
 
 	INIT_LIST_HEAD(&channel->sc_list);
+	INIT_LIST_HEAD(&channel->percpu_list);
 
 	channel->controlwq = create_workqueue("hv_vmbus_ctl");
 	if (!channel->controlwq) {
@@ -188,7 +189,20 @@ static void free_channel(struct vmbus_channel *channel)
 	queue_work(vmbus_connection.work_queue, &channel->work);
 }
 
+static void percpu_channel_enq(void *arg)
+{
+	struct vmbus_channel *channel = arg;
+	int cpu = smp_processor_id();
 
+	list_add_tail(&channel->percpu_list, &hv_context.percpu_list[cpu]);
+}
+
+static void percpu_channel_deq(void *arg)
+{
+	struct vmbus_channel *channel = arg;
+
+	list_del(&channel->percpu_list);
+}
 
 /*
  * vmbus_process_rescind_offer -
@@ -202,13 +216,29 @@ static void vmbus_process_rescind_offer(struct work_struct *work)
 	unsigned long flags;
 	struct vmbus_channel *primary_channel;
 	struct vmbus_channel_relid_released msg;
+	struct device *dev;
 
-	if (channel->device_obj)
-		vmbus_device_unregister(channel->device_obj);
+	if (channel->device_obj) {
+		dev = get_device(&channel->device_obj->device);
+		if (dev) {
+			vmbus_device_unregister(channel->device_obj);
+			put_device(dev);
+		}
+	}
+
 	memset(&msg, 0, sizeof(struct vmbus_channel_relid_released));
 	msg.child_relid = channel->offermsg.child_relid;
 	msg.header.msgtype = CHANNELMSG_RELID_RELEASED;
 	vmbus_post_msg(&msg, sizeof(struct vmbus_channel_relid_released));
+
+	if (channel->target_cpu != get_cpu()) {
+		put_cpu();
+		smp_call_function_single(channel->target_cpu,
+					 percpu_channel_deq, channel, true);
+	} else {
+		percpu_channel_deq(channel);
+		put_cpu();
+	}
 
 	if (channel->primary_channel == NULL) {
 		spin_lock_irqsave(&vmbus_connection.channel_lock, flags);
@@ -245,6 +275,7 @@ static void vmbus_process_offer(struct work_struct *work)
 							work);
 	struct vmbus_channel *channel;
 	bool fnew = true;
+	bool enq = false;
 	int ret;
 	unsigned long flags;
 
@@ -264,12 +295,25 @@ static void vmbus_process_offer(struct work_struct *work)
 		}
 	}
 
-	if (fnew)
+	if (fnew) {
 		list_add_tail(&newchannel->listentry,
 			      &vmbus_connection.chn_list);
+		enq = true;
+	}
 
 	spin_unlock_irqrestore(&vmbus_connection.channel_lock, flags);
 
+	if (enq) {
+		if (newchannel->target_cpu != get_cpu()) {
+			put_cpu();
+			smp_call_function_single(newchannel->target_cpu,
+						 percpu_channel_enq,
+						 newchannel, true);
+		} else {
+			percpu_channel_enq(newchannel);
+			put_cpu();
+		}
+	}
 	if (!fnew) {
 		/*
 		 * Check to see if this is a sub-channel.
@@ -282,6 +326,17 @@ static void vmbus_process_offer(struct work_struct *work)
 			spin_lock_irqsave(&channel->sc_lock, flags);
 			list_add_tail(&newchannel->sc_list, &channel->sc_list);
 			spin_unlock_irqrestore(&channel->sc_lock, flags);
+
+			if (newchannel->target_cpu != get_cpu()) {
+				put_cpu();
+				smp_call_function_single(newchannel->target_cpu,
+							 percpu_channel_enq,
+							 newchannel, true);
+			} else {
+				percpu_channel_enq(newchannel);
+				put_cpu();
+			}
+
 			newchannel->state = CHANNEL_OPEN_STATE;
 			if (channel->sc_creation_callback != NULL)
 				channel->sc_creation_callback(newchannel);
@@ -365,7 +420,7 @@ static u32  next_vp;
  * performance critical channels (IDE, SCSI and Network) will be uniformly
  * distributed across all available CPUs.
  */
-static u32 get_vp_index(uuid_le *type_guid)
+static void init_vp_index(struct vmbus_channel *channel, const uuid_le *type_guid)
 {
 	u32 cur_cpu;
 	int i;
@@ -387,10 +442,13 @@ static u32 get_vp_index(uuid_le *type_guid)
 		 * Also if the channel is not a performance critical
 		 * channel, bind it to cpu 0.
 		 */
-		return 0;
+		channel->target_cpu = 0;
+		channel->target_vp = 0;
+		return;
 	}
 	cur_cpu = (++next_vp % max_cpus);
-	return hv_context.vp_index[cur_cpu];
+	channel->target_cpu = cur_cpu;
+	channel->target_vp = hv_context.vp_index[cur_cpu];
 }
 
 /*
@@ -438,7 +496,7 @@ static void vmbus_onoffer(struct vmbus_channel_message_header *hdr)
 				offer->connection_id;
 	}
 
-	newchannel->target_vp = get_vp_index(&offer->offer.if_type);
+	init_vp_index(newchannel, &offer->offer.if_type);
 
 	memcpy(&newchannel->offermsg, offer,
 	       sizeof(struct vmbus_channel_offer_channel));
@@ -465,6 +523,8 @@ static void vmbus_onoffer_rescind(struct vmbus_channel_message_header *hdr)
 	if (channel == NULL)
 		/* Just return here, no channel found */
 		return;
+
+	channel->rescind = true;
 
 	/* work is initialized for vmbus_process_rescind_offer() from
 	 * vmbus_process_offer() where the channel got created */

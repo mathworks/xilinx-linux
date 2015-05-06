@@ -70,7 +70,7 @@ static struct quirk_entry quirk_dell_vostro_v130 = {
 	.touchpad_led = 1,
 };
 
-static int dmi_matched(const struct dmi_system_id *dmi)
+static int __init dmi_matched(const struct dmi_system_id *dmi)
 {
 	quirks = dmi->driver_data;
 	return 1;
@@ -84,7 +84,6 @@ static struct calling_interface_token *da_tokens;
 static struct platform_driver platform_driver = {
 	.driver = {
 		.name = "dell-laptop",
-		.owner = THIS_MODULE,
 	}
 };
 
@@ -123,7 +122,7 @@ static const struct dmi_system_id dell_device_table[] __initconst = {
 };
 MODULE_DEVICE_TABLE(dmi, dell_device_table);
 
-static struct dmi_system_id dell_quirks[] = {
+static const struct dmi_system_id dell_quirks[] __initconst = {
 	{
 		.callback = dmi_matched,
 		.ident = "Dell Vostro V130",
@@ -564,7 +563,7 @@ static bool dell_laptop_i8042_filter(unsigned char data, unsigned char str,
 {
 	static bool extended;
 
-	if (str & 0x20)
+	if (str & I8042_STR_AUXDATA)
 		return false;
 
 	if (unlikely(data == 0xe0)) {
@@ -780,7 +779,7 @@ static struct led_classdev touchpad_led = {
 	.flags = LED_CORE_SUSPENDRESUME,
 };
 
-static int touchpad_led_init(struct device *dev)
+static int __init touchpad_led_init(struct device *dev)
 {
 	return led_classdev_register(dev, &touchpad_led);
 }

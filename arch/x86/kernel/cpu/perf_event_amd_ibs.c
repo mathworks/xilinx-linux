@@ -565,6 +565,21 @@ static int perf_ibs_handle_irq(struct perf_ibs *perf_ibs, struct pt_regs *iregs)
 				       perf_ibs->offset_max,
 				       offset + 1);
 	} while (offset < offset_max);
+	if (event->attr.sample_type & PERF_SAMPLE_RAW) {
+		/*
+		 * Read IbsBrTarget and IbsOpData4 separately
+		 * depending on their availability.
+		 * Can't add to offset_max as they are staggered
+		 */
+		if (ibs_caps & IBS_CAPS_BRNTRGT) {
+			rdmsrl(MSR_AMD64_IBSBRTARGET, *buf++);
+			size++;
+		}
+		if (ibs_caps & IBS_CAPS_OPDATA4) {
+			rdmsrl(MSR_AMD64_IBSOPDATA4, *buf++);
+			size++;
+		}
+	}
 	ibs_data.size = sizeof(u64) * size;
 
 	regs = *iregs;
@@ -593,7 +608,7 @@ out:
 	return 1;
 }
 
-static int __kprobes
+static int
 perf_ibs_nmi_handler(unsigned int cmd, struct pt_regs *regs)
 {
 	int handled = 0;
@@ -606,6 +621,7 @@ perf_ibs_nmi_handler(unsigned int cmd, struct pt_regs *regs)
 
 	return handled;
 }
+NOKPROBE_SYMBOL(perf_ibs_nmi_handler);
 
 static __init int perf_ibs_pmu_init(struct perf_ibs *perf_ibs, char *name)
 {

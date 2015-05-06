@@ -1,6 +1,6 @@
 /* parser.c
  *
- * Copyright © 2010 - 2013 UNISYS CORPORATION
+ * Copyright (C) 2010 - 2013 UNISYS CORPORATION
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,7 @@
 #include "controlvmchannel.h"
 #include <linux/ctype.h>
 #include <linux/mm.h>
+#include <linux/uuid.h>
 
 #define MYDRVNAME "visorchipset_parser"
 #define CURRENT_FILE_PC VISOR_CHIPSET_PC_parser_c
@@ -40,14 +41,14 @@ struct PARSER_CONTEXT_Tag {
 };
 
 static PARSER_CONTEXT *
-parser_init_guts(U64 addr, U32 bytes, BOOL isLocal,
+parser_init_guts(u64 addr, u32 bytes, BOOL isLocal,
 		 BOOL hasStandardPayloadHeader, BOOL *tryAgain)
 {
 	int allocbytes = sizeof(PARSER_CONTEXT) + bytes;
 	PARSER_CONTEXT *rc = NULL;
 	PARSER_CONTEXT *ctx = NULL;
-	MEMREGION *rgn = NULL;
-	ULTRA_CONTROLVM_PARAMETERS_HEADER *phdr = NULL;
+	struct memregion *rgn = NULL;
+	struct spar_controlvm_parameters_header *phdr = NULL;
 
 	if (tryAgain)
 		*tryAgain = FALSE;
@@ -83,6 +84,7 @@ parser_init_guts(U64 addr, U32 bytes, BOOL isLocal,
 	ctx->byte_stream = FALSE;
 	if (isLocal) {
 		void *p;
+
 		if (addr > virt_to_phys(high_memory - 1)) {
 			ERRDRV("%s - bad local address (0x%-16.16Lx for %lu)",
 			       __func__,
@@ -108,27 +110,29 @@ parser_init_guts(U64 addr, U32 bytes, BOOL isLocal,
 		rc = ctx;
 		goto Away;
 	}
-	phdr = (ULTRA_CONTROLVM_PARAMETERS_HEADER *) (ctx->data);
-	if (phdr->TotalLength != bytes) {
+	phdr = (struct spar_controlvm_parameters_header *)(ctx->data);
+	if (phdr->total_length != bytes) {
 		ERRDRV("%s - bad total length %lu (should be %lu)",
 		       __func__,
-		       (ulong) (phdr->TotalLength), (ulong) (bytes));
+		       (ulong) (phdr->total_length), (ulong) (bytes));
 		rc = NULL;
 		goto Away;
 	}
-	if (phdr->TotalLength < phdr->HeaderLength) {
+	if (phdr->total_length < phdr->header_length) {
 		ERRDRV("%s - total length < header length (%lu < %lu)",
 		       __func__,
-		       (ulong) (phdr->TotalLength),
-		       (ulong) (phdr->HeaderLength));
+		       (ulong) (phdr->total_length),
+		       (ulong) (phdr->header_length));
 		rc = NULL;
 		goto Away;
 	}
-	if (phdr->HeaderLength < sizeof(ULTRA_CONTROLVM_PARAMETERS_HEADER)) {
+	if (phdr->header_length <
+	    sizeof(struct spar_controlvm_parameters_header)) {
 		ERRDRV("%s - header is too small (%lu < %lu)",
 		       __func__,
-		       (ulong) (phdr->HeaderLength),
-		       (ulong) (sizeof(ULTRA_CONTROLVM_PARAMETERS_HEADER)));
+		       (ulong) (phdr->header_length),
+		       (ulong)(sizeof(
+				struct spar_controlvm_parameters_header)));
 		rc = NULL;
 		goto Away;
 	}
@@ -151,18 +155,18 @@ Away:
 }
 
 PARSER_CONTEXT *
-parser_init(U64 addr, U32 bytes, BOOL isLocal, BOOL *tryAgain)
+parser_init(u64 addr, u32 bytes, BOOL isLocal, BOOL *tryAgain)
 {
 	return parser_init_guts(addr, bytes, isLocal, TRUE, tryAgain);
 }
 
 /* Call this instead of parser_init() if the payload area consists of just
- * a sequence of bytes, rather than a ULTRA_CONTROLVM_PARAMETERS_HEADER
+ * a sequence of bytes, rather than a struct spar_controlvm_parameters_header
  * structures.  Afterwards, you can call parser_simpleString_get() or
  * parser_byteStream_get() to obtain the data.
  */
 PARSER_CONTEXT *
-parser_init_byteStream(U64 addr, U32 bytes, BOOL isLocal, BOOL *tryAgain)
+parser_init_byteStream(u64 addr, u32 bytes, BOOL isLocal, BOOL *tryAgain)
 {
 	return parser_init_guts(addr, bytes, isLocal, FALSE, tryAgain);
 }
@@ -191,47 +195,47 @@ parser_byteStream_get(PARSER_CONTEXT *ctx, ulong *nbytes)
 	return (void *) ctx->data;
 }
 
-GUID
+uuid_le
 parser_id_get(PARSER_CONTEXT *ctx)
 {
-	ULTRA_CONTROLVM_PARAMETERS_HEADER *phdr = NULL;
+	struct spar_controlvm_parameters_header *phdr = NULL;
 
 	if (ctx == NULL) {
 		ERRDRV("%s (%s:%d) - no context",
 		       __func__, __FILE__, __LINE__);
-		return Guid0;
+		return NULL_UUID_LE;
 	}
-	phdr = (ULTRA_CONTROLVM_PARAMETERS_HEADER *) (ctx->data);
-	return phdr->Id;
+	phdr = (struct spar_controlvm_parameters_header *)(ctx->data);
+	return phdr->id;
 }
 
 void
 parser_param_start(PARSER_CONTEXT *ctx, PARSER_WHICH_STRING which_string)
 {
-	ULTRA_CONTROLVM_PARAMETERS_HEADER *phdr = NULL;
+	struct spar_controlvm_parameters_header *phdr = NULL;
 
 	if (ctx == NULL) {
 		ERRDRV("%s (%s:%d) - no context",
 		       __func__, __FILE__, __LINE__);
 		goto Away;
 	}
-	phdr = (ULTRA_CONTROLVM_PARAMETERS_HEADER *) (ctx->data);
+	phdr = (struct spar_controlvm_parameters_header *)(ctx->data);
 	switch (which_string) {
 	case PARSERSTRING_INITIATOR:
-		ctx->curr = ctx->data + phdr->InitiatorOffset;
-		ctx->bytes_remaining = phdr->InitiatorLength;
+		ctx->curr = ctx->data + phdr->initiator_offset;
+		ctx->bytes_remaining = phdr->initiator_length;
 		break;
 	case PARSERSTRING_TARGET:
-		ctx->curr = ctx->data + phdr->TargetOffset;
-		ctx->bytes_remaining = phdr->TargetLength;
+		ctx->curr = ctx->data + phdr->target_offset;
+		ctx->bytes_remaining = phdr->target_length;
 		break;
 	case PARSERSTRING_CONNECTION:
-		ctx->curr = ctx->data + phdr->ConnectionOffset;
-		ctx->bytes_remaining = phdr->ConnectionLength;
+		ctx->curr = ctx->data + phdr->connection_offset;
+		ctx->bytes_remaining = phdr->connection_length;
 		break;
 	case PARSERSTRING_NAME:
-		ctx->curr = ctx->data + phdr->NameOffset;
-		ctx->bytes_remaining = phdr->NameLength;
+		ctx->curr = ctx->data + phdr->name_offset;
+		ctx->bytes_remaining = phdr->name_length;
 		break;
 	default:
 		ERRDRV("%s - bad which_string %d", __func__, which_string);
@@ -256,6 +260,7 @@ static int
 string_length_no_trail(char *s, int len)
 {
 	int i = len - 1;
+
 	while (i >= 0) {
 		if (!isspace(s[i]))
 			return i + 1;

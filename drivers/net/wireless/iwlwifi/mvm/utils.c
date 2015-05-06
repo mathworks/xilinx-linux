@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,6 +32,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
+ * Copyright(c) 2013 - 2014 Intel Mobile Communications GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -64,6 +66,7 @@
 
 #include "iwl-debug.h"
 #include "iwl-io.h"
+#include "iwl-prph.h"
 
 #include "mvm.h"
 #include "fw-api-rs.h"
@@ -143,7 +146,7 @@ int iwl_mvm_send_cmd_status(struct iwl_mvm *mvm, struct iwl_host_cmd *cmd,
 		      "cmd flags %x", cmd->flags))
 		return -EINVAL;
 
-	cmd->flags |= CMD_SYNC | CMD_WANT_SKB;
+	cmd->flags |= CMD_WANT_SKB;
 
 	ret = iwl_trans_send_cmd(mvm->trans, cmd);
 	if (ret == -ERFKILL) {
@@ -386,15 +389,19 @@ struct iwl_error_event_table {
 struct iwl_umac_error_event_table {
 	u32 valid;		/* (nonzero) valid, (0) log is empty */
 	u32 error_id;		/* type of error */
-	u32 pc;			/* program counter */
 	u32 blink1;		/* branch link */
 	u32 blink2;		/* branch link */
 	u32 ilink1;		/* interrupt link */
 	u32 ilink2;		/* interrupt link */
 	u32 data1;		/* error-specific data */
 	u32 data2;		/* error-specific data */
-	u32 line;		/* source code line of error */
-	u32 umac_ver;		/* umac version */
+	u32 data3;		/* error-specific data */
+	u32 umac_fw_ver;	/* UMAC version */
+	u32 umac_fw_api_ver;	/* UMAC FW API ver */
+	u32 frame_pointer;	/* core register 27*/
+	u32 stack_pointer;	/* core register 28 */
+	u32 cmd_header;	/* latest host cmd sent to UMAC */
+	u32 nic_isr_pref;	/* ISR status register */
 } __packed;
 
 #define ERROR_START_OFFSET  (1 * sizeof(u32))
@@ -408,7 +415,7 @@ static void iwl_mvm_dump_umac_error_log(struct iwl_mvm *mvm)
 
 	base = mvm->umac_error_event_table;
 
-	if (base < 0x800000 || base >= 0x80C000) {
+	if (base < 0x800000) {
 		IWL_ERR(mvm,
 			"Not valid error log pointer 0x%08X for %s uCode\n",
 			base,
@@ -427,14 +434,19 @@ static void iwl_mvm_dump_umac_error_log(struct iwl_mvm *mvm)
 
 	IWL_ERR(mvm, "0x%08X | %-28s\n", table.error_id,
 		desc_lookup(table.error_id));
-	IWL_ERR(mvm, "0x%08X | umac uPc\n", table.pc);
 	IWL_ERR(mvm, "0x%08X | umac branchlink1\n", table.blink1);
 	IWL_ERR(mvm, "0x%08X | umac branchlink2\n", table.blink2);
 	IWL_ERR(mvm, "0x%08X | umac interruptlink1\n", table.ilink1);
 	IWL_ERR(mvm, "0x%08X | umac interruptlink2\n", table.ilink2);
 	IWL_ERR(mvm, "0x%08X | umac data1\n", table.data1);
 	IWL_ERR(mvm, "0x%08X | umac data2\n", table.data2);
-	IWL_ERR(mvm, "0x%08X | umac version\n", table.umac_ver);
+	IWL_ERR(mvm, "0x%08X | umac data3\n", table.data3);
+	IWL_ERR(mvm, "0x%08X | umac version\n", table.umac_fw_ver);
+	IWL_ERR(mvm, "0x%08X | umac api version\n", table.umac_fw_api_ver);
+	IWL_ERR(mvm, "0x%08X | frame pointer\n", table.frame_pointer);
+	IWL_ERR(mvm, "0x%08X | stack pointer\n", table.stack_pointer);
+	IWL_ERR(mvm, "0x%08X | last host cmd\n", table.cmd_header);
+	IWL_ERR(mvm, "0x%08X | isr status reg\n", table.nic_isr_pref);
 }
 
 void iwl_mvm_dump_nic_error_log(struct iwl_mvm *mvm)
@@ -468,6 +480,8 @@ void iwl_mvm_dump_nic_error_log(struct iwl_mvm *mvm)
 		IWL_ERR(trans, "Status: 0x%08lX, count: %d\n",
 			mvm->status, table.valid);
 	}
+
+	/* Do not change this output - scripts rely on it */
 
 	IWL_ERR(mvm, "Loaded firmware version: %s\n", mvm->fw->fw_version);
 
@@ -516,26 +530,50 @@ void iwl_mvm_dump_nic_error_log(struct iwl_mvm *mvm)
 		iwl_mvm_dump_umac_error_log(mvm);
 }
 
-void iwl_mvm_fw_error_sram_dump(struct iwl_mvm *mvm)
+void iwl_mvm_enable_txq(struct iwl_mvm *mvm, int queue, u16 ssn,
+			const struct iwl_trans_txq_scd_cfg *cfg)
 {
-	const struct fw_img *img;
-	u32 ofs, sram_len;
-	void *sram;
+	if (iwl_mvm_is_dqa_supported(mvm)) {
+		struct iwl_scd_txq_cfg_cmd cmd = {
+			.scd_queue = queue,
+			.enable = 1,
+			.window = cfg->frame_limit,
+			.sta_id = cfg->sta_id,
+			.ssn = cpu_to_le16(ssn),
+			.tx_fifo = cfg->fifo,
+			.aggregate = cfg->aggregate,
+			.flags = IWL_SCD_FLAGS_DQA_ENABLED,
+			.tid = cfg->tid,
+			.control = IWL_SCD_CONTROL_SET_SSN,
+		};
+		int ret = iwl_mvm_send_cmd_pdu(mvm, SCD_QUEUE_CFG, 0,
+					       sizeof(cmd), &cmd);
+		if (ret)
+			IWL_ERR(mvm,
+				"Failed to configure queue %d on FIFO %d\n",
+				queue, cfg->fifo);
+	}
 
-	if (!mvm->ucode_loaded || mvm->fw_error_sram)
-		return;
+	iwl_trans_txq_enable_cfg(mvm->trans, queue, ssn,
+				 iwl_mvm_is_dqa_supported(mvm) ? NULL : cfg);
+}
 
-	img = &mvm->fw->img[mvm->cur_ucode];
-	ofs = img->sec[IWL_UCODE_SECTION_DATA].offset;
-	sram_len = img->sec[IWL_UCODE_SECTION_DATA].len;
+void iwl_mvm_disable_txq(struct iwl_mvm *mvm, int queue)
+{
+	iwl_trans_txq_disable(mvm->trans, queue,
+			      !iwl_mvm_is_dqa_supported(mvm));
 
-	sram = kzalloc(sram_len, GFP_ATOMIC);
-	if (!sram)
-		return;
-
-	iwl_trans_read_mem_bytes(mvm->trans, ofs, sram, sram_len);
-	mvm->fw_error_sram = sram;
-	mvm->fw_error_sram_len = sram_len;
+	if (iwl_mvm_is_dqa_supported(mvm)) {
+		struct iwl_scd_txq_cfg_cmd cmd = {
+			.scd_queue = queue,
+			.enable = 0,
+		};
+		int ret = iwl_mvm_send_cmd_pdu(mvm, SCD_QUEUE_CFG, CMD_ASYNC,
+					       sizeof(cmd), &cmd);
+		if (ret)
+			IWL_ERR(mvm, "Failed to disable queue %d (ret=%d)\n",
+				queue, ret);
+	}
 }
 
 /**
@@ -553,7 +591,7 @@ int iwl_mvm_send_lq_cmd(struct iwl_mvm *mvm, struct iwl_lq_cmd *lq, bool init)
 	struct iwl_host_cmd cmd = {
 		.id = LQ_CMD,
 		.len = { sizeof(struct iwl_lq_cmd), },
-		.flags = init ? CMD_SYNC : CMD_ASYNC,
+		.flags = init ? 0 : CMD_ASYNC,
 		.data = { lq, },
 	};
 
@@ -604,6 +642,39 @@ void iwl_mvm_update_smps(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	ieee80211_request_smps(vif, smps_mode);
 }
 
+static void iwl_mvm_diversity_iter(void *_data, u8 *mac,
+				   struct ieee80211_vif *vif)
+{
+	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
+	bool *result = _data;
+	int i;
+
+	for (i = 0; i < NUM_IWL_MVM_SMPS_REQ; i++) {
+		if (mvmvif->smps_requests[i] == IEEE80211_SMPS_STATIC ||
+		    mvmvif->smps_requests[i] == IEEE80211_SMPS_DYNAMIC)
+			*result = false;
+	}
+}
+
+bool iwl_mvm_rx_diversity_allowed(struct iwl_mvm *mvm)
+{
+	bool result = true;
+
+	lockdep_assert_held(&mvm->mutex);
+
+	if (num_of_ant(mvm->fw->valid_rx_ant) == 1)
+		return false;
+
+	if (mvm->cfg->rx_with_siso_diversity)
+		return false;
+
+	ieee80211_iterate_active_interfaces_atomic(
+			mvm->hw, IEEE80211_IFACE_ITER_NORMAL,
+			iwl_mvm_diversity_iter, &result);
+
+	return result;
+}
+
 int iwl_mvm_update_low_latency(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 			       bool value)
 {
@@ -623,7 +694,7 @@ int iwl_mvm_update_low_latency(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 
 	iwl_mvm_bt_coex_vif_change(mvm);
 
-	return iwl_mvm_power_update_mac(mvm, vif);
+	return iwl_mvm_power_update_mac(mvm);
 }
 
 static void iwl_mvm_ll_iter(void *_data, u8 *mac, struct ieee80211_vif *vif)
@@ -662,4 +733,41 @@ bool iwl_mvm_is_idle(struct iwl_mvm *mvm)
 			iwl_mvm_idle_iter, &idle);
 
 	return idle;
+}
+
+struct iwl_bss_iter_data {
+	struct ieee80211_vif *vif;
+	bool error;
+};
+
+static void iwl_mvm_bss_iface_iterator(void *_data, u8 *mac,
+				       struct ieee80211_vif *vif)
+{
+	struct iwl_bss_iter_data *data = _data;
+
+	if (vif->type != NL80211_IFTYPE_STATION || vif->p2p)
+		return;
+
+	if (data->vif) {
+		data->error = true;
+		return;
+	}
+
+	data->vif = vif;
+}
+
+struct ieee80211_vif *iwl_mvm_get_bss_vif(struct iwl_mvm *mvm)
+{
+	struct iwl_bss_iter_data bss_iter_data = {};
+
+	ieee80211_iterate_active_interfaces_atomic(
+		mvm->hw, IEEE80211_IFACE_ITER_NORMAL,
+		iwl_mvm_bss_iface_iterator, &bss_iter_data);
+
+	if (bss_iter_data.error) {
+		IWL_ERR(mvm, "More than one managed interface active!\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	return bss_iter_data.vif;
 }

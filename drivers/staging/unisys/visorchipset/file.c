@@ -1,6 +1,6 @@
 /* file.c
  *
- * Copyright © 2010 - 2013 UNISYS CORPORATION
+ * Copyright (C) 2010 - 2013 UNISYS CORPORATION
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -155,9 +155,9 @@ visorchipset_mmap(struct file *file, struct vm_area_struct *vma)
 			return -ENXIO;
 		}
 		visorchannel_read(*PControlVm_channel,
-				  offsetof(ULTRA_CONTROLVM_CHANNEL_PROTOCOL,
-					   gpControlChannel), &addr,
-				  sizeof(addr));
+			offsetof(struct spar_controlvm_channel_protocol,
+				 gp_control_channel),
+			&addr, sizeof(addr));
 		if (addr == 0) {
 			ERRDRV("%s control channel address is 0", __func__);
 			return -ENXIO;
@@ -190,13 +190,14 @@ visorchipset_ioctl(struct inode *inode, struct file *file,
 #endif
 {
 	int rc = SUCCESS;
-	S64 adjustment;
-	S64 vrtc_offset;
+	s64 adjustment;
+	s64 vrtc_offset;
+
 	DBGINF("entered visorchipset_ioctl, cmd=%d", cmd);
 	switch (cmd) {
 	case VMCALL_QUERY_GUEST_VIRTUAL_TIME_OFFSET:
 		/* get the physical rtc offset */
-		vrtc_offset = Issue_VMCALL_QUERY_GUEST_VIRTUAL_TIME_OFFSET();
+		vrtc_offset = issue_vmcall_query_guest_virtual_time_offset();
 		if (copy_to_user
 		    ((void __user *)arg, &vrtc_offset, sizeof(vrtc_offset))) {
 			rc = -EFAULT;
@@ -213,7 +214,7 @@ visorchipset_ioctl(struct inode *inode, struct file *file,
 		}
 		DBGINF("insde visorchipset_ioctl, cmd=%d, adjustment=%lld", cmd,
 		       adjustment);
-		rc = Issue_VMCALL_UPDATE_PHYSICAL_TIME(adjustment);
+		rc = issue_vmcall_update_physical_time(adjustment);
 		break;
 	default:
 		LOGERR("visorchipset_ioctl received invalid command");

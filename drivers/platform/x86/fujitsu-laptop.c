@@ -129,15 +129,14 @@
 #define FUJLAPTOP_DBG_INFO	  0x0004
 #define FUJLAPTOP_DBG_TRACE	  0x0008
 
-#define dbg_printk(a_dbg_level, format, arg...) \
+#ifdef CONFIG_FUJITSU_LAPTOP_DEBUG
+#define vdbg_printk(a_dbg_level, format, arg...) \
 	do { if (dbg_level & a_dbg_level) \
 		printk(FUJLAPTOP_DEBUG "%s: " format, __func__ , ## arg); \
 	} while (0)
-#ifdef CONFIG_FUJITSU_LAPTOP_DEBUG
-#define vdbg_printk(a_dbg_level, format, arg...) \
-	dbg_printk(a_dbg_level, format, ## arg)
 #else
-#define vdbg_printk(a_dbg_level, format, arg...)
+#define vdbg_printk(a_dbg_level, format, arg...) \
+	do { } while (0)
 #endif
 
 /* Device controlling the backlight and associated keys */
@@ -560,11 +559,10 @@ static struct attribute_group fujitsupf_attribute_group = {
 static struct platform_driver fujitsupf_driver = {
 	.driver = {
 		   .name = "fujitsu-laptop",
-		   .owner = THIS_MODULE,
 		   }
 };
 
-static void dmi_check_cb_common(const struct dmi_system_id *id)
+static void __init dmi_check_cb_common(const struct dmi_system_id *id)
 {
 	pr_info("Identified laptop model '%s'\n", id->ident);
 	if (use_alt_lcd_levels == -1) {
@@ -578,7 +576,7 @@ static void dmi_check_cb_common(const struct dmi_system_id *id)
 	}
 }
 
-static int dmi_check_cb_s6410(const struct dmi_system_id *id)
+static int __init dmi_check_cb_s6410(const struct dmi_system_id *id)
 {
 	dmi_check_cb_common(id);
 	fujitsu->keycode1 = KEY_SCREENLOCK;	/* "Lock" */
@@ -586,7 +584,7 @@ static int dmi_check_cb_s6410(const struct dmi_system_id *id)
 	return 1;
 }
 
-static int dmi_check_cb_s6420(const struct dmi_system_id *id)
+static int __init dmi_check_cb_s6420(const struct dmi_system_id *id)
 {
 	dmi_check_cb_common(id);
 	fujitsu->keycode1 = KEY_SCREENLOCK;	/* "Lock" */
@@ -594,7 +592,7 @@ static int dmi_check_cb_s6420(const struct dmi_system_id *id)
 	return 1;
 }
 
-static int dmi_check_cb_p8010(const struct dmi_system_id *id)
+static int __init dmi_check_cb_p8010(const struct dmi_system_id *id)
 {
 	dmi_check_cb_common(id);
 	fujitsu->keycode1 = KEY_HELP;	/* "Support" */
@@ -603,7 +601,7 @@ static int dmi_check_cb_p8010(const struct dmi_system_id *id)
 	return 1;
 }
 
-static struct dmi_system_id fujitsu_dmi_table[] = {
+static const struct dmi_system_id fujitsu_dmi_table[] __initconst = {
 	{
 	 .ident = "Fujitsu Siemens S6410",
 	 .matches = {
@@ -1051,6 +1049,13 @@ static struct acpi_driver acpi_fujitsu_hotkey_driver = {
 		},
 };
 
+static const struct acpi_device_id fujitsu_ids[] __used = {
+	{ACPI_FUJITSU_HID, 0},
+	{ACPI_FUJITSU_HOTKEY_HID, 0},
+	{"", 0}
+};
+MODULE_DEVICE_TABLE(acpi, fujitsu_ids);
+
 static int __init fujitsu_init(void)
 {
 	int ret, result, max_brightness;
@@ -1148,8 +1153,7 @@ fail_hotkey1:
 fail_hotkey:
 	platform_driver_unregister(&fujitsupf_driver);
 fail_backlight:
-	if (fujitsu->bl_device)
-		backlight_device_unregister(fujitsu->bl_device);
+	backlight_device_unregister(fujitsu->bl_device);
 fail_sysfs_group:
 	sysfs_remove_group(&fujitsu->pf_device->dev.kobj,
 			   &fujitsupf_attribute_group);
@@ -1173,8 +1177,7 @@ static void __exit fujitsu_cleanup(void)
 
 	platform_driver_unregister(&fujitsupf_driver);
 
-	if (fujitsu->bl_device)
-		backlight_device_unregister(fujitsu->bl_device);
+	backlight_device_unregister(fujitsu->bl_device);
 
 	sysfs_remove_group(&fujitsu->pf_device->dev.kobj,
 			   &fujitsupf_attribute_group);
@@ -1209,12 +1212,3 @@ MODULE_LICENSE("GPL");
 MODULE_ALIAS("dmi:*:svnFUJITSUSIEMENS:*:pvr:rvnFUJITSU:rnFJNB1D3:*:cvrS6410:*");
 MODULE_ALIAS("dmi:*:svnFUJITSUSIEMENS:*:pvr:rvnFUJITSU:rnFJNB1E6:*:cvrS6420:*");
 MODULE_ALIAS("dmi:*:svnFUJITSU:*:pvr:rvnFUJITSU:rnFJNB19C:*:cvrS7020:*");
-
-static struct pnp_device_id pnp_ids[] __used = {
-	{.id = "FUJ02bf"},
-	{.id = "FUJ02B1"},
-	{.id = "FUJ02E3"},
-	{.id = ""}
-};
-
-MODULE_DEVICE_TABLE(pnp, pnp_ids);

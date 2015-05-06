@@ -43,10 +43,6 @@
 #include <asm/crypto/glue_helper.h>
 #endif
 
-#if defined(CONFIG_CRYPTO_PCBC) || defined(CONFIG_CRYPTO_PCBC_MODULE)
-#define HAS_PCBC
-#endif
-
 /* This data is stored at the end of the crypto_tfm struct.
  * It's a type of per "session" data storage location.
  * This needs to be 16 byte aligned.
@@ -105,6 +101,9 @@ void crypto_fpu_exit(void);
 #define AVX_GEN4_OPTSIZE 4096
 
 #ifdef CONFIG_X86_64
+
+static void (*aesni_ctr_enc_tfm)(struct crypto_aes_ctx *ctx, u8 *out,
+			      const u8 *in, unsigned int len, u8 *iv);
 asmlinkage void aesni_ctr_enc(struct crypto_aes_ctx *ctx, u8 *out,
 			      const u8 *in, unsigned int len, u8 *iv);
 
@@ -155,6 +154,12 @@ asmlinkage void aesni_gcm_dec(void *ctx, u8 *out,
 
 
 #ifdef CONFIG_AS_AVX
+asmlinkage void aes_ctr_enc_128_avx_by8(const u8 *in, u8 *iv,
+		void *keys, u8 *out, unsigned int num_bytes);
+asmlinkage void aes_ctr_enc_192_avx_by8(const u8 *in, u8 *iv,
+		void *keys, u8 *out, unsigned int num_bytes);
+asmlinkage void aes_ctr_enc_256_avx_by8(const u8 *in, u8 *iv,
+		void *keys, u8 *out, unsigned int num_bytes);
 /*
  * asmlinkage void aesni_gcm_precomp_avx_gen2()
  * gcm_data *my_ctx_data, context data
@@ -472,6 +477,25 @@ static void ctr_crypt_final(struct crypto_aes_ctx *ctx,
 	crypto_inc(ctrblk, AES_BLOCK_SIZE);
 }
 
+#ifdef CONFIG_AS_AVX
+static void aesni_ctr_enc_avx_tfm(struct crypto_aes_ctx *ctx, u8 *out,
+			      const u8 *in, unsigned int len, u8 *iv)
+{
+	/*
+	 * based on key length, override with the by8 version
+	 * of ctr mode encryption/decryption for improved performance
+	 * aes_set_key_common() ensures that key length is one of
+	 * {128,192,256}
+	 */
+	if (ctx->key_length == AES_KEYSIZE_128)
+		aes_ctr_enc_128_avx_by8(in, iv, (void *)ctx, out, len);
+	else if (ctx->key_length == AES_KEYSIZE_192)
+		aes_ctr_enc_192_avx_by8(in, iv, (void *)ctx, out, len);
+	else
+		aes_ctr_enc_256_avx_by8(in, iv, (void *)ctx, out, len);
+}
+#endif
+
 static int ctr_crypt(struct blkcipher_desc *desc,
 		     struct scatterlist *dst, struct scatterlist *src,
 		     unsigned int nbytes)
@@ -486,8 +510,8 @@ static int ctr_crypt(struct blkcipher_desc *desc,
 
 	kernel_fpu_begin();
 	while ((nbytes = walk.nbytes) >= AES_BLOCK_SIZE) {
-		aesni_ctr_enc(ctx, walk.dst.virt.addr, walk.src.virt.addr,
-			      nbytes & AES_BLOCK_MASK, walk.iv);
+		aesni_ctr_enc_tfm(ctx, walk.dst.virt.addr, walk.src.virt.addr,
+				  nbytes & AES_BLOCK_MASK, walk.iv);
 		nbytes &= AES_BLOCK_SIZE - 1;
 		err = blkcipher_walk_done(desc, &walk, nbytes);
 	}
@@ -519,7 +543,7 @@ static int ablk_ctr_init(struct crypto_tfm *tfm)
 
 #endif
 
-#ifdef HAS_PCBC
+#if IS_ENABLED(CONFIG_CRYPTO_PCBC)
 static int ablk_pcbc_init(struct crypto_tfm *tfm)
 {
 	return ablk_init_common(tfm, "fpu(pcbc(__driver-aes-aesni))");
@@ -1349,7 +1373,7 @@ static struct crypto_alg aesni_algs[] = { {
 		},
 	},
 #endif
-#ifdef HAS_PCBC
+#if IS_ENABLED(CONFIG_CRYPTO_PCBC)
 }, {
 	.cra_name		= "pcbc(aes)",
 	.cra_driver_name	= "pcbc-aes-aesni",
@@ -1493,6 +1517,14 @@ static int __init aesni_init(void)
 		aesni_gcm_enc_tfm = aesni_gcm_enc;
 		aesni_gcm_dec_tfm = aesni_gcm_dec;
 	}
+	aesni_ctr_enc_tfm = aesni_ctr_enc;
+#ifdef CONFIG_AS_AVX
+	if (cpu_has_avx) {
+		/* optimize performance of ctr mode encryption transform */
+		aesni_ctr_enc_tfm = aesni_ctr_enc_avx_tfm;
+		pr_info("AES CTR mode by8 optimization enabled\n");
+	}
+#endif
 #endif
 
 	err = crypto_fpu_init();
@@ -1514,4 +1546,4 @@ module_exit(aesni_exit);
 
 MODULE_DESCRIPTION("Rijndael (AES) Cipher Algorithm, Intel AES-NI instructions optimized");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("aes");
+MODULE_ALIAS_CRYPTO("aes");

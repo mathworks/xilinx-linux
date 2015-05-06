@@ -356,6 +356,8 @@ static int do_rx_dma(struct atm_vcc *vcc,struct sk_buff *skb,
 	if (skb) {
 		paddr = pci_map_single(eni_dev->pci_dev,skb->data,skb->len,
 		    PCI_DMA_FROMDEVICE);
+		if (pci_dma_mapping_error(eni_dev->pci_dev, paddr))
+			goto dma_map_error;
 		ENI_PRV_PADDR(skb) = paddr;
 		if (paddr & 3)
 			printk(KERN_CRIT DEV_LABEL "(itf %d): VCI %d has "
@@ -481,6 +483,7 @@ trouble:
 	if (paddr)
 		pci_unmap_single(eni_dev->pci_dev,paddr,skb->len,
 		    PCI_DMA_FROMDEVICE);
+dma_map_error:
 	if (skb) dev_kfree_skb_irq(skb);
 	return -1;
 }
@@ -2155,7 +2158,7 @@ static int eni_proc_read(struct atm_dev *dev,loff_t *pos,char *page)
 
 		if (!tx->send) continue;
 		if (!--left) {
-			return sprintf(page,"tx[%d]:    0x%ld-0x%ld "
+			return sprintf(page, "tx[%d]:    0x%lx-0x%lx "
 			    "(%6ld bytes), rsv %d cps, shp %d cps%s\n",i,
 			    (unsigned long) (tx->send - eni_dev->ram),
 			    tx->send-eni_dev->ram+tx->words*4-1,tx->words*4,
@@ -2181,7 +2184,7 @@ static int eni_proc_read(struct atm_dev *dev,loff_t *pos,char *page)
 			if (--left) continue;
 			length = sprintf(page,"vcc %4d: ",vcc->vci);
 			if (eni_vcc->rx) {
-				length += sprintf(page+length,"0x%ld-0x%ld "
+				length += sprintf(page+length, "0x%lx-0x%lx "
 				    "(%6ld bytes)",
 				    (unsigned long) (eni_vcc->recv - eni_dev->ram),
 				    eni_vcc->recv-eni_dev->ram+eni_vcc->words*4-1,

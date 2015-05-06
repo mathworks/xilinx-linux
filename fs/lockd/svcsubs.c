@@ -14,12 +14,11 @@
 #include <linux/mutex.h>
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/addr.h>
-#include <linux/nfsd/nfsfh.h>
-#include <linux/nfsd/export.h>
 #include <linux/lockd/lockd.h>
 #include <linux/lockd/share.h>
 #include <linux/module.h>
 #include <linux/mount.h>
+#include <uapi/linux/nfs2.h>
 
 #define NLMDBG_FACILITY		NLMDBG_SVCSUBS
 
@@ -409,7 +408,7 @@ nlmsvc_match_sb(void *datap, struct nlm_file *file)
 {
 	struct super_block *sb = datap;
 
-	return sb == file->f_file->f_path.dentry->d_sb;
+	return sb == file_inode(file->f_file)->i_sb;
 }
 
 /**

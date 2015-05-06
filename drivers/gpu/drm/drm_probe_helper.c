@@ -82,6 +82,126 @@ static void drm_mode_validate_flag(struct drm_connector *connector,
 	return;
 }
 
+static int drm_helper_probe_add_cmdline_mode(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	if (!connector->cmdline_mode.specified)
+		return 0;
+
+	mode = drm_mode_create_from_cmdline_mode(connector->dev,
+						 &connector->cmdline_mode);
+	if (mode == NULL)
+		return 0;
+
+	drm_mode_probed_add(connector, mode);
+	return 1;
+}
+
+static int drm_helper_probe_single_connector_modes_merge_bits(struct drm_connector *connector,
+							      uint32_t maxX, uint32_t maxY, bool merge_type_bits)
+{
+	struct drm_device *dev = connector->dev;
+	struct drm_display_mode *mode;
+	struct drm_connector_helper_funcs *connector_funcs =
+		connector->helper_private;
+	int count = 0;
+	int mode_flags = 0;
+	bool verbose_prune = true;
+
+	WARN_ON(!mutex_is_locked(&dev->mode_config.mutex));
+
+	DRM_DEBUG_KMS("[CONNECTOR:%d:%s]\n", connector->base.id,
+			connector->name);
+	/* set all modes to the unverified state */
+	list_for_each_entry(mode, &connector->modes, head)
+		mode->status = MODE_UNVERIFIED;
+
+	if (connector->force) {
+		if (connector->force == DRM_FORCE_ON ||
+		    connector->force == DRM_FORCE_ON_DIGITAL)
+			connector->status = connector_status_connected;
+		else
+			connector->status = connector_status_disconnected;
+		if (connector->funcs->force)
+			connector->funcs->force(connector);
+	} else {
+		connector->status = connector->funcs->detect(connector, true);
+	}
+
+	/* Re-enable polling in case the global poll config changed. */
+	if (drm_kms_helper_poll != dev->mode_config.poll_running)
+		drm_kms_helper_poll_enable(dev);
+
+	dev->mode_config.poll_running = drm_kms_helper_poll;
+
+	if (connector->status == connector_status_disconnected) {
+		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] disconnected\n",
+			connector->base.id, connector->name);
+		drm_mode_connector_update_edid_property(connector, NULL);
+		verbose_prune = false;
+		goto prune;
+	}
+
+#ifdef CONFIG_DRM_LOAD_EDID_FIRMWARE
+	count = drm_load_edid_firmware(connector);
+	if (count == 0)
+#endif
+	{
+		if (connector->override_edid) {
+			struct edid *edid = (struct edid *) connector->edid_blob_ptr->data;
+
+			count = drm_add_edid_modes(connector, edid);
+		} else
+			count = (*connector_funcs->get_modes)(connector);
+	}
+
+	if (count == 0 && connector->status == connector_status_connected)
+		count = drm_add_modes_noedid(connector, 1024, 768);
+	count += drm_helper_probe_add_cmdline_mode(connector);
+	if (count == 0)
+		goto prune;
+
+	drm_mode_connector_list_update(connector, merge_type_bits);
+
+	if (maxX && maxY)
+		drm_mode_validate_size(dev, &connector->modes, maxX, maxY);
+
+	if (connector->interlace_allowed)
+		mode_flags |= DRM_MODE_FLAG_INTERLACE;
+	if (connector->doublescan_allowed)
+		mode_flags |= DRM_MODE_FLAG_DBLSCAN;
+	if (connector->stereo_allowed)
+		mode_flags |= DRM_MODE_FLAG_3D_MASK;
+	drm_mode_validate_flag(connector, mode_flags);
+
+	list_for_each_entry(mode, &connector->modes, head) {
+		if (mode->status == MODE_OK && connector_funcs->mode_valid)
+			mode->status = connector_funcs->mode_valid(connector,
+								   mode);
+	}
+
+prune:
+	drm_mode_prune_invalid(dev, &connector->modes, verbose_prune);
+
+	if (list_empty(&connector->modes))
+		return 0;
+
+	list_for_each_entry(mode, &connector->modes, head)
+		mode->vrefresh = drm_mode_vrefresh(mode);
+
+	drm_mode_sort(&connector->modes);
+
+	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] probed modes :\n", connector->base.id,
+			connector->name);
+	list_for_each_entry(mode, &connector->modes, head) {
+		drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V);
+		drm_mode_debug_printmodeline(mode);
+	}
+
+	return count;
+}
+
 /**
  * drm_helper_probe_single_connector_modes - get complete set of display modes
  * @connector: connector to probe
@@ -103,98 +223,25 @@ static void drm_mode_validate_flag(struct drm_connector *connector,
 int drm_helper_probe_single_connector_modes(struct drm_connector *connector,
 					    uint32_t maxX, uint32_t maxY)
 {
-	struct drm_device *dev = connector->dev;
-	struct drm_display_mode *mode;
-	struct drm_connector_helper_funcs *connector_funcs =
-		connector->helper_private;
-	int count = 0;
-	int mode_flags = 0;
-	bool verbose_prune = true;
-
-	WARN_ON(!mutex_is_locked(&dev->mode_config.mutex));
-
-	DRM_DEBUG_KMS("[CONNECTOR:%d:%s]\n", connector->base.id,
-			drm_get_connector_name(connector));
-	/* set all modes to the unverified state */
-	list_for_each_entry(mode, &connector->modes, head)
-		mode->status = MODE_UNVERIFIED;
-
-	if (connector->force) {
-		if (connector->force == DRM_FORCE_ON)
-			connector->status = connector_status_connected;
-		else
-			connector->status = connector_status_disconnected;
-		if (connector->funcs->force)
-			connector->funcs->force(connector);
-	} else {
-		connector->status = connector->funcs->detect(connector, true);
-	}
-
-	/* Re-enable polling in case the global poll config changed. */
-	if (drm_kms_helper_poll != dev->mode_config.poll_running)
-		drm_kms_helper_poll_enable(dev);
-
-	dev->mode_config.poll_running = drm_kms_helper_poll;
-
-	if (connector->status == connector_status_disconnected) {
-		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] disconnected\n",
-			connector->base.id, drm_get_connector_name(connector));
-		drm_mode_connector_update_edid_property(connector, NULL);
-		verbose_prune = false;
-		goto prune;
-	}
-
-#ifdef CONFIG_DRM_LOAD_EDID_FIRMWARE
-	count = drm_load_edid_firmware(connector);
-	if (count == 0)
-#endif
-		count = (*connector_funcs->get_modes)(connector);
-
-	if (count == 0 && connector->status == connector_status_connected)
-		count = drm_add_modes_noedid(connector, 1024, 768);
-	if (count == 0)
-		goto prune;
-
-	drm_mode_connector_list_update(connector);
-
-	if (maxX && maxY)
-		drm_mode_validate_size(dev, &connector->modes, maxX, maxY);
-
-	if (connector->interlace_allowed)
-		mode_flags |= DRM_MODE_FLAG_INTERLACE;
-	if (connector->doublescan_allowed)
-		mode_flags |= DRM_MODE_FLAG_DBLSCAN;
-	if (connector->stereo_allowed)
-		mode_flags |= DRM_MODE_FLAG_3D_MASK;
-	drm_mode_validate_flag(connector, mode_flags);
-
-	list_for_each_entry(mode, &connector->modes, head) {
-		if (mode->status == MODE_OK)
-			mode->status = connector_funcs->mode_valid(connector,
-								   mode);
-	}
-
-prune:
-	drm_mode_prune_invalid(dev, &connector->modes, verbose_prune);
-
-	if (list_empty(&connector->modes))
-		return 0;
-
-	list_for_each_entry(mode, &connector->modes, head)
-		mode->vrefresh = drm_mode_vrefresh(mode);
-
-	drm_mode_sort(&connector->modes);
-
-	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] probed modes :\n", connector->base.id,
-			drm_get_connector_name(connector));
-	list_for_each_entry(mode, &connector->modes, head) {
-		drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V);
-		drm_mode_debug_printmodeline(mode);
-	}
-
-	return count;
+	return drm_helper_probe_single_connector_modes_merge_bits(connector, maxX, maxY, true);
 }
 EXPORT_SYMBOL(drm_helper_probe_single_connector_modes);
+
+/**
+ * drm_helper_probe_single_connector_modes_nomerge - get complete set of display modes
+ * @connector: connector to probe
+ * @maxX: max width for modes
+ * @maxY: max height for modes
+ *
+ * This operates like drm_hehlper_probe_single_connector_modes except it
+ * replaces the mode bits instead of merging them for preferred modes.
+ */
+int drm_helper_probe_single_connector_modes_nomerge(struct drm_connector *connector,
+					    uint32_t maxX, uint32_t maxY)
+{
+	return drm_helper_probe_single_connector_modes_merge_bits(connector, maxX, maxY, false);
+}
+EXPORT_SYMBOL(drm_helper_probe_single_connector_modes_nomerge);
 
 /**
  * drm_kms_helper_hotplug_event - fire off KMS hotplug events
@@ -264,7 +311,7 @@ static void output_poll_execute(struct work_struct *work)
 			DRM_DEBUG_KMS("[CONNECTOR:%d:%s] "
 				      "status updated from %s to %s\n",
 				      connector->base.id,
-				      drm_get_connector_name(connector),
+				      connector->name,
 				      old, new);
 
 			changed = true;
@@ -409,7 +456,7 @@ bool drm_helper_hpd_irq_event(struct drm_device *dev)
 		connector->status = connector->funcs->detect(connector, false);
 		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] status updated from %s to %s\n",
 			      connector->base.id,
-			      drm_get_connector_name(connector),
+			      connector->name,
 			      drm_get_connector_status_name(old_status),
 			      drm_get_connector_status_name(connector->status));
 		if (old_status != connector->status)

@@ -124,10 +124,10 @@ static const struct file_operations axi_hdmi_driver_fops = {
 };
 
 static struct drm_driver axi_hdmi_driver = {
-	.driver_features	= DRIVER_BUS_PLATFORM |
-				  DRIVER_MODESET | DRIVER_GEM,
+	.driver_features	= DRIVER_MODESET | DRIVER_GEM,
 	.load			= axi_hdmi_load,
 	.unload			= axi_hdmi_unload,
+	.set_busid		= drm_platform_set_busid,
 	.lastclose		= axi_hdmi_lastclose,
 	.gem_free_object	= drm_gem_cma_free_object,
 	.gem_vm_ops		= &drm_gem_cma_vm_ops,
@@ -167,9 +167,9 @@ static int axi_hdmi_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	private->base = devm_request_and_ioremap(&pdev->dev, res);
-	if (!private->base)
-		return -EBUSY;
+	private->base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(private->base))
+		return PTR_ERR(private->base);
 
 	private->hdmi_clock = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(private->hdmi_clock)) {

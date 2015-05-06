@@ -130,9 +130,7 @@ struct pcmuio_asic {
 	spinlock_t pagelock;	/* protects the page registers */
 	spinlock_t spinlock;	/* protects member variables */
 	unsigned int enabled_mask;
-	unsigned int stop_count;
 	unsigned int active:1;
-	unsigned int continuous:1;
 };
 
 struct pcmuio_private {
@@ -279,7 +277,7 @@ static int pcmuio_dio_insn_config(struct comedi_device *dev,
 
 static void pcmuio_reset(struct comedi_device *dev)
 {
-	const struct pcmuio_board *board = comedi_board(dev);
+	const struct pcmuio_board *board = dev->board_ptr;
 	int asic;
 
 	for (asic = 0; asic < board->num_asics; ++asic) {
@@ -317,8 +315,7 @@ static void pcmuio_handle_intr_subdev(struct comedi_device *dev,
 	struct pcmuio_private *devpriv = dev->private;
 	int asic = pcmuio_subdevice_to_asic(s);
 	struct pcmuio_asic *chip = &devpriv->asics[asic];
-	unsigned int len = s->async->cmd.chanlist_len;
-	unsigned oldevents = s->async->events;
+	struct comedi_cmd *cmd = &s->async->cmd;
 	unsigned int val = 0;
 	unsigned long flags;
 	unsigned int i;
@@ -331,40 +328,23 @@ static void pcmuio_handle_intr_subdev(struct comedi_device *dev,
 	if (!(triggered & chip->enabled_mask))
 		goto done;
 
-	for (i = 0; i < len; i++) {
-		unsigned int chan = CR_CHAN(s->async->cmd.chanlist[i]);
+	for (i = 0; i < cmd->chanlist_len; i++) {
+		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
+
 		if (triggered & (1 << chan))
 			val |= (1 << i);
 	}
 
-	/* Write the scan to the buffer. */
-	if (comedi_buf_put(s->async, val) &&
-	    comedi_buf_put(s->async, val >> 16)) {
-		s->async->events |= (COMEDI_CB_BLOCK | COMEDI_CB_EOS);
-	} else {
-		/* Overflow! Stop acquisition!! */
-		/* TODO: STOP_ACQUISITION_CALL_HERE!! */
-		pcmuio_stop_intr(dev, s);
-	}
+	comedi_buf_write_samples(s, &val, 1);
 
-	/* Check for end of acquisition. */
-	if (!chip->continuous) {
-		/* stop_src == TRIG_COUNT */
-		if (chip->stop_count > 0) {
-			chip->stop_count--;
-			if (chip->stop_count == 0) {
-				s->async->events |= COMEDI_CB_EOA;
-				/* TODO: STOP_ACQUISITION_CALL_HERE!! */
-				pcmuio_stop_intr(dev, s);
-			}
-		}
-	}
+	if (cmd->stop_src == TRIG_COUNT &&
+	    s->async->scans_done >= cmd->stop_arg)
+		s->async->events |= COMEDI_CB_EOA;
 
 done:
 	spin_unlock_irqrestore(&chip->spinlock, flags);
 
-	if (oldevents != s->async->events)
-		comedi_event(dev, s);
+	comedi_handle_events(dev, s);
 }
 
 static int pcmuio_handle_asic_interrupt(struct comedi_device *dev, int asic)
@@ -404,8 +384,8 @@ static irqreturn_t pcmuio_interrupt(int irq, void *d)
 }
 
 /* chip->spinlock is already locked */
-static int pcmuio_start_intr(struct comedi_device *dev,
-			     struct comedi_subdevice *s)
+static void pcmuio_start_intr(struct comedi_device *dev,
+			      struct comedi_subdevice *s)
 {
 	struct pcmuio_private *devpriv = dev->private;
 	int asic = pcmuio_subdevice_to_asic(s);
@@ -414,13 +394,6 @@ static int pcmuio_start_intr(struct comedi_device *dev,
 	unsigned int bits = 0;
 	unsigned int pol_bits = 0;
 	int i;
-
-	if (!chip->continuous && chip->stop_count == 0) {
-		/* An empty acquisition! */
-		s->async->events |= COMEDI_CB_EOA;
-		chip->active = 0;
-		return 1;
-	}
 
 	chip->enabled_mask = 0;
 	chip->active = 1;
@@ -441,8 +414,6 @@ static int pcmuio_start_intr(struct comedi_device *dev,
 	/* set pol and enab intrs for this subdev.. */
 	pcmuio_write(dev, pol_bits, asic, PCMUIO_PAGE_POL, 0);
 	pcmuio_write(dev, bits, asic, PCMUIO_PAGE_ENAB, 0);
-
-	return 0;
 }
 
 static int pcmuio_cancel(struct comedi_device *dev, struct comedi_subdevice *s)
@@ -460,31 +431,25 @@ static int pcmuio_cancel(struct comedi_device *dev, struct comedi_subdevice *s)
 	return 0;
 }
 
-/*
- * Internal trigger function to start acquisition for an 'INTERRUPT' subdevice.
- */
-static int
-pcmuio_inttrig_start_intr(struct comedi_device *dev, struct comedi_subdevice *s,
-			  unsigned int trignum)
+static int pcmuio_inttrig_start_intr(struct comedi_device *dev,
+				     struct comedi_subdevice *s,
+				     unsigned int trig_num)
 {
 	struct pcmuio_private *devpriv = dev->private;
+	struct comedi_cmd *cmd = &s->async->cmd;
 	int asic = pcmuio_subdevice_to_asic(s);
 	struct pcmuio_asic *chip = &devpriv->asics[asic];
 	unsigned long flags;
-	int event = 0;
 
-	if (trignum != 0)
+	if (trig_num != cmd->start_arg)
 		return -EINVAL;
 
 	spin_lock_irqsave(&chip->spinlock, flags);
 	s->async->inttrig = NULL;
 	if (chip->active)
-		event = pcmuio_start_intr(dev, s);
+		pcmuio_start_intr(dev, s);
 
 	spin_unlock_irqrestore(&chip->spinlock, flags);
-
-	if (event)
-		comedi_event(dev, s);
 
 	return 1;
 }
@@ -499,38 +464,17 @@ static int pcmuio_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	int asic = pcmuio_subdevice_to_asic(s);
 	struct pcmuio_asic *chip = &devpriv->asics[asic];
 	unsigned long flags;
-	int event = 0;
 
 	spin_lock_irqsave(&chip->spinlock, flags);
 	chip->active = 1;
 
-	/* Set up end of acquisition. */
-	switch (cmd->stop_src) {
-	case TRIG_COUNT:
-		chip->continuous = 0;
-		chip->stop_count = cmd->stop_arg;
-		break;
-	default:
-		/* TRIG_NONE */
-		chip->continuous = 1;
-		chip->stop_count = 0;
-		break;
-	}
-
 	/* Set up start of acquisition. */
-	switch (cmd->start_src) {
-	case TRIG_INT:
+	if (cmd->start_src == TRIG_INT)
 		s->async->inttrig = pcmuio_inttrig_start_intr;
-		break;
-	default:
-		/* TRIG_NOW */
-		event = pcmuio_start_intr(dev, s);
-		break;
-	}
-	spin_unlock_irqrestore(&chip->spinlock, flags);
+	else	/* TRIG_NOW */
+		pcmuio_start_intr(dev, s);
 
-	if (event)
-		comedi_event(dev, s);
+	spin_unlock_irqrestore(&chip->spinlock, flags);
 
 	return 0;
 }
@@ -569,16 +513,10 @@ static int pcmuio_cmdtest(struct comedi_device *dev,
 	err |= cfc_check_trigger_arg_is(&cmd->convert_arg, 0);
 	err |= cfc_check_trigger_arg_is(&cmd->scan_end_arg, cmd->chanlist_len);
 
-	switch (cmd->stop_src) {
-	case TRIG_COUNT:
-		/* any count allowed */
-		break;
-	case TRIG_NONE:
+	if (cmd->stop_src == TRIG_COUNT)
+		err |= cfc_check_trigger_arg_min(&cmd->stop_arg, 1);
+	else	/* TRIG_NONE */
 		err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
-		break;
-	default:
-		break;
-	}
 
 	if (err)
 		return 3;
@@ -592,7 +530,7 @@ static int pcmuio_cmdtest(struct comedi_device *dev,
 
 static int pcmuio_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
-	const struct pcmuio_board *board = comedi_board(dev);
+	const struct pcmuio_board *board = dev->board_ptr;
 	struct comedi_subdevice *s;
 	struct pcmuio_private *devpriv;
 	int ret;
@@ -655,7 +593,8 @@ static int pcmuio_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 		if ((i == 0 && dev->irq) || (i == 2 && devpriv->irq2)) {
 			/* setup the interrupt subdevice */
 			dev->read_subdev = s;
-			s->subdev_flags	|= SDF_CMD_READ;
+			s->subdev_flags	|= SDF_CMD_READ | SDF_LSAMPL |
+					   SDF_PACKED;
 			s->len_chanlist	= s->n_chan;
 			s->cancel	= pcmuio_cancel;
 			s->do_cmd	= pcmuio_cmd;

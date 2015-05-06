@@ -588,9 +588,7 @@ static void dev_lastclose(struct drm_device *dev)
 		}
 	}
 
-	drm_modeset_lock_all(dev);
-	ret = drm_fb_helper_restore_fbdev_mode(priv->fbdev);
-	drm_modeset_unlock_all(dev);
+	ret = drm_fb_helper_restore_fbdev_mode_unlocked(priv->fbdev);
 	if (ret)
 		DBG("failed to restore crtc mode");
 }
@@ -631,6 +629,7 @@ static struct drm_driver omap_drm_driver = {
 		.lastclose = dev_lastclose,
 		.preclose = dev_preclose,
 		.postclose = dev_postclose,
+		.set_busid = drm_platform_set_busid,
 		.get_vblank_counter = drm_vblank_count,
 		.enable_vblank = omap_irq_enable_vblank,
 		.disable_vblank = omap_irq_disable_vblank,
@@ -719,7 +718,6 @@ static const struct dev_pm_ops omapdrm_pm_ops = {
 static struct platform_driver pdev = {
 		.driver = {
 			.name = DRIVER_NAME,
-			.owner = THIS_MODULE,
 #ifdef CONFIG_PM
 			.pm = &omapdrm_pm_ops,
 #endif

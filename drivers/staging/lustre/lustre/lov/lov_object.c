@@ -42,7 +42,6 @@
 #define DEBUG_SUBSYSTEM S_LOV
 
 #include "lov_cl_internal.h"
-#include <lustre_debug.h>
 
 /** \addtogroup lov
  *  @{
@@ -234,7 +233,7 @@ static int lov_init_raid0(const struct lu_env *env,
 			result = ostid_to_fid(ofid, &oinfo->loi_oi,
 					      oinfo->loi_ost_idx);
 			if (result != 0)
-				GOTO(out, result);
+				goto out;
 
 			subdev = lovsub2cl_dev(dev->ld_target[ost_idx]);
 			subconf->u.coc_oinfo = oinfo;
@@ -748,7 +747,8 @@ static int lov_conf_set(const struct lu_env *env, struct cl_object *obj,
 	lov_conf_lock(lov);
 	if (conf->coc_opc == OBJECT_CONF_INVALIDATE) {
 		lov->lo_layout_invalid = true;
-		GOTO(out, result = 0);
+		result = 0;
+		goto out;
 	}
 
 	if (conf->coc_opc == OBJECT_CONF_WAIT) {
@@ -758,7 +758,7 @@ static int lov_conf_set(const struct lu_env *env, struct cl_object *obj,
 			result = lov_layout_wait(env, lov);
 			lov_conf_lock(lov);
 		}
-		GOTO(out, result);
+		goto out;
 	}
 
 	LASSERT(conf->coc_opc == OBJECT_CONF_SET);
@@ -771,13 +771,15 @@ static int lov_conf_set(const struct lu_env *env, struct cl_object *obj,
 	     (lov->lo_lsm->lsm_pattern == lsm->lsm_pattern))) {
 		/* same version of layout */
 		lov->lo_layout_invalid = false;
-		GOTO(out, result = 0);
+		result = 0;
+		goto out;
 	}
 
 	/* will change layout - check if there still exists active IO. */
 	if (atomic_read(&lov->lo_active_ios) > 0) {
 		lov->lo_layout_invalid = true;
-		GOTO(out, result = -EBUSY);
+		result = -EBUSY;
+		goto out;
 	}
 
 	lov->lo_layout_invalid = lov_layout_change(env, lov, conf);
@@ -885,7 +887,7 @@ struct lu_object *lov_object_alloc(const struct lu_env *env,
 	struct lov_object *lov;
 	struct lu_object  *obj;
 
-	OBD_SLAB_ALLOC_PTR_GFP(lov, lov_object_kmem, __GFP_IO);
+	OBD_SLAB_ALLOC_PTR_GFP(lov, lov_object_kmem, GFP_NOFS);
 	if (lov != NULL) {
 		obj = lov2lu(lov);
 		lu_object_init(obj, NULL, dev);

@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -20,34 +21,17 @@
 #include "msm_mmu.h"
 #include "mdp5_kms.h"
 
-static struct mdp5_platform_config *mdp5_get_config(struct platform_device *dev);
+static const char *iommu_ports[] = {
+		"mdp_0",
+};
 
 static int mdp5_hw_init(struct msm_kms *kms)
 {
 	struct mdp5_kms *mdp5_kms = to_mdp5_kms(to_mdp_kms(kms));
 	struct drm_device *dev = mdp5_kms->dev;
-	uint32_t version, major, minor;
-	int ret = 0;
+	unsigned long flags;
 
 	pm_runtime_get_sync(dev->dev);
-
-	mdp5_enable(mdp5_kms);
-	version = mdp5_read(mdp5_kms, REG_MDP5_MDP_VERSION);
-	mdp5_disable(mdp5_kms);
-
-	major = FIELD(version, MDP5_MDP_VERSION_MAJOR);
-	minor = FIELD(version, MDP5_MDP_VERSION_MINOR);
-
-	DBG("found MDP5 version v%d.%d", major, minor);
-
-	if ((major != 1) || ((minor != 0) && (minor != 2))) {
-		dev_err(dev->dev, "unexpected MDP version: v%d.%d\n",
-				major, minor);
-		ret = -ENXIO;
-		goto out;
-	}
-
-	mdp5_kms->rev = minor;
 
 	/* Magic unknown register writes:
 	 *
@@ -73,16 +57,15 @@ static int mdp5_hw_init(struct msm_kms *kms)
 	 * care.
 	 */
 
+	spin_lock_irqsave(&mdp5_kms->resource_lock, flags);
 	mdp5_write(mdp5_kms, REG_MDP5_DISP_INTF_SEL, 0);
-	mdp5_write(mdp5_kms, REG_MDP5_CTL_OP(0), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_CTL_OP(1), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_CTL_OP(2), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_CTL_OP(3), 0);
+	spin_unlock_irqrestore(&mdp5_kms->resource_lock, flags);
 
-out:
+	mdp5_ctlm_hw_reset(mdp5_kms->ctlm);
+
 	pm_runtime_put_sync(dev->dev);
 
-	return ret;
+	return 0;
 }
 
 static long mdp5_round_pixclk(struct msm_kms *kms, unsigned long rate,
@@ -104,6 +87,22 @@ static void mdp5_preclose(struct msm_kms *kms, struct drm_file *file)
 static void mdp5_destroy(struct msm_kms *kms)
 {
 	struct mdp5_kms *mdp5_kms = to_mdp5_kms(to_mdp_kms(kms));
+	struct msm_mmu *mmu = mdp5_kms->mmu;
+
+	mdp5_irq_domain_fini(mdp5_kms);
+
+	if (mmu) {
+		mmu->funcs->detach(mmu, iommu_ports, ARRAY_SIZE(iommu_ports));
+		mmu->funcs->destroy(mmu);
+	}
+
+	if (mdp5_kms->ctlm)
+		mdp5_ctlm_destroy(mdp5_kms->ctlm);
+	if (mdp5_kms->smp)
+		mdp5_smp_destroy(mdp5_kms->smp);
+	if (mdp5_kms->cfg)
+		mdp5_cfg_destroy(mdp5_kms->cfg);
+
 	kfree(mdp5_kms);
 }
 
@@ -151,19 +150,33 @@ int mdp5_enable(struct mdp5_kms *mdp5_kms)
 static int modeset_init(struct mdp5_kms *mdp5_kms)
 {
 	static const enum mdp5_pipe crtcs[] = {
-			SSPP_RGB0, SSPP_RGB1, SSPP_RGB2,
+			SSPP_RGB0, SSPP_RGB1, SSPP_RGB2, SSPP_RGB3,
+	};
+	static const enum mdp5_pipe pub_planes[] = {
+			SSPP_VIG0, SSPP_VIG1, SSPP_VIG2, SSPP_VIG3,
 	};
 	struct drm_device *dev = mdp5_kms->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct drm_encoder *encoder;
+	const struct mdp5_cfg_hw *hw_cfg;
 	int i, ret;
 
-	/* construct CRTCs: */
-	for (i = 0; i < ARRAY_SIZE(crtcs); i++) {
+	hw_cfg = mdp5_cfg_get_hw_config(mdp5_kms->cfg);
+
+	/* register our interrupt-controller for hdmi/eDP/dsi/etc
+	 * to use for irqs routed through mdp:
+	 */
+	ret = mdp5_irq_domain_init(mdp5_kms);
+	if (ret)
+		goto fail;
+
+	/* construct CRTCs and their private planes: */
+	for (i = 0; i < hw_cfg->pipe_rgb.count; i++) {
 		struct drm_plane *plane;
 		struct drm_crtc *crtc;
 
-		plane = mdp5_plane_init(dev, crtcs[i], true);
+		plane = mdp5_plane_init(dev, crtcs[i], true,
+				hw_cfg->pipe_rgb.base[i]);
 		if (IS_ERR(plane)) {
 			ret = PTR_ERR(plane);
 			dev_err(dev->dev, "failed to construct plane for %s (%d)\n",
@@ -181,6 +194,20 @@ static int modeset_init(struct mdp5_kms *mdp5_kms)
 		priv->crtcs[priv->num_crtcs++] = crtc;
 	}
 
+	/* Construct public planes: */
+	for (i = 0; i < hw_cfg->pipe_vig.count; i++) {
+		struct drm_plane *plane;
+
+		plane = mdp5_plane_init(dev, pub_planes[i], false,
+				hw_cfg->pipe_vig.base[i]);
+		if (IS_ERR(plane)) {
+			ret = PTR_ERR(plane);
+			dev_err(dev->dev, "failed to construct %s plane: %d\n",
+					pipe2name(pub_planes[i]), ret);
+			goto fail;
+		}
+	}
+
 	/* Construct encoder for HDMI: */
 	encoder = mdp5_encoder_init(dev, 3, INTF_HDMI);
 	if (IS_ERR(encoder)) {
@@ -189,25 +216,16 @@ static int modeset_init(struct mdp5_kms *mdp5_kms)
 		goto fail;
 	}
 
-	/* NOTE: the vsync and error irq's are actually associated with
-	 * the INTF/encoder.. the easiest way to deal with this (ie. what
-	 * we do now) is assume a fixed relationship between crtc's and
-	 * encoders.  I'm not sure if there is ever a need to more freely
-	 * assign crtcs to encoders, but if there is then we need to take
-	 * care of error and vblank irq's that the crtc has registered,
-	 * and also update user-requested vblank_mask.
-	 */
-	encoder->possible_crtcs = BIT(0);
-	mdp5_crtc_set_intf(priv->crtcs[0], 3, INTF_HDMI);
-
+	encoder->possible_crtcs = (1 << priv->num_crtcs) - 1;;
 	priv->encoders[priv->num_encoders++] = encoder;
 
 	/* Construct bridge/connector for HDMI: */
-	mdp5_kms->hdmi = hdmi_init(dev, encoder);
-	if (IS_ERR(mdp5_kms->hdmi)) {
-		ret = PTR_ERR(mdp5_kms->hdmi);
-		dev_err(dev->dev, "failed to initialize HDMI: %d\n", ret);
-		goto fail;
+	if (priv->hdmi) {
+		ret = hdmi_modeset_init(priv->hdmi, dev, encoder);
+		if (ret) {
+			dev_err(dev->dev, "failed to initialize HDMI: %d\n", ret);
+			goto fail;
+		}
 	}
 
 	return 0;
@@ -216,9 +234,20 @@ fail:
 	return ret;
 }
 
-static const char *iommu_ports[] = {
-		"mdp_0",
-};
+static void read_hw_revision(struct mdp5_kms *mdp5_kms,
+		uint32_t *major, uint32_t *minor)
+{
+	uint32_t version;
+
+	mdp5_enable(mdp5_kms);
+	version = mdp5_read(mdp5_kms, REG_MDP5_MDP_VERSION);
+	mdp5_disable(mdp5_kms);
+
+	*major = FIELD(version, MDP5_MDP_VERSION_MAJOR);
+	*minor = FIELD(version, MDP5_MDP_VERSION_MINOR);
+
+	DBG("MDP5 version v%d.%d", *major, *minor);
+}
 
 static int get_clk(struct platform_device *pdev, struct clk **clkp,
 		const char *name)
@@ -236,11 +265,12 @@ static int get_clk(struct platform_device *pdev, struct clk **clkp,
 struct msm_kms *mdp5_kms_init(struct drm_device *dev)
 {
 	struct platform_device *pdev = dev->platformdev;
-	struct mdp5_platform_config *config = mdp5_get_config(pdev);
+	struct mdp5_cfg *config;
 	struct mdp5_kms *mdp5_kms;
 	struct msm_kms *kms = NULL;
 	struct msm_mmu *mmu;
-	int ret;
+	uint32_t major, minor;
+	int i, ret;
 
 	mdp5_kms = kzalloc(sizeof(*mdp5_kms), GFP_KERNEL);
 	if (!mdp5_kms) {
@@ -249,12 +279,13 @@ struct msm_kms *mdp5_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
+	spin_lock_init(&mdp5_kms->resource_lock);
+
 	mdp_kms_init(&mdp5_kms->base, &kms_funcs);
 
 	kms = &mdp5_kms->base.base;
 
 	mdp5_kms->dev = dev;
-	mdp5_kms->smp_blk_cnt = config->smp_blk_cnt;
 
 	mdp5_kms->mmio = msm_ioremap(pdev, "mdp_phys", "MDP5");
 	if (IS_ERR(mdp5_kms->mmio)) {
@@ -280,44 +311,90 @@ struct msm_kms *mdp5_kms_init(struct drm_device *dev)
 		goto fail;
 	}
 
-	ret = get_clk(pdev, &mdp5_kms->axi_clk, "bus_clk") ||
-			get_clk(pdev, &mdp5_kms->ahb_clk, "iface_clk") ||
-			get_clk(pdev, &mdp5_kms->src_clk, "core_clk_src") ||
-			get_clk(pdev, &mdp5_kms->core_clk, "core_clk") ||
-			get_clk(pdev, &mdp5_kms->lut_clk, "lut_clk") ||
-			get_clk(pdev, &mdp5_kms->vsync_clk, "vsync_clk");
+	ret = get_clk(pdev, &mdp5_kms->axi_clk, "bus_clk");
+	if (ret)
+		goto fail;
+	ret = get_clk(pdev, &mdp5_kms->ahb_clk, "iface_clk");
+	if (ret)
+		goto fail;
+	ret = get_clk(pdev, &mdp5_kms->src_clk, "core_clk_src");
+	if (ret)
+		goto fail;
+	ret = get_clk(pdev, &mdp5_kms->core_clk, "core_clk");
+	if (ret)
+		goto fail;
+	ret = get_clk(pdev, &mdp5_kms->lut_clk, "lut_clk");
+	if (ret)
+		goto fail;
+	ret = get_clk(pdev, &mdp5_kms->vsync_clk, "vsync_clk");
 	if (ret)
 		goto fail;
 
-	ret = clk_set_rate(mdp5_kms->src_clk, config->max_clk);
+	/* we need to set a default rate before enabling.  Set a safe
+	 * rate first, then figure out hw revision, and then set a
+	 * more optimal rate:
+	 */
+	clk_set_rate(mdp5_kms->src_clk, 200000000);
+
+	read_hw_revision(mdp5_kms, &major, &minor);
+
+	mdp5_kms->cfg = mdp5_cfg_init(mdp5_kms, major, minor);
+	if (IS_ERR(mdp5_kms->cfg)) {
+		ret = PTR_ERR(mdp5_kms->cfg);
+		mdp5_kms->cfg = NULL;
+		goto fail;
+	}
+
+	config = mdp5_cfg_get_config(mdp5_kms->cfg);
+
+	/* TODO: compute core clock rate at runtime */
+	clk_set_rate(mdp5_kms->src_clk, config->hw->max_clk);
+
+	mdp5_kms->smp = mdp5_smp_init(mdp5_kms->dev, &config->hw->smp);
+	if (IS_ERR(mdp5_kms->smp)) {
+		ret = PTR_ERR(mdp5_kms->smp);
+		mdp5_kms->smp = NULL;
+		goto fail;
+	}
+
+	mdp5_kms->ctlm = mdp5_ctlm_init(dev, mdp5_kms->mmio, config->hw);
+	if (IS_ERR(mdp5_kms->ctlm)) {
+		ret = PTR_ERR(mdp5_kms->ctlm);
+		mdp5_kms->ctlm = NULL;
+		goto fail;
+	}
 
 	/* make sure things are off before attaching iommu (bootloader could
 	 * have left things on, in which case we'll start getting faults if
 	 * we don't disable):
 	 */
 	mdp5_enable(mdp5_kms);
-	mdp5_write(mdp5_kms, REG_MDP5_INTF_TIMING_ENGINE_EN(0), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_INTF_TIMING_ENGINE_EN(1), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_INTF_TIMING_ENGINE_EN(2), 0);
-	mdp5_write(mdp5_kms, REG_MDP5_INTF_TIMING_ENGINE_EN(3), 0);
+	for (i = 0; i < config->hw->intf.count; i++)
+		mdp5_write(mdp5_kms, REG_MDP5_INTF_TIMING_ENGINE_EN(i), 0);
 	mdp5_disable(mdp5_kms);
 	mdelay(16);
 
-	if (config->iommu) {
-		mmu = msm_iommu_new(dev, config->iommu);
+	if (config->platform.iommu) {
+		mmu = msm_iommu_new(&pdev->dev, config->platform.iommu);
 		if (IS_ERR(mmu)) {
 			ret = PTR_ERR(mmu);
+			dev_err(dev->dev, "failed to init iommu: %d\n", ret);
 			goto fail;
 		}
+
 		ret = mmu->funcs->attach(mmu, iommu_ports,
 				ARRAY_SIZE(iommu_ports));
-		if (ret)
+		if (ret) {
+			dev_err(dev->dev, "failed to attach iommu: %d\n", ret);
+			mmu->funcs->destroy(mmu);
 			goto fail;
+		}
 	} else {
 		dev_info(dev->dev, "no iommu, fallback to phys "
 				"contig buffers for scanout\n");
 		mmu = NULL;
 	}
+	mdp5_kms->mmu = mmu;
 
 	mdp5_kms->id = msm_register_mmu(dev, mmu);
 	if (mdp5_kms->id < 0) {
@@ -338,13 +415,4 @@ fail:
 	if (kms)
 		mdp5_destroy(kms);
 	return ERR_PTR(ret);
-}
-
-static struct mdp5_platform_config *mdp5_get_config(struct platform_device *dev)
-{
-	static struct mdp5_platform_config config = {};
-#ifdef CONFIG_OF
-	/* TODO */
-#endif
-	return &config;
 }

@@ -43,6 +43,17 @@ static unsigned int _get_table_maxdiv(const struct clk_div_table *table)
 	return maxdiv;
 }
 
+static unsigned int _get_table_mindiv(const struct clk_div_table *table)
+{
+	unsigned int mindiv = UINT_MAX;
+	const struct clk_div_table *clkt;
+
+	for (clkt = table; clkt->div; clkt++)
+		if (clkt->div < mindiv)
+			mindiv = clkt->div;
+	return mindiv;
+}
+
 static unsigned int _get_maxdiv(struct clk_divider *divider)
 {
 	if (divider->flags & CLK_DIVIDER_ONE_BASED)
@@ -162,6 +173,24 @@ static int _round_up_table(const struct clk_div_table *table, int div)
 	return up;
 }
 
+static int _round_down_table(const struct clk_div_table *table, int div)
+{
+	const struct clk_div_table *clkt;
+	int down = _get_table_mindiv(table);
+
+	for (clkt = table; clkt->div; clkt++) {
+		if (clkt->div == div)
+			return clkt->div;
+		else if (clkt->div > div)
+			continue;
+
+		if ((div - clkt->div) < (div - down))
+			down = clkt->div;
+	}
+
+	return down;
+}
+
 static int _div_round_up(struct clk_divider *divider,
 		unsigned long parent_rate, unsigned long rate)
 {
@@ -171,6 +200,54 @@ static int _div_round_up(struct clk_divider *divider,
 		div = __roundup_pow_of_two(div);
 	if (divider->table)
 		div = _round_up_table(divider->table, div);
+
+	return div;
+}
+
+static int _div_round_closest(struct clk_divider *divider,
+		unsigned long parent_rate, unsigned long rate)
+{
+	int up, down, div;
+
+	up = down = div = DIV_ROUND_CLOSEST(parent_rate, rate);
+
+	if (divider->flags & CLK_DIVIDER_POWER_OF_TWO) {
+		up = __roundup_pow_of_two(div);
+		down = __rounddown_pow_of_two(div);
+	} else if (divider->table) {
+		up = _round_up_table(divider->table, div);
+		down = _round_down_table(divider->table, div);
+	}
+
+	return (up - div) <= (div - down) ? up : down;
+}
+
+static int _div_round(struct clk_divider *divider, unsigned long parent_rate,
+		unsigned long rate)
+{
+	if (divider->flags & CLK_DIVIDER_ROUND_CLOSEST)
+		return _div_round_closest(divider, parent_rate, rate);
+
+	return _div_round_up(divider, parent_rate, rate);
+}
+
+static bool _is_best_div(struct clk_divider *divider,
+		unsigned long rate, unsigned long now, unsigned long best)
+{
+	if (divider->flags & CLK_DIVIDER_ROUND_CLOSEST)
+		return abs(rate - now) < abs(rate - best);
+
+	return now <= rate && now > best;
+}
+
+static int _next_div(struct clk_divider *divider, int div)
+{
+	div++;
+
+	if (divider->flags & CLK_DIVIDER_POWER_OF_TWO)
+		return __roundup_pow_of_two(div);
+	if (divider->table)
+		return _round_up_table(divider->table, div);
 
 	return div;
 }
@@ -186,11 +263,19 @@ static int clk_divider_bestdiv(struct clk_hw *hw, unsigned long rate,
 	if (!rate)
 		rate = 1;
 
+	/* if read only, just return current value */
+	if (divider->flags & CLK_DIVIDER_READ_ONLY) {
+		bestdiv = readl(divider->reg) >> divider->shift;
+		bestdiv &= div_mask(divider);
+		bestdiv = _get_div(divider, bestdiv);
+		return bestdiv;
+	}
+
 	maxdiv = _get_maxdiv(divider);
 
 	if (!(__clk_get_flags(hw->clk) & CLK_SET_RATE_PARENT)) {
 		parent_rate = *best_parent_rate;
-		bestdiv = _div_round_up(divider, parent_rate, rate);
+		bestdiv = _div_round(divider, parent_rate, rate);
 		bestdiv = bestdiv == 0 ? 1 : bestdiv;
 		bestdiv = bestdiv > maxdiv ? maxdiv : bestdiv;
 		return bestdiv;
@@ -202,7 +287,7 @@ static int clk_divider_bestdiv(struct clk_hw *hw, unsigned long rate,
 	 */
 	maxdiv = min(ULONG_MAX / rate, maxdiv);
 
-	for (i = 1; i <= maxdiv; i++) {
+	for (i = 1; i <= maxdiv; i = _next_div(divider, i)) {
 		if (!_is_valid_div(divider, i))
 			continue;
 		if (rate * i == parent_rate_saved) {
@@ -217,7 +302,7 @@ static int clk_divider_bestdiv(struct clk_hw *hw, unsigned long rate,
 		parent_rate = __clk_round_rate(__clk_get_parent(hw->clk),
 				MULT_ROUND_UP(rate, i));
 		now = DIV_ROUND_UP(parent_rate, i);
-		if (now <= rate && now > best) {
+		if (_is_best_div(divider, rate, now, best)) {
 			bestdiv = i;
 			best = now;
 			*best_parent_rate = parent_rate;

@@ -117,13 +117,13 @@ static int tps65912_gpio_remove(struct platform_device *pdev)
 {
 	struct tps65912_gpio_data  *tps65912_gpio = platform_get_drvdata(pdev);
 
-	return gpiochip_remove(&tps65912_gpio->gpio_chip);
+	gpiochip_remove(&tps65912_gpio->gpio_chip);
+	return 0;
 }
 
 static struct platform_driver tps65912_gpio_driver = {
 	.driver = {
 		.name = "tps65912-gpio",
-		.owner = THIS_MODULE,
 	},
 	.probe = tps65912_gpio_probe,
 	.remove = tps65912_gpio_remove,

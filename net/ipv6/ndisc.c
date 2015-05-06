@@ -162,7 +162,8 @@ static void ndisc_fill_addr_option(struct sk_buff *skb, int type, void *data)
 	memcpy(opt+2, data, data_len);
 	data_len += 2;
 	opt += data_len;
-	if ((space -= data_len) > 0)
+	space -= data_len;
+	if (space > 0)
 		memset(opt, 0, space);
 }
 
@@ -175,7 +176,7 @@ static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
 	type = cur->nd_opt_type;
 	do {
 		cur = ((void *)cur) + (cur->nd_opt_len << 3);
-	} while(cur < end && cur->nd_opt_type != type);
+	} while (cur < end && cur->nd_opt_type != type);
 	return cur <= end && cur->nd_opt_type == type ? cur : NULL;
 }
 
@@ -192,7 +193,7 @@ static struct nd_opt_hdr *ndisc_next_useropt(struct nd_opt_hdr *cur,
 		return NULL;
 	do {
 		cur = ((void *)cur) + (cur->nd_opt_len << 3);
-	} while(cur < end && !ndisc_is_useropt(cur));
+	} while (cur < end && !ndisc_is_useropt(cur));
 	return cur <= end && ndisc_is_useropt(cur) ? cur : NULL;
 }
 
@@ -284,7 +285,6 @@ int ndisc_mc_map(const struct in6_addr *addr, char *buf, struct net_device *dev,
 	}
 	return -EINVAL;
 }
-
 EXPORT_SYMBOL(ndisc_mc_map);
 
 static u32 ndisc_hash(const void *pkey,
@@ -296,7 +296,7 @@ static u32 ndisc_hash(const void *pkey,
 
 static int ndisc_constructor(struct neighbour *neigh)
 {
-	struct in6_addr *addr = (struct in6_addr*)&neigh->primary_key;
+	struct in6_addr *addr = (struct in6_addr *)&neigh->primary_key;
 	struct net_device *dev = neigh->dev;
 	struct inet6_dev *in6_dev;
 	struct neigh_parms *parms;
@@ -344,7 +344,7 @@ static int ndisc_constructor(struct neighbour *neigh)
 
 static int pndisc_constructor(struct pneigh_entry *n)
 {
-	struct in6_addr *addr = (struct in6_addr*)&n->key;
+	struct in6_addr *addr = (struct in6_addr *)&n->key;
 	struct in6_addr maddr;
 	struct net_device *dev = n->dev;
 
@@ -357,7 +357,7 @@ static int pndisc_constructor(struct pneigh_entry *n)
 
 static void pndisc_destructor(struct pneigh_entry *n)
 {
-	struct in6_addr *addr = (struct in6_addr*)&n->key;
+	struct in6_addr *addr = (struct in6_addr *)&n->key;
 	struct in6_addr maddr;
 	struct net_device *dev = n->dev;
 
@@ -657,8 +657,8 @@ static void ndisc_solicit(struct neighbour *neigh, struct sk_buff *skb)
 
 	if (skb && ipv6_chk_addr(dev_net(dev), &ipv6_hdr(skb)->saddr, dev, 1))
 		saddr = &ipv6_hdr(skb)->saddr;
-
-	if ((probes -= NEIGH_VAR(neigh->parms, UCAST_PROBES)) < 0) {
+	probes -= NEIGH_VAR(neigh->parms, UCAST_PROBES);
+	if (probes < 0) {
 		if (!(neigh->nud_state & NUD_VALID)) {
 			ND_PRINTK(1, dbg,
 				  "%s: trying to ucast probe in NUD_INVALID: %pI6\n",
@@ -1065,11 +1065,14 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 	int optlen;
 	unsigned int pref = 0;
 
-	__u8 * opt = (__u8 *)(ra_msg + 1);
+	__u8 *opt = (__u8 *)(ra_msg + 1);
 
 	optlen = (skb_tail_pointer(skb) - skb_transport_header(skb)) -
 		sizeof(struct ra_msg);
 
+	ND_PRINTK(2, info,
+		  "RA: %s, dev: %s\n",
+		  __func__, skb->dev->name);
 	if (!(ipv6_addr_type(&ipv6_hdr(skb)->saddr) & IPV6_ADDR_LINKLOCAL)) {
 		ND_PRINTK(2, warn, "RA: source address is not link-local\n");
 		return;
@@ -1102,13 +1105,21 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 		return;
 	}
 
-	if (!ipv6_accept_ra(in6_dev))
+	if (!ipv6_accept_ra(in6_dev)) {
+		ND_PRINTK(2, info,
+			  "RA: %s, did not accept ra for dev: %s\n",
+			  __func__, skb->dev->name);
 		goto skip_linkparms;
+	}
 
 #ifdef CONFIG_IPV6_NDISC_NODETYPE
 	/* skip link-specific parameters from interior routers */
-	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT)
+	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT) {
+		ND_PRINTK(2, info,
+			  "RA: %s, nodetype is NODEFAULT, dev: %s\n",
+			  __func__, skb->dev->name);
 		goto skip_linkparms;
+	}
 #endif
 
 	if (in6_dev->if_flags & IF_RS_SENT) {
@@ -1130,11 +1141,24 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 				(ra_msg->icmph.icmp6_addrconf_other ?
 					IF_RA_OTHERCONF : 0);
 
-	if (!in6_dev->cnf.accept_ra_defrtr)
+	if (!in6_dev->cnf.accept_ra_defrtr) {
+		ND_PRINTK(2, info,
+			  "RA: %s, defrtr is false for dev: %s\n",
+			  __func__, skb->dev->name);
 		goto skip_defrtr;
+	}
 
-	if (ipv6_chk_addr(dev_net(in6_dev->dev), &ipv6_hdr(skb)->saddr, NULL, 0))
+	/* Do not accept RA with source-addr found on local machine unless
+	 * accept_ra_from_local is set to true.
+	 */
+	if (!in6_dev->cnf.accept_ra_from_local &&
+	    ipv6_chk_addr(dev_net(in6_dev->dev), &ipv6_hdr(skb)->saddr,
+			  NULL, 0)) {
+		ND_PRINTK(2, info,
+			  "RA from local address detected on dev: %s: default router ignored\n",
+			  skb->dev->name);
 		goto skip_defrtr;
+	}
 
 	lifetime = ntohs(ra_msg->icmph.icmp6_rt_lifetime);
 
@@ -1163,8 +1187,10 @@ static void ndisc_router_discovery(struct sk_buff *skb)
 		rt = NULL;
 	}
 
+	ND_PRINTK(3, info, "RA: rt: %p  lifetime: %d, for dev: %s\n",
+		  rt, lifetime, skb->dev->name);
 	if (rt == NULL && lifetime) {
-		ND_PRINTK(3, dbg, "RA: adding default router\n");
+		ND_PRINTK(3, info, "RA: adding default router\n");
 
 		rt = rt6_add_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev, pref);
 		if (rt == NULL) {
@@ -1260,12 +1286,22 @@ skip_linkparms:
 			     NEIGH_UPDATE_F_ISROUTER);
 	}
 
-	if (!ipv6_accept_ra(in6_dev))
+	if (!ipv6_accept_ra(in6_dev)) {
+		ND_PRINTK(2, info,
+			  "RA: %s, accept_ra is false for dev: %s\n",
+			  __func__, skb->dev->name);
 		goto out;
+	}
 
 #ifdef CONFIG_IPV6_ROUTE_INFO
-	if (ipv6_chk_addr(dev_net(in6_dev->dev), &ipv6_hdr(skb)->saddr, NULL, 0))
+	if (!in6_dev->cnf.accept_ra_from_local &&
+	    ipv6_chk_addr(dev_net(in6_dev->dev), &ipv6_hdr(skb)->saddr,
+			  NULL, 0)) {
+		ND_PRINTK(2, info,
+			  "RA from local address detected on dev: %s: router info ignored.\n",
+			  skb->dev->name);
 		goto skip_routeinfo;
+	}
 
 	if (in6_dev->cnf.accept_ra_rtr_pref && ndopts.nd_opts_ri) {
 		struct nd_opt_hdr *p;
@@ -1283,7 +1319,7 @@ skip_linkparms:
 				continue;
 			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
 				continue;
-			rt6_route_rcv(skb->dev, (u8*)p, (p->nd_opt_len) << 3,
+			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
 				      &ipv6_hdr(skb)->saddr);
 		}
 	}
@@ -1293,8 +1329,12 @@ skip_routeinfo:
 
 #ifdef CONFIG_IPV6_NDISC_NODETYPE
 	/* skip link-specific ndopts from interior routers */
-	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT)
+	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT) {
+		ND_PRINTK(2, info,
+			  "RA: %s, nodetype is NODEFAULT (interior routes), dev: %s\n",
+			  __func__, skb->dev->name);
 		goto out;
+	}
 #endif
 
 	if (in6_dev->cnf.accept_ra_pinfo && ndopts.nd_opts_pi) {
@@ -1312,7 +1352,7 @@ skip_routeinfo:
 		__be32 n;
 		u32 mtu;
 
-		memcpy(&n, ((u8*)(ndopts.nd_opts_mtu+1))+2, sizeof(mtu));
+		memcpy(&n, ((u8 *)(ndopts.nd_opts_mtu+1))+2, sizeof(mtu));
 		mtu = ntohl(n);
 
 		if (mtu < IPV6_MIN_MTU || mtu > skb->dev->mtu) {
@@ -1724,11 +1764,11 @@ int __init ndisc_init(void)
 	/*
 	 * Initialize the neighbour table
 	 */
-	neigh_table_init(&nd_tbl);
+	neigh_table_init(NEIGH_ND_TABLE, &nd_tbl);
 
 #ifdef CONFIG_SYSCTL
 	err = neigh_sysctl_register(NULL, &nd_tbl.parms,
-				    &ndisc_ifinfo_sysctl_change);
+				    ndisc_ifinfo_sysctl_change);
 	if (err)
 		goto out_unregister_pernet;
 out:
@@ -1757,6 +1797,6 @@ void ndisc_cleanup(void)
 #ifdef CONFIG_SYSCTL
 	neigh_sysctl_unregister(&nd_tbl.parms);
 #endif
-	neigh_table_clear(&nd_tbl);
+	neigh_table_clear(NEIGH_ND_TABLE, &nd_tbl);
 	unregister_pernet_subsys(&ndisc_net_ops);
 }

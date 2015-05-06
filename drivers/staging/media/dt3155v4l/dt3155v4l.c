@@ -262,7 +262,7 @@ dt3155_buf_prepare(struct vb2_buffer *vb)
 	return 0;
 }
 
-static int
+static void
 dt3155_stop_streaming(struct vb2_queue *q)
 {
 	struct dt3155_priv *pd = vb2_get_drv_priv(q);
@@ -276,7 +276,6 @@ dt3155_stop_streaming(struct vb2_queue *q)
 	}
 	spin_unlock_irq(&pd->lock);
 	msleep(45); /* irq hendler will stop the hardware */
-	return 0;
 }
 
 static void
@@ -513,10 +512,9 @@ dt3155_ioc_querycap(struct file *filp, void *p, struct v4l2_capability *cap)
 	strcpy(cap->driver, DT3155_NAME);
 	strcpy(cap->card, DT3155_NAME " frame grabber");
 	sprintf(cap->bus_info, "PCI:%s", pci_name(pd->pdev));
-	cap->version =
-	       KERNEL_VERSION(DT3155_VER_MAJ, DT3155_VER_MIN, DT3155_VER_EXT);
-	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE |
+	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE |
 				DT3155_CAPTURE_METHOD;
+	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -907,8 +905,10 @@ dt3155_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!pd)
 		return -ENOMEM;
 	pd->vdev = video_device_alloc();
-	if (!pd->vdev)
+	if (!pd->vdev) {
+		err = -ENOMEM;
 		goto err_video_device_alloc;
+	}
 	*pd->vdev = dt3155_vdev;
 	pci_set_drvdata(pdev, pd);    /* for use in dt3155_remove() */
 	video_set_drvdata(pd->vdev, pd);  /* for use in video_fops */

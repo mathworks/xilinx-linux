@@ -115,7 +115,7 @@ static struct iio_trigger *iio_trigger_find_by_name(const char *name,
 	return trig;
 }
 
-void iio_trigger_poll(struct iio_trigger *trig, s64 time)
+void iio_trigger_poll(struct iio_trigger *trig)
 {
 	int i;
 
@@ -134,12 +134,12 @@ EXPORT_SYMBOL(iio_trigger_poll);
 
 irqreturn_t iio_trigger_generic_data_rdy_poll(int irq, void *private)
 {
-	iio_trigger_poll(private, iio_get_time_ns());
+	iio_trigger_poll(private);
 	return IRQ_HANDLED;
 }
 EXPORT_SYMBOL(iio_trigger_generic_data_rdy_poll);
 
-void iio_trigger_poll_chained(struct iio_trigger *trig, s64 time)
+void iio_trigger_poll_chained(struct iio_trigger *trig)
 {
 	int i;
 
@@ -162,7 +162,7 @@ void iio_trigger_notify_done(struct iio_trigger *trig)
 		trig->ops->try_reenable)
 		if (trig->ops->try_reenable(trig))
 			/* Missed an interrupt so launch new poll now */
-			iio_trigger_poll(trig, 0);
+			iio_trigger_poll(trig);
 }
 EXPORT_SYMBOL(iio_trigger_notify_done);
 
@@ -582,48 +582,3 @@ int iio_triggered_buffer_predisable(struct iio_dev *indio_dev)
 					     indio_dev->pollfunc);
 }
 EXPORT_SYMBOL(iio_triggered_buffer_predisable);
-
-int iio_simple_trigger_handler(int irq, void *devid)
-{
-	struct iio_poll_func *pf = devid;
-	struct iio_dev *indio_dev = pf->indio_dev;
-	struct iio_buffer *buffer = indio_dev->buffer;
-	const struct iio_chan_spec *ch;
-	unsigned int val;
-	u8 sample[100];
-	u8 *p = sample;
-	int ret;
-	int i;
-
-	ret = iio_buffer_remove_sample(buffer, sample);
-	if (ret < 0)
-		return IRQ_HANDLED;
-
-	for_each_set_bit(i,
-		indio_dev->active_scan_mask,
-		indio_dev->masklength) {
-		ch = iio_find_channel_from_si(indio_dev, i);
-
-		p = PTR_ALIGN(p, ch->scan_type.storagebits / 8);
-
-		switch (ch->scan_type.storagebits) {
-		case 32:
-			val = *((u32 *)p);
-			break;
-		case 16:
-			val = *((u16 *)p);
-			break;
-		case 8:
-			val = *((u8 *)p);
-			break;
-		default:
-			dev_err(&indio_dev->dev, "Unsupported storage size\n");
-			return IRQ_HANDLED;
-		}
-		indio_dev->info->write_raw(indio_dev, ch, val, 0, 0);
-
-		p += ch->scan_type.storagebits / 8;
-	}
-
-	return IRQ_HANDLED;
-}

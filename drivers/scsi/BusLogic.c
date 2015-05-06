@@ -2327,12 +2327,12 @@ static int blogic_slaveconfig(struct scsi_device *dev)
 		if (qdepth == 0)
 			qdepth = BLOGIC_MAX_AUTO_TAG_DEPTH;
 		adapter->qdepth[tgt_id] = qdepth;
-		scsi_adjust_queue_depth(dev, MSG_SIMPLE_TAG, qdepth);
+		scsi_change_queue_depth(dev, qdepth);
 	} else {
 		adapter->tagq_ok &= ~(1 << tgt_id);
 		qdepth = adapter->untag_qdepth;
 		adapter->qdepth[tgt_id] = qdepth;
-		scsi_adjust_queue_depth(dev, 0, qdepth);
+		scsi_change_queue_depth(dev, qdepth);
 	}
 	qdepth = 0;
 	for (tgt_id = 0; tgt_id < adapter->maxdev; tgt_id++)
@@ -3893,7 +3893,7 @@ __setup("BusLogic=", blogic_setup);
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ }
 };*/
-static DEFINE_PCI_DEVICE_TABLE(blogic_pci_tbl) = {
+static const struct pci_device_id blogic_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER)},
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER_NC)},
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_FLASHPOINT)},

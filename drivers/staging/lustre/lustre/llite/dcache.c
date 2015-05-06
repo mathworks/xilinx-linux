@@ -40,10 +40,10 @@
 
 #define DEBUG_SUBSYSTEM S_LLITE
 
-#include <obd_support.h>
-#include <lustre_lite.h>
-#include <lustre/lustre_idl.h>
-#include <lustre_dlm.h>
+#include "../include/obd_support.h"
+#include "../include/lustre_lite.h"
+#include "../include/lustre/lustre_idl.h"
+#include "../include/lustre_dlm.h"
 
 #include "llite_internal.h"
 
@@ -69,8 +69,7 @@ static void ll_release(struct dentry *de)
 		ll_intent_release(lld->lld_it);
 		OBD_FREE(lld->lld_it, sizeof(*lld->lld_it));
 	}
-	LASSERT(lld->lld_cwd_count == 0);
-	LASSERT(lld->lld_mnt_count == 0);
+
 	de->d_fsdata = NULL;
 	call_rcu(&lld->lld_rcu_head, free_dentry_data);
 }
@@ -82,8 +81,9 @@ static void ll_release(struct dentry *de)
  * an AST before calling d_revalidate_it().  The dentry still exists (marked
  * INVALID) so d_lookup() matches it, but we have no lock on it (so
  * lock_match() fails) and we spin around real_lookup(). */
-int ll_dcompare(const struct dentry *parent, const struct dentry *dentry,
-		unsigned int len, const char *str, const struct qstr *name)
+static int ll_dcompare(const struct dentry *parent, const struct dentry *dentry,
+		       unsigned int len, const char *str,
+		       const struct qstr *name)
 {
 	if (len != name->len)
 		return 1;
@@ -151,10 +151,10 @@ static int ll_ddelete(const struct dentry *de)
 {
 	LASSERT(de);
 
-	CDEBUG(D_DENTRY, "%s dentry %.*s (%p, parent %p, inode %p) %s%s\n",
+	CDEBUG(D_DENTRY, "%s dentry %pd (%p, parent %p, inode %p) %s%s\n",
 	       d_lustre_invalid((struct dentry *)de) ? "deleting" : "keeping",
-	       de->d_name.len, de->d_name.name, de, de->d_parent, de->d_inode,
-	       d_unhashed((struct dentry *)de) ? "" : "hashed,",
+	       de, de, de->d_parent, de->d_inode,
+	       d_unhashed(de) ? "" : "hashed,",
 	       list_empty(&de->d_subdirs) ? "" : "subdirs");
 
 	/* kernel >= 2.6.38 last refcount is decreased after this function. */
@@ -180,15 +180,15 @@ int ll_d_init(struct dentry *de)
 {
 	LASSERT(de != NULL);
 
-	CDEBUG(D_DENTRY, "ldd on dentry %.*s (%p) parent %p inode %p refc %d\n",
-		de->d_name.len, de->d_name.name, de, de->d_parent, de->d_inode,
+	CDEBUG(D_DENTRY, "ldd on dentry %pd (%p) parent %p inode %p refc %d\n",
+		de, de, de->d_parent, de->d_inode,
 		d_count(de));
 
 	if (de->d_fsdata == NULL) {
 		struct ll_dentry_data *lld;
 
-		OBD_ALLOC_PTR(lld);
-		if (likely(lld != NULL)) {
+		lld = kzalloc(sizeof(*lld), GFP_NOFS);
+		if (likely(lld)) {
 			spin_lock(&de->d_lock);
 			if (likely(de->d_fsdata == NULL)) {
 				de->d_fsdata = lld;
@@ -213,8 +213,8 @@ void ll_intent_drop_lock(struct lookup_intent *it)
 
 		handle.cookie = it->d.lustre.it_lock_handle;
 
-		CDEBUG(D_DLMTRACE, "releasing lock with cookie "LPX64
-		       " from it %p\n", handle.cookie, it);
+		CDEBUG(D_DLMTRACE, "releasing lock with cookie %#llx from it %p\n",
+		       handle.cookie, it);
 		ldlm_lock_decref(&handle, it->d.lustre.it_lock_mode);
 
 		/* bug 494: intent_release may be called multiple times, from
@@ -223,8 +223,8 @@ void ll_intent_drop_lock(struct lookup_intent *it)
 		if (it->d.lustre.it_remote_lock_mode != 0) {
 			handle.cookie = it->d.lustre.it_remote_lock_handle;
 
-			CDEBUG(D_DLMTRACE, "releasing remote lock with cookie"
-			       LPX64" from it %p\n", handle.cookie, it);
+			CDEBUG(D_DLMTRACE, "releasing remote lock with cookie%#llx from it %p\n",
+			       handle.cookie, it);
 			ldlm_lock_decref(&handle,
 					 it->d.lustre.it_remote_lock_mode);
 			it->d.lustre.it_remote_lock_mode = 0;
@@ -238,7 +238,8 @@ void ll_intent_release(struct lookup_intent *it)
 	ll_intent_drop_lock(it);
 	/* We are still holding extra reference on a request, need to free it */
 	if (it_disposition(it, DISP_ENQ_OPEN_REF))
-		 ptlrpc_req_finished(it->d.lustre.it_data); /* ll_file_open */
+		ptlrpc_req_finished(it->d.lustre.it_data); /* ll_file_open */
+
 	if (it_disposition(it, DISP_ENQ_CREATE_REF)) /* create rec */
 		ptlrpc_req_finished(it->d.lustre.it_data);
 
@@ -257,10 +258,9 @@ void ll_invalidate_aliases(struct inode *inode)
 	       inode->i_ino, inode->i_generation, inode);
 
 	ll_lock_dcache(inode);
-	ll_d_hlist_for_each_entry(dentry, p, &inode->i_dentry, d_alias) {
-		CDEBUG(D_DENTRY, "dentry in drop %.*s (%p) parent %p "
-		       "inode %p flags %d\n", dentry->d_name.len,
-		       dentry->d_name.name, dentry, dentry->d_parent,
+	ll_d_hlist_for_each_entry(dentry, p, &inode->i_dentry, d_u.d_alias) {
+		CDEBUG(D_DENTRY, "dentry in drop %pd (%p) parent %p inode %p flags %d\n",
+		       dentry, dentry, dentry->d_parent,
 		       dentry->d_inode, dentry->d_flags);
 
 		if (unlikely(dentry == dentry->d_sb->s_root)) {
@@ -316,15 +316,6 @@ void ll_lookup_finish_locks(struct lookup_intent *it, struct dentry *dentry)
 	}
 }
 
-void ll_frob_intent(struct lookup_intent **itp, struct lookup_intent *deft)
-{
-	struct lookup_intent *it = *itp;
-
-	if (!it || it->it_op == IT_GETXATTR)
-		it = *itp = deft;
-
-}
-
 static int ll_revalidate_dentry(struct dentry *dentry,
 				unsigned int lookup_flags)
 {
@@ -356,19 +347,19 @@ static int ll_revalidate_dentry(struct dentry *dentry,
 /*
  * Always trust cached dentries. Update statahead window if necessary.
  */
-int ll_revalidate_nd(struct dentry *dentry, unsigned int flags)
+static int ll_revalidate_nd(struct dentry *dentry, unsigned int flags)
 {
 	int rc;
 
-	CDEBUG(D_VFSTRACE, "VFS Op:name=%s, flags=%u\n",
-	       dentry->d_name.name, flags);
+	CDEBUG(D_VFSTRACE, "VFS Op:name=%pd, flags=%u\n",
+	       dentry, flags);
 
 	rc = ll_revalidate_dentry(dentry, flags);
 	return rc;
 }
 
 
-void ll_d_iput(struct dentry *de, struct inode *inode)
+static void ll_d_iput(struct dentry *de, struct inode *inode)
 {
 	LASSERT(inode);
 	if (!find_cbdata(inode))
@@ -376,7 +367,7 @@ void ll_d_iput(struct dentry *de, struct inode *inode)
 	iput(inode);
 }
 
-struct dentry_operations ll_d_ops = {
+const struct dentry_operations ll_d_ops = {
 	.d_revalidate = ll_revalidate_nd,
 	.d_release = ll_release,
 	.d_delete  = ll_ddelete,

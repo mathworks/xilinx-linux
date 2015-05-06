@@ -5,8 +5,8 @@
  *    Jan Glauber <jang@linux.vnet.ibm.com>
  */
 
-#define COMPONENT "zPCI"
-#define pr_fmt(fmt) COMPONENT ": " fmt
+#define KMSG_COMPONENT "zpci"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/seq_file.h>
@@ -158,10 +158,7 @@ int __init zpci_debug_init(void)
 
 void zpci_debug_exit(void)
 {
-	if (pci_debug_msg_id)
-		debug_unregister(pci_debug_msg_id);
-	if (pci_debug_err_id)
-		debug_unregister(pci_debug_err_id);
-
+	debug_unregister(pci_debug_msg_id);
+	debug_unregister(pci_debug_err_id);
 	debugfs_remove(debugfs_root);
 }

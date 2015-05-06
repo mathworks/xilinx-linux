@@ -65,7 +65,7 @@ int sync_filesystem(struct super_block *sb)
 		return ret;
 	return __sync_filesystem(sb, 1);
 }
-EXPORT_SYMBOL_GPL(sync_filesystem);
+EXPORT_SYMBOL(sync_filesystem);
 
 static void sync_inodes_one_sb(struct super_block *sb, void *arg)
 {
@@ -154,7 +154,7 @@ SYSCALL_DEFINE1(syncfs, int, fd)
 
 	if (!f.file)
 		return -EBADF;
-	sb = f.file->f_dentry->d_sb;
+	sb = f.file->f_path.dentry->d_sb;
 
 	down_read(&sb->s_umount);
 	ret = sync_filesystem(sb);

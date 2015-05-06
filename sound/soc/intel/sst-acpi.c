@@ -246,7 +246,8 @@ static struct sst_acpi_desc sst_acpi_broadwell_desc = {
 };
 
 static struct sst_acpi_mach baytrail_machines[] = {
-	{ "10EC5640", "byt-rt5640", "intel/fw_sst_0f28.bin-i2s_master" },
+	{ "10EC5640", "byt-rt5640", "intel/fw_sst_0f28.bin-48kHz_i2s_master" },
+	{ "193C9890", "byt-max98090", "intel/fw_sst_0f28.bin-48kHz_i2s_master" },
 	{}
 };
 
@@ -274,7 +275,6 @@ static struct platform_driver sst_acpi_driver = {
 	.remove = sst_acpi_remove,
 	.driver = {
 		.name = "sst-acpi",
-		.owner = THIS_MODULE,
 		.acpi_match_table = ACPI_PTR(sst_acpi_match),
 	},
 };

@@ -27,6 +27,7 @@ struct nfc_hci_dev;
 struct nfc_hci_ops {
 	int (*open) (struct nfc_hci_dev *hdev);
 	void (*close) (struct nfc_hci_dev *hdev);
+	int (*load_session) (struct nfc_hci_dev *hdev);
 	int (*hci_ready) (struct nfc_hci_dev *hdev);
 	/*
 	 * xmit must always send the complete buffer before
@@ -36,6 +37,7 @@ struct nfc_hci_ops {
 	int (*xmit) (struct nfc_hci_dev *hdev, struct sk_buff *skb);
 	int (*start_poll) (struct nfc_hci_dev *hdev,
 			   u32 im_protocols, u32 tm_protocols);
+	void (*stop_poll) (struct nfc_hci_dev *hdev);
 	int (*dep_link_up)(struct nfc_hci_dev *hdev, struct nfc_target *target,
 			   u8 comm_mode, u8 *gb, size_t gb_len);
 	int (*dep_link_down)(struct nfc_hci_dev *hdev);
@@ -55,10 +57,14 @@ struct nfc_hci_ops {
 	int (*discover_se)(struct nfc_hci_dev *dev);
 	int (*enable_se)(struct nfc_hci_dev *dev, u32 se_idx);
 	int (*disable_se)(struct nfc_hci_dev *dev, u32 se_idx);
+	int (*se_io)(struct nfc_hci_dev *dev, u32 se_idx,
+		      u8 *apdu, size_t apdu_length,
+		      se_io_cb_t cb, void *cb_context);
 };
 
 /* Pipes */
 #define NFC_HCI_INVALID_PIPE	0x80
+#define NFC_HCI_DO_NOT_CREATE_PIPE	0x81
 #define NFC_HCI_LINK_MGMT_PIPE	0x00
 #define NFC_HCI_ADMIN_PIPE	0x01
 

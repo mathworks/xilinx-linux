@@ -8,6 +8,7 @@
 #include <linux/threads.h>
 #include <linux/nsproxy.h>
 #include <linux/kref.h>
+#include <linux/ns_common.h>
 
 struct pidmap {
        atomic_t nr_free;
@@ -33,6 +34,7 @@ struct pid_namespace {
 #ifdef CONFIG_PROC_FS
 	struct vfsmount *proc_mnt;
 	struct dentry *proc_self;
+	struct dentry *proc_thread_self;
 #endif
 #ifdef CONFIG_BSD_PROCESS_ACCT
 	struct bsd_acct_struct *bacct;
@@ -42,7 +44,7 @@ struct pid_namespace {
 	kgid_t pid_gid;
 	int hide_pid;
 	int reboot;	/* group exit code if this pidns was rebooted */
-	unsigned int proc_inum;
+	struct ns_common ns;
 };
 
 extern struct pid_namespace init_pid_ns;

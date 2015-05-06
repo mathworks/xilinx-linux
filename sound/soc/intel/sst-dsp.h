@@ -30,6 +30,9 @@
 #define SST_DMA_TYPE_DW		1
 #define SST_DMA_TYPE_MID	2
 
+/* autosuspend delay 5s*/
+#define SST_RUNTIME_SUSPEND_DELAY	(5 * 1000)
+
 /* SST Shim register map
  * The register naming can differ between products. Some products also
  * contain extra functionality.
@@ -52,7 +55,11 @@
 #define SST_CLKCTL		0x78
 #define SST_CSR2		0x80
 #define SST_LTRC		0xE0
-#define SST_HDMC		0xE8
+#define SST_HMDC		0xE8
+
+#define SST_SHIM_BEGIN		SST_CSR
+#define SST_SHIM_END		SST_HDMC
+
 #define SST_DBGO		0xF0
 
 #define SST_SHIM_SIZE		0x100
@@ -73,6 +80,8 @@
 #define SST_CSR_S0IOCS		(0x1 << 21)
 #define SST_CSR_S1IOCS		(0x1 << 23)
 #define SST_CSR_LPCS		(0x1 << 31)
+#define SST_CSR_24MHZ_LPCS	(SST_CSR_SBCS0 | SST_CSR_SBCS1 | SST_CSR_LPCS)
+#define SST_CSR_24MHZ_NO_LPCS	(SST_CSR_SBCS0 | SST_CSR_SBCS1)
 #define SST_BYT_CSR_RST		(0x1 << 0)
 #define SST_BYT_CSR_VECTOR_SEL	(0x1 << 1)
 #define SST_BYT_CSR_STALL	(0x1 << 2)
@@ -91,6 +100,14 @@
 #define SST_IMRX_BUSY		(0x1 << 1)
 #define SST_IMRX_DONE		(0x1 << 0)
 #define SST_BYT_IMRX_REQUEST	(0x1 << 1)
+
+/* IMRD / IMD */
+#define SST_IMRD_DONE		(0x1 << 0)
+#define SST_IMRD_BUSY		(0x1 << 1)
+#define SST_IMRD_SSP0		(0x1 << 16)
+#define SST_IMRD_DMAC0		(0x1 << 21)
+#define SST_IMRD_DMAC1		(0x1 << 22)
+#define SST_IMRD_DMAC		(SST_IMRD_DMAC0 | SST_IMRD_DMAC1)
 
 /*  IPCX / IPCC */
 #define	SST_IPCX_DONE		(0x1 << 30)
@@ -118,9 +135,21 @@
 /* LTRC */
 #define SST_LTRC_VAL(x)		(x << 0)
 
-/* HDMC */
-#define SST_HDMC_HDDA0(x)	(x << 0)
-#define SST_HDMC_HDDA1(x)	(x << 7)
+/* HMDC */
+#define SST_HMDC_HDDA0(x)	(x << 0)
+#define SST_HMDC_HDDA1(x)	(x << 7)
+#define SST_HMDC_HDDA_E0_CH0	1
+#define SST_HMDC_HDDA_E0_CH1	2
+#define SST_HMDC_HDDA_E0_CH2	4
+#define SST_HMDC_HDDA_E0_CH3	8
+#define SST_HMDC_HDDA_E1_CH0	SST_HMDC_HDDA1(SST_HMDC_HDDA_E0_CH0)
+#define SST_HMDC_HDDA_E1_CH1	SST_HMDC_HDDA1(SST_HMDC_HDDA_E0_CH1)
+#define SST_HMDC_HDDA_E1_CH2	SST_HMDC_HDDA1(SST_HMDC_HDDA_E0_CH2)
+#define SST_HMDC_HDDA_E1_CH3	SST_HMDC_HDDA1(SST_HMDC_HDDA_E0_CH3)
+#define SST_HMDC_HDDA_E0_ALLCH	(SST_HMDC_HDDA_E0_CH0 | SST_HMDC_HDDA_E0_CH1 | \
+				 SST_HMDC_HDDA_E0_CH2 | SST_HMDC_HDDA_E0_CH3)
+#define SST_HMDC_HDDA_E1_ALLCH	(SST_HMDC_HDDA_E1_CH0 | SST_HMDC_HDDA_E1_CH1 | \
+				 SST_HMDC_HDDA_E1_CH2 | SST_HMDC_HDDA_E1_CH3)
 
 
 /* SST Vendor Defined Registers and bits */
@@ -130,10 +159,21 @@
 #define SST_VDRTCTL3		0xaC
 
 /* VDRTCTL0 */
-#define SST_VDRTCL0_DSRAMPGE_SHIFT	16
-#define SST_VDRTCL0_DSRAMPGE_MASK	(0xffff << SST_VDRTCL0_DSRAMPGE_SHIFT)
-#define SST_VDRTCL0_ISRAMPGE_SHIFT	6
+#define SST_VDRTCL0_D3PGD		(1 << 0)
+#define SST_VDRTCL0_D3SRAMPGD		(1 << 1)
+#define SST_VDRTCL0_DSRAMPGE_SHIFT	12
+#define SST_VDRTCL0_DSRAMPGE_MASK	(0xfffff << SST_VDRTCL0_DSRAMPGE_SHIFT)
+#define SST_VDRTCL0_ISRAMPGE_SHIFT	2
 #define SST_VDRTCL0_ISRAMPGE_MASK	(0x3ff << SST_VDRTCL0_ISRAMPGE_SHIFT)
+
+/* VDRTCTL2 */
+#define SST_VDRTCL2_DCLCGE		(1 << 1)
+#define SST_VDRTCL2_DTCGE		(1 << 10)
+#define SST_VDRTCL2_APLLSE_MASK		(1 << 31)
+
+/* PMCS */
+#define SST_PMCS		0x84
+#define SST_PMCS_PS_MASK	0x3
 
 struct sst_dsp;
 
@@ -214,6 +254,17 @@ void sst_memcpy_fromio_32(struct sst_dsp *sst,
 /* DSP reset & boot */
 void sst_dsp_reset(struct sst_dsp *sst);
 int sst_dsp_boot(struct sst_dsp *sst);
+int sst_dsp_wake(struct sst_dsp *sst);
+void sst_dsp_sleep(struct sst_dsp *sst);
+void sst_dsp_stall(struct sst_dsp *sst);
+
+/* DMA */
+int sst_dsp_dma_get_channel(struct sst_dsp *dsp, int chan_id);
+void sst_dsp_dma_put_channel(struct sst_dsp *dsp);
+int sst_dsp_dma_copyfrom(struct sst_dsp *sst, dma_addr_t dest_addr,
+	dma_addr_t src_addr, size_t size);
+int sst_dsp_dma_copyto(struct sst_dsp *sst, dma_addr_t dest_addr,
+	dma_addr_t src_addr, size_t size);
 
 /* Msg IO */
 void sst_dsp_ipc_msg_tx(struct sst_dsp *dsp, u32 msg);

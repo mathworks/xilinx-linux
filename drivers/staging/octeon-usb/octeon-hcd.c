@@ -47,6 +47,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
+#include <linux/prefetch.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/usb.h>
@@ -169,27 +170,6 @@ struct cvmx_usb_port_status {
 };
 
 /**
- * union cvmx_usb_control_header - the structure of a Control packet header
- *
- * @s.request_type:	Bit 7 tells the direction: 1=IN, 0=OUT
- * @s.request		The standard usb request to make
- * @s.value		Value parameter for the request in little endian format
- * @s.index		Index for the request in little endian format
- * @s.length		Length of the data associated with this request in
- *			little endian format
- */
-union cvmx_usb_control_header {
-	uint64_t u64;
-	struct {
-		uint64_t request_type   : 8;
-		uint64_t request        : 8;
-		uint64_t value          : 16;
-		uint64_t index          : 16;
-		uint64_t length         : 16;
-	} s;
-};
-
-/**
  * struct cvmx_usb_iso_packet - descriptor for Isochronous packets
  *
  * @offset:	This is the offset in bytes into the main buffer where this data
@@ -244,9 +224,6 @@ enum cvmx_usb_pipe_flags {
 	__CVMX_USB_PIPE_FLAGS_SCHEDULED	= 1 << 17,
 	__CVMX_USB_PIPE_FLAGS_NEED_PING	= 1 << 18,
 };
-
-/* Normal prefetch that use the pref instruction. */
-#define CVMX_PREFETCH(address, offset) asm volatile ("pref %[type], %[off](%[rbase])" : : [rbase] "d" (address), [off] "I" (offset), [type] "n" (0))
 
 /* Maximum number of times to retry failed transactions */
 #define MAX_RETRIES		3
@@ -424,8 +401,6 @@ struct cvmx_usb_state {
 struct octeon_hcd {
 	spinlock_t lock;
 	struct cvmx_usb_state usb;
-	struct tasklet_struct dequeue_tasklet;
-	struct list_head dequeue_list;
 };
 
 /* This macro spins on a field waiting for it to reach a value */
@@ -462,7 +437,8 @@ struct octeon_hcd {
 	} while (0)
 
 /* Returns the IO address to push/pop stuff data from the FIFOs */
-#define USB_FIFO_ADDRESS(channel, usb_index) (CVMX_USBCX_GOTGCTL(usb_index) + ((channel)+1)*0x1000)
+#define USB_FIFO_ADDRESS(channel, usb_index) \
+	(CVMX_USBCX_GOTGCTL(usb_index) + ((channel)+1)*0x1000)
 
 /**
  * struct octeon_temp_buffer - a bounce buffer for USB transfers
@@ -479,6 +455,16 @@ struct octeon_temp_buffer {
 	void *orig_buffer;
 	u8 data[0];
 };
+
+static inline struct octeon_hcd *cvmx_usb_to_octeon(struct cvmx_usb_state *p)
+{
+	return container_of(p, struct octeon_hcd, usb);
+}
+
+static inline struct usb_hcd *octeon_to_hcd(struct octeon_hcd *p)
+{
+	return container_of((void *)p, struct usb_hcd, hcd_priv);
+}
 
 /**
  * octeon_alloc_temp_buffer - allocate a temporary buffer for USB transfer
@@ -664,8 +650,7 @@ static inline int __cvmx_usb_get_data_pid(struct cvmx_usb_pipe *pipe)
 {
 	if (pipe->pid_toggle)
 		return 2; /* Data1 */
-	else
-		return 0; /* Data0 */
+	return 0; /* Data0 */
 }
 
 /**
@@ -768,7 +753,7 @@ static int cvmx_usb_initialize(struct cvmx_usb_state *usb,
 	 *     such that USB is as close as possible to 125Mhz
 	 */
 	{
-		int divisor = (octeon_get_clock_rate()+125000000-1)/125000000;
+		int divisor = DIV_ROUND_UP(octeon_get_clock_rate(), 125000000);
 		/* Lower than 4 doesn't seem to work properly */
 		if (divisor < 4)
 			divisor = 4;
@@ -892,6 +877,7 @@ static int cvmx_usb_initialize(struct cvmx_usb_state *usb,
 	 */
 	{
 		union cvmx_usbcx_gusbcfg usbcx_gusbcfg;
+
 		usbcx_gusbcfg.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_GUSBCFG(usb->index));
 		usbcx_gusbcfg.s.toutcal = 0;
@@ -949,6 +935,7 @@ static int cvmx_usb_initialize(struct cvmx_usb_state *usb,
 		 */
 		{
 			union cvmx_usbcx_hcfg usbcx_hcfg;
+
 			usbcx_hcfg.u32 = __cvmx_usb_read_csr32(usb,
 					CVMX_USBCX_HCFG(usb->index));
 			usbcx_hcfg.s.fslssupp = 0;
@@ -1076,6 +1063,7 @@ static int cvmx_usb_enable(struct cvmx_usb_state *usb)
 	 */
 	{
 		union cvmx_usbcx_gnptxfsiz siz;
+
 		siz.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_GNPTXFSIZ(usb->index));
 		siz.s.nptxfdep = usbcx_ghwcfg3.s.dfifodepth / 2;
@@ -1090,6 +1078,7 @@ static int cvmx_usb_enable(struct cvmx_usb_state *usb)
 	 */
 	{
 		union cvmx_usbcx_hptxfsiz siz;
+
 		siz.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_HPTXFSIZ(usb->index));
 		siz.s.ptxfsize = usbcx_ghwcfg3.s.dfifodepth / 4;
@@ -1219,8 +1208,8 @@ static struct cvmx_usb_port_status cvmx_usb_get_status(
  * Returns: A non-NULL value is a pipe. NULL means an error.
  */
 static struct cvmx_usb_pipe *cvmx_usb_open_pipe(struct cvmx_usb_state *usb,
-						int device_addr, int
-						endpoint_num,
+						int device_addr,
+						int endpoint_num,
 						enum cvmx_usb_speed
 							device_speed,
 						int max_packet,
@@ -1286,7 +1275,8 @@ static struct cvmx_usb_pipe *cvmx_usb_open_pipe(struct cvmx_usb_state *usb,
 	if (__cvmx_usb_pipe_needs_split(usb, pipe)) {
 		pipe->interval = interval*8;
 		/* Force start splits to be schedule on uFrame 0 */
-		pipe->next_tx_frame = ((usb->frame_number+7)&~7) + pipe->interval;
+		pipe->next_tx_frame = ((usb->frame_number+7)&~7) +
+					pipe->interval;
 	} else {
 		pipe->interval = interval;
 		pipe->next_tx_frame = usb->frame_number + pipe->interval;
@@ -1337,18 +1327,21 @@ static void __cvmx_usb_poll_rx_fifo(struct cvmx_usb_state *usb)
 		return;
 
 	/* Get where the DMA engine would have written this data */
-	address = __cvmx_usb_read_csr64(usb, CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8);
+	address = __cvmx_usb_read_csr64(usb,
+			CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8);
+
 	ptr = cvmx_phys_to_ptr(address);
-	__cvmx_usb_write_csr64(usb, CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8, address + bytes);
+	__cvmx_usb_write_csr64(usb,
+			       CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8,
+			       address + bytes);
 
 	/* Loop writing the FIFO data for this packet into memory */
 	while (bytes > 0) {
-		*ptr++ = __cvmx_usb_read_csr32(usb, USB_FIFO_ADDRESS(channel, usb->index));
+		*ptr++ = __cvmx_usb_read_csr32(usb,
+				USB_FIFO_ADDRESS(channel, usb->index));
 		bytes -= 4;
 	}
 	CVMX_SYNCW;
-
-	return;
 }
 
 
@@ -1423,6 +1416,7 @@ static void __cvmx_usb_poll_tx_fifo(struct cvmx_usb_state *usb)
 {
 	if (usb->periodic.head != usb->periodic.tail) {
 		union cvmx_usbcx_hptxsts tx_status;
+
 		tx_status.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_HPTXSTS(usb->index));
 		if (__cvmx_usb_fill_tx_hw(usb, &usb->periodic,
@@ -1438,6 +1432,7 @@ static void __cvmx_usb_poll_tx_fifo(struct cvmx_usb_state *usb)
 
 	if (usb->nonperiodic.head != usb->nonperiodic.tail) {
 		union cvmx_usbcx_gnptxsts tx_status;
+
 		tx_status.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_GNPTXSTS(usb->index));
 		if (__cvmx_usb_fill_tx_hw(usb, &usb->nonperiodic,
@@ -1450,8 +1445,6 @@ static void __cvmx_usb_poll_tx_fifo(struct cvmx_usb_state *usb)
 					union cvmx_usbcx_gintmsk,
 					nptxfempmsk, 0);
 	}
-
-	return;
 }
 
 
@@ -1496,15 +1489,14 @@ static void __cvmx_usb_fill_tx_fifo(struct cvmx_usb_state *usb, int channel)
 		fifo = &usb->nonperiodic;
 
 	fifo->entry[fifo->head].channel = channel;
-	fifo->entry[fifo->head].address = __cvmx_usb_read_csr64(usb, CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8);
+	fifo->entry[fifo->head].address = __cvmx_usb_read_csr64(usb,
+			CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8);
 	fifo->entry[fifo->head].size = (usbc_hctsiz.s.xfersize+3)>>2;
 	fifo->head++;
 	if (fifo->head > MAX_CHANNELS)
 		fifo->head = 0;
 
 	__cvmx_usb_poll_tx_fifo(usb);
-
-	return;
 }
 
 /**
@@ -1520,10 +1512,13 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 					     int channel,
 					     struct cvmx_usb_pipe *pipe)
 {
+	struct octeon_hcd *priv = cvmx_usb_to_octeon(usb);
+	struct usb_hcd *hcd = octeon_to_hcd(priv);
+	struct device *dev = hcd->self.controller;
 	struct cvmx_usb_transaction *transaction =
 		list_first_entry(&pipe->transactions, typeof(*transaction),
 				 node);
-	union cvmx_usb_control_header *header =
+	struct usb_ctrlrequest *header =
 		cvmx_phys_to_ptr(transaction->control_header);
 	int bytes_to_transfer = transaction->buffer_length -
 		transaction->actual_bytes;
@@ -1536,47 +1531,55 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 	switch (transaction->stage) {
 	case CVMX_USB_STAGE_NON_CONTROL:
 	case CVMX_USB_STAGE_NON_CONTROL_SPLIT_COMPLETE:
-		cvmx_dprintf("%s: ERROR - Non control stage\n", __FUNCTION__);
+		dev_err(dev, "%s: ERROR - Non control stage\n", __func__);
 		break;
 	case CVMX_USB_STAGE_SETUP:
 		usbc_hctsiz.s.pid = 3; /* Setup */
 		bytes_to_transfer = sizeof(*header);
 		/* All Control operations start with a setup going OUT */
-		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index), union cvmx_usbcx_hccharx, epdir, CVMX_USB_DIRECTION_OUT);
+		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
+				union cvmx_usbcx_hccharx, epdir,
+				CVMX_USB_DIRECTION_OUT);
 		/*
 		 * Setup send the control header instead of the buffer data. The
 		 * buffer data will be used in the next stage
 		 */
-		__cvmx_usb_write_csr64(usb, CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8, transaction->control_header);
+		__cvmx_usb_write_csr64(usb,
+			CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8,
+			transaction->control_header);
 		break;
 	case CVMX_USB_STAGE_SETUP_SPLIT_COMPLETE:
 		usbc_hctsiz.s.pid = 3; /* Setup */
 		bytes_to_transfer = 0;
 		/* All Control operations start with a setup going OUT */
-		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index), union cvmx_usbcx_hccharx, epdir, CVMX_USB_DIRECTION_OUT);
-		USB_SET_FIELD32(CVMX_USBCX_HCSPLTX(channel, usb->index), union cvmx_usbcx_hcspltx, compsplt, 1);
+		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
+				union cvmx_usbcx_hccharx, epdir,
+				CVMX_USB_DIRECTION_OUT);
+
+		USB_SET_FIELD32(CVMX_USBCX_HCSPLTX(channel, usb->index),
+				union cvmx_usbcx_hcspltx, compsplt, 1);
 		break;
 	case CVMX_USB_STAGE_DATA:
 		usbc_hctsiz.s.pid = __cvmx_usb_get_data_pid(pipe);
 		if (__cvmx_usb_pipe_needs_split(usb, pipe)) {
-			if (header->s.request_type & 0x80)
+			if (header->bRequestType & USB_DIR_IN)
 				bytes_to_transfer = 0;
 			else if (bytes_to_transfer > pipe->max_packet)
 				bytes_to_transfer = pipe->max_packet;
 		}
 		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
 				union cvmx_usbcx_hccharx, epdir,
-				((header->s.request_type & 0x80) ?
+				((header->bRequestType & USB_DIR_IN) ?
 					CVMX_USB_DIRECTION_IN :
 					CVMX_USB_DIRECTION_OUT));
 		break;
 	case CVMX_USB_STAGE_DATA_SPLIT_COMPLETE:
 		usbc_hctsiz.s.pid = __cvmx_usb_get_data_pid(pipe);
-		if (!(header->s.request_type & 0x80))
+		if (!(header->bRequestType & USB_DIR_IN))
 			bytes_to_transfer = 0;
 		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
 				union cvmx_usbcx_hccharx, epdir,
-				((header->s.request_type & 0x80) ?
+				((header->bRequestType & USB_DIR_IN) ?
 					CVMX_USB_DIRECTION_IN :
 					CVMX_USB_DIRECTION_OUT));
 		USB_SET_FIELD32(CVMX_USBCX_HCSPLTX(channel, usb->index),
@@ -1587,7 +1590,7 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 		bytes_to_transfer = 0;
 		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
 				union cvmx_usbcx_hccharx, epdir,
-				((header->s.request_type & 0x80) ?
+				((header->bRequestType & USB_DIR_IN) ?
 					CVMX_USB_DIRECTION_OUT :
 					CVMX_USB_DIRECTION_IN));
 		break;
@@ -1596,7 +1599,7 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 		bytes_to_transfer = 0;
 		USB_SET_FIELD32(CVMX_USBCX_HCCHARX(channel, usb->index),
 				union cvmx_usbcx_hccharx, epdir,
-				((header->s.request_type & 0x80) ?
+				((header->bRequestType & USB_DIR_IN) ?
 					CVMX_USB_DIRECTION_OUT :
 					CVMX_USB_DIRECTION_IN));
 		USB_SET_FIELD32(CVMX_USBCX_HCSPLTX(channel, usb->index),
@@ -1618,8 +1621,8 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 	 * Calculate the number of packets to transfer. If the length is zero
 	 * we still need to transfer one packet
 	 */
-	packets_to_transfer = (bytes_to_transfer + pipe->max_packet - 1) /
-		pipe->max_packet;
+	packets_to_transfer = DIV_ROUND_UP(bytes_to_transfer,
+					   pipe->max_packet);
 	if (packets_to_transfer == 0)
 		packets_to_transfer = 1;
 	else if ((packets_to_transfer > 1) &&
@@ -1645,7 +1648,6 @@ static void __cvmx_usb_start_channel_control(struct cvmx_usb_state *usb,
 
 	__cvmx_usb_write_csr32(usb, CVMX_USBCX_HCTSIZX(channel, usb->index),
 			       usbc_hctsiz.u32);
-	return;
 }
 
 
@@ -1684,6 +1686,7 @@ static void __cvmx_usb_start_channel(struct cvmx_usb_state *usb,
 		/* Clear all channel status bits */
 		usbc_hcint.u32 = __cvmx_usb_read_csr32(usb,
 				CVMX_USBCX_HCINTX(channel, usb->index));
+
 		__cvmx_usb_write_csr32(usb,
 				       CVMX_USBCX_HCINTX(channel, usb->index),
 				       usbc_hcint.u32);
@@ -1711,21 +1714,36 @@ static void __cvmx_usb_start_channel(struct cvmx_usb_state *usb,
 			usbc_hcintmsk.s.stallmsk = 1;
 			usbc_hcintmsk.s.xfercomplmsk = 1;
 		}
-		__cvmx_usb_write_csr32(usb, CVMX_USBCX_HCINTMSKX(channel, usb->index), usbc_hcintmsk.u32);
+		__cvmx_usb_write_csr32(usb,
+				CVMX_USBCX_HCINTMSKX(channel, usb->index),
+				usbc_hcintmsk.u32);
 
 		/* Enable the channel interrupt to propagate */
-		usbc_haintmsk.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_HAINTMSK(usb->index));
+		usbc_haintmsk.u32 = __cvmx_usb_read_csr32(usb,
+					CVMX_USBCX_HAINTMSK(usb->index));
 		usbc_haintmsk.s.haintmsk |= 1<<channel;
-		__cvmx_usb_write_csr32(usb, CVMX_USBCX_HAINTMSK(usb->index), usbc_haintmsk.u32);
+		__cvmx_usb_write_csr32(usb,
+					CVMX_USBCX_HAINTMSK(usb->index),
+					usbc_haintmsk.u32);
 	}
 
 	/* Setup the locations the DMA engines use  */
 	{
-		uint64_t dma_address = transaction->buffer + transaction->actual_bytes;
+		uint64_t dma_address = transaction->buffer +
+					transaction->actual_bytes;
+
 		if (transaction->type == CVMX_USB_TRANSFER_ISOCHRONOUS)
-			dma_address = transaction->buffer + transaction->iso_packets[0].offset + transaction->actual_bytes;
-		__cvmx_usb_write_csr64(usb, CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8, dma_address);
-		__cvmx_usb_write_csr64(usb, CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8, dma_address);
+			dma_address = transaction->buffer +
+					transaction->iso_packets[0].offset +
+					transaction->actual_bytes;
+
+		__cvmx_usb_write_csr64(usb,
+			CVMX_USBNX_DMA0_OUTB_CHN0(usb->index) + channel*8,
+			dma_address);
+
+		__cvmx_usb_write_csr64(usb,
+			CVMX_USBNX_DMA0_INB_CHN0(usb->index) + channel*8,
+			dma_address);
 	}
 
 	/* Setup both the size of the transfer and the SPLIT characteristics */
@@ -1851,8 +1869,7 @@ static void __cvmx_usb_start_channel(struct cvmx_usb_state *usb,
 		 * zero we still need to transfer one packet
 		 */
 		packets_to_transfer =
-			(bytes_to_transfer + pipe->max_packet - 1) /
-			pipe->max_packet;
+			DIV_ROUND_UP(bytes_to_transfer, pipe->max_packet);
 		if (packets_to_transfer == 0)
 			packets_to_transfer = 1;
 		else if ((packets_to_transfer > 1) &&
@@ -1978,7 +1995,6 @@ static void __cvmx_usb_start_channel(struct cvmx_usb_state *usb,
 			union cvmx_usbcx_hccharx, chena, 1);
 	if (usb->init_flags & CVMX_USB_INITIALIZE_FLAGS_NO_DMA)
 		__cvmx_usb_fill_tx_fifo(usb, channel);
-	return;
 }
 
 
@@ -2008,8 +2024,7 @@ static struct cvmx_usb_pipe *__cvmx_usb_find_ready_pipe(
 			 ((((int)current_frame - (int)pipe->split_sc_frame)
 			   & 0x7f) < 0x40)) &&
 			(!usb->active_split || (usb->active_split == t))) {
-			CVMX_PREFETCH(pipe, 128);
-			CVMX_PREFETCH(t, 0);
+			prefetch(t);
 			return pipe;
 		}
 	}
@@ -2036,8 +2051,16 @@ static void __cvmx_usb_schedule(struct cvmx_usb_state *usb, int is_sof)
 		 * Without DMA we need to be careful to not schedule something
 		 * at the end of a frame and cause an overrun.
 		 */
-		union cvmx_usbcx_hfnum hfnum = {.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_HFNUM(usb->index))};
-		union cvmx_usbcx_hfir hfir = {.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_HFIR(usb->index))};
+		union cvmx_usbcx_hfnum hfnum = {
+			.u32 = __cvmx_usb_read_csr32(usb,
+						CVMX_USBCX_HFNUM(usb->index))
+		};
+
+		union cvmx_usbcx_hfir hfir = {
+			.u32 = __cvmx_usb_read_csr32(usb,
+						CVMX_USBCX_HFIR(usb->index))
+		};
+
 		if (hfnum.s.frrem < hfir.s.frint/4)
 			goto done;
 	}
@@ -2100,17 +2123,6 @@ done:
 	}
 	USB_SET_FIELD32(CVMX_USBCX_GINTMSK(usb->index),
 			union cvmx_usbcx_gintmsk, sofmsk, need_sof);
-	return;
-}
-
-static inline struct octeon_hcd *cvmx_usb_to_octeon(struct cvmx_usb_state *p)
-{
-	return container_of(p, struct octeon_hcd, usb);
-}
-
-static inline struct usb_hcd *octeon_to_hcd(struct octeon_hcd *p)
-{
-	return container_of((void *)p, struct usb_hcd, hcd_priv);
 }
 
 static void octeon_usb_urb_complete_callback(struct cvmx_usb_state *usb,
@@ -2125,17 +2137,12 @@ static void octeon_usb_urb_complete_callback(struct cvmx_usb_state *usb,
 	struct usb_hcd *hcd = octeon_to_hcd(priv);
 	struct device *dev = hcd->self.controller;
 
-	urb->actual_length = bytes_transferred;
-	urb->hcpriv = NULL;
+	if (likely(status == CVMX_USB_COMPLETE_SUCCESS))
+		urb->actual_length = bytes_transferred;
+	else
+		urb->actual_length = 0;
 
-	if (!list_empty(&urb->urb_list))
-		/*
-		 * It is on the dequeue_list, but we are going to call
-		 * usb_hcd_giveback_urb(), so we must clear it from
-		 * the list.  We got to it before the
-		 * octeon_usb_urb_dequeue_work() tasklet did.
-		 */
-		list_del_init(&urb->urb_list);
+	urb->hcpriv = NULL;
 
 	/* For Isochronous transactions we need to update the URB packet status
 	   list from data in our private copy */
@@ -2202,6 +2209,7 @@ static void octeon_usb_urb_complete_callback(struct cvmx_usb_state *usb,
 		urb->status = -EPROTO;
 		break;
 	}
+	usb_hcd_unlink_urb_from_ep(octeon_to_hcd(priv), urb);
 	spin_unlock(&priv->lock);
 	usb_hcd_giveback_urb(octeon_to_hcd(priv), urb, urb->status);
 	spin_lock(&priv->lock);
@@ -2250,7 +2258,7 @@ static void __cvmx_usb_perform_complete(
 			/* Increment to the next location in our packet array */
 			transaction->iso_packets++;
 			transaction->stage = CVMX_USB_STAGE_NON_CONTROL;
-			goto done;
+			return;
 		}
 	}
 
@@ -2263,8 +2271,6 @@ static void __cvmx_usb_perform_complete(
 					 transaction->actual_bytes,
 					 transaction->urb);
 	kfree(transaction);
-done:
-	return;
 }
 
 
@@ -2410,11 +2416,10 @@ static struct cvmx_usb_transaction *cvmx_usb_submit_control(
 {
 	int buffer_length = urb->transfer_buffer_length;
 	uint64_t control_header = urb->setup_dma;
-	union cvmx_usb_control_header *header =
-		cvmx_phys_to_ptr(control_header);
+	struct usb_ctrlrequest *header = cvmx_phys_to_ptr(control_header);
 
-	if ((header->s.request_type & 0x80) == 0)
-		buffer_length = le16_to_cpu(header->s.length);
+	if ((header->bRequestType & USB_DIR_IN) == 0)
+		buffer_length = le16_to_cpu(header->wLength);
 
 	return __cvmx_usb_submit_transaction(usb, pipe,
 					     CVMX_USB_TRANSFER_CONTROL,
@@ -2522,6 +2527,7 @@ static int cvmx_usb_cancel_all(struct cvmx_usb_state *usb,
 	/* Simply loop through and attempt to cancel each transaction */
 	list_for_each_entry_safe(transaction, next, &pipe->transactions, node) {
 		int result = cvmx_usb_cancel(usb, pipe, transaction);
+
 		if (unlikely(result != 0))
 			return result;
 	}
@@ -2582,6 +2588,9 @@ static int cvmx_usb_get_frame_number(struct cvmx_usb_state *usb)
  */
 static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 {
+	struct octeon_hcd *priv = cvmx_usb_to_octeon(usb);
+	struct usb_hcd *hcd = octeon_to_hcd(priv);
+	struct device *dev = hcd->self.controller;
 	union cvmx_usbcx_hcintx usbc_hcint;
 	union cvmx_usbcx_hctsizx usbc_hctsiz;
 	union cvmx_usbcx_hccharx usbc_hcchar;
@@ -2639,8 +2648,8 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 				 * Channel halt isn't needed.
 				 */
 			} else {
-				cvmx_dprintf("USB%d: Channel %d interrupt without halt\n",
-						usb->index, channel);
+				dev_err(dev, "USB%d: Channel %d interrupt without halt\n",
+					usb->index, channel);
 				return 0;
 			}
 		}
@@ -2654,19 +2663,20 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 	}
 
 	/* Disable the channel interrupts now that it is done */
-	__cvmx_usb_write_csr32(usb, CVMX_USBCX_HCINTMSKX(channel, usb->index), 0);
+	__cvmx_usb_write_csr32(usb,
+				CVMX_USBCX_HCINTMSKX(channel, usb->index),
+				0);
 	usb->idle_hardware_channels |= (1<<channel);
 
 	/* Make sure this channel is tied to a valid pipe */
 	pipe = usb->pipe_for_channel[channel];
-	CVMX_PREFETCH(pipe, 0);
-	CVMX_PREFETCH(pipe, 128);
+	prefetch(pipe);
 	if (!pipe)
 		return 0;
 	transaction = list_first_entry(&pipe->transactions,
 				       typeof(*transaction),
 				       node);
-	CVMX_PREFETCH(transaction, 0);
+	prefetch(transaction);
 
 	/*
 	 * Disconnect this pipe from the HW channel. Later the schedule
@@ -2809,8 +2819,9 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 		__cvmx_usb_perform_complete(usb, pipe, transaction,
 					    CVMX_USB_COMPLETE_BABBLEERR);
 	} else if (usbc_hcint.s.datatglerr) {
-		/* We'll retry the exact same transaction again */
-		transaction->retries++;
+		/* Data toggle error */
+		__cvmx_usb_perform_complete(usb, pipe, transaction,
+					    CVMX_USB_COMPLETE_DATATGLERR);
 	} else if (usbc_hcint.s.nyet) {
 		/*
 		 * NYET as a response is only allowed in three cases: as a
@@ -2875,22 +2886,26 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 					transaction->stage =
 						CVMX_USB_STAGE_SETUP_SPLIT_COMPLETE;
 				else {
-					union cvmx_usb_control_header *header =
+					struct usb_ctrlrequest *header =
 						cvmx_phys_to_ptr(transaction->control_header);
-					if (header->s.length)
-						transaction->stage = CVMX_USB_STAGE_DATA;
+					if (header->wLength)
+						transaction->stage =
+							CVMX_USB_STAGE_DATA;
 					else
-						transaction->stage = CVMX_USB_STAGE_STATUS;
+						transaction->stage =
+							CVMX_USB_STAGE_STATUS;
 				}
 				break;
 			case CVMX_USB_STAGE_SETUP_SPLIT_COMPLETE:
 				{
-					union cvmx_usb_control_header *header =
+					struct usb_ctrlrequest *header =
 						cvmx_phys_to_ptr(transaction->control_header);
-					if (header->s.length)
-						transaction->stage = CVMX_USB_STAGE_DATA;
+					if (header->wLength)
+						transaction->stage =
+							CVMX_USB_STAGE_DATA;
 					else
-						transaction->stage = CVMX_USB_STAGE_STATUS;
+						transaction->stage =
+							CVMX_USB_STAGE_STATUS;
 				}
 				break;
 			case CVMX_USB_STAGE_DATA:
@@ -3012,7 +3027,8 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 				 * is complete, the pipe sleeps until the next
 				 * schedule interval
 				 */
-				if (pipe->transfer_dir == CVMX_USB_DIRECTION_OUT) {
+				if (pipe->transfer_dir ==
+					CVMX_USB_DIRECTION_OUT) {
 					/*
 					 * If no space left or this wasn't a max
 					 * size packet then this transfer is
@@ -3021,7 +3037,8 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 					 */
 					if (!buffer_space_left ||
 						(bytes_this_transfer < 188)) {
-						pipe->next_tx_frame += pipe->interval;
+						pipe->next_tx_frame +=
+							pipe->interval;
 						__cvmx_usb_perform_complete(
 							usb,
 							pipe,
@@ -3083,6 +3100,7 @@ static int __cvmx_usb_poll_channel(struct cvmx_usb_state *usb, int channel)
 				pipe->interval;
 	} else {
 		struct cvmx_usb_port_status port;
+
 		port = cvmx_usb_get_status(usb);
 		if (port.port_enabled) {
 			/* We'll retry the exact same transaction again */
@@ -3123,24 +3141,24 @@ static int cvmx_usb_poll(struct cvmx_usb_state *usb)
 	union cvmx_usbcx_hfnum usbc_hfnum;
 	union cvmx_usbcx_gintsts usbc_gintsts;
 
-	CVMX_PREFETCH(usb, 0);
-	CVMX_PREFETCH(usb, 1*128);
-	CVMX_PREFETCH(usb, 2*128);
-	CVMX_PREFETCH(usb, 3*128);
-	CVMX_PREFETCH(usb, 4*128);
+	prefetch_range(usb, sizeof(*usb));
 
 	/* Update the frame counter */
-	usbc_hfnum.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_HFNUM(usb->index));
+	usbc_hfnum.u32 = __cvmx_usb_read_csr32(usb,
+						CVMX_USBCX_HFNUM(usb->index));
 	if ((usb->frame_number&0x3fff) > usbc_hfnum.s.frnum)
 		usb->frame_number += 0x4000;
 	usb->frame_number &= ~0x3fffull;
 	usb->frame_number |= usbc_hfnum.s.frnum;
 
 	/* Read the pending interrupts */
-	usbc_gintsts.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_GINTSTS(usb->index));
+	usbc_gintsts.u32 = __cvmx_usb_read_csr32(usb,
+						CVMX_USBCX_GINTSTS(usb->index));
 
 	/* Clear the interrupts now that we know about them */
-	__cvmx_usb_write_csr32(usb, CVMX_USBCX_GINTSTS(usb->index), usbc_gintsts.u32);
+	__cvmx_usb_write_csr32(usb,
+				CVMX_USBCX_GINTSTS(usb->index),
+				usbc_gintsts.u32);
 
 	if (usbc_gintsts.s.rxflvl) {
 		/*
@@ -3196,7 +3214,9 @@ static int cvmx_usb_poll(struct cvmx_usb_state *usb)
 		 * to clear this bit.
 		 */
 		union cvmx_usbcx_haint usbc_haint;
-		usbc_haint.u32 = __cvmx_usb_read_csr32(usb, CVMX_USBCX_HAINT(usb->index));
+
+		usbc_haint.u32 = __cvmx_usb_read_csr32(usb,
+					CVMX_USBCX_HAINT(usb->index));
 		while (usbc_haint.u32) {
 			int channel;
 
@@ -3257,16 +3277,23 @@ static int octeon_usb_urb_enqueue(struct usb_hcd *hcd,
 	unsigned long flags;
 	struct cvmx_usb_iso_packet *iso_packet;
 	struct usb_host_endpoint *ep = urb->ep;
+	int rc;
 
 	urb->status = 0;
-	INIT_LIST_HEAD(&urb->urb_list);	/* not enqueued on dequeue_list */
 	spin_lock_irqsave(&priv->lock, flags);
+
+	rc = usb_hcd_link_urb_to_ep(hcd, urb);
+	if (rc) {
+		spin_unlock_irqrestore(&priv->lock, flags);
+		return rc;
+	}
 
 	if (!ep->hcpriv) {
 		enum cvmx_usb_transfer transfer_type;
 		enum cvmx_usb_speed speed;
 		int split_device = 0;
 		int split_port = 0;
+
 		switch (usb_pipetype(urb->pipe)) {
 		case PIPE_ISOCHRONOUS:
 			transfer_type = CVMX_USB_TRANSFER_ISOCHRONOUS;
@@ -3303,6 +3330,7 @@ static int octeon_usb_urb_enqueue(struct usb_hcd *hcd,
 			 * tree.
 			 */
 			struct usb_device *dev = urb->dev;
+
 			while (dev->parent) {
 				/*
 				 * If our parent is high speed then he'll
@@ -3335,6 +3363,7 @@ static int octeon_usb_urb_enqueue(struct usb_hcd *hcd,
 					   >> 11) & 0x3,
 					  split_device, split_port);
 		if (!pipe) {
+			usb_hcd_unlink_urb_from_ep(hcd, urb);
 			spin_unlock_irqrestore(&priv->lock, flags);
 			dev_dbg(dev, "Failed to create pipe\n");
 			return -ENOMEM;
@@ -3405,6 +3434,7 @@ static int octeon_usb_urb_enqueue(struct usb_hcd *hcd,
 		break;
 	}
 	if (!transaction) {
+		usb_hcd_unlink_urb_from_ep(hcd, urb);
 		spin_unlock_irqrestore(&priv->lock, flags);
 		dev_dbg(dev, "Failed to submit\n");
 		return -ENOMEM;
@@ -3414,43 +3444,30 @@ static int octeon_usb_urb_enqueue(struct usb_hcd *hcd,
 	return 0;
 }
 
-static void octeon_usb_urb_dequeue_work(unsigned long arg)
-{
-	struct urb *urb;
-	struct urb *next;
-	unsigned long flags;
-	struct octeon_hcd *priv = (struct octeon_hcd *)arg;
-
-	spin_lock_irqsave(&priv->lock, flags);
-
-	list_for_each_entry_safe(urb, next, &priv->dequeue_list, urb_list) {
-		list_del_init(&urb->urb_list);
-		cvmx_usb_cancel(&priv->usb, urb->ep->hcpriv, urb->hcpriv);
-	}
-
-	spin_unlock_irqrestore(&priv->lock, flags);
-}
-
 static int octeon_usb_urb_dequeue(struct usb_hcd *hcd,
 				  struct urb *urb,
 				  int status)
 {
 	struct octeon_hcd *priv = hcd_to_octeon(hcd);
 	unsigned long flags;
+	int rc;
 
 	if (!urb->dev)
 		return -EINVAL;
 
 	spin_lock_irqsave(&priv->lock, flags);
 
-	urb->status = status;
-	list_add_tail(&urb->urb_list, &priv->dequeue_list);
+	rc = usb_hcd_check_unlink_urb(hcd, urb, status);
+	if (rc)
+		goto out;
 
+	urb->status = status;
+	cvmx_usb_cancel(&priv->usb, urb->ep->hcpriv, urb->hcpriv);
+
+out:
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	tasklet_schedule(&priv->dequeue_tasklet);
-
-	return 0;
+	return rc;
 }
 
 static void octeon_usb_endpoint_disable(struct usb_hcd *hcd,
@@ -3462,6 +3479,7 @@ static void octeon_usb_endpoint_disable(struct usb_hcd *hcd,
 		struct octeon_hcd *priv = hcd_to_octeon(hcd);
 		struct cvmx_usb_pipe *pipe = ep->hcpriv;
 		unsigned long flags;
+
 		spin_lock_irqsave(&priv->lock, flags);
 		cvmx_usb_cancel_all(&priv->usb, pipe);
 		if (cvmx_usb_close_pipe(&priv->usb, pipe))
@@ -3483,10 +3501,11 @@ static int octeon_usb_hub_status_data(struct usb_hcd *hcd, char *buf)
 	buf[0] = 0;
 	buf[0] = port_status.connect_change << 1;
 
-	return (buf[0] != 0);
+	return buf[0] != 0;
 }
 
-static int octeon_usb_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue, u16 wIndex, char *buf, u16 wLength)
+static int octeon_usb_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
+				u16 wIndex, char *buf, u16 wLength)
 {
 	struct octeon_hcd *priv = hcd_to_octeon(hcd);
 	struct device *dev = hcd->self.controller;
@@ -3589,7 +3608,7 @@ static int octeon_usb_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue, 
 		desc->bDescLength = 9;
 		desc->bDescriptorType = 0x29;
 		desc->bNbrPorts = 1;
-		desc->wHubCharacteristics = 0x08;
+		desc->wHubCharacteristics = cpu_to_le16(0x08);
 		desc->bPwrOn2PwrGood = 1;
 		desc->bHubContrCurrent = 0;
 		desc->u.hs.DeviceRemovable[0] = 0;
@@ -3778,6 +3797,7 @@ static int octeon_usb_probe(struct platform_device *pdev)
 	if (irq < 0) {
 		/* Defective device tree, but we know how to fix it. */
 		irq_hw_number_t hwirq = usb_num ? (1 << 6) + 17 : 56;
+
 		irq = irq_create_mapping(NULL, hwirq);
 	}
 
@@ -3818,10 +3838,6 @@ static int octeon_usb_probe(struct platform_device *pdev)
 
 	spin_lock_init(&priv->lock);
 
-	tasklet_init(&priv->dequeue_tasklet, octeon_usb_urb_dequeue_work,
-		     (unsigned long)priv);
-	INIT_LIST_HEAD(&priv->dequeue_list);
-
 	status = cvmx_usb_initialize(&priv->usb, usb_num, initialize_flags);
 	if (status) {
 		dev_dbg(dev, "USB initialization failed with %d\n", status);
@@ -3858,7 +3874,6 @@ static int octeon_usb_remove(struct platform_device *pdev)
 	unsigned long flags;
 
 	usb_remove_hcd(hcd);
-	tasklet_kill(&priv->dequeue_tasklet);
 	spin_lock_irqsave(&priv->lock, flags);
 	status = cvmx_usb_shutdown(&priv->usb);
 	spin_unlock_irqrestore(&priv->lock, flags);
@@ -3880,7 +3895,6 @@ static struct of_device_id octeon_usb_match[] = {
 static struct platform_driver octeon_usb_driver = {
 	.driver = {
 		.name       = "OcteonUSB",
-		.owner		= THIS_MODULE,
 		.of_match_table = octeon_usb_match,
 	},
 	.probe      = octeon_usb_probe,

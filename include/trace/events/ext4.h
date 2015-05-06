@@ -36,23 +36,20 @@ struct extent_status;
 
 #define show_map_flags(flags) __print_flags(flags, "|",			\
 	{ EXT4_GET_BLOCKS_CREATE,		"CREATE" },		\
-	{ EXT4_GET_BLOCKS_UNINIT_EXT,		"UNINIT" },		\
+	{ EXT4_GET_BLOCKS_UNWRIT_EXT,		"UNWRIT" },		\
 	{ EXT4_GET_BLOCKS_DELALLOC_RESERVE,	"DELALLOC" },		\
 	{ EXT4_GET_BLOCKS_PRE_IO,		"PRE_IO" },		\
 	{ EXT4_GET_BLOCKS_CONVERT,		"CONVERT" },		\
 	{ EXT4_GET_BLOCKS_METADATA_NOFAIL,	"METADATA_NOFAIL" },	\
 	{ EXT4_GET_BLOCKS_NO_NORMALIZE,		"NO_NORMALIZE" },	\
 	{ EXT4_GET_BLOCKS_KEEP_SIZE,		"KEEP_SIZE" },		\
-	{ EXT4_GET_BLOCKS_NO_LOCK,		"NO_LOCK" },		\
-	{ EXT4_GET_BLOCKS_NO_PUT_HOLE,		"NO_PUT_HOLE" })
+	{ EXT4_GET_BLOCKS_NO_LOCK,		"NO_LOCK" })
 
 #define show_mflags(flags) __print_flags(flags, "",	\
 	{ EXT4_MAP_NEW,		"N" },			\
 	{ EXT4_MAP_MAPPED,	"M" },			\
 	{ EXT4_MAP_UNWRITTEN,	"U" },			\
-	{ EXT4_MAP_BOUNDARY,	"B" },			\
-	{ EXT4_MAP_UNINIT,	"u" },			\
-	{ EXT4_MAP_FROM_CLUSTER, "C" })
+	{ EXT4_MAP_BOUNDARY,	"B" })
 
 #define show_free_flags(flags) __print_flags(flags, "|",	\
 	{ EXT4_FREE_BLOCKS_METADATA,		"METADATA" },	\
@@ -1497,7 +1494,7 @@ DEFINE_EVENT(ext4__truncate, ext4_truncate_exit,
 	TP_ARGS(inode)
 );
 
-/* 'ux' is the uninitialized extent. */
+/* 'ux' is the unwritten extent. */
 TRACE_EVENT(ext4_ext_convert_to_initialized_enter,
 	TP_PROTO(struct inode *inode, struct ext4_map_blocks *map,
 		 struct ext4_extent *ux),
@@ -1533,7 +1530,7 @@ TRACE_EVENT(ext4_ext_convert_to_initialized_enter,
 );
 
 /*
- * 'ux' is the uninitialized extent.
+ * 'ux' is the unwritten extent.
  * 'ix' is the initialized extent to which blocks are transferred.
  */
 TRACE_EVENT(ext4_ext_convert_to_initialized_fastpath,
@@ -1811,7 +1808,7 @@ DEFINE_EVENT(ext4__trim, ext4_trim_all_free,
 	TP_ARGS(sb, group, start, len)
 );
 
-TRACE_EVENT(ext4_ext_handle_uninitialized_extents,
+TRACE_EVENT(ext4_ext_handle_unwritten_extents,
 	TP_PROTO(struct inode *inode, struct ext4_map_blocks *map, int flags,
 		 unsigned int allocated, ext4_fsblk_t newblock),
 
@@ -2370,7 +2367,7 @@ TRACE_EVENT(ext4_es_lookup_extent_exit,
 		  show_extent_status(__entry->found ? __entry->status : 0))
 );
 
-TRACE_EVENT(ext4_es_shrink_enter,
+DECLARE_EVENT_CLASS(ext4__es_shrink_enter,
 	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
 
 	TP_ARGS(sb, nr_to_scan, cache_cnt),
@@ -2392,26 +2389,38 @@ TRACE_EVENT(ext4_es_shrink_enter,
 		  __entry->nr_to_scan, __entry->cache_cnt)
 );
 
-TRACE_EVENT(ext4_es_shrink_exit,
-	TP_PROTO(struct super_block *sb, int shrunk_nr, int cache_cnt),
+DEFINE_EVENT(ext4__es_shrink_enter, ext4_es_shrink_count,
+	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
 
-	TP_ARGS(sb, shrunk_nr, cache_cnt),
+	TP_ARGS(sb, nr_to_scan, cache_cnt)
+);
+
+DEFINE_EVENT(ext4__es_shrink_enter, ext4_es_shrink_scan_enter,
+	TP_PROTO(struct super_block *sb, int nr_to_scan, int cache_cnt),
+
+	TP_ARGS(sb, nr_to_scan, cache_cnt)
+);
+
+TRACE_EVENT(ext4_es_shrink_scan_exit,
+	TP_PROTO(struct super_block *sb, int nr_shrunk, int cache_cnt),
+
+	TP_ARGS(sb, nr_shrunk, cache_cnt),
 
 	TP_STRUCT__entry(
 		__field(	dev_t,	dev			)
-		__field(	int,	shrunk_nr		)
+		__field(	int,	nr_shrunk		)
 		__field(	int,	cache_cnt		)
 	),
 
 	TP_fast_assign(
 		__entry->dev		= sb->s_dev;
-		__entry->shrunk_nr	= shrunk_nr;
+		__entry->nr_shrunk	= nr_shrunk;
 		__entry->cache_cnt	= cache_cnt;
 	),
 
-	TP_printk("dev %d,%d shrunk_nr %d cache_cnt %d",
+	TP_printk("dev %d,%d nr_shrunk %d cache_cnt %d",
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
-		  __entry->shrunk_nr, __entry->cache_cnt)
+		  __entry->nr_shrunk, __entry->cache_cnt)
 );
 
 TRACE_EVENT(ext4_collapse_range,
@@ -2437,6 +2446,34 @@ TRACE_EVENT(ext4_collapse_range,
 		  MAJOR(__entry->dev), MINOR(__entry->dev),
 		  (unsigned long) __entry->ino,
 		  __entry->offset, __entry->len)
+);
+
+TRACE_EVENT(ext4_es_shrink,
+	TP_PROTO(struct super_block *sb, int nr_shrunk, u64 scan_time,
+		 int nr_skipped, int retried),
+
+	TP_ARGS(sb, nr_shrunk, scan_time, nr_skipped, retried),
+
+	TP_STRUCT__entry(
+		__field(	dev_t,		dev		)
+		__field(	int,		nr_shrunk	)
+		__field(	unsigned long long, scan_time	)
+		__field(	int,		nr_skipped	)
+		__field(	int,		retried		)
+	),
+
+	TP_fast_assign(
+		__entry->dev		= sb->s_dev;
+		__entry->nr_shrunk	= nr_shrunk;
+		__entry->scan_time	= div_u64(scan_time, 1000);
+		__entry->nr_skipped	= nr_skipped;
+		__entry->retried	= retried;
+	),
+
+	TP_printk("dev %d,%d nr_shrunk %d, scan_time %llu "
+		  "nr_skipped %d retried %d",
+		  MAJOR(__entry->dev), MINOR(__entry->dev), __entry->nr_shrunk,
+		  __entry->scan_time, __entry->nr_skipped, __entry->retried)
 );
 
 #endif /* _TRACE_EXT4_H */

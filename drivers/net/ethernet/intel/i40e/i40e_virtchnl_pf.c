@@ -29,6 +29,24 @@
 /***********************misc routines*****************************/
 
 /**
+ * i40e_vc_disable_vf
+ * @pf: pointer to the pf info
+ * @vf: pointer to the vf info
+ *
+ * Disable the VF through a SW reset
+ **/
+static inline void i40e_vc_disable_vf(struct i40e_pf *pf, struct i40e_vf *vf)
+{
+	struct i40e_hw *hw = &pf->hw;
+	u32 reg;
+
+	reg = rd32(hw, I40E_VPGEN_VFRTRIG(vf->vf_id));
+	reg |= I40E_VPGEN_VFRTRIG_VFSWR_MASK;
+	wr32(hw, I40E_VPGEN_VFRTRIG(vf->vf_id), reg);
+	i40e_flush(hw);
+}
+
+/**
  * i40e_vc_isvalid_vsi_id
  * @vf: pointer to the vf info
  * @vsi_id: vf relative vsi id
@@ -55,7 +73,7 @@ static inline bool i40e_vc_isvalid_queue_id(struct i40e_vf *vf, u8 vsi_id,
 {
 	struct i40e_pf *pf = vf->pf;
 
-	return qid < pf->vsi[vsi_id]->num_queue_pairs;
+	return qid < pf->vsi[vsi_id]->alloc_queue_pairs;
 }
 
 /**
@@ -230,9 +248,8 @@ static int i40e_config_vsi_tx_queue(struct i40e_vf *vf, u16 vsi_idx,
 	tx_ctx.qlen = info->ring_len;
 	tx_ctx.rdylist = le16_to_cpu(pf->vsi[vsi_idx]->info.qs_handle[0]);
 	tx_ctx.rdylist_act = 0;
-	tx_ctx.head_wb_ena = 1;
-	tx_ctx.head_wb_addr = info->dma_ring_addr +
-			      (info->ring_len * sizeof(struct i40e_tx_desc));
+	tx_ctx.head_wb_ena = info->headwb_enabled;
+	tx_ctx.head_wb_addr = info->dma_headwb_addr;
 
 	/* clear the context in the HMC */
 	ret = i40e_clear_lan_tx_queue_context(hw, pf_queue_id);
@@ -330,12 +347,10 @@ static int i40e_config_vsi_rx_queue(struct i40e_vf *vf, u16 vsi_idx,
 	rx_ctx.dsize = 1;
 
 	/* default values */
-	rx_ctx.tphrdesc_ena = 1;
-	rx_ctx.tphwdesc_ena = 1;
-	rx_ctx.tphdata_ena = 1;
-	rx_ctx.tphhead_ena = 1;
 	rx_ctx.lrxqthresh = 2;
 	rx_ctx.crcstrip = 1;
+	rx_ctx.prefena = 1;
+	rx_ctx.l2tsel = 1;
 
 	/* clear the context in the HMC */
 	ret = i40e_clear_lan_rx_queue_context(hw, pf_queue_id);
@@ -416,6 +431,15 @@ static int i40e_alloc_vsi_res(struct i40e_vf *vf, enum i40e_vsi_type type)
 	if (ret)
 		dev_err(&pf->pdev->dev, "Unable to program ucast filters\n");
 
+	/* Set VF bandwidth if specified */
+	if (vf->tx_rate) {
+		ret = i40e_aq_config_vsi_bw_limit(&pf->hw, vsi->seid,
+						  vf->tx_rate / 50, 0, NULL);
+		if (ret)
+			dev_err(&pf->pdev->dev, "Unable to set tx rate, VF %d, error code %d.\n",
+				vf->vf_id, ret);
+	}
+
 error_alloc_vsi_res:
 	return ret;
 }
@@ -445,7 +469,7 @@ static void i40e_enable_vf_mappings(struct i40e_vf *vf)
 	wr32(hw, I40E_VPLAN_MAPENA(vf->vf_id), reg);
 
 	/* map PF queues to VF queues */
-	for (j = 0; j < pf->vsi[vf->lan_vsi_index]->num_queue_pairs; j++) {
+	for (j = 0; j < pf->vsi[vf->lan_vsi_index]->alloc_queue_pairs; j++) {
 		u16 qid = i40e_vc_get_pf_queue_id(vf, vf->lan_vsi_index, j);
 		reg = (qid & I40E_VPLAN_QTABLE_QINDEX_MASK);
 		wr32(hw, I40E_VPLAN_QTABLE(total_queue_pairs, vf->vf_id), reg);
@@ -454,7 +478,7 @@ static void i40e_enable_vf_mappings(struct i40e_vf *vf)
 
 	/* map PF queues to VSI */
 	for (j = 0; j < 7; j++) {
-		if (j * 2 >= pf->vsi[vf->lan_vsi_index]->num_queue_pairs) {
+		if (j * 2 >= pf->vsi[vf->lan_vsi_index]->alloc_queue_pairs) {
 			reg = 0x07FF07FF;	/* unused */
 		} else {
 			u16 qid = i40e_vc_get_pf_queue_id(vf, vf->lan_vsi_index,
@@ -561,7 +585,7 @@ static int i40e_alloc_vf_res(struct i40e_vf *vf)
 	ret = i40e_alloc_vsi_res(vf, I40E_VSI_SRIOV);
 	if (ret)
 		goto error_alloc;
-	total_queue_pairs += pf->vsi[vf->lan_vsi_index]->num_queue_pairs;
+	total_queue_pairs += pf->vsi[vf->lan_vsi_index]->alloc_queue_pairs;
 	set_bit(I40E_VIRTCHNL_VF_CAP_PRIVILEGE, &vf->vf_caps);
 
 	/* store the total qps number for the runtime
@@ -646,11 +670,11 @@ void i40e_reset_vf(struct i40e_vf *vf, bool flr)
 	 */
 	for (i = 0; i < 100; i++) {
 		/* vf reset requires driver to first reset the
-		 * vf & than poll the status register to make sure
+		 * vf and then poll the status register to make sure
 		 * that the requested op was completed
 		 * successfully
 		 */
-		udelay(10);
+		usleep_range(10, 20);
 		reg = rd32(hw, I40E_VPGEN_VFRSTAT(vf->vf_id));
 		if (reg & I40E_VPGEN_VFRSTAT_VFRD_MASK) {
 			rsd = true;
@@ -685,42 +709,12 @@ complete_reset:
 }
 
 /**
- * i40e_vfs_are_assigned
- * @pf: pointer to the pf structure
- *
- * Determine if any VFs are assigned to VMs
- **/
-static bool i40e_vfs_are_assigned(struct i40e_pf *pf)
-{
-	struct pci_dev *pdev = pf->pdev;
-	struct pci_dev *vfdev;
-
-	/* loop through all the VFs to see if we own any that are assigned */
-	vfdev = pci_get_device(PCI_VENDOR_ID_INTEL, I40E_DEV_ID_VF , NULL);
-	while (vfdev) {
-		/* if we don't own it we don't care */
-		if (vfdev->is_virtfn && pci_physfn(vfdev) == pdev) {
-			/* if it is assigned we cannot release it */
-			if (vfdev->dev_flags & PCI_DEV_FLAGS_ASSIGNED)
-				return true;
-		}
-
-		vfdev = pci_get_device(PCI_VENDOR_ID_INTEL,
-				       I40E_DEV_ID_VF,
-				       vfdev);
-	}
-
-	return false;
-}
-#ifdef CONFIG_PCI_IOV
-
-/**
  * i40e_enable_pf_switch_lb
  * @pf: pointer to the pf structure
  *
  * enable switch loop back or die - no point in a return value
  **/
-static void i40e_enable_pf_switch_lb(struct i40e_pf *pf)
+void i40e_enable_pf_switch_lb(struct i40e_pf *pf)
 {
 	struct i40e_vsi *vsi = pf->vsi[pf->lan_vsi];
 	struct i40e_vsi_context ctxt;
@@ -747,7 +741,6 @@ static void i40e_enable_pf_switch_lb(struct i40e_pf *pf)
 			 __func__, vsi->back->hw.aq.asq_last_status);
 	}
 }
-#endif
 
 /**
  * i40e_disable_pf_switch_lb
@@ -815,7 +808,11 @@ void i40e_free_vfs(struct i40e_pf *pf)
 	kfree(pf->vf);
 	pf->vf = NULL;
 
-	if (!i40e_vfs_are_assigned(pf)) {
+	/* This check is for when the driver is unloaded while VFs are
+	 * assigned. Setting the number of VFs to 0 through sysfs is caught
+	 * before this function ever gets called.
+	 */
+	if (!pci_vfs_assigned(pf->pdev)) {
 		pci_disable_sriov(pf->pdev);
 		/* Acknowledge VFLR for all VFS. Without this, VFs will fail to
 		 * work correctly when SR-IOV gets re-enabled.
@@ -867,6 +864,7 @@ int i40e_alloc_vfs(struct i40e_pf *pf, u16 num_alloc_vfs)
 		ret = -ENOMEM;
 		goto err_alloc;
 	}
+	pf->vf = vfs;
 
 	/* apply default profile */
 	for (i = 0; i < num_alloc_vfs; i++) {
@@ -876,13 +874,13 @@ int i40e_alloc_vfs(struct i40e_pf *pf, u16 num_alloc_vfs)
 
 		/* assign default capabilities */
 		set_bit(I40E_VIRTCHNL_VF_CAP_L2, &vfs[i].vf_caps);
+		vfs[i].spoofchk = true;
 		/* vf resources get allocated during reset */
 		i40e_reset_vf(&vfs[i], false);
 
 		/* enable vf vplan_qtable mappings */
 		i40e_enable_vf_mappings(&vfs[i]);
 	}
-	pf->vf = vfs;
 	pf->num_alloc_vfs = num_alloc_vfs;
 
 	i40e_enable_pf_switch_lb(pf);
@@ -951,7 +949,12 @@ int i40e_pci_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	if (num_vfs)
 		return i40e_pci_sriov_enable(pdev, num_vfs);
 
-	i40e_free_vfs(pf);
+	if (!pci_vfs_assigned(pf->pdev)) {
+		i40e_free_vfs(pf);
+	} else {
+		dev_warn(&pdev->dev, "Unable to free VFs because some are assigned to VMs.\n");
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -970,10 +973,18 @@ int i40e_pci_sriov_configure(struct pci_dev *pdev, int num_vfs)
 static int i40e_vc_send_msg_to_vf(struct i40e_vf *vf, u32 v_opcode,
 				  u32 v_retval, u8 *msg, u16 msglen)
 {
-	struct i40e_pf *pf = vf->pf;
-	struct i40e_hw *hw = &pf->hw;
-	int true_vf_id = vf->vf_id + hw->func_caps.vf_base_id;
+	struct i40e_pf *pf;
+	struct i40e_hw *hw;
+	int abs_vf_id;
 	i40e_status aq_ret;
+
+	/* validate the request */
+	if (!vf || vf->vf_id >= vf->pf->num_alloc_vfs)
+		return -EINVAL;
+
+	pf = vf->pf;
+	hw = &pf->hw;
+	abs_vf_id = vf->vf_id + hw->func_caps.vf_base_id;
 
 	/* single place to detect unsuccessful return values */
 	if (v_retval) {
@@ -992,7 +1003,7 @@ static int i40e_vc_send_msg_to_vf(struct i40e_vf *vf, u32 v_opcode,
 		vf->num_valid_msgs++;
 	}
 
-	aq_ret = i40e_aq_send_msg_to_vf(hw, true_vf_id,	v_opcode, v_retval,
+	aq_ret = i40e_aq_send_msg_to_vf(hw, abs_vf_id,	v_opcode, v_retval,
 					msg, msglen, NULL);
 	if (aq_ret) {
 		dev_err(&pf->pdev->dev,
@@ -1082,7 +1093,7 @@ static int i40e_vc_get_vf_resources_msg(struct i40e_vf *vf)
 		vfres->vsi_res[i].vsi_id = vf->lan_vsi_index;
 		vfres->vsi_res[i].vsi_type = I40E_VSI_SRIOV;
 		vfres->vsi_res[i].num_queue_pairs =
-		    pf->vsi[vf->lan_vsi_index]->num_queue_pairs;
+		    pf->vsi[vf->lan_vsi_index]->alloc_queue_pairs;
 		memcpy(vfres->vsi_res[i].default_mac_addr,
 		       vf->default_lan_addr.addr, ETH_ALEN);
 		i++;
@@ -1130,8 +1141,8 @@ static int i40e_vc_config_promiscuous_mode_msg(struct i40e_vf *vf,
 	    (struct i40e_virtchnl_promisc_info *)msg;
 	struct i40e_pf *pf = vf->pf;
 	struct i40e_hw *hw = &pf->hw;
+	struct i40e_vsi *vsi;
 	bool allmulti = false;
-	bool promisc = false;
 	i40e_status aq_ret;
 
 	if (!test_bit(I40E_VF_STAT_ACTIVE, &vf->vf_states) ||
@@ -1141,17 +1152,10 @@ static int i40e_vc_config_promiscuous_mode_msg(struct i40e_vf *vf,
 		aq_ret = I40E_ERR_PARAM;
 		goto error_param;
 	}
-
-	if (info->flags & I40E_FLAG_VF_UNICAST_PROMISC)
-		promisc = true;
-	aq_ret = i40e_aq_set_vsi_unicast_promiscuous(hw, info->vsi_id,
-						     promisc, NULL);
-	if (aq_ret)
-		goto error_param;
-
+	vsi = pf->vsi[info->vsi_id];
 	if (info->flags & I40E_FLAG_VF_MULTICAST_PROMISC)
 		allmulti = true;
-	aq_ret = i40e_aq_set_vsi_multicast_promiscuous(hw, info->vsi_id,
+	aq_ret = i40e_aq_set_vsi_multicast_promiscuous(hw, vsi->seid,
 						       allmulti, NULL);
 
 error_param:
@@ -1175,6 +1179,7 @@ static int i40e_vc_config_queues_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 	struct i40e_virtchnl_vsi_queue_config_info *qci =
 	    (struct i40e_virtchnl_vsi_queue_config_info *)msg;
 	struct i40e_virtchnl_queue_pair_info *qpi;
+	struct i40e_pf *pf = vf->pf;
 	u16 vsi_id, vsi_queue_id;
 	i40e_status aq_ret = 0;
 	int i;
@@ -1208,6 +1213,8 @@ static int i40e_vc_config_queues_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 			goto error_param;
 		}
 	}
+	/* set vsi num_queue_pairs in use to num configured by vf */
+	pf->vsi[vf->lan_vsi_index]->num_queue_pairs = qci->num_queue_pairs;
 
 error_param:
 	/* send the response to the vf */
@@ -1860,6 +1867,12 @@ int i40e_vc_process_vflr_event(struct i40e_pf *pf)
 	if (!test_bit(__I40E_VFLR_EVENT_PENDING, &pf->state))
 		return 0;
 
+	/* re-enable vflr interrupt cause */
+	reg = rd32(hw, I40E_PFINT_ICR0_ENA);
+	reg |= I40E_PFINT_ICR0_ENA_VFLR_MASK;
+	wr32(hw, I40E_PFINT_ICR0_ENA, reg);
+	i40e_flush(hw);
+
 	clear_bit(__I40E_VFLR_EVENT_PENDING, &pf->state);
 	for (vf_id = 0; vf_id < pf->num_alloc_vfs; vf_id++) {
 		reg_idx = (hw->func_caps.vf_base_id + vf_id) / 32;
@@ -1875,12 +1888,6 @@ int i40e_vc_process_vflr_event(struct i40e_pf *pf)
 				i40e_reset_vf(vf, true);
 		}
 	}
-
-	/* re-enable vflr interrupt cause */
-	reg = rd32(hw, I40E_PFINT_ICR0_ENA);
-	reg |= I40E_PFINT_ICR0_ENA_VFLR_MASK;
-	wr32(hw, I40E_PFINT_ICR0_ENA, reg);
-	i40e_flush(hw);
 
 	return 0;
 }
@@ -1904,13 +1911,18 @@ static void i40e_vc_vf_broadcast(struct i40e_pf *pf,
 	struct i40e_vf *vf = pf->vf;
 	int i;
 
-	for (i = 0; i < pf->num_alloc_vfs; i++) {
+	for (i = 0; i < pf->num_alloc_vfs; i++, vf++) {
+		int abs_vf_id = vf->vf_id + hw->func_caps.vf_base_id;
+		/* Not all vfs are enabled so skip the ones that are not */
+		if (!test_bit(I40E_VF_STAT_INIT, &vf->vf_states) &&
+		    !test_bit(I40E_VF_STAT_ACTIVE, &vf->vf_states))
+			continue;
+
 		/* Ignore return value on purpose - a given VF may fail, but
 		 * we need to keep going and send to all of them
 		 */
-		i40e_aq_send_msg_to_vf(hw, vf->vf_id, v_opcode, v_retval,
+		i40e_aq_send_msg_to_vf(hw, abs_vf_id, v_opcode, v_retval,
 				       msg, msglen, NULL);
-		vf++;
 	}
 }
 
@@ -1930,7 +1942,8 @@ void i40e_vc_notify_link_state(struct i40e_pf *pf)
 
 	pfe.event = I40E_VIRTCHNL_EVENT_LINK_CHANGE;
 	pfe.severity = I40E_PF_EVENT_SEVERITY_INFO;
-	for (i = 0; i < pf->num_alloc_vfs; i++) {
+	for (i = 0; i < pf->num_alloc_vfs; i++, vf++) {
+		int abs_vf_id = vf->vf_id + hw->func_caps.vf_base_id;
 		if (vf->link_forced) {
 			pfe.event_data.link_event.link_status = vf->link_up;
 			pfe.event_data.link_event.link_speed =
@@ -1940,10 +1953,9 @@ void i40e_vc_notify_link_state(struct i40e_pf *pf)
 				ls->link_info & I40E_AQ_LINK_UP;
 			pfe.event_data.link_event.link_speed = ls->link_speed;
 		}
-		i40e_aq_send_msg_to_vf(hw, vf->vf_id, I40E_VIRTCHNL_OP_EVENT,
+		i40e_aq_send_msg_to_vf(hw, abs_vf_id, I40E_VIRTCHNL_OP_EVENT,
 				       0, (u8 *)&pfe, sizeof(pfe),
 				       NULL);
-		vf++;
 	}
 }
 
@@ -1972,10 +1984,22 @@ void i40e_vc_notify_reset(struct i40e_pf *pf)
 void i40e_vc_notify_vf_reset(struct i40e_vf *vf)
 {
 	struct i40e_virtchnl_pf_event pfe;
+	int abs_vf_id;
+
+	/* validate the request */
+	if (!vf || vf->vf_id >= vf->pf->num_alloc_vfs)
+		return;
+
+	/* verify if the VF is in either init or active before proceeding */
+	if (!test_bit(I40E_VF_STAT_INIT, &vf->vf_states) &&
+	    !test_bit(I40E_VF_STAT_ACTIVE, &vf->vf_states))
+		return;
+
+	abs_vf_id = vf->vf_id + vf->pf->hw.func_caps.vf_base_id;
 
 	pfe.event = I40E_VIRTCHNL_EVENT_RESET_IMPENDING;
 	pfe.severity = I40E_PF_EVENT_SEVERITY_CERTAIN_DOOM;
-	i40e_aq_send_msg_to_vf(&vf->pf->hw, vf->vf_id, I40E_VIRTCHNL_OP_EVENT,
+	i40e_aq_send_msg_to_vf(&vf->pf->hw, abs_vf_id, I40E_VIRTCHNL_OP_EVENT,
 			       I40E_SUCCESS, (u8 *)&pfe,
 			       sizeof(struct i40e_virtchnl_pf_event), NULL);
 }
@@ -2022,16 +2046,14 @@ int i40e_ndo_set_vf_mac(struct net_device *netdev, int vf_id, u8 *mac)
 	}
 
 	/* delete the temporary mac address */
-	i40e_del_filter(vsi, vf->default_lan_addr.addr, 0, true, false);
+	i40e_del_filter(vsi, vf->default_lan_addr.addr, vf->port_vlan_id,
+			true, false);
 
-	/* add the new mac address */
-	f = i40e_add_filter(vsi, mac, 0, true, false);
-	if (!f) {
-		dev_err(&pf->pdev->dev,
-			"Unable to add VF ucast filter\n");
-		ret = -ENOMEM;
-		goto error_param;
-	}
+	/* Delete all the filters for this VSI - we're going to kill it
+	 * anyway.
+	 */
+	list_for_each_entry(f, &vsi->mac_filter_list, list)
+		i40e_del_filter(vsi, f->macaddr, f->vlan, true, false);
 
 	dev_info(&pf->pdev->dev, "Setting MAC %pM on VF %d\n", mac, vf_id);
 	/* program mac filter */
@@ -2040,10 +2062,11 @@ int i40e_ndo_set_vf_mac(struct net_device *netdev, int vf_id, u8 *mac)
 		ret = -EIO;
 		goto error_param;
 	}
-	memcpy(vf->default_lan_addr.addr, mac, ETH_ALEN);
+	ether_addr_copy(vf->default_lan_addr.addr, mac);
 	vf->pf_set_mac = true;
+	/* Force the VF driver stop so it has to reload with new MAC address */
+	i40e_vc_disable_vf(pf, vf);
 	dev_info(&pf->pdev->dev, "Reload the VF driver to make this change effective.\n");
-	ret = 0;
 
 error_param:
 	return ret;
@@ -2088,18 +2111,28 @@ int i40e_ndo_set_vf_port_vlan(struct net_device *netdev,
 		goto error_pvid;
 	}
 
-	if (vsi->info.pvid == 0 && i40e_is_vsi_in_vlan(vsi))
+	if (vsi->info.pvid == 0 && i40e_is_vsi_in_vlan(vsi)) {
 		dev_err(&pf->pdev->dev,
 			"VF %d has already configured VLAN filters and the administrator is requesting a port VLAN override.\nPlease unload and reload the VF driver for this change to take effect.\n",
 			vf_id);
+		/* Administrator Error - knock the VF offline until he does
+		 * the right thing by reconfiguring his network correctly
+		 * and then reloading the VF driver.
+		 */
+		i40e_vc_disable_vf(pf, vf);
+	}
 
 	/* Check for condition where there was already a port VLAN ID
 	 * filter set and now it is being deleted by setting it to zero.
+	 * Additionally check for the condition where there was a port
+	 * VLAN but now there is a new and different port VLAN being set.
 	 * Before deleting all the old VLAN filters we must add new ones
 	 * with -1 (I40E_VLAN_ANY) or otherwise we're left with all our
 	 * MAC addresses deleted.
 	 */
-	if (!(vlan_id || qos) && vsi->info.pvid)
+	if ((!(vlan_id || qos) ||
+	    (vlan_id | qos) != le16_to_cpu(vsi->info.pvid)) &&
+	    vsi->info.pvid)
 		ret = i40e_vsi_add_vlan(vsi, I40E_VLAN_ANY);
 
 	if (vsi->info.pvid) {
@@ -2150,6 +2183,8 @@ error_pvid:
 	return ret;
 }
 
+#define I40E_BW_CREDIT_DIVISOR 50     /* 50Mbps per BW credit */
+#define I40E_MAX_BW_INACTIVE_ACCUM 4  /* device can accumulate 4 credits max */
 /**
  * i40e_ndo_set_vf_bw
  * @netdev: network interface device structure
@@ -2158,9 +2193,76 @@ error_pvid:
  *
  * configure vf tx rate
  **/
-int i40e_ndo_set_vf_bw(struct net_device *netdev, int vf_id, int tx_rate)
+int i40e_ndo_set_vf_bw(struct net_device *netdev, int vf_id, int min_tx_rate,
+		       int max_tx_rate)
 {
-	return -EOPNOTSUPP;
+	struct i40e_netdev_priv *np = netdev_priv(netdev);
+	struct i40e_pf *pf = np->vsi->back;
+	struct i40e_vsi *vsi;
+	struct i40e_vf *vf;
+	int speed = 0;
+	int ret = 0;
+
+	/* validate the request */
+	if (vf_id >= pf->num_alloc_vfs) {
+		dev_err(&pf->pdev->dev, "Invalid VF Identifier %d.\n", vf_id);
+		ret = -EINVAL;
+		goto error;
+	}
+
+	if (min_tx_rate) {
+		dev_err(&pf->pdev->dev, "Invalid min tx rate (%d) (greater than 0) specified for vf %d.\n",
+			min_tx_rate, vf_id);
+		return -EINVAL;
+	}
+
+	vf = &(pf->vf[vf_id]);
+	vsi = pf->vsi[vf->lan_vsi_index];
+	if (!test_bit(I40E_VF_STAT_INIT, &vf->vf_states)) {
+		dev_err(&pf->pdev->dev, "Uninitialized VF %d.\n", vf_id);
+		ret = -EINVAL;
+		goto error;
+	}
+
+	switch (pf->hw.phy.link_info.link_speed) {
+	case I40E_LINK_SPEED_40GB:
+		speed = 40000;
+		break;
+	case I40E_LINK_SPEED_10GB:
+		speed = 10000;
+		break;
+	case I40E_LINK_SPEED_1GB:
+		speed = 1000;
+		break;
+	default:
+		break;
+	}
+
+	if (max_tx_rate > speed) {
+		dev_err(&pf->pdev->dev, "Invalid max tx rate %d specified for vf %d.",
+			max_tx_rate, vf->vf_id);
+		ret = -EINVAL;
+		goto error;
+	}
+
+	if ((max_tx_rate < 50) && (max_tx_rate > 0)) {
+		dev_warn(&pf->pdev->dev, "Setting max Tx rate to minimum usable value of 50Mbps.\n");
+		max_tx_rate = 50;
+	}
+
+	/* Tx rate credits are in values of 50Mbps, 0 is disabled*/
+	ret = i40e_aq_config_vsi_bw_limit(&pf->hw, vsi->seid,
+					  max_tx_rate / I40E_BW_CREDIT_DIVISOR,
+					  I40E_MAX_BW_INACTIVE_ACCUM, NULL);
+	if (ret) {
+		dev_err(&pf->pdev->dev, "Unable to set max tx rate, error code %d.\n",
+			ret);
+		ret = -EIO;
+		goto error;
+	}
+	vf->tx_rate = max_tx_rate;
+error:
+	return ret;
 }
 
 /**
@@ -2200,10 +2302,18 @@ int i40e_ndo_get_vf_config(struct net_device *netdev,
 
 	memcpy(&ivi->mac, vf->default_lan_addr.addr, ETH_ALEN);
 
-	ivi->tx_rate = 0;
+	ivi->max_tx_rate = vf->tx_rate;
+	ivi->min_tx_rate = 0;
 	ivi->vlan = le16_to_cpu(vsi->info.pvid) & I40E_VLAN_MASK;
 	ivi->qos = (le16_to_cpu(vsi->info.pvid) & I40E_PRIORITY_MASK) >>
 		   I40E_VLAN_PRIORITY_SHIFT;
+	if (vf->link_forced == false)
+		ivi->linkstate = IFLA_VF_LINK_STATE_AUTO;
+	else if (vf->link_up == true)
+		ivi->linkstate = IFLA_VF_LINK_STATE_ENABLE;
+	else
+		ivi->linkstate = IFLA_VF_LINK_STATE_DISABLE;
+	ivi->spoofchk = vf->spoofchk;
 	ret = 0;
 
 error_param:
@@ -2225,6 +2335,7 @@ int i40e_ndo_set_vf_link_state(struct net_device *netdev, int vf_id, int link)
 	struct i40e_virtchnl_pf_event pfe;
 	struct i40e_hw *hw = &pf->hw;
 	struct i40e_vf *vf;
+	int abs_vf_id;
 	int ret = 0;
 
 	/* validate the request */
@@ -2235,6 +2346,7 @@ int i40e_ndo_set_vf_link_state(struct net_device *netdev, int vf_id, int link)
 	}
 
 	vf = &pf->vf[vf_id];
+	abs_vf_id = vf->vf_id + hw->func_caps.vf_base_id;
 
 	pfe.event = I40E_VIRTCHNL_EVENT_LINK_CHANGE;
 	pfe.severity = I40E_PF_EVENT_SEVERITY_INFO;
@@ -2264,9 +2376,56 @@ int i40e_ndo_set_vf_link_state(struct net_device *netdev, int vf_id, int link)
 		goto error_out;
 	}
 	/* Notify the VF of its new link state */
-	i40e_aq_send_msg_to_vf(hw, vf->vf_id, I40E_VIRTCHNL_OP_EVENT,
+	i40e_aq_send_msg_to_vf(hw, abs_vf_id, I40E_VIRTCHNL_OP_EVENT,
 			       0, (u8 *)&pfe, sizeof(pfe), NULL);
 
 error_out:
+	return ret;
+}
+
+/**
+ * i40e_ndo_set_vf_spoofchk
+ * @netdev: network interface device structure
+ * @vf_id: vf identifier
+ * @enable: flag to enable or disable feature
+ *
+ * Enable or disable VF spoof checking
+ **/
+int i40e_ndo_set_vf_spoofchk(struct net_device *netdev, int vf_id, bool enable)
+{
+	struct i40e_netdev_priv *np = netdev_priv(netdev);
+	struct i40e_vsi *vsi = np->vsi;
+	struct i40e_pf *pf = vsi->back;
+	struct i40e_vsi_context ctxt;
+	struct i40e_hw *hw = &pf->hw;
+	struct i40e_vf *vf;
+	int ret = 0;
+
+	/* validate the request */
+	if (vf_id >= pf->num_alloc_vfs) {
+		dev_err(&pf->pdev->dev, "Invalid VF Identifier %d\n", vf_id);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	vf = &(pf->vf[vf_id]);
+
+	if (enable == vf->spoofchk)
+		goto out;
+
+	vf->spoofchk = enable;
+	memset(&ctxt, 0, sizeof(ctxt));
+	ctxt.seid = pf->vsi[vf->lan_vsi_index]->seid;
+	ctxt.pf_num = pf->hw.pf_id;
+	ctxt.info.valid_sections = cpu_to_le16(I40E_AQ_VSI_PROP_SECURITY_VALID);
+	if (enable)
+		ctxt.info.sec_flags |= I40E_AQ_VSI_SEC_FLAG_ENABLE_MAC_CHK;
+	ret = i40e_aq_update_vsi_params(hw, &ctxt, NULL);
+	if (ret) {
+		dev_err(&pf->pdev->dev, "Error %d updating VSI parameters\n",
+			ret);
+		ret = -EIO;
+	}
+out:
 	return ret;
 }

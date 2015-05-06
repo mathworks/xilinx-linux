@@ -29,7 +29,6 @@
 #include <linux/spi/spi.h>
 #include <linux/completion.h>
 #include <linux/err.h>
-#include <linux/workqueue.h>
 #include <linux/pm_runtime.h>
 
 #include <bcm63xx_dev_spi.h>
@@ -470,7 +469,6 @@ static const struct dev_pm_ops bcm63xx_spi_pm_ops = {
 static struct platform_driver bcm63xx_spi_driver = {
 	.driver = {
 		.name	= "bcm63xx-spi",
-		.owner	= THIS_MODULE,
 		.pm	= &bcm63xx_spi_pm_ops,
 	},
 	.probe		= bcm63xx_spi_probe,

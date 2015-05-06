@@ -83,6 +83,7 @@ int axiadc_set_pnsel(struct axiadc_state *st, int channel, enum adc_pn_sel sel)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(axiadc_set_pnsel);
 
 enum adc_pn_sel axiadc_get_pnsel(struct axiadc_state *st,
 			       int channel, const char **name)
@@ -407,6 +408,66 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 	}
 }
 
+static int axiadc_read_event_value(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan, enum iio_event_type type,
+	enum iio_event_direction dir, enum iio_event_info info, int *val,
+	int *val2)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+
+	if (conv->read_event_value)
+		return conv->read_event_value(indio_dev, chan,
+				type, dir, info, val, val2);
+	else
+		return -ENOSYS;
+}
+
+static int axiadc_write_event_value(struct iio_dev *indio_dev,
+	const struct iio_chan_spec *chan, enum iio_event_type type,
+	enum iio_event_direction dir, enum iio_event_info info, int val,
+	int val2)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+
+	if (conv->write_event_value)
+		return conv->write_event_value(indio_dev, chan,
+				type, dir, info, val, val2);
+	else
+		return -ENOSYS;
+}
+
+static int axiadc_read_event_config(struct iio_dev *indio_dev,
+				    const struct iio_chan_spec *chan,
+				    enum iio_event_type type,
+				    enum iio_event_direction dir)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+
+	if (conv->read_event_config)
+		return conv->read_event_config(indio_dev, chan, type, dir);
+	else
+		return -ENOSYS;
+}
+
+static int axiadc_write_event_config(struct iio_dev *indio_dev,
+				     const struct iio_chan_spec *chan,
+				     enum iio_event_type type,
+				     enum iio_event_direction dir,
+				     int state)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+
+	if (conv->write_event_config)
+		return conv->write_event_config(indio_dev,
+				chan, type, dir, state);
+	else
+		return -ENOSYS;
+}
+
 static int axiadc_update_scan_mode(struct iio_dev *indio_dev,
 	const unsigned long *scan_mask)
 {
@@ -477,6 +538,10 @@ static const struct iio_info axiadc_info = {
 	.driver_module = THIS_MODULE,
 	.read_raw = &axiadc_read_raw,
 	.write_raw = &axiadc_write_raw,
+	.read_event_value = &axiadc_read_event_value,
+	.write_event_value = &axiadc_write_event_value,
+	.read_event_config = &axiadc_read_event_config,
+	.write_event_config = &axiadc_write_event_config,
 	.debugfs_reg_access = &axiadc_reg_access,
 	.update_scan_mode = &axiadc_update_scan_mode,
 };
@@ -492,6 +557,11 @@ static int axiadc_attach_spi_client(struct device *dev, void *data)
 
 	return 0;
 }
+
+static const struct axiadc_core_info ad9467_core_1_00_a_info = {
+	.has_fifo_interface = true,
+	.version = PCORE_VERSION(8, 0, 'a'),
+};
 
 static const struct axiadc_core_info ad9361_6_00_a_info = {
 	.has_fifo_interface = true,
@@ -510,14 +580,15 @@ static const struct axiadc_core_info ad9680_6_00_a_info = {
 
 /* Match table for of_platform binding */
 static const struct of_device_id axiadc_of_match[] = {
-	{ .compatible = "xlnx,cf-ad9467-core-1.00.a", },
+	{ .compatible = "xlnx,cf-ad9467-core-1.00.a", .data = &ad9467_core_1_00_a_info },
 	{ .compatible = "xlnx,cf-ad9643-core-1.00.a", },
 	{ .compatible = "xlnx,axi-adc-2c-1.00.a", },
 	{ .compatible =	"xlnx,axi-adc-1c-1.00.a", },
-	{ .compatible =	"xlnx,axi-ad9250-1.00.a", },
+	{ .compatible =	"xlnx,axi-ad9234-1.00.a", .data = &ad9680_6_00_a_info },
+	{ .compatible =	"xlnx,axi-ad9250-1.00.a", .data = &ad9680_6_00_a_info },
 	{ .compatible =	"xlnx,axi-ad9683-1.00.a", },
 	{ .compatible =	"xlnx,axi-ad9625-1.00.a", },
-	{ .compatible =	"xlnx,axi-ad9434-1.00.a", },
+	{ .compatible =	"xlnx,axi-ad9434-1.00.a", .data = &ad9680_6_00_a_info },
 	{ .compatible = "adi,axi-ad9643-6.00.a", .data = &ad9643_6_00_a_info },
 	{ .compatible = "adi,axi-ad9361-6.00.a", .data = &ad9361_6_00_a_info },
 	{ .compatible = "adi,axi-ad9680-1.0", .data = &ad9680_6_00_a_info },
@@ -612,6 +683,7 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	conv = to_converter(st->dev_spi);
 	iio_device_set_drvdata(indio_dev, conv);
+	conv->indio_dev = indio_dev;
 
 	if (conv->chip_info->num_shadow_slave_channels) {
 		u32 regs[2];
@@ -628,7 +700,7 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	/* Reset all HDL Cores */
 	axiadc_write(st, ADI_REG_RSTN, 0);
-	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN);
+	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
 	st->pcore_version = axiadc_read(st, ADI_REG_VERSION);
 
@@ -667,24 +739,23 @@ static int axiadc_probe(struct platform_device *pdev)
 		goto err_put_converter;
 
 	if (!st->dp_disable && !axiadc_read(st, ADI_REG_ID)) {
+
 		if (st->streaming_dma)
-			axiadc_configure_ring_stream(indio_dev, NULL);
+			ret = axiadc_configure_ring_stream(indio_dev, NULL);
 		else
-			axiadc_configure_ring(indio_dev, NULL);
+			ret = axiadc_configure_ring(indio_dev, NULL);
 
-		ret = iio_buffer_register(indio_dev,
-					indio_dev->channels,
-					indio_dev->num_channels);
-		if (ret)
-			goto err_unconfigure_ring;
-
-		*indio_dev->buffer->scan_mask =
-			(1UL << conv->chip_info->num_channels) - 1;
+		if (ret < 0)
+			goto err_put_converter;
 	}
 
 	ret = iio_device_register(indio_dev);
 	if (ret)
-		goto err_iio_buffer_unregister;
+		goto err_unconfigure_ring;
+
+	if (indio_dev->buffer && indio_dev->buffer->scan_mask)
+		*indio_dev->buffer->scan_mask =
+			(1UL << conv->chip_info->num_channels) - 1;
 
 	dev_info(&pdev->dev, "ADI AIM (%d.%.2d.%c) at 0x%08llX mapped to 0x%p,"
 		 " probed ADC %s as %s\n",
@@ -702,9 +773,6 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_iio_buffer_unregister:
-	if (!st->dp_disable)
-		iio_buffer_unregister(indio_dev);
 err_unconfigure_ring:
 	if (!st->dp_disable) {
 		if (st->streaming_dma)
@@ -734,7 +802,6 @@ static int axiadc_remove(struct platform_device *pdev)
 
 	iio_device_unregister(indio_dev);
 	if (!st->dp_disable) {
-		iio_buffer_unregister(indio_dev);
 		if (st->streaming_dma)
 			axiadc_unconfigure_ring_stream(indio_dev);
 		else

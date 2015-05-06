@@ -105,7 +105,7 @@ static void drm_connector_clear(struct drm_connector *connector)
 
 static void tegra_connector_destroy(struct drm_connector *connector)
 {
-	drm_sysfs_connector_remove(connector);
+	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
 	drm_connector_clear(connector);
 }
@@ -140,7 +140,9 @@ static void tegra_encoder_dpms(struct drm_encoder *encoder, int mode)
 	if (mode != DRM_MODE_DPMS_ON) {
 		drm_panel_disable(panel);
 		tegra_output_disable(output);
+		drm_panel_unprepare(panel);
 	} else {
+		drm_panel_prepare(panel);
 		tegra_output_enable(output);
 		drm_panel_enable(panel);
 	}
@@ -155,22 +157,18 @@ static bool tegra_encoder_mode_fixup(struct drm_encoder *encoder,
 
 static void tegra_encoder_prepare(struct drm_encoder *encoder)
 {
+	tegra_encoder_dpms(encoder, DRM_MODE_DPMS_OFF);
 }
 
 static void tegra_encoder_commit(struct drm_encoder *encoder)
 {
+	tegra_encoder_dpms(encoder, DRM_MODE_DPMS_ON);
 }
 
 static void tegra_encoder_mode_set(struct drm_encoder *encoder,
 				   struct drm_display_mode *mode,
 				   struct drm_display_mode *adjusted)
 {
-	struct tegra_output *output = encoder_to_output(encoder);
-	int err;
-
-	err = tegra_output_enable(output);
-	if (err < 0)
-		dev_err(encoder->dev->dev, "tegra_output_enable(): %d\n", err);
 }
 
 static const struct drm_encoder_helper_funcs encoder_helper_funcs = {
@@ -185,7 +183,8 @@ static irqreturn_t hpd_irq(int irq, void *data)
 {
 	struct tegra_output *output = data;
 
-	drm_helper_hpd_irq_event(output->connector.dev);
+	if (output->connector.dev)
+		drm_helper_hpd_irq_event(output->connector.dev);
 
 	return IRQ_HANDLED;
 }
@@ -257,6 +256,13 @@ int tegra_output_probe(struct tegra_output *output)
 		}
 
 		output->connector.polled = DRM_CONNECTOR_POLL_HPD;
+
+		/*
+		 * Disable the interrupt until the connector has been
+		 * initialized to avoid a race in the hotplug interrupt
+		 * handler.
+		 */
+		disable_irq(output->hpd_irq);
 	}
 
 	return 0;
@@ -318,14 +324,31 @@ int tegra_output_init(struct drm_device *drm, struct tegra_output *output)
 	drm_encoder_helper_add(&output->encoder, &encoder_helper_funcs);
 
 	drm_mode_connector_attach_encoder(&output->connector, &output->encoder);
-	drm_sysfs_connector_add(&output->connector);
+	drm_connector_register(&output->connector);
 
 	output->encoder.possible_crtcs = 0x3;
+
+	/*
+	 * The connector is now registered and ready to receive hotplug events
+	 * so the hotplug interrupt can be enabled.
+	 */
+	if (gpio_is_valid(output->hpd_gpio))
+		enable_irq(output->hpd_irq);
 
 	return 0;
 }
 
 int tegra_output_exit(struct tegra_output *output)
 {
+	/*
+	 * The connector is going away, so the interrupt must be disabled to
+	 * prevent the hotplug interrupt handler from potentially crashing.
+	 */
+	if (gpio_is_valid(output->hpd_gpio))
+		disable_irq(output->hpd_irq);
+
+	if (output->panel)
+		drm_panel_detach(output->panel);
+
 	return 0;
 }

@@ -764,7 +764,9 @@ brcms_ops_configure_filter(struct ieee80211_hw *hw,
 	return;
 }
 
-static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw)
+static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw,
+				    struct ieee80211_vif *vif,
+				    const u8 *mac_addr)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -773,7 +775,8 @@ static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw)
 	return;
 }
 
-static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw)
+static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw,
+				       struct ieee80211_vif *vif)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -897,7 +900,8 @@ static bool brcms_tx_flush_completed(struct brcms_info *wl)
 	return result;
 }
 
-static void brcms_ops_flush(struct ieee80211_hw *hw, u32 queues, bool drop)
+static void brcms_ops_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			    u32 queues, bool drop)
 {
 	struct brcms_info *wl = hw->priv;
 	int ret;

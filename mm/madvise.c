@@ -292,9 +292,6 @@ static long madvise_dontneed(struct vm_area_struct *vma,
 /*
  * Application wants to free up the pages and associated backing store.
  * This is effectively punching a hole into the middle of a file.
- *
- * NOTE: Currently, only shmfs/tmpfs is supported for this operation.
- * Other filesystems return -ENOSYS.
  */
 static long madvise_remove(struct vm_area_struct *vma,
 				struct vm_area_struct **prev,
@@ -329,7 +326,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 	 */
 	get_file(f);
 	up_read(&current->mm->mmap_sem);
-	error = do_fallocate(f,
+	error = vfs_fallocate(f,
 				FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
 				offset, end - start);
 	fput(f);

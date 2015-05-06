@@ -23,7 +23,7 @@
 #include <asm/time.h>
 
 #ifdef CONFIG_X86_64
-__visible DEFINE_VVAR(volatile unsigned long, jiffies) = INITIAL_JIFFIES;
+__visible volatile unsigned long jiffies __cacheline_aligned = INITIAL_JIFFIES;
 #endif
 
 unsigned long profile_pc(struct pt_regs *regs)
@@ -68,6 +68,8 @@ static struct irqaction irq0  = {
 
 void __init setup_default_timer_irq(void)
 {
+	if (!nr_legacy_irqs())
+		return;
 	setup_irq(0, &irq0);
 }
 

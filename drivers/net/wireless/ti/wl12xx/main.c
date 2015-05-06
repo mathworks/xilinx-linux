@@ -1668,7 +1668,7 @@ static bool wl12xx_lnk_high_prio(struct wl1271 *wl, u8 hlid,
 {
 	u8 thold;
 
-	if (test_bit(hlid, (unsigned long *)&wl->fw_fast_lnk_map))
+	if (test_bit(hlid, &wl->fw_fast_lnk_map))
 		thold = wl->conf.tx.fast_link_thold;
 	else
 		thold = wl->conf.tx.slow_link_thold;
@@ -1900,7 +1900,6 @@ static struct platform_driver wl12xx_driver = {
 	.id_table	= wl12xx_id_table,
 	.driver = {
 		.name	= "wl12xx_driver",
-		.owner	= THIS_MODULE,
 	}
 };
 

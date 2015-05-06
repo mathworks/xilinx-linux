@@ -73,8 +73,10 @@ void radeon_pm_acpi_event_handler(struct radeon_device *rdev)
 			rdev->pm.dpm.ac_power = true;
 		else
 			rdev->pm.dpm.ac_power = false;
-		if (rdev->asic->dpm.enable_bapm)
-			radeon_dpm_enable_bapm(rdev, rdev->pm.dpm.ac_power);
+		if (rdev->family == CHIP_ARUBA) {
+			if (rdev->asic->dpm.enable_bapm)
+				radeon_dpm_enable_bapm(rdev, rdev->pm.dpm.ac_power);
+		}
 		mutex_unlock(&rdev->pm.mutex);
         } else if (rdev->pm.pm_method == PM_METHOD_PROFILE) {
 		if (rdev->pm.profile == PM_PROFILE_AUTO) {
@@ -458,10 +460,6 @@ static ssize_t radeon_get_dpm_state(struct device *dev,
 	struct radeon_device *rdev = ddev->dev_private;
 	enum radeon_pm_state_type pm = rdev->pm.dpm.user_state;
 
-	if  ((rdev->flags & RADEON_IS_PX) &&
-	     (ddev->switch_power_state != DRM_SWITCH_POWER_ON))
-		return snprintf(buf, PAGE_SIZE, "off\n");
-
 	return snprintf(buf, PAGE_SIZE, "%s\n",
 			(pm == POWER_STATE_TYPE_BATTERY) ? "battery" :
 			(pm == POWER_STATE_TYPE_BALANCED) ? "balanced" : "performance");
@@ -474,11 +472,6 @@ static ssize_t radeon_set_dpm_state(struct device *dev,
 {
 	struct drm_device *ddev = dev_get_drvdata(dev);
 	struct radeon_device *rdev = ddev->dev_private;
-
-	/* Can't set dpm state when the card is off */
-	if  ((rdev->flags & RADEON_IS_PX) &&
-	     (ddev->switch_power_state != DRM_SWITCH_POWER_ON))
-		return -EINVAL;
 
 	mutex_lock(&rdev->pm.mutex);
 	if (strncmp("battery", buf, strlen("battery")) == 0)
@@ -493,7 +486,12 @@ static ssize_t radeon_set_dpm_state(struct device *dev,
 		goto fail;
 	}
 	mutex_unlock(&rdev->pm.mutex);
-	radeon_pm_compute_clocks(rdev);
+
+	/* Can't set dpm state when the card is off */
+	if (!(rdev->flags & RADEON_IS_PX) ||
+	    (ddev->switch_power_state == DRM_SWITCH_POWER_ON))
+		radeon_pm_compute_clocks(rdev);
+
 fail:
 	return count;
 }
@@ -984,6 +982,8 @@ void radeon_dpm_enable_uvd(struct radeon_device *rdev, bool enable)
 		if (enable) {
 			mutex_lock(&rdev->pm.mutex);
 			rdev->pm.dpm.uvd_active = true;
+			/* disable this for now */
+#if 0
 			if ((rdev->pm.dpm.sd == 1) && (rdev->pm.dpm.hd == 0))
 				dpm_state = POWER_STATE_TYPE_INTERNAL_UVD_SD;
 			else if ((rdev->pm.dpm.sd == 2) && (rdev->pm.dpm.hd == 0))
@@ -993,6 +993,7 @@ void radeon_dpm_enable_uvd(struct radeon_device *rdev, bool enable)
 			else if ((rdev->pm.dpm.sd == 0) && (rdev->pm.dpm.hd == 2))
 				dpm_state = POWER_STATE_TYPE_INTERNAL_UVD_HD2;
 			else
+#endif
 				dpm_state = POWER_STATE_TYPE_INTERNAL_UVD;
 			rdev->pm.dpm.state = dpm_state;
 			mutex_unlock(&rdev->pm.mutex);
@@ -1286,8 +1287,39 @@ dpm_failed:
 	return ret;
 }
 
+struct radeon_dpm_quirk {
+	u32 chip_vendor;
+	u32 chip_device;
+	u32 subsys_vendor;
+	u32 subsys_device;
+};
+
+/* cards with dpm stability problems */
+static struct radeon_dpm_quirk radeon_dpm_quirk_list[] = {
+	/* TURKS - https://bugs.launchpad.net/ubuntu/+source/linux/+bug/1386534 */
+	{ PCI_VENDOR_ID_ATI, 0x6759, 0x1682, 0x3195 },
+	/* TURKS - https://bugzilla.kernel.org/show_bug.cgi?id=83731 */
+	{ PCI_VENDOR_ID_ATI, 0x6840, 0x1179, 0xfb81 },
+	{ 0, 0, 0, 0 },
+};
+
 int radeon_pm_init(struct radeon_device *rdev)
 {
+	struct radeon_dpm_quirk *p = radeon_dpm_quirk_list;
+	bool disable_dpm = false;
+
+	/* Apply dpm quirks */
+	while (p && p->chip_device != 0) {
+		if (rdev->pdev->vendor == p->chip_vendor &&
+		    rdev->pdev->device == p->chip_device &&
+		    rdev->pdev->subsystem_vendor == p->subsys_vendor &&
+		    rdev->pdev->subsystem_device == p->subsys_device) {
+			disable_dpm = true;
+			break;
+		}
+		++p;
+	}
+
 	/* enable dpm on rv6xx+ */
 	switch (rdev->family) {
 	case CHIP_RV610:
@@ -1298,10 +1330,6 @@ int radeon_pm_init(struct radeon_device *rdev)
 	case CHIP_RS780:
 	case CHIP_RS880:
 	case CHIP_RV770:
-	case CHIP_BARTS:
-	case CHIP_TURKS:
-	case CHIP_CAICOS:
-	case CHIP_CAYMAN:
 		/* DPM requires the RLC, RV770+ dGPU requires SMC */
 		if (!rdev->rlc_fw)
 			rdev->pm.pm_method = PM_METHOD_PROFILE;
@@ -1325,6 +1353,10 @@ int radeon_pm_init(struct radeon_device *rdev)
 	case CHIP_PALM:
 	case CHIP_SUMO:
 	case CHIP_SUMO2:
+	case CHIP_BARTS:
+	case CHIP_TURKS:
+	case CHIP_CAICOS:
+	case CHIP_CAYMAN:
 	case CHIP_ARUBA:
 	case CHIP_TAHITI:
 	case CHIP_PITCAIRN:
@@ -1342,6 +1374,8 @@ int radeon_pm_init(struct radeon_device *rdev)
 		else if ((rdev->family >= CHIP_RV770) &&
 			 (!(rdev->flags & RADEON_IS_IGP)) &&
 			 (!rdev->smc_fw))
+			rdev->pm.pm_method = PM_METHOD_PROFILE;
+		else if (disable_dpm && (radeon_dpm == -1))
 			rdev->pm.pm_method = PM_METHOD_PROFILE;
 		else if (radeon_dpm == 0)
 			rdev->pm.pm_method = PM_METHOD_PROFILE;
@@ -1395,9 +1429,7 @@ static void radeon_pm_fini_old(struct radeon_device *rdev)
 	}
 
 	radeon_hwmon_fini(rdev);
-
-	if (rdev->pm.power_state)
-		kfree(rdev->pm.power_state);
+	kfree(rdev->pm.power_state);
 }
 
 static void radeon_pm_fini_dpm(struct radeon_device *rdev)
@@ -1416,9 +1448,7 @@ static void radeon_pm_fini_dpm(struct radeon_device *rdev)
 	radeon_dpm_fini(rdev);
 
 	radeon_hwmon_fini(rdev);
-
-	if (rdev->pm.power_state)
-		kfree(rdev->pm.power_state);
+	kfree(rdev->pm.power_state);
 }
 
 void radeon_pm_fini(struct radeon_device *rdev)
@@ -1559,7 +1589,7 @@ static bool radeon_pm_in_vbl(struct radeon_device *rdev)
 		if (rdev->pm.active_crtcs & (1 << crtc)) {
 			vbl_status = radeon_get_crtc_scanoutpos(rdev->ddev, crtc, 0, &vpos, &hpos, NULL, NULL);
 			if ((vbl_status & DRM_SCANOUTPOS_VALID) &&
-			    !(vbl_status & DRM_SCANOUTPOS_INVBL))
+			    !(vbl_status & DRM_SCANOUTPOS_IN_VBLANK))
 				in_vbl = false;
 		}
 	}

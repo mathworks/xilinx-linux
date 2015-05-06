@@ -93,14 +93,6 @@ static int irq_status[NR_IRQS] = {
 	[0 ... NR_IRQS -1] = IRQ_UNUSED
 };
 
-int check_irq_used(int irq)
-{
-	if (irq_status[irq] == IRQ_USED)
-		return 1;
-
-	return -1;
-}
-
 static inline int find_unassigned_irq(void)
 {
 	int irq;
@@ -338,7 +330,7 @@ static irqreturn_t smp_irq_move_cleanup_interrupt(int irq, void *dev_id)
 		int irq;
 		struct irq_desc *desc;
 		struct irq_cfg *cfg;
-		irq = __get_cpu_var(vector_irq)[vector];
+		irq = __this_cpu_read(vector_irq[vector]);
 		if (irq < 0)
 			continue;
 
@@ -352,7 +344,7 @@ static irqreturn_t smp_irq_move_cleanup_interrupt(int irq, void *dev_id)
 			goto unlock;
 
 		spin_lock_irqsave(&vector_lock, flags);
-		__get_cpu_var(vector_irq)[vector] = -1;
+		__this_cpu_write(vector_irq[vector], -1);
 		cpu_clear(me, vector_table[vector]);
 		spin_unlock_irqrestore(&vector_lock, flags);
 		cfg->move_cleanup_count--;
@@ -390,8 +382,7 @@ void destroy_and_reserve_irq(unsigned int irq)
 {
 	unsigned long flags;
 
-	dynamic_irq_cleanup(irq);
-
+	irq_init_desc(irq);
 	spin_lock_irqsave(&vector_lock, flags);
 	__clear_irq_vector(irq);
 	irq_status[irq] = IRQ_RSVD;
@@ -424,13 +415,13 @@ int create_irq(void)
  out:
 	spin_unlock_irqrestore(&vector_lock, flags);
 	if (irq >= 0)
-		dynamic_irq_init(irq);
+		irq_init_desc(irq);
 	return irq;
 }
 
 void destroy_irq(unsigned int irq)
 {
-	dynamic_irq_cleanup(irq);
+	irq_init_desc(irq);
 	clear_irq_vector(irq);
 }
 

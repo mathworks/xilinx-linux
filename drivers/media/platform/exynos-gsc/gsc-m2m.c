@@ -66,15 +66,13 @@ static int gsc_m2m_start_streaming(struct vb2_queue *q, unsigned int count)
 	return ret > 0 ? 0 : ret;
 }
 
-static int gsc_m2m_stop_streaming(struct vb2_queue *q)
+static void gsc_m2m_stop_streaming(struct vb2_queue *q)
 {
 	struct gsc_ctx *ctx = q->drv_priv;
 
 	__gsc_m2m_job_abort(ctx);
 
 	pm_runtime_put(&ctx->gsc_dev->pdev->dev);
-
-	return 0;
 }
 
 void gsc_m2m_job_finish(struct gsc_ctx *ctx, int vb_state)
@@ -364,7 +362,6 @@ static int gsc_m2m_reqbufs(struct file *file, void *fh,
 {
 	struct gsc_ctx *ctx = fh_to_ctx(fh);
 	struct gsc_dev *gsc = ctx->gsc_dev;
-	struct gsc_frame *frame;
 	u32 max_cnt;
 
 	max_cnt = (reqbufs->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) ?
@@ -377,8 +374,6 @@ static int gsc_m2m_reqbufs(struct file *file, void *fh,
 		else
 			gsc_ctx_state_lock_clear(GSC_DST_FMT, ctx);
 	}
-
-	frame = ctx_get_frame(ctx, reqbufs->type);
 
 	return v4l2_m2m_reqbufs(file, ctx->m2m_ctx, reqbufs);
 }

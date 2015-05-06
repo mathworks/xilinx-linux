@@ -41,6 +41,7 @@
 #include <linux/i2c-mux.h>
 #include <linux/i2c/pca954x.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/slab.h>
 
 #define PCA954X_MAX_NCHANS 8
@@ -200,9 +201,9 @@ static int pca954x_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, data);
 
 	/* Get the mux out of reset if a reset GPIO is specified. */
-	gpio = devm_gpiod_get(&client->dev, "reset");
-	if (!IS_ERR(gpio))
-		gpiod_direction_output(gpio, 0);
+	gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(gpio))
+		return PTR_ERR(gpio);
 
 	/* Write the mux register at addr to verify
 	 * that the mux is in fact present. This also
@@ -273,9 +274,23 @@ static int pca954x_remove(struct i2c_client *client)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int pca954x_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct pca954x *data = i2c_get_clientdata(client);
+
+	data->last_chan = 0;
+	return i2c_smbus_write_byte(client, 0);
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(pca954x_pm, NULL, pca954x_resume);
+
 static struct i2c_driver pca954x_driver = {
 	.driver		= {
 		.name	= "pca954x",
+		.pm	= &pca954x_pm,
 		.owner	= THIS_MODULE,
 	},
 	.probe		= pca954x_probe,

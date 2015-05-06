@@ -133,14 +133,6 @@ befs_get_block(struct inode *inode, sector_t block,
 
 	befs_debug(sb, "---> befs_get_block() for inode %lu, block %ld",
 		   (unsigned long)inode->i_ino, (long)block);
-
-	if (block < 0) {
-		befs_error(sb, "befs_get_block() was asked for a block "
-			   "number less than zero: block %ld in inode %lu",
-			   (long)block, (unsigned long)inode->i_ino);
-		return -EIO;
-	}
-
 	if (create) {
 		befs_error(sb, "befs_get_block() was asked to write to "
 			   "block %ld in inode %lu", (long)block,
@@ -180,8 +172,8 @@ befs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 	char *utfname;
 	const char *name = dentry->d_name.name;
 
-	befs_debug(sb, "---> %s name %s inode %ld", __func__,
-		   dentry->d_name.name, dir->i_ino);
+	befs_debug(sb, "---> %s name %pd inode %ld", __func__,
+		   dentry, dir->i_ino);
 
 	/* Convert to UTF-8 */
 	if (BEFS_SB(sb)->nls) {
@@ -199,8 +191,7 @@ befs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 	}
 
 	if (ret == BEFS_BT_NOT_FOUND) {
-		befs_debug(sb, "<--- %s %s not found", __func__,
-			   dentry->d_name.name);
+		befs_debug(sb, "<--- %s %pd not found", __func__, dentry);
 		return ERR_PTR(-ENOENT);
 
 	} else if (ret != BEFS_OK || offset == 0) {
@@ -230,10 +221,9 @@ befs_readdir(struct file *file, struct dir_context *ctx)
 	size_t keysize;
 	unsigned char d_type;
 	char keybuf[BEFS_NAME_LEN + 1];
-	const char *dirname = file->f_path.dentry->d_name.name;
 
-	befs_debug(sb, "---> %s name %s, inode %ld, ctx->pos %lld",
-		  __func__, dirname, inode->i_ino, ctx->pos);
+	befs_debug(sb, "---> %s name %pD, inode %ld, ctx->pos %lld",
+		  __func__, file, inode->i_ino, ctx->pos);
 
 more:
 	result = befs_btree_read(sb, ds, ctx->pos, BEFS_NAME_LEN + 1,
@@ -241,8 +231,8 @@ more:
 
 	if (result == BEFS_ERR) {
 		befs_debug(sb, "<--- %s ERROR", __func__);
-		befs_error(sb, "IO error reading %s (inode %lu)",
-			   dirname, inode->i_ino);
+		befs_error(sb, "IO error reading %pD (inode %lu)",
+			   file, inode->i_ino);
 		return -EIO;
 
 	} else if (result == BEFS_BT_END) {
@@ -279,10 +269,6 @@ more:
 	}
 	ctx->pos++;
 	goto more;
-
-	befs_debug(sb, "<--- %s pos %lld", __func__, ctx->pos);
-
-	return 0;
 }
 
 static struct inode *
@@ -396,9 +382,8 @@ static struct inode *befs_iget(struct super_block *sb, unsigned long ino)
 	if (S_ISLNK(inode->i_mode) && !(befs_ino->i_flags & BEFS_LONG_SYMLINK)){
 		inode->i_size = 0;
 		inode->i_blocks = befs_sb->block_size / VFS_BLOCK_SIZE;
-		strncpy(befs_ino->i_data.symlink, raw_inode->data.symlink,
-			BEFS_SYMLINK_LEN - 1);
-		befs_ino->i_data.symlink[BEFS_SYMLINK_LEN - 1] = '\0';
+		strlcpy(befs_ino->i_data.symlink, raw_inode->data.symlink,
+			BEFS_SYMLINK_LEN);
 	} else {
 		int num_blks;
 
@@ -591,21 +576,21 @@ befs_utf2nls(struct super_block *sb, const char *in,
 /**
  * befs_nls2utf - Convert NLS string to utf8 encodeing
  * @sb: Superblock
- * @src: Input string buffer in NLS format
- * @srclen: Length of input string in bytes
- * @dest: The output string in UTF-8 format
- * @destlen: Length of the output buffer
+ * @in: Input string buffer in NLS format
+ * @in_len: Length of input string in bytes
+ * @out: The output string in UTF-8 format
+ * @out_len: Length of the output buffer
  * 
- * Converts input string @src, which is in the format of the loaded NLS map,
+ * Converts input string @in, which is in the format of the loaded NLS map,
  * into a utf8 string.
  * 
- * The destination string @dest is allocated by this function and the caller is
+ * The destination string @out is allocated by this function and the caller is
  * responsible for freeing it with kfree()
  * 
- * On return, *@destlen is the length of @dest in bytes.
+ * On return, *@out_len is the length of @out in bytes.
  *
  * On success, the return value is the number of utf8 characters written to
- * the output buffer @dest.
+ * the output buffer @out.
  *  
  * On Failure, a negative number coresponding to the error code is returned.
  */
@@ -808,13 +793,11 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 
 	befs_debug(sb, "---> %s", __func__);
 
-#ifndef CONFIG_BEFS_RW
 	if (!(sb->s_flags & MS_RDONLY)) {
 		befs_warning(sb,
 			     "No write support. Marking filesystem read-only");
 		sb->s_flags |= MS_RDONLY;
 	}
-#endif				/* CONFIG_BEFS_RW */
 
 	/*
 	 * Set dummy blocksize to read super block.
@@ -843,15 +826,13 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 		    (befs_super_block *) ((void *) bh->b_data + x86_sb_off);
 	}
 
-	if (befs_load_sb(sb, disk_sb) != BEFS_OK)
+	if ((befs_load_sb(sb, disk_sb) != BEFS_OK) ||
+	    (befs_check_sb(sb) != BEFS_OK))
 		goto unacquire_bh;
 
 	befs_dump_super_block(sb, disk_sb);
 
 	brelse(bh);
-
-	if (befs_check_sb(sb) != BEFS_OK)
-		goto unacquire_priv_sbp;
 
 	if( befs_sb->num_blocks > ~((sector_t)0) ) {
 		befs_error(sb, "blocks count: %llu "

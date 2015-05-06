@@ -3702,8 +3702,7 @@ static int snd_trident_free(struct snd_trident *trident)
 		free_irq(trident->irq, trident);
 	if (trident->tlb.buffer.area) {
 		outl(0, TRID_REG(trident, NX_TLBC));
-		if (trident->tlb.memhdr)
-			snd_util_memhdr_free(trident->tlb.memhdr);
+		snd_util_memhdr_free(trident->tlb.memhdr);
 		if (trident->tlb.silent_page.area)
 			snd_dma_free_pages(&trident->tlb.silent_page);
 		vfree(trident->tlb.shadow_entries);
@@ -3880,14 +3879,12 @@ void snd_trident_free_voice(struct snd_trident * trident, struct snd_trident_voi
 {
 	unsigned long flags;
 	void (*private_free)(struct snd_trident_voice *);
-	void *private_data;
 
 	if (voice == NULL || !voice->use)
 		return;
 	snd_trident_clear_voices(trident, voice->number, voice->number);
 	spin_lock_irqsave(&trident->voice_alloc, flags);
 	private_free = voice->private_free;
-	private_data = voice->private_data;
 	voice->private_free = NULL;
 	voice->private_data = NULL;
 	if (voice->pcm)

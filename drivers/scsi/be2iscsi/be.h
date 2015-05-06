@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2005 - 2013 Emulex
+ * Copyright (C) 2005 - 2014 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -83,9 +83,20 @@ static inline void queue_tail_inc(struct be_queue_info *q)
 
 /*ISCSI */
 
+struct be_aic_obj {		/* Adaptive interrupt coalescing (AIC) info */
+	bool enable;
+	u32 min_eqd;		/* in usecs */
+	u32 max_eqd;		/* in usecs */
+	u32 prev_eqd;		/* in usecs */
+	u32 et_eqd;		/* configured val when aic is off */
+	ulong jiffs;
+	u64 eq_prev;		/* Used to calculate eqe */
+};
+
 struct be_eq_obj {
 	bool todo_mcc_cq;
 	bool todo_cq;
+	u32 cq_count;
 	struct be_queue_info q;
 	struct beiscsi_hba *phba;
 	struct be_queue_info *cq;

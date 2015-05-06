@@ -180,7 +180,7 @@ MODULE_PARM_DESC(enable, "Enable the EMU10K1X soundcard.");
 
 /* From 0x50 - 0x5f, last samples captured */
 
-/**
+/*
  * The hardware has 3 channels for playback and 1 for capture.
  *  - channel 0 is the front channel
  *  - channel 1 is the rear channel
@@ -1634,7 +1634,7 @@ static void snd_emu10k1x_remove(struct pci_dev *pci)
 }
 
 // PCI IDs
-static DEFINE_PCI_DEVICE_TABLE(snd_emu10k1x_ids) = {
+static const struct pci_device_id snd_emu10k1x_ids[] = {
 	{ PCI_VDEVICE(CREATIVE, 0x0006), 0 },	/* Dell OEM version (EMU10K1) */
 	{ 0, }
 };

@@ -41,6 +41,7 @@ nvbios_dp_table(struct nouveau_bios *bios, u8 *ver, u8 *hdr, u8 *cnt, u8 *len)
 				case 0x21:
 				case 0x30:
 				case 0x40:
+				case 0x41:
 					*hdr = nv_ro08(bios, data + 0x01);
 					*len = nv_ro08(bios, data + 0x02);
 					*cnt = nv_ro08(bios, data + 0x03);
@@ -70,6 +71,7 @@ nvbios_dpout_entry(struct nouveau_bios *bios, u8 idx,
 			*cnt = nv_ro08(bios, outp + 0x04);
 			break;
 		case 0x40:
+		case 0x41:
 			*hdr = nv_ro08(bios, data + 0x04);
 			*cnt = 0;
 			*len = 0;
@@ -108,6 +110,7 @@ nvbios_dpout_parse(struct nouveau_bios *bios, u8 idx,
 				info->script[4] = nv_ro16(bios, data + 0x10);
 			break;
 		case 0x40:
+		case 0x41:
 			info->flags     = nv_ro08(bios, data + 0x04);
 			info->script[0] = nv_ro16(bios, data + 0x05);
 			info->script[1] = nv_ro16(bios, data + 0x07);
@@ -162,18 +165,21 @@ nvbios_dpcfg_parse(struct nouveau_bios *bios, u16 outp, u8 idx,
 		   struct nvbios_dpcfg *info)
 {
 	u16 data = nvbios_dpcfg_entry(bios, outp, idx, ver, hdr, cnt, len);
+	memset(info, 0x00, sizeof(*info));
 	if (data) {
 		switch (*ver) {
 		case 0x21:
-			info->drv = nv_ro08(bios, data + 0x02);
-			info->pre = nv_ro08(bios, data + 0x03);
-			info->unk = nv_ro08(bios, data + 0x04);
+			info->dc    = nv_ro08(bios, data + 0x02);
+			info->pe    = nv_ro08(bios, data + 0x03);
+			info->tx_pu = nv_ro08(bios, data + 0x04);
 			break;
 		case 0x30:
 		case 0x40:
-			info->drv = nv_ro08(bios, data + 0x01);
-			info->pre = nv_ro08(bios, data + 0x02);
-			info->unk = nv_ro08(bios, data + 0x03);
+		case 0x41:
+			info->pc    = nv_ro08(bios, data + 0x00);
+			info->dc    = nv_ro08(bios, data + 0x01);
+			info->pe    = nv_ro08(bios, data + 0x02);
+			info->tx_pu = nv_ro08(bios, data + 0x03) & 0x0f;
 			break;
 		default:
 			data = 0x0000;
@@ -184,7 +190,7 @@ nvbios_dpcfg_parse(struct nouveau_bios *bios, u16 outp, u8 idx,
 }
 
 u16
-nvbios_dpcfg_match(struct nouveau_bios *bios, u16 outp, u8 un, u8 vs, u8 pe,
+nvbios_dpcfg_match(struct nouveau_bios *bios, u16 outp, u8 pc, u8 vs, u8 pe,
 		   u8 *ver, u8 *hdr, u8 *cnt, u8 *len,
 		   struct nvbios_dpcfg *info)
 {
@@ -192,17 +198,20 @@ nvbios_dpcfg_match(struct nouveau_bios *bios, u16 outp, u8 un, u8 vs, u8 pe,
 	u16 data;
 
 	if (*ver >= 0x30) {
+		/*XXX: there's a second set of these on at least 4.1, that
+		 *     i've witnessed nvidia using instead of the first
+		 *     on gm204.  figure out what/why
+		 */
 		const u8 vsoff[] = { 0, 4, 7, 9 };
-		idx = (un * 10) + vsoff[vs] + pe;
+		idx = (pc * 10) + vsoff[vs] + pe;
 	} else {
-		while ((data = nvbios_dpcfg_entry(bios, outp, idx,
+		while ((data = nvbios_dpcfg_entry(bios, outp, ++idx,
 						  ver, hdr, cnt, len))) {
 			if (nv_ro08(bios, data + 0x00) == vs &&
 			    nv_ro08(bios, data + 0x01) == pe)
 				break;
-			idx++;
 		}
 	}
 
-	return nvbios_dpcfg_parse(bios, outp, pe, ver, hdr, cnt, len, info);
+	return nvbios_dpcfg_parse(bios, outp, idx, ver, hdr, cnt, len, info);
 }

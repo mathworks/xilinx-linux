@@ -201,14 +201,6 @@ struct ehci_hcd {			/* one per controller */
 	unsigned long		resuming_ports;		/* which ports have
 			started to resume */
 
-#ifdef CONFIG_USB_ZYNQ_PHY
-	/*
-	 * OTG controllers and transceivers need software interaction;
-	 * other external transceivers should be software-transparent
-	 */
-	void (*start_hnp)(struct ehci_hcd *ehci);
-#endif
-
 	/* per-HC memory pools (could be per-bus, but ...) */
 	struct dma_pool		*qh_pool;	/* qh per active urb */
 	struct dma_pool		*qtd_pool;	/* one or more per qh */
@@ -867,6 +859,8 @@ static inline u32 hc32_to_cpup (const struct ehci_hcd *ehci, const __hc32 *x)
 struct ehci_driver_overrides {
 	size_t		extra_priv_size;
 	int		(*reset)(struct usb_hcd *hcd);
+	int		(*port_power)(struct usb_hcd *hcd,
+				int portnum, bool enable);
 };
 
 extern void	ehci_init_driver(struct hc_driver *drv,
@@ -879,5 +873,8 @@ extern int	ehci_handshake(struct ehci_hcd *ehci, void __iomem *ptr,
 extern int	ehci_suspend(struct usb_hcd *hcd, bool do_wakeup);
 extern int	ehci_resume(struct usb_hcd *hcd, bool hibernated);
 #endif	/* CONFIG_PM */
+
+extern int	ehci_hub_control(struct usb_hcd	*hcd, u16 typeReq, u16 wValue,
+				 u16 wIndex, char *buf, u16 wLength);
 
 #endif /* __LINUX_EHCI_HCD_H */

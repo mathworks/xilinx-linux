@@ -33,9 +33,9 @@
 #include <linux/swap.h>
 #include <linux/stddef.h>
 #include <linux/vmalloc.h>
-#include <linux/bootmem.h>
 #include <linux/memblock.h>
 #include <linux/slab.h>
+#include <linux/hugetlb.h>
 
 #include <asm/pgalloc.h>
 #include <asm/page.h>
@@ -51,8 +51,12 @@
 #include <asm/cputable.h>
 #include <asm/sections.h>
 #include <asm/firmware.h>
+#include <asm/dma.h>
 
 #include "mmu_decl.h"
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/thp.h>
 
 /* Some sanity checking */
 #if TASK_SIZE_USER64 > PGTABLE_RANGE
@@ -68,15 +72,11 @@
 unsigned long ioremap_bot = IOREMAP_BASE;
 
 #ifdef CONFIG_PPC_MMU_NOHASH
-static void *early_alloc_pgtable(unsigned long size)
+static __ref void *early_alloc_pgtable(unsigned long size)
 {
 	void *pt;
 
-	if (init_bootmem_done)
-		pt = __alloc_bootmem(size, size, __pa(MAX_DMA_ADDRESS));
-	else
-		pt = __va(memblock_alloc_base(size, size,
-					 __pa(MAX_DMA_ADDRESS)));
+	pt = __va(memblock_alloc_base(size, size, __pa(MAX_DMA_ADDRESS)));
 	memset(pt, 0, size);
 
 	return pt;
@@ -110,10 +110,6 @@ int map_kernel_page(unsigned long ea, unsigned long pa, int flags)
 							  __pgprot(flags)));
 	} else {
 #ifdef CONFIG_PPC_MMU_NOHASH
-		/* Warning ! This will blow up if bootmem is not initialized
-		 * which our ppc64 code is keen to do that, we'll need to
-		 * fix it and/or be more careful
-		 */
 		pgdp = pgd_offset_k(ea);
 #ifdef PUD_TABLE_SIZE
 		if (pgd_none(*pgdp)) {
@@ -349,16 +345,31 @@ EXPORT_SYMBOL(iounmap);
 EXPORT_SYMBOL(__iounmap);
 EXPORT_SYMBOL(__iounmap_at);
 
+#ifndef __PAGETABLE_PUD_FOLDED
+/* 4 level page table */
+struct page *pgd_page(pgd_t pgd)
+{
+	if (pgd_huge(pgd))
+		return pte_page(pgd_pte(pgd));
+	return virt_to_page(pgd_page_vaddr(pgd));
+}
+#endif
+
+struct page *pud_page(pud_t pud)
+{
+	if (pud_huge(pud))
+		return pte_page(pud_pte(pud));
+	return virt_to_page(pud_page_vaddr(pud));
+}
+
 /*
  * For hugepage we have pfn in the pmd, we use PTE_RPN_SHIFT bits for flags
  * For PTE page, we have a PTE_FRAG_SIZE (4K) aligned virtual address.
  */
 struct page *pmd_page(pmd_t pmd)
 {
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	if (pmd_trans_huge(pmd))
+	if (pmd_trans_huge(pmd) || pmd_huge(pmd))
 		return pfn_to_page(pmd_pfn(pmd));
-#endif
 	return virt_to_page(pmd_page_vaddr(pmd));
 }
 
@@ -537,8 +548,9 @@ unsigned long pmd_hugepage_update(struct mm_struct *mm, unsigned long addr,
 	old = pmd_val(*pmdp);
 	*pmdp = __pmd((old & ~clr) | set);
 #endif
+	trace_hugepage_update(addr, old, clr, set);
 	if (old & _PAGE_HASHPTE)
-		hpte_do_hugepage_flush(mm, addr, pmdp);
+		hpte_do_hugepage_flush(mm, addr, pmdp, old);
 	return old;
 }
 
@@ -642,10 +654,11 @@ void pmdp_splitting_flush(struct vm_area_struct *vma,
 	 * If we didn't had the splitting flag set, go and flush the
 	 * HPTE entries.
 	 */
+	trace_hugepage_splitting(address, old);
 	if (!(old & _PAGE_SPLITTING)) {
 		/* We need to flush the hpte */
 		if (old & _PAGE_HASHPTE)
-			hpte_do_hugepage_flush(vma->vm_mm, address, pmdp);
+			hpte_do_hugepage_flush(vma->vm_mm, address, pmdp, old);
 	}
 	/*
 	 * This ensures that generic code that rely on IRQ disabling
@@ -709,6 +722,7 @@ void set_pmd_at(struct mm_struct *mm, unsigned long addr,
 	assert_spin_locked(&mm->page_table_lock);
 	WARN_ON(!pmd_trans_huge(pmd));
 #endif
+	trace_hugepage_set_pmd(addr, pmd);
 	return set_pte_at(mm, addr, pmdp_ptep(pmdp), pmd_pte(pmd));
 }
 
@@ -723,70 +737,38 @@ void pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
  * neesd to be flushed.
  */
 void hpte_do_hugepage_flush(struct mm_struct *mm, unsigned long addr,
-			    pmd_t *pmdp)
+			    pmd_t *pmdp, unsigned long old_pmd)
 {
-	int ssize, i;
-	unsigned long s_addr;
-	int max_hpte_count;
-	unsigned int psize, valid;
-	unsigned char *hpte_slot_array;
-	unsigned long hidx, vpn, vsid, hash, shift, slot;
+	int ssize;
+	unsigned int psize;
+	unsigned long vsid;
+	unsigned long flags = 0;
+	const struct cpumask *tmp;
 
-	/*
-	 * Flush all the hptes mapping this hugepage
-	 */
-	s_addr = addr & HPAGE_PMD_MASK;
-	hpte_slot_array = get_hpte_slot_array(pmdp);
-	/*
-	 * IF we try to do a HUGE PTE update after a withdraw is done.
-	 * we will find the below NULL. This happens when we do
-	 * split_huge_page_pmd
-	 */
-	if (!hpte_slot_array)
-		return;
+	/* get the base page size,vsid and segment size */
+#ifdef CONFIG_DEBUG_VM
+	psize = get_slice_psize(mm, addr);
+	BUG_ON(psize == MMU_PAGE_16M);
+#endif
+	if (old_pmd & _PAGE_COMBO)
+		psize = MMU_PAGE_4K;
+	else
+		psize = MMU_PAGE_64K;
 
-	/* get the base page size */
-	psize = get_slice_psize(mm, s_addr);
-
-	if (ppc_md.hugepage_invalidate)
-		return ppc_md.hugepage_invalidate(mm, hpte_slot_array,
-						  s_addr, psize);
-	/*
-	 * No bluk hpte removal support, invalidate each entry
-	 */
-	shift = mmu_psize_defs[psize].shift;
-	max_hpte_count = HPAGE_PMD_SIZE >> shift;
-	for (i = 0; i < max_hpte_count; i++) {
-		/*
-		 * 8 bits per each hpte entries
-		 * 000| [ secondary group (one bit) | hidx (3 bits) | valid bit]
-		 */
-		valid = hpte_valid(hpte_slot_array, i);
-		if (!valid)
-			continue;
-		hidx =  hpte_hash_index(hpte_slot_array, i);
-
-		/* get the vpn */
-		addr = s_addr + (i * (1ul << shift));
-		if (!is_kernel_addr(addr)) {
-			ssize = user_segment_size(addr);
-			vsid = get_vsid(mm->context.id, addr, ssize);
-			WARN_ON(vsid == 0);
-		} else {
-			vsid = get_kernel_vsid(addr, mmu_kernel_ssize);
-			ssize = mmu_kernel_ssize;
-		}
-
-		vpn = hpt_vpn(addr, vsid, ssize);
-		hash = hpt_hash(vpn, shift, ssize);
-		if (hidx & _PTEIDX_SECONDARY)
-			hash = ~hash;
-
-		slot = (hash & htab_hash_mask) * HPTES_PER_GROUP;
-		slot += hidx & _PTEIDX_GROUP_IX;
-		ppc_md.hpte_invalidate(slot, vpn, psize,
-				       MMU_PAGE_16M, ssize, 0);
+	if (!is_kernel_addr(addr)) {
+		ssize = user_segment_size(addr);
+		vsid = get_vsid(mm->context.id, addr, ssize);
+		WARN_ON(vsid == 0);
+	} else {
+		vsid = get_kernel_vsid(addr, mmu_kernel_ssize);
+		ssize = mmu_kernel_ssize;
 	}
+
+	tmp = cpumask_of(smp_processor_id());
+	if (cpumask_equal(mm_cpumask(mm), tmp))
+		flags |= HPTE_LOCAL_UPDATE;
+
+	return flush_hash_hugepage(vsid, addr, pmdp, psize, ssize, flags);
 }
 
 static pmd_t pmd_set_protbits(pmd_t pmd, pgprot_t pgprot)

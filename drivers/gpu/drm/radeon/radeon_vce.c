@@ -66,6 +66,7 @@ int radeon_vce_init(struct radeon_device *rdev)
 	case CHIP_BONAIRE:
 	case CHIP_KAVERI:
 	case CHIP_KABINI:
+	case CHIP_HAWAII:
 	case CHIP_MULLINS:
 		fw_name = FIRMWARE_BONAIRE;
 		break;
@@ -125,7 +126,8 @@ int radeon_vce_init(struct radeon_device *rdev)
 	size = RADEON_GPU_PAGE_ALIGN(rdev->vce_fw->size) +
 	       RADEON_VCE_STACK_SIZE + RADEON_VCE_HEAP_SIZE;
 	r = radeon_bo_create(rdev, size, PAGE_SIZE, true,
-			     RADEON_GEM_DOMAIN_VRAM, NULL, &rdev->vce.vcpu_bo);
+			     RADEON_GEM_DOMAIN_VRAM, 0, NULL, NULL,
+			     &rdev->vce.vcpu_bo);
 	if (r) {
 		dev_err(rdev->dev, "(%d) failed to allocate VCE bo\n", r);
 		return r;
@@ -367,7 +369,7 @@ int radeon_vce_get_create_msg(struct radeon_device *rdev, int ring,
 	for (i = ib.length_dw; i < ib_size_dw; ++i)
 		ib.ptr[i] = 0x0;
 
-	r = radeon_ib_schedule(rdev, &ib, NULL);
+	r = radeon_ib_schedule(rdev, &ib, NULL, false);
 	if (r) {
 	        DRM_ERROR("radeon: failed to schedule ib (%d).\n", r);
 	}
@@ -424,7 +426,7 @@ int radeon_vce_get_destroy_msg(struct radeon_device *rdev, int ring,
 	for (i = ib.length_dw; i < ib_size_dw; ++i)
 		ib.ptr[i] = 0x0;
 
-	r = radeon_ib_schedule(rdev, &ib, NULL);
+	r = radeon_ib_schedule(rdev, &ib, NULL, false);
 	if (r) {
 	        DRM_ERROR("radeon: failed to schedule ib (%d).\n", r);
 	}
@@ -451,11 +453,11 @@ int radeon_vce_cs_reloc(struct radeon_cs_parser *p, int lo, int hi,
 			unsigned size)
 {
 	struct radeon_cs_chunk *relocs_chunk;
-	struct radeon_cs_reloc *reloc;
+	struct radeon_bo_list *reloc;
 	uint64_t start, end, offset;
 	unsigned idx;
 
-	relocs_chunk = &p->chunks[p->chunk_relocs_idx];
+	relocs_chunk = p->chunk_relocs;
 	offset = radeon_get_ib_value(p, lo);
 	idx = radeon_get_ib_value(p, hi);
 
@@ -465,7 +467,7 @@ int radeon_vce_cs_reloc(struct radeon_cs_parser *p, int lo, int hi,
 		return -EINVAL;
 	}
 
-	reloc = p->relocs_ptr[(idx / 4)];
+	reloc = &p->relocs[(idx / 4)];
 	start = reloc->gpu_offset;
 	end = start + radeon_bo_size(reloc->robj);
 	start += offset;
@@ -532,7 +534,7 @@ int radeon_vce_cs_parse(struct radeon_cs_parser *p)
 	uint32_t *size = &tmp;
 	int i, r;
 
-	while (p->idx < p->chunks[p->chunk_ib_idx].length_dw) {
+	while (p->idx < p->chunk_ib->length_dw) {
 		uint32_t len = radeon_get_ib_value(p, p->idx);
 		uint32_t cmd = radeon_get_ib_value(p, p->idx + 1);
 
@@ -714,7 +716,7 @@ int radeon_vce_ring_test(struct radeon_device *rdev, struct radeon_ring *ring)
 		return r;
 	}
 	radeon_ring_write(ring, VCE_CMD_END);
-	radeon_ring_unlock_commit(rdev, ring);
+	radeon_ring_unlock_commit(rdev, ring, false);
 
 	for (i = 0; i < rdev->usec_timeout; i++) {
 	        if (vce_v1_0_get_rptr(rdev, ring) != rptr)

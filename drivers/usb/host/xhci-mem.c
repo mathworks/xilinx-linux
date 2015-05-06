@@ -1020,7 +1020,6 @@ int xhci_alloc_virt_device(struct xhci_hcd *xhci, int slot_id,
 	dev->num_rings_cached = 0;
 
 	init_completion(&dev->cmd_completion);
-	INIT_LIST_HEAD(&dev->cmd_list);
 	dev->udev = udev;
 
 	/* Point to output device context in dcbaa. */
@@ -1794,9 +1793,10 @@ void xhci_free_command(struct xhci_hcd *xhci,
 void xhci_mem_cleanup(struct xhci_hcd *xhci)
 {
 	struct device	*dev = xhci_to_hcd(xhci)->self.controller;
-	struct xhci_cd  *cur_cd, *next_cd;
 	int size;
 	int i, j, num_ports;
+
+	del_timer_sync(&xhci->cmd_timer);
 
 	/* Free the Event Ring Segment Table and the actual Event Ring */
 	size = sizeof(struct xhci_erst_entry)*(xhci->erst.num_entries);
@@ -1812,18 +1812,15 @@ void xhci_mem_cleanup(struct xhci_hcd *xhci)
 
 	if (xhci->lpm_command)
 		xhci_free_command(xhci, xhci->lpm_command);
+	xhci->lpm_command = NULL;
 	if (xhci->cmd_ring)
 		xhci_ring_free(xhci, xhci->cmd_ring);
 	xhci->cmd_ring = NULL;
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init, "Freed command ring");
-	list_for_each_entry_safe(cur_cd, next_cd,
-			&xhci->cancel_cmd_list, cancel_cmd_list) {
-		list_del(&cur_cd->cancel_cmd_list);
-		kfree(cur_cd);
-	}
+	xhci_cleanup_command_queue(xhci);
 
 	num_ports = HCS_MAX_PORTS(xhci->hcs_params1);
-	for (i = 0; i < num_ports; i++) {
+	for (i = 0; i < num_ports && xhci->rh_bw; i++) {
 		struct xhci_interval_bw_table *bwt = &xhci->rh_bw[i].bw_table;
 		for (j = 0; j < XHCI_MAX_INTERVAL; j++) {
 			struct list_head *ep = &bwt->interval_bw[j].endpoints;
@@ -1907,7 +1904,7 @@ static int xhci_test_trb_in_td(struct xhci_hcd *xhci,
 	start_dma = xhci_trb_virt_to_dma(input_seg, start_trb);
 	end_dma = xhci_trb_virt_to_dma(input_seg, end_trb);
 
-	seg = trb_in_td(input_seg, start_trb, end_trb, input_dma);
+	seg = trb_in_td(xhci, input_seg, start_trb, end_trb, input_dma, false);
 	if (seg != result_seg) {
 		xhci_warn(xhci, "WARN: %s TRB math test %d failed!\n",
 				test_name, test_number);
@@ -1921,6 +1918,8 @@ static int xhci_test_trb_in_td(struct xhci_hcd *xhci,
 				end_trb, end_dma);
 		xhci_warn(xhci, "Expected seg %p, got seg %p\n",
 				result_seg, seg);
+		trb_in_td(xhci, input_seg, start_trb, end_trb, input_dma,
+			  true);
 		return -1;
 	}
 	return 0;
@@ -2323,7 +2322,7 @@ int xhci_mem_init(struct xhci_hcd *xhci, gfp_t flags)
 	u32 page_size, temp;
 	int i;
 
-	INIT_LIST_HEAD(&xhci->cancel_cmd_list);
+	INIT_LIST_HEAD(&xhci->cmd_list);
 
 	page_size = readl(&xhci->op_regs->page_size);
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init,
@@ -2508,6 +2507,11 @@ int xhci_mem_init(struct xhci_hcd *xhci, gfp_t flags)
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init,
 			"Wrote ERST address to ir_set 0.");
 	xhci_print_ir_set(xhci, 0);
+
+	/* init command timeout timer */
+	init_timer(&xhci->cmd_timer);
+	xhci->cmd_timer.data = (unsigned long) xhci;
+	xhci->cmd_timer.function = xhci_handle_command_timeout;
 
 	/*
 	 * XXX: Might need to set the Interrupter Moderation Register to

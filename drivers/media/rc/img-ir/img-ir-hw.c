@@ -3,6 +3,11 @@
  *
  * Copyright 2010-2014 Imagination Technologies Ltd.
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
  * This ties into the input subsystem using the RC-core. Protocol support is
  * provided in separate modules which provide the parameters and scancode
  * translation functions to set up the hardware decoder and interpret the
@@ -19,12 +24,6 @@
 
 /* Decoders lock (only modified to preprocess them) */
 static DEFINE_SPINLOCK(img_ir_decoders_lock);
-
-extern struct img_ir_decoder img_ir_nec;
-extern struct img_ir_decoder img_ir_jvc;
-extern struct img_ir_decoder img_ir_sony;
-extern struct img_ir_decoder img_ir_sharp;
-extern struct img_ir_decoder img_ir_sanyo;
 
 static bool img_ir_decoders_preprocessed;
 static struct img_ir_decoder *img_ir_decoders[] = {
@@ -507,7 +506,7 @@ unlock:
 static int img_ir_set_normal_filter(struct rc_dev *dev,
 				    struct rc_scancode_filter *sc_filter)
 {
-	return img_ir_set_filter(dev, RC_FILTER_NORMAL, sc_filter); 
+	return img_ir_set_filter(dev, RC_FILTER_NORMAL, sc_filter);
 }
 
 static int img_ir_set_wakeup_filter(struct rc_dev *dev,
@@ -531,6 +530,22 @@ static void img_ir_set_decoder(struct img_ir_priv *priv,
 	u32 ir_status, irq_en;
 	spin_lock_irq(&priv->lock);
 
+	/*
+	 * First record that the protocol is being stopped so that the end timer
+	 * isn't restarted while we're trying to stop it.
+	 */
+	hw->stopping = true;
+
+	/*
+	 * Release the lock to stop the end timer, since the end timer handler
+	 * acquires the lock and we don't want to deadlock waiting for it.
+	 */
+	spin_unlock_irq(&priv->lock);
+	del_timer_sync(&hw->end_timer);
+	spin_lock_irq(&priv->lock);
+
+	hw->stopping = false;
+
 	/* switch off and disable interrupts */
 	img_ir_write(priv, IMG_IR_CONTROL, 0);
 	irq_en = img_ir_read(priv, IMG_IR_IRQ_ENABLE);
@@ -542,17 +557,18 @@ static void img_ir_set_decoder(struct img_ir_priv *priv,
 	if (ir_status & (IMG_IR_RXDVAL | IMG_IR_RXDVALD2)) {
 		ir_status &= ~(IMG_IR_RXDVAL | IMG_IR_RXDVALD2);
 		img_ir_write(priv, IMG_IR_STATUS, ir_status);
-		img_ir_read(priv, IMG_IR_DATA_LW);
-		img_ir_read(priv, IMG_IR_DATA_UP);
 	}
 
-	/* stop the end timer and switch back to normal mode */
-	del_timer_sync(&hw->end_timer);
+	/* always read data to clear buffer if IR wakes the device */
+	img_ir_read(priv, IMG_IR_DATA_LW);
+	img_ir_read(priv, IMG_IR_DATA_UP);
+
+	/* switch back to normal mode */
 	hw->mode = IMG_IR_M_NORMAL;
 
 	/* clear the wakeup scancode filter */
-	rdev->scancode_filters[RC_FILTER_WAKEUP].data = 0;
-	rdev->scancode_filters[RC_FILTER_WAKEUP].mask = 0;
+	rdev->scancode_wakeup_filter.data = 0;
+	rdev->scancode_wakeup_filter.mask = 0;
 
 	/* clear raw filters */
 	_img_ir_set_filter(priv, NULL);
@@ -656,8 +672,8 @@ success:
 	wakeup_protocols = *ir_type;
 	if (!hw->decoder || !hw->decoder->filter)
 		wakeup_protocols = 0;
-	rc_set_allowed_wakeup_protocols(rdev, wakeup_protocols);
-	rc_set_enabled_wakeup_protocols(rdev, wakeup_protocols);
+	rdev->allowed_wakeup_protocols = wakeup_protocols;
+	rdev->enabled_wakeup_protocols = wakeup_protocols;
 	return 0;
 }
 
@@ -671,9 +687,9 @@ static void img_ir_set_protocol(struct img_ir_priv *priv, u64 proto)
 	spin_unlock_irq(&rdev->rc_map.lock);
 
 	mutex_lock(&rdev->lock);
-	rc_set_enabled_protocols(rdev, proto);
-	rc_set_allowed_wakeup_protocols(rdev, proto);
-	rc_set_enabled_wakeup_protocols(rdev, proto);
+	rdev->enabled_protocols = proto;
+	rdev->allowed_wakeup_protocols = proto;
+	rdev->enabled_wakeup_protocols = proto;
 	mutex_unlock(&rdev->lock);
 }
 
@@ -790,9 +806,11 @@ static void img_ir_handle_data(struct img_ir_priv *priv, u32 len, u64 raw)
 	struct img_ir_priv_hw *hw = &priv->hw;
 	const struct img_ir_decoder *dec = hw->decoder;
 	int ret = IMG_IR_SCANCODE;
-	int scancode;
+	u32 scancode;
+	enum rc_type protocol = RC_TYPE_UNKNOWN;
+
 	if (dec->scancode)
-		ret = dec->scancode(len, raw, &scancode, hw->enabled_protocols);
+		ret = dec->scancode(len, raw, &protocol, &scancode, hw->enabled_protocols);
 	else if (len >= 32)
 		scancode = (u32)raw;
 	else if (len < 32)
@@ -801,7 +819,7 @@ static void img_ir_handle_data(struct img_ir_priv *priv, u32 len, u64 raw)
 		len, (unsigned long long)raw);
 	if (ret == IMG_IR_SCANCODE) {
 		dev_dbg(priv->dev, "decoded scan code %#x\n", scancode);
-		rc_keydown(hw->rdev, scancode, 0);
+		rc_keydown(hw->rdev, protocol, scancode, 0);
 		img_ir_end_repeat(priv);
 	} else if (ret == IMG_IR_REPEATCODE) {
 		if (hw->mode == IMG_IR_M_REPEATING) {
@@ -816,7 +834,8 @@ static void img_ir_handle_data(struct img_ir_priv *priv, u32 len, u64 raw)
 	}
 
 
-	if (dec->repeat) {
+	/* we mustn't update the end timer while trying to stop it */
+	if (dec->repeat && !hw->stopping) {
 		unsigned long interval;
 
 		img_ir_begin_repeat(priv);
@@ -996,7 +1015,7 @@ int img_ir_probe_hw(struct img_ir_priv *priv)
 	}
 	rdev->priv = priv;
 	rdev->map_name = RC_MAP_EMPTY;
-	rc_set_allowed_protocols(rdev, img_ir_allowed_protos(priv));
+	rdev->allowed_protocols = img_ir_allowed_protos(priv);
 	rdev->input_name = "IMG Infrared Decoder";
 	rdev->s_filter = img_ir_set_normal_filter;
 	rdev->s_wakeup_filter = img_ir_set_wakeup_filter;

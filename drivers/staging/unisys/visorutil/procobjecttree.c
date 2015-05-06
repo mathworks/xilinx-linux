@@ -1,6 +1,6 @@
 /* procobjecttree.c
  *
- * Copyright © 2010 - 2013 UNISYS CORPORATION
+ * Copyright (C) 2010 - 2013 UNISYS CORPORATION
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -95,6 +95,7 @@ static struct proc_dir_entry *
 createProcDir(const char *name, struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry *p = proc_mkdir_mode(name, S_IFDIR, parent);
+
 	if (p == NULL)
 		ERRDRV("failed to create /proc directory %s", name);
 	return p;
@@ -197,9 +198,11 @@ void visor_proc_DestroyType(MYPROCTYPE *type)
 		return;
 	if (type->procDirs != NULL) {
 		int i = type->nNames-1;
+
 		while (i >= 0) {
 			if (type->procDirs[i] != NULL) {
 				struct proc_dir_entry *parent = NULL;
+
 				if (i == 0)
 					parent = type->procDirRoot;
 				else
@@ -247,9 +250,8 @@ MYPROCOBJECT *visor_proc_CreateObject(MYPROCTYPE *type,
 		}
 		strcpy(obj->name, name);
 		obj->procDir = createProcDir(obj->name, type->procDir);
-		if (obj->procDir == NULL) {
+		if (obj->procDir == NULL)
 			goto Away;
-		}
 	}
 	obj->procDirPropertyContexts =
 		kzalloc((type->nProperties + 1) * sizeof(PROCDIRENTRYCONTEXT),
@@ -299,6 +301,7 @@ EXPORT_SYMBOL_GPL(visor_proc_CreateObject);
 void visor_proc_DestroyObject(MYPROCOBJECT *obj)
 {
 	MYPROCTYPE *type = NULL;
+
 	if (obj == NULL)
 		return;
 	type = obj->type;
@@ -306,6 +309,7 @@ void visor_proc_DestroyObject(MYPROCOBJECT *obj)
 		return;
 	if (obj->procDirProperties != NULL) {
 		int i = 0;
+
 		for (i = 0; i < type->nProperties; i++) {
 			if (obj->procDirProperties[i] != NULL) {
 				remove_proc_entry(type->propertyNames[i],
@@ -316,19 +320,18 @@ void visor_proc_DestroyObject(MYPROCOBJECT *obj)
 		kfree(obj->procDirProperties);
 		obj->procDirProperties = NULL;
 	}
-	if (obj->procDirPropertyContexts != NULL) {
-		kfree(obj->procDirPropertyContexts);
-		obj->procDirPropertyContexts = NULL;
-	}
+
+	kfree(obj->procDirPropertyContexts);
+	obj->procDirPropertyContexts = NULL;
+
 	if (obj->procDir != NULL) {
 		if (obj->name != NULL)
 			remove_proc_entry(obj->name, type->procDir);
 		obj->procDir = NULL;
 	}
-	if (obj->name != NULL) {
-		kfree(obj->name);
-		obj->name = NULL;
-	}
+
+	kfree(obj->name);
+	obj->name = NULL;
 	kfree(obj);
 }
 EXPORT_SYMBOL_GPL(visor_proc_DestroyObject);
@@ -338,6 +341,7 @@ EXPORT_SYMBOL_GPL(visor_proc_DestroyObject);
 static int seq_show(struct seq_file *seq, void *offset)
 {
 	PROCDIRENTRYCONTEXT *ctx = (PROCDIRENTRYCONTEXT *)(seq->private);
+
 	if (ctx == NULL) {
 		ERRDRV("I don't have a freakin' clue...");
 		return 0;

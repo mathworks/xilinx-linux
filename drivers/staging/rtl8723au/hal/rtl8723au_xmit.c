@@ -21,32 +21,6 @@
 /* include <rtl8192c_hal.h> */
 #include <rtl8723a_hal.h>
 
-s32	rtl8723au_init_xmit_priv(struct rtw_adapter *padapter)
-{
-	struct xmit_priv	*pxmitpriv = &padapter->xmitpriv;
-
-	tasklet_init(&pxmitpriv->xmit_tasklet,
-	     (void(*)(unsigned long))rtl8723au_xmit_tasklet,
-	     (unsigned long)padapter);
-	return _SUCCESS;
-}
-
-void	rtl8723au_free_xmit_priv(struct rtw_adapter *padapter)
-{
-}
-
-static void do_queue_select(struct rtw_adapter	*padapter, struct pkt_attrib *pattrib)
-{
-	u8 qsel;
-
-	qsel = pattrib->priority;
-	RT_TRACE(_module_rtl871x_xmit_c_, _drv_info_,
-		 ("### do_queue_select priority =%d , qsel = %d\n",
-		  pattrib->priority, qsel));
-
-	pattrib->qsel = qsel;
-}
-
 static int urb_zero_packet_chk(struct rtw_adapter *padapter, int sz)
 {
 	int blnSetTxDescOffset;
@@ -87,19 +61,18 @@ static void fill_txdesc_sectype(struct pkt_attrib *pattrib, struct tx_desc *ptxd
 	if ((pattrib->encrypt > 0) && !pattrib->bswenc) {
 		switch (pattrib->encrypt) {
 		/* SEC_TYPE */
-		case _WEP40_:
-		case _WEP104_:
+		case WLAN_CIPHER_SUITE_WEP40:
+		case WLAN_CIPHER_SUITE_WEP104:
 			ptxdesc->txdw1 |= cpu_to_le32((0x01<<22)&0x00c00000);
 			break;
-		case _TKIP_:
-		case _TKIP_WTMIC_:
+		case WLAN_CIPHER_SUITE_TKIP:
 			/* ptxdesc->txdw1 |= cpu_to_le32((0x02<<22)&0x00c00000); */
 			ptxdesc->txdw1 |= cpu_to_le32((0x01<<22)&0x00c00000);
 			break;
-		case _AES_:
+		case WLAN_CIPHER_SUITE_CCMP:
 			ptxdesc->txdw1 |= cpu_to_le32((0x03<<22)&0x00c00000);
 			break;
-		case _NO_PRIVACY_:
+		case 0:
 		default:
 			break;
 		}
@@ -178,7 +151,7 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz, u8 bag
 
 	memset(ptxdesc, 0, sizeof(struct tx_desc));
 
-	if ((pxmitframe->frame_tag&0x0f) == DATA_FRAMETAG) {
+	if (pxmitframe->frame_tag == DATA_FRAMETAG) {
 		/* offset 4 */
 		ptxdesc->txdw1 |= cpu_to_le32(pattrib->mac_id&0x1f);
 
@@ -230,7 +203,7 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz, u8 bag
 
 			ptxdesc->txdw5 |= cpu_to_le32(MRateToHwRate23a(pmlmeext->tx_rate));
 		}
-	} else if ((pxmitframe->frame_tag&0x0f) == MGNT_FRAMETAG) {
+	} else if (pxmitframe->frame_tag == MGNT_FRAMETAG) {
 		/* offset 4 */
 		ptxdesc->txdw1 |= cpu_to_le32(pattrib->mac_id&0x1f);
 
@@ -255,10 +228,11 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz, u8 bag
 		ptxdesc->txdw5 |= cpu_to_le32(0x00180000);/* retry limit = 6 */
 
 		ptxdesc->txdw5 |= cpu_to_le32(MRateToHwRate23a(pmlmeext->tx_rate));
-	} else if ((pxmitframe->frame_tag&0x0f) == TXAGG_FRAMETAG) {
+	} else if (pxmitframe->frame_tag == TXAGG_FRAMETAG) {
 		DBG_8723A("pxmitframe->frame_tag == TXAGG_FRAMETAG\n");
 	} else {
-		DBG_8723A("pxmitframe->frame_tag = %d\n", pxmitframe->frame_tag);
+		DBG_8723A("pxmitframe->frame_tag = %d\n",
+			  pxmitframe->frame_tag);
 
 		/* offset 4 */
 		ptxdesc->txdw1 |= cpu_to_le32((4)&0x1f);/* CAM_ID(MAC_ID) */
@@ -309,10 +283,11 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz, u8 bag
 	return pull;
 }
 
-static s32 rtw_dump_xframe(struct rtw_adapter *padapter, struct xmit_frame *pxmitframe)
+static int rtw_dump_xframe(struct rtw_adapter *padapter,
+			   struct xmit_frame *pxmitframe)
 {
-	s32 ret = _SUCCESS;
-	s32 inner_ret = _SUCCESS;
+	int ret = _SUCCESS;
+	int inner_ret = _SUCCESS;
 	int t, sz, w_sz, pull = 0;
 	u8 *mem_addr;
 	u32 ff_hwaddr;
@@ -320,10 +295,10 @@ static s32 rtw_dump_xframe(struct rtw_adapter *padapter, struct xmit_frame *pxmi
 	struct pkt_attrib *pattrib = &pxmitframe->attrib;
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 
-	if ((pxmitframe->frame_tag == DATA_FRAMETAG) &&
-	    (pxmitframe->attrib.ether_type != 0x0806) &&
-	    (pxmitframe->attrib.ether_type != 0x888e) &&
-	    (pxmitframe->attrib.dhcp_pkt != 1))
+	if (pxmitframe->frame_tag == DATA_FRAMETAG &&
+	    pxmitframe->attrib.ether_type != ETH_P_ARP &&
+	    pxmitframe->attrib.ether_type != ETH_P_PAE &&
+	    pxmitframe->attrib.dhcp_pkt != 1)
 		rtw_issue_addbareq_cmd23a(padapter, pxmitframe);
 
 	mem_addr = pxmitframe->buf_addr;
@@ -358,7 +333,8 @@ static s32 rtw_dump_xframe(struct rtw_adapter *padapter, struct xmit_frame *pxmi
 		}
 
 		ff_hwaddr = rtw_get_ff_hwaddr23a(pxmitframe);
-		inner_ret = rtw_write_port(padapter, ff_hwaddr, w_sz, pxmitbuf);
+		inner_ret = rtl8723au_write_port(padapter, ff_hwaddr,
+						 w_sz, pxmitbuf);
 		rtw_count_tx_stats23a(padapter, pxmitframe, sz);
 
 		RT_TRACE(_module_rtl871x_xmit_c_, _drv_info_,
@@ -377,8 +353,9 @@ static s32 rtw_dump_xframe(struct rtw_adapter *padapter, struct xmit_frame *pxmi
 	return ret;
 }
 
-s32 rtl8723au_xmitframe_complete(struct rtw_adapter *padapter,
-				 struct xmit_priv *pxmitpriv, struct xmit_buf *pxmitbuf)
+bool rtl8723au_xmitframe_complete(struct rtw_adapter *padapter,
+				  struct xmit_priv *pxmitpriv,
+				  struct xmit_buf *pxmitbuf)
 {
 	struct hw_xmit *phwxmits;
 	struct xmit_frame *pxmitframe;
@@ -404,7 +381,7 @@ s32 rtl8723au_xmitframe_complete(struct rtw_adapter *padapter,
 
 		pxmitbuf->priv_data = pxmitframe;
 
-		if ((pxmitframe->frame_tag&0x0f) == DATA_FRAMETAG) {
+		if (pxmitframe->frame_tag == DATA_FRAMETAG) {
 			if (pxmitframe->attrib.priority <= 15)/* TID0~15 */
 				res = rtw_xmitframe_coalesce23a(padapter, pxmitframe->pkt, pxmitframe);
 
@@ -427,9 +404,10 @@ s32 rtl8723au_xmitframe_complete(struct rtw_adapter *padapter,
 	return true;
 }
 
-static s32 xmitframe_direct(struct rtw_adapter *padapter, struct xmit_frame *pxmitframe)
+static int xmitframe_direct(struct rtw_adapter *padapter,
+			    struct xmit_frame *pxmitframe)
 {
-	s32 res = _SUCCESS;
+	int res;
 
 	res = rtw_xmitframe_coalesce23a(padapter, pxmitframe->pkt, pxmitframe);
 	if (res == _SUCCESS)
@@ -442,15 +420,16 @@ static s32 xmitframe_direct(struct rtw_adapter *padapter, struct xmit_frame *pxm
  *	true	dump packet directly
  *	false	enqueue packet
  */
-static s32 pre_xmitframe(struct rtw_adapter *padapter, struct xmit_frame *pxmitframe)
+bool rtl8723au_hal_xmit(struct rtw_adapter *padapter,
+			struct xmit_frame *pxmitframe)
 {
-	s32 res;
+	int res;
 	struct xmit_buf *pxmitbuf = NULL;
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 	struct pkt_attrib *pattrib = &pxmitframe->attrib;
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
 
-	do_queue_select(padapter, pattrib);
+	pattrib->qsel = pattrib->priority;
 	spin_lock_bh(&pxmitpriv->lock);
 
 #ifdef CONFIG_8723AU_AP_MODE
@@ -513,26 +492,17 @@ enqueue:
 	return false;
 }
 
-s32 rtl8723au_mgnt_xmit(struct rtw_adapter *padapter, struct xmit_frame *pmgntframe)
+int rtl8723au_mgnt_xmit(struct rtw_adapter *padapter,
+			struct xmit_frame *pmgntframe)
 {
 	return rtw_dump_xframe(padapter, pmgntframe);
 }
 
-/*
- * Return
- *	true	dump packet directly ok
- *	false	temporary can't transmit packets to hardware
- */
-s32 rtl8723au_hal_xmit(struct rtw_adapter *padapter, struct xmit_frame *pxmitframe)
-{
-	return pre_xmitframe(padapter, pxmitframe);
-}
-
-s32	rtl8723au_hal_xmitframe_enqueue(struct rtw_adapter *padapter,
-					struct xmit_frame *pxmitframe)
+int rtl8723au_hal_xmitframe_enqueue(struct rtw_adapter *padapter,
+				    struct xmit_frame *pxmitframe)
 {
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
-	s32 err;
+	int err;
 
 	err = rtw_xmitframe_enqueue23a(padapter, pxmitframe);
 	if (err != _SUCCESS) {

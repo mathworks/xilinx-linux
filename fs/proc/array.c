@@ -157,20 +157,29 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 	struct user_namespace *user_ns = seq_user_ns(m);
 	struct group_info *group_info;
 	int g;
-	struct fdtable *fdt = NULL;
+	struct task_struct *tracer;
 	const struct cred *cred;
-	pid_t ppid, tpid;
+	pid_t ppid, tpid = 0, tgid, ngid;
+	unsigned int max_fds = 0;
 
 	rcu_read_lock();
 	ppid = pid_alive(p) ?
 		task_tgid_nr_ns(rcu_dereference(p->real_parent), ns) : 0;
-	tpid = 0;
-	if (pid_alive(p)) {
-		struct task_struct *tracer = ptrace_parent(p);
-		if (tracer)
-			tpid = task_pid_nr_ns(tracer, ns);
-	}
+
+	tracer = ptrace_parent(p);
+	if (tracer)
+		tpid = task_pid_nr_ns(tracer, ns);
+
+	tgid = task_tgid_nr_ns(p, ns);
+	ngid = task_numa_group_id(p);
 	cred = get_task_cred(p);
+
+	task_lock(p);
+	if (p->files)
+		max_fds = files_fdtable(p->files)->max_fds;
+	task_unlock(p);
+	rcu_read_unlock();
+
 	seq_printf(m,
 		"State:\t%s\n"
 		"Tgid:\t%d\n"
@@ -179,12 +188,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 		"PPid:\t%d\n"
 		"TracerPid:\t%d\n"
 		"Uid:\t%d\t%d\t%d\t%d\n"
-		"Gid:\t%d\t%d\t%d\t%d\n",
+		"Gid:\t%d\t%d\t%d\t%d\n"
+		"FDSize:\t%d\nGroups:\t",
 		get_task_state(p),
-		task_tgid_nr_ns(p, ns),
-		task_numa_group_id(p),
-		pid_nr_ns(pid, ns),
-		ppid, tpid,
+		tgid, ngid, pid_nr_ns(pid, ns), ppid, tpid,
 		from_kuid_munged(user_ns, cred->uid),
 		from_kuid_munged(user_ns, cred->euid),
 		from_kuid_munged(user_ns, cred->suid),
@@ -192,20 +199,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 		from_kgid_munged(user_ns, cred->gid),
 		from_kgid_munged(user_ns, cred->egid),
 		from_kgid_munged(user_ns, cred->sgid),
-		from_kgid_munged(user_ns, cred->fsgid));
-
-	task_lock(p);
-	if (p->files)
-		fdt = files_fdtable(p->files);
-	seq_printf(m,
-		"FDSize:\t%d\n"
-		"Groups:\t",
-		fdt ? fdt->max_fds : 0);
-	rcu_read_unlock();
+		from_kgid_munged(user_ns, cred->fsgid),
+		max_fds);
 
 	group_info = cred->group_info;
-	task_unlock(p);
-
 	for (g = 0; g < group_info->ngroups; g++)
 		seq_printf(m, "%d ",
 			   from_kgid_munged(user_ns, GROUP_AT(group_info, g)));
@@ -297,14 +294,10 @@ static void render_cap_t(struct seq_file *m, const char *header,
 	seq_puts(m, header);
 	CAP_FOR_EACH_U32(__capi) {
 		seq_printf(m, "%08x",
-			   a->cap[(_KERNEL_CAPABILITY_U32S-1) - __capi]);
+			   a->cap[CAP_LAST_U32 - __capi]);
 	}
 	seq_putc(m, '\n');
 }
-
-/* Remove non-existent capabilities */
-#define NORM_CAPS(v) (v.cap[CAP_TO_INDEX(CAP_LAST_CAP)] &= \
-				CAP_TO_MASK(CAP_LAST_CAP + 1) - 1)
 
 static inline void task_cap(struct seq_file *m, struct task_struct *p)
 {
@@ -318,11 +311,6 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
 	cap_effective	= cred->cap_effective;
 	cap_bset	= cred->cap_bset;
 	rcu_read_unlock();
-
-	NORM_CAPS(cap_inheritable);
-	NORM_CAPS(cap_permitted);
-	NORM_CAPS(cap_effective);
-	NORM_CAPS(cap_bset);
 
 	render_cap_t(m, "CapInh:\t", &cap_inheritable);
 	render_cap_t(m, "CapPrm:\t", &cap_permitted);
@@ -473,13 +461,8 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	priority = task_prio(task);
 	nice = task_nice(task);
 
-	/* Temporary variable needed for gcc-2.96 */
-	/* convert timespec -> nsec*/
-	start_time =
-		(unsigned long long)task->real_start_time.tv_sec * NSEC_PER_SEC
-				+ task->real_start_time.tv_nsec;
 	/* convert nsec -> ticks */
-	start_time = nsec_to_clock_t(start_time);
+	start_time = nsec_to_clock_t(task->real_start_time);
 
 	seq_printf(m, "%d (%s) %c", pid_nr_ns(pid, ns), tcomm, state);
 	seq_put_decimal_ll(m, ' ', ppid);

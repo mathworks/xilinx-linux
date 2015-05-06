@@ -568,7 +568,9 @@ int rt2x00mac_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_sta_remove);
 
-void rt2x00mac_sw_scan_start(struct ieee80211_hw *hw)
+void rt2x00mac_sw_scan_start(struct ieee80211_hw *hw,
+			     struct ieee80211_vif *vif,
+			     const u8 *mac_addr)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 	set_bit(DEVICE_STATE_SCANNING, &rt2x00dev->flags);
@@ -576,7 +578,8 @@ void rt2x00mac_sw_scan_start(struct ieee80211_hw *hw)
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_sw_scan_start);
 
-void rt2x00mac_sw_scan_complete(struct ieee80211_hw *hw)
+void rt2x00mac_sw_scan_complete(struct ieee80211_hw *hw,
+				struct ieee80211_vif *vif)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 	clear_bit(DEVICE_STATE_SCANNING, &rt2x00dev->flags);
@@ -626,25 +629,24 @@ void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 	 * Start/stop beaconing.
 	 */
 	if (changes & BSS_CHANGED_BEACON_ENABLED) {
+		mutex_lock(&intf->beacon_skb_mutex);
 		if (!bss_conf->enable_beacon && intf->enable_beacon) {
 			rt2x00dev->intf_beaconing--;
 			intf->enable_beacon = false;
-			/*
-			 * Clear beacon in the H/W for this vif. This is needed
-			 * to disable beaconing on this particular interface
-			 * and keep it running on other interfaces.
-			 */
-			rt2x00queue_clear_beacon(rt2x00dev, vif);
 
 			if (rt2x00dev->intf_beaconing == 0) {
 				/*
 				 * Last beaconing interface disabled
 				 * -> stop beacon queue.
 				 */
-				mutex_lock(&intf->beacon_skb_mutex);
 				rt2x00queue_stop_queue(rt2x00dev->bcn);
-				mutex_unlock(&intf->beacon_skb_mutex);
 			}
+			/*
+			 * Clear beacon in the H/W for this vif. This is needed
+			 * to disable beaconing on this particular interface
+			 * and keep it running on other interfaces.
+			 */
+			rt2x00queue_clear_beacon(rt2x00dev, vif);
 		} else if (bss_conf->enable_beacon && !intf->enable_beacon) {
 			rt2x00dev->intf_beaconing++;
 			intf->enable_beacon = true;
@@ -660,11 +662,10 @@ void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 				 * First beaconing interface enabled
 				 * -> start beacon queue.
 				 */
-				mutex_lock(&intf->beacon_skb_mutex);
 				rt2x00queue_start_queue(rt2x00dev->bcn);
-				mutex_unlock(&intf->beacon_skb_mutex);
 			}
 		}
+		mutex_unlock(&intf->beacon_skb_mutex);
 	}
 
 	/*
@@ -751,7 +752,8 @@ void rt2x00mac_rfkill_poll(struct ieee80211_hw *hw)
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_rfkill_poll);
 
-void rt2x00mac_flush(struct ieee80211_hw *hw, u32 queues, bool drop)
+void rt2x00mac_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		     u32 queues, bool drop)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 	struct data_queue *queue;
@@ -800,6 +802,8 @@ int rt2x00mac_set_antenna(struct ieee80211_hw *hw, u32 tx_ant, u32 rx_ant)
 
 	setup.tx = tx_ant;
 	setup.rx = rx_ant;
+	setup.rx_chain_num = 0;
+	setup.tx_chain_num = 0;
 
 	rt2x00lib_config_antenna(rt2x00dev, setup);
 

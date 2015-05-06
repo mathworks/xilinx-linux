@@ -54,7 +54,7 @@ static LIST_HEAD(deferred_probe_active_list);
 static struct workqueue_struct *deferred_wq;
 static atomic_t deferred_trigger_count = ATOMIC_INIT(0);
 
-/**
+/*
  * deferred_probe_work_func() - Retry probing devices in the active list.
  */
 static void deferred_probe_work_func(struct work_struct *work)
@@ -587,29 +587,3 @@ void driver_detach(struct device_driver *drv)
 		put_device(dev);
 	}
 }
-
-/*
- * These exports can't be _GPL due to .h files using this within them, and it
- * might break something that was previously working...
- */
-void *dev_get_drvdata(const struct device *dev)
-{
-	if (dev && dev->p)
-		return dev->p->driver_data;
-	return NULL;
-}
-EXPORT_SYMBOL(dev_get_drvdata);
-
-int dev_set_drvdata(struct device *dev, void *data)
-{
-	int error;
-
-	if (!dev->p) {
-		error = device_private_init(dev);
-		if (error)
-			return error;
-	}
-	dev->p->driver_data = data;
-	return 0;
-}
-EXPORT_SYMBOL(dev_set_drvdata);

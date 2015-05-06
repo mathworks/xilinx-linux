@@ -51,7 +51,7 @@ enum {
 
 struct mlx5_pages_req {
 	struct mlx5_core_dev *dev;
-	u32	func_id;
+	u16	func_id;
 	s32	npages;
 	struct work_struct work;
 };
@@ -311,7 +311,8 @@ retry:
 	in->num_entries = cpu_to_be32(npages);
 	err = mlx5_cmd_exec(dev, in, inlen, &out, sizeof(out));
 	if (err) {
-		mlx5_core_warn(dev, "func_id 0x%x, npages %d, err %d\n", func_id, npages, err);
+		mlx5_core_warn(dev, "func_id 0x%x, npages %d, err %d\n",
+			       func_id, npages, err);
 		goto out_alloc;
 	}
 	dev->priv.fw_pages += npages;
@@ -319,7 +320,8 @@ retry:
 	if (out.hdr.status) {
 		err = mlx5_cmd_status_to_err(&out.hdr);
 		if (err) {
-			mlx5_core_warn(dev, "func_id 0x%x, npages %d, status %d\n", func_id, npages, out.hdr.status);
+			mlx5_core_warn(dev, "func_id 0x%x, npages %d, status %d\n",
+				       func_id, npages, out.hdr.status);
 			goto out_alloc;
 		}
 	}
@@ -347,7 +349,7 @@ out_4k:
 	for (i--; i >= 0; i--)
 		free_4k(dev, be64_to_cpu(in->pas[i]));
 out_free:
-	mlx5_vfree(in);
+	kvfree(in);
 	return err;
 }
 
@@ -378,7 +380,7 @@ static int reclaim_pages(struct mlx5_core_dev *dev, u32 func_id, int npages,
 	mlx5_core_dbg(dev, "npages %d, outlen %d\n", npages, outlen);
 	err = mlx5_cmd_exec(dev, &in, sizeof(in), out, outlen);
 	if (err) {
-		mlx5_core_err(dev, "failed recliaming pages\n");
+		mlx5_core_err(dev, "failed reclaiming pages\n");
 		goto out_free;
 	}
 	dev->priv.fw_pages -= npages;
@@ -398,7 +400,7 @@ static int reclaim_pages(struct mlx5_core_dev *dev, u32 func_id, int npages,
 	}
 
 out_free:
-	mlx5_vfree(out);
+	kvfree(out);
 	return err;
 }
 
@@ -414,8 +416,8 @@ static void pages_work_handler(struct work_struct *work)
 		err = give_pages(dev, req->func_id, req->npages, 1);
 
 	if (err)
-		mlx5_core_warn(dev, "%s fail %d\n", req->npages < 0 ?
-			       "reclaim" : "give", err);
+		mlx5_core_warn(dev, "%s fail %d\n",
+			       req->npages < 0 ? "reclaim" : "give", err);
 
 	kfree(req);
 }
@@ -487,7 +489,8 @@ int mlx5_reclaim_startup_pages(struct mlx5_core_dev *dev)
 					    optimal_reclaimed_pages(),
 					    &nclaimed);
 			if (err) {
-				mlx5_core_warn(dev, "failed reclaiming pages (%d)\n", err);
+				mlx5_core_warn(dev, "failed reclaiming pages (%d)\n",
+					       err);
 				return err;
 			}
 			if (nclaimed)

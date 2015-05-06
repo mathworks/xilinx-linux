@@ -71,7 +71,7 @@ static int __init init_ras_IRQ(void)
 
 	return 0;
 }
-subsys_initcall(init_ras_IRQ);
+machine_subsys_initcall(pseries, init_ras_IRQ);
 
 #define EPOW_SHUTDOWN_NORMAL				1
 #define EPOW_SHUTDOWN_ON_UPS				2
@@ -126,7 +126,7 @@ struct epow_errorlog {
 #define EPOW_MAIN_ENCLOSURE		5
 #define EPOW_POWER_OFF			7
 
-void rtas_parse_epow_errlog(struct rtas_error_log *log)
+static void rtas_parse_epow_errlog(struct rtas_error_log *log)
 {
 	struct pseries_errorlog *pseries_log;
 	struct epow_errorlog *epow_log;
@@ -302,8 +302,8 @@ static struct rtas_error_log *fwnmi_get_errinfo(struct pt_regs *regs)
 	/* If it isn't an extended log we can use the per cpu 64bit buffer */
 	h = (struct rtas_error_log *)&savep[1];
 	if (!rtas_error_extended(h)) {
-		memcpy(&__get_cpu_var(mce_data_buf), h, sizeof(__u64));
-		errhdr = (struct rtas_error_log *)&__get_cpu_var(mce_data_buf);
+		memcpy(this_cpu_ptr(&mce_data_buf), h, sizeof(__u64));
+		errhdr = (struct rtas_error_log *)this_cpu_ptr(&mce_data_buf);
 	} else {
 		int len, error_log_length;
 

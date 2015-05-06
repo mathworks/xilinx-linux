@@ -65,8 +65,6 @@ struct daqp_private {
 	enum { semaphore, buffer } interrupt_mode;
 
 	struct completion eos;
-
-	int count;
 };
 
 /* The DAQP communicates with the system through a 16 byte I/O window. */
@@ -194,6 +192,7 @@ static enum irqreturn daqp_interrupt(int irq, void *dev_id)
 	struct comedi_device *dev = dev_id;
 	struct daqp_private *devpriv = dev->private;
 	struct comedi_subdevice *s = dev->read_subdev;
+	struct comedi_cmd *cmd = &s->async->cmd;
 	int loop_limit = 10000;
 	int status;
 
@@ -221,18 +220,16 @@ static enum irqreturn daqp_interrupt(int irq, void *dev_id)
 			data |= inb(dev->iobase + DAQP_FIFO) << 8;
 			data ^= 0x8000;
 
-			comedi_buf_put(s->async, data);
+			comedi_buf_write_samples(s, &data, 1);
 
 			/* If there's a limit, decrement it
 			 * and stop conversion if zero
 			 */
 
-			if (devpriv->count > 0) {
-				devpriv->count--;
-				if (devpriv->count == 0) {
-					s->async->events |= COMEDI_CB_EOA;
-					break;
-				}
+			if (cmd->stop_src == TRIG_COUNT &&
+			    s->async->scans_done >= cmd->stop_arg) {
+				s->async->events |= COMEDI_CB_EOA;
+				break;
 			}
 
 			if ((loop_limit--) <= 0)
@@ -245,9 +242,7 @@ static enum irqreturn daqp_interrupt(int irq, void *dev_id)
 			s->async->events |= COMEDI_CB_EOA | COMEDI_CB_ERROR;
 		}
 
-		s->async->events |= COMEDI_CB_BLOCK;
-
-		cfc_handle_events(dev, s);
+		comedi_handle_events(dev, s);
 	}
 	return IRQ_HANDLED;
 }
@@ -351,7 +346,7 @@ static int daqp_ai_insn_read(struct comedi_device *dev,
  * time that the device will use.
  */
 
-static int daqp_ns_to_timer(unsigned int *ns, int round)
+static int daqp_ns_to_timer(unsigned int *ns, unsigned int flags)
 {
 	int timer;
 
@@ -373,7 +368,7 @@ static int daqp_ai_cmdtest(struct comedi_device *dev,
 			   struct comedi_subdevice *s, struct comedi_cmd *cmd)
 {
 	int err = 0;
-	int tmp;
+	unsigned int arg;
 
 	/* Step 1 : check if triggers are trivially valid */
 
@@ -435,19 +430,15 @@ static int daqp_ai_cmdtest(struct comedi_device *dev,
 	/* step 4: fix up any arguments */
 
 	if (cmd->scan_begin_src == TRIG_TIMER) {
-		tmp = cmd->scan_begin_arg;
-		daqp_ns_to_timer(&cmd->scan_begin_arg,
-				 cmd->flags & TRIG_ROUND_MASK);
-		if (tmp != cmd->scan_begin_arg)
-			err++;
+		arg = cmd->scan_begin_arg;
+		daqp_ns_to_timer(&arg, cmd->flags);
+		err |= cfc_check_trigger_arg_is(&cmd->scan_begin_arg, arg);
 	}
 
 	if (cmd->convert_src == TRIG_TIMER) {
-		tmp = cmd->convert_arg;
-		daqp_ns_to_timer(&cmd->convert_arg,
-				 cmd->flags & TRIG_ROUND_MASK);
-		if (tmp != cmd->convert_arg)
-			err++;
+		arg = cmd->convert_arg;
+		daqp_ns_to_timer(&arg, cmd->flags);
+		err |= cfc_check_trigger_arg_is(&cmd->convert_arg, arg);
 	}
 
 	if (err)
@@ -492,15 +483,13 @@ static int daqp_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	 */
 
 	if (cmd->convert_src == TRIG_TIMER) {
-		counter = daqp_ns_to_timer(&cmd->convert_arg,
-					       cmd->flags & TRIG_ROUND_MASK);
+		counter = daqp_ns_to_timer(&cmd->convert_arg, cmd->flags);
 		outb(counter & 0xff, dev->iobase + DAQP_PACER_LOW);
 		outb((counter >> 8) & 0xff, dev->iobase + DAQP_PACER_MID);
 		outb((counter >> 16) & 0xff, dev->iobase + DAQP_PACER_HIGH);
 		scanlist_start_on_every_entry = 1;
 	} else {
-		counter = daqp_ns_to_timer(&cmd->scan_begin_arg,
-					       cmd->flags & TRIG_ROUND_MASK);
+		counter = daqp_ns_to_timer(&cmd->scan_begin_arg, cmd->flags);
 		outb(counter & 0xff, dev->iobase + DAQP_PACER_LOW);
 		outb((counter >> 8) & 0xff, dev->iobase + DAQP_PACER_MID);
 		outb((counter >> 16) & 0xff, dev->iobase + DAQP_PACER_HIGH);
@@ -581,12 +570,16 @@ static int daqp_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	 */
 
 	if (cmd->stop_src == TRIG_COUNT) {
-		devpriv->count = cmd->stop_arg * cmd->scan_end_arg;
-		threshold = 2 * devpriv->count;
-		while (threshold > DAQP_FIFO_SIZE * 3 / 4)
-			threshold /= 2;
+		unsigned long long nsamples;
+		unsigned long long nbytes;
+
+		nsamples = (unsigned long long)cmd->stop_arg *
+			   cmd->scan_end_arg;
+		nbytes = nsamples * comedi_bytes_per_sample(s);
+		while (nbytes > DAQP_FIFO_SIZE * 3 / 4)
+			nbytes /= 2;
+		threshold = nbytes;
 	} else {
-		devpriv->count = -1;
 		threshold = DAQP_FIFO_SIZE / 2;
 	}
 
@@ -644,7 +637,6 @@ static int daqp_ao_insn_write(struct comedi_device *dev,
 {
 	struct daqp_private *devpriv = dev->private;
 	unsigned int chan = CR_CHAN(insn->chanspec);
-	unsigned int val;
 	int i;
 
 	if (devpriv->stop)
@@ -654,7 +646,10 @@ static int daqp_ao_insn_write(struct comedi_device *dev,
 	outb(0, dev->iobase + DAQP_AUX);
 
 	for (i = 0; i > insn->n; i++) {
-		val = data[0];
+		unsigned val = data[i];
+
+		s->readback[chan] = val;
+
 		val &= 0x0fff;
 		val ^= 0x0800;		/* Flip the sign */
 		val |= (chan << 12);
@@ -740,11 +735,15 @@ static int daqp_auto_attach(struct comedi_device *dev,
 
 	s = &dev->subdevices[1];
 	s->type		= COMEDI_SUBD_AO;
-	s->subdev_flags	= SDF_WRITEABLE;
+	s->subdev_flags	= SDF_WRITABLE;
 	s->n_chan	= 2;
 	s->maxdata	= 0x0fff;
 	s->range_table	= &range_bipolar5;
 	s->insn_write	= daqp_ao_insn_write;
+
+	ret = comedi_alloc_subdev_readback(s);
+	if (ret)
+		return ret;
 
 	s = &dev->subdevices[2];
 	s->type		= COMEDI_SUBD_DI;
@@ -755,7 +754,7 @@ static int daqp_auto_attach(struct comedi_device *dev,
 
 	s = &dev->subdevices[3];
 	s->type		= COMEDI_SUBD_DO;
-	s->subdev_flags	= SDF_WRITEABLE;
+	s->subdev_flags	= SDF_WRITABLE;
 	s->n_chan	= 1;
 	s->maxdata	= 1;
 	s->insn_bits	= daqp_do_insn_bits;

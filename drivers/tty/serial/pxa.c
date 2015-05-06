@@ -223,6 +223,7 @@ static void serial_pxa_start_tx(struct uart_port *port)
 	}
 }
 
+/* should hold up->port.lock */
 static inline void check_modem_status(struct uart_pxa_port *up)
 {
 	int status;
@@ -255,12 +256,14 @@ static inline irqreturn_t serial_pxa_irq(int irq, void *dev_id)
 	iir = serial_in(up, UART_IIR);
 	if (iir & UART_IIR_NO_INT)
 		return IRQ_NONE;
+	spin_lock(&up->port.lock);
 	lsr = serial_in(up, UART_LSR);
 	if (lsr & UART_LSR_DR)
 		receive_chars(up, &lsr);
 	check_modem_status(up);
 	if (lsr & UART_LSR_THRE)
 		transmit_chars(up);
+	spin_unlock(&up->port.lock);
 	return IRQ_HANDLED;
 }
 
@@ -711,13 +714,8 @@ static void serial_pxa_put_poll_char(struct uart_port *port,
 	wait_for_xmitr(up);
 	/*
 	 *	Send the character out.
-	 *	If a LF, also do CR...
 	 */
 	serial_out(up, UART_TX, c);
-	if (c == 10) {
-		wait_for_xmitr(up);
-		serial_out(up, UART_TX, 13);
-	}
 
 	/*
 	 *	Finally, wait for transmitter to become empty
@@ -783,7 +781,7 @@ static struct uart_ops serial_pxa_pops = {
 	.request_port	= serial_pxa_request_port,
 	.config_port	= serial_pxa_config_port,
 	.verify_port	= serial_pxa_verify_port,
-#ifdef CONFIG_CONSOLE_POLL
+#if defined(CONFIG_CONSOLE_POLL) && defined(CONFIG_SERIAL_PXA_CONSOLE)
 	.poll_get_char = serial_pxa_get_poll_char,
 	.poll_put_char = serial_pxa_put_poll_char,
 #endif
@@ -935,7 +933,6 @@ static struct platform_driver serial_pxa_driver = {
 
 	.driver		= {
 	        .name	= "pxa2xx-uart",
-		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM
 		.pm	= &serial_pxa_pm_ops,
 #endif

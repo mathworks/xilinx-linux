@@ -142,8 +142,8 @@ static void omap_plane_pre_apply(struct omap_drm_apply *apply)
 	DBG("%dx%d -> %dx%d (%d)", info->width, info->height,
 			info->out_width, info->out_height,
 			info->screen_width);
-	DBG("%d,%d %08x %08x", info->pos_x, info->pos_y,
-			info->paddr, info->p_uv_addr);
+	DBG("%d,%d %pad %pad", info->pos_x, info->pos_y,
+			&info->paddr, &info->p_uv_addr);
 
 	/* TODO: */
 	ilace = false;
@@ -308,16 +308,13 @@ void omap_plane_install_properties(struct drm_plane *plane,
 	if (priv->has_dmm) {
 		prop = priv->rotation_prop;
 		if (!prop) {
-			const struct drm_prop_enum_list props[] = {
-					{ DRM_ROTATE_0,   "rotate-0" },
-					{ DRM_ROTATE_90,  "rotate-90" },
-					{ DRM_ROTATE_180, "rotate-180" },
-					{ DRM_ROTATE_270, "rotate-270" },
-					{ DRM_REFLECT_X,  "reflect-x" },
-					{ DRM_REFLECT_Y,  "reflect-y" },
-			};
-			prop = drm_property_create_bitmask(dev, 0, "rotation",
-					props, ARRAY_SIZE(props));
+			prop = drm_mode_create_rotation_property(dev,
+								 BIT(DRM_ROTATE_0) |
+								 BIT(DRM_ROTATE_90) |
+								 BIT(DRM_ROTATE_180) |
+								 BIT(DRM_ROTATE_270) |
+								 BIT(DRM_REFLECT_X) |
+								 BIT(DRM_REFLECT_Y));
 			if (prop == NULL)
 				return;
 			priv->rotation_prop = prop;
@@ -391,20 +388,15 @@ struct drm_plane *omap_plane_init(struct drm_device *dev,
 	struct drm_plane *plane = NULL;
 	struct omap_plane *omap_plane;
 	struct omap_overlay_info *info;
-	int ret;
 
 	DBG("%s: priv=%d", plane_names[id], private_plane);
 
 	omap_plane = kzalloc(sizeof(*omap_plane), GFP_KERNEL);
 	if (!omap_plane)
-		goto fail;
+		return NULL;
 
-	ret = drm_flip_work_init(&omap_plane->unpin_work, 16,
+	drm_flip_work_init(&omap_plane->unpin_work,
 			"unpin", unpin_worker);
-	if (ret) {
-		dev_err(dev->dev, "could not allocate unpin FIFO\n");
-		goto fail;
-	}
 
 	omap_plane->nformats = omap_framebuffer_get_formats(
 			omap_plane->formats, ARRAY_SIZE(omap_plane->formats),
@@ -446,10 +438,4 @@ struct drm_plane *omap_plane_init(struct drm_device *dev,
 		omap_plane->info.zorder = id;
 
 	return plane;
-
-fail:
-	if (plane)
-		omap_plane_destroy(plane);
-
-	return NULL;
 }

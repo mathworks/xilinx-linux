@@ -265,7 +265,7 @@ static int ath79_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(wdt_clk))
 		return PTR_ERR(wdt_clk);
 
-	err = clk_enable(wdt_clk);
+	err = clk_prepare_enable(wdt_clk);
 	if (err)
 		return err;
 
@@ -296,14 +296,14 @@ static int ath79_wdt_probe(struct platform_device *pdev)
 	return 0;
 
 err_clk_disable:
-	clk_disable(wdt_clk);
+	clk_disable_unprepare(wdt_clk);
 	return err;
 }
 
 static int ath79_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&ath79_wdt_miscdev);
-	clk_disable(wdt_clk);
+	clk_disable_unprepare(wdt_clk);
 	return 0;
 }
 
@@ -326,7 +326,6 @@ static struct platform_driver ath79_wdt_driver = {
 	.shutdown	= ath97_wdt_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(ath79_wdt_match),
 	},
 };

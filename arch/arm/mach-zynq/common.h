@@ -27,10 +27,9 @@ extern void zynq_slcr_cpu_start(int cpu);
 extern bool zynq_slcr_cpu_state_read(int cpu);
 extern void zynq_slcr_cpu_state_write(int cpu, bool die);
 extern u32 zynq_slcr_get_ocm_config(void);
+extern u32 zynq_slcr_get_device_id(void);
 
 #ifdef CONFIG_SMP
-extern void zynq_secondary_startup(void);
-extern void secondary_startup(void);
 extern char zynq_secondary_trampoline;
 extern char zynq_secondary_trampoline_jump;
 extern char zynq_secondary_trampoline_end;
@@ -44,7 +43,7 @@ extern void zynq_slcr_init_postload_fpga(void);
 extern void __iomem *zynq_slcr_base;
 extern void __iomem *zynq_scu_base;
 
-int zynq_pm_late_init(void);
+void zynq_pm_late_init(void);
 extern unsigned int zynq_sys_suspend_sz;
 int zynq_sys_suspend(void __iomem *ddrc_base, void __iomem *slcr_base);
 

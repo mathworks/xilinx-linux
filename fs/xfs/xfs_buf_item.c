@@ -17,11 +17,11 @@
  */
 #include "xfs.h"
 #include "xfs_fs.h"
+#include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
 #include "xfs_sb.h"
-#include "xfs_ag.h"
 #include "xfs_mount.h"
 #include "xfs_trans.h"
 #include "xfs_buf_item.h"
@@ -488,10 +488,10 @@ xfs_buf_item_unpin(
 		xfs_buf_lock(bp);
 		xfs_buf_hold(bp);
 		bp->b_flags |= XBF_ASYNC;
-		xfs_buf_ioerror(bp, EIO);
+		xfs_buf_ioerror(bp, -EIO);
 		XFS_BUF_UNDONE(bp);
 		xfs_buf_stale(bp);
-		xfs_buf_ioend(bp, 0);
+		xfs_buf_ioend(bp);
 	}
 }
 
@@ -501,7 +501,7 @@ xfs_buf_item_unpin(
  * buffer being bad..
  */
 
-DEFINE_RATELIMIT_STATE(xfs_buf_write_fail_rl_state, 30 * HZ, 10);
+static DEFINE_RATELIMIT_STATE(xfs_buf_write_fail_rl_state, 30 * HZ, 10);
 
 STATIC uint
 xfs_buf_item_push(
@@ -725,7 +725,7 @@ xfs_buf_item_get_format(
 	bip->bli_formats = kmem_zalloc(count * sizeof(struct xfs_buf_log_format),
 				KM_SLEEP);
 	if (!bip->bli_formats)
-		return ENOMEM;
+		return -ENOMEM;
 	return 0;
 }
 
@@ -812,7 +812,6 @@ xfs_buf_item_init(
  */
 static void
 xfs_buf_item_log_segment(
-	struct xfs_buf_log_item	*bip,
 	uint			first,
 	uint			last,
 	uint			*map)
@@ -920,7 +919,7 @@ xfs_buf_item_log(
 		if (end > last)
 			end = last;
 
-		xfs_buf_item_log_segment(bip, first, end,
+		xfs_buf_item_log_segment(first, end,
 					 &bip->bli_formats[i].blf_data_map[0]);
 
 		start += bp->b_maps[i].bm_len;
@@ -1053,7 +1052,7 @@ xfs_buf_iodone_callbacks(
 	static ulong		lasttime;
 	static xfs_buftarg_t	*lasttarg;
 
-	if (likely(!xfs_buf_geterror(bp)))
+	if (likely(!bp->b_error))
 		goto do_callbacks;
 
 	/*
@@ -1082,7 +1081,7 @@ xfs_buf_iodone_callbacks(
 	 * a way to shut the filesystem down if the writes keep failing.
 	 *
 	 * In practice we'll shut the filesystem down soon as non-transient
-	 * erorrs tend to affect the whole device and a failing log write
+	 * errors tend to affect the whole device and a failing log write
 	 * will make us give up.  But we really ought to do better here.
 	 */
 	if (XFS_BUF_ISASYNC(bp)) {
@@ -1095,7 +1094,7 @@ xfs_buf_iodone_callbacks(
 		if (!(bp->b_flags & (XBF_STALE|XBF_WRITE_FAIL))) {
 			bp->b_flags |= XBF_WRITE | XBF_ASYNC |
 				       XBF_DONE | XBF_WRITE_FAIL;
-			xfs_buf_iorequest(bp);
+			xfs_buf_submit(bp);
 		} else {
 			xfs_buf_relse(bp);
 		}
@@ -1116,7 +1115,7 @@ do_callbacks:
 	xfs_buf_do_callbacks(bp);
 	bp->b_fspriv = NULL;
 	bp->b_iodone = NULL;
-	xfs_buf_ioend(bp, 0);
+	xfs_buf_ioend(bp);
 }
 
 /*

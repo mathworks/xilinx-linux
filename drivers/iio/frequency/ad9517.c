@@ -234,9 +234,10 @@ static int ad9517_parse_firmware(struct ad9517_state *st,
 	char *line;
 	int ret;
 	unsigned addr, val1, val2;
+	char *start_addr = data;
 
 	while ((line = strsep(&data, "\n"))) {
-		if (line >= data + size)
+		if (line >= start_addr + size)
 			break;
 
 		ret = sscanf(line, "\"%x\",\"%x\",\"%x\"", &addr, &val1, &val2);
@@ -372,8 +373,8 @@ static int ad9517_setup(struct ad9517_state *st)
 
 	prescaler &= ~IS_FD;
 
-	vco_freq = (st->refin_freq * (prescaler  *
-			pll_b_cnt + pll_a_cnt)) / pll_r_cnt;
+	vco_freq = (st->refin_freq / pll_r_cnt * (prescaler  *
+			pll_b_cnt + pll_a_cnt));
 
 	/* tcal = 4400 * Rdiv * cal_div / Refin */
 	cal_delay_ms = (4400 * pll_r_cnt *
@@ -624,6 +625,8 @@ static int ad9517_probe(struct spi_device *spi)
 	const struct firmware *fw;
 	struct ad9517_state *st;
 	struct clk *clk, *ref_clk, *clkin;
+	bool spi3wire = of_property_read_bool(
+			spi->dev.of_node, "adi,spi-3wire-enable");
 
 	indio_dev = iio_device_alloc(sizeof(*st));
 	if (indio_dev == NULL)
@@ -632,7 +635,7 @@ static int ad9517_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 
 	conf = AD9517_LONG_INSTR |
-		(spi->mode & SPI_3WIRE ? 0 : AD9517_SDO_ACTIVE);
+		((spi->mode & SPI_3WIRE || spi3wire) ? 0 : AD9517_SDO_ACTIVE);
 
 	ret = ad9517_write(spi, AD9517_SERCONF,  conf | AD9517_SOFT_RESET);
 	if (ret < 0)

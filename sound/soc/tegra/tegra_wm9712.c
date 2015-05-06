@@ -50,9 +50,7 @@ static int tegra_wm9712_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_codec *codec = codec_dai->codec;
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 
-	snd_soc_dapm_force_enable_pin(dapm, "Mic Bias");
-
-	return snd_soc_dapm_sync(dapm);
+	return snd_soc_dapm_force_enable_pin(dapm, "Mic Bias");
 }
 
 static struct snd_soc_dai_link tegra_wm9712_dai = {
@@ -169,7 +167,6 @@ static const struct of_device_id tegra_wm9712_of_match[] = {
 static struct platform_driver tegra_wm9712_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 		.of_match_table = tegra_wm9712_of_match,
 	},

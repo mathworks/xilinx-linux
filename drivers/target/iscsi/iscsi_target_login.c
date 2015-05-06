@@ -281,7 +281,6 @@ static int iscsi_login_zero_tsih_s1(
 {
 	struct iscsi_session *sess = NULL;
 	struct iscsi_login_req *pdu = (struct iscsi_login_req *)buf;
-	enum target_prot_op sup_pro_ops;
 	int ret;
 
 	sess = kzalloc(sizeof(struct iscsi_session), GFP_KERNEL);
@@ -343,9 +342,8 @@ static int iscsi_login_zero_tsih_s1(
 		kfree(sess);
 		return -ENOMEM;
 	}
-	sup_pro_ops = conn->conn_transport->iscsit_get_sup_prot_ops(conn);
 
-	sess->se_sess = transport_init_session(sup_pro_ops);
+	sess->se_sess = transport_init_session(TARGET_PROT_NORMAL);
 	if (IS_ERR(sess->se_sess)) {
 		iscsit_tx_login_rsp(conn, ISCSI_STATUS_CLS_TARGET_ERR,
 				ISCSI_LOGIN_STATUS_NO_RESOURCES);
@@ -978,8 +976,7 @@ int iscsit_setup_np(
 	return 0;
 fail:
 	np->np_socket = NULL;
-	if (sock)
-		sock_release(sock);
+	sock_release(sock);
 	return ret;
 }
 
@@ -1145,7 +1142,7 @@ iscsit_conn_set_transport(struct iscsi_conn *conn, struct iscsit_transport *t)
 void iscsi_target_login_sess_out(struct iscsi_conn *conn,
 		struct iscsi_np *np, bool zero_tsih, bool new_sess)
 {
-	if (new_sess == false)
+	if (!new_sess)
 		goto old_sess_out;
 
 	pr_err("iSCSI Login negotiation failed.\n");
@@ -1162,6 +1159,7 @@ void iscsi_target_login_sess_out(struct iscsi_conn *conn,
 	}
 	kfree(conn->sess->sess_ops);
 	kfree(conn->sess);
+	conn->sess = NULL;
 
 old_sess_out:
 	iscsi_stop_login_thread_timer(np);
@@ -1190,8 +1188,7 @@ old_sess_out:
 	if (!IS_ERR(conn->conn_tx_hash.tfm))
 		crypto_free_hash(conn->conn_tx_hash.tfm);
 
-	if (conn->conn_cpumask)
-		free_cpumask_var(conn->conn_cpumask);
+	free_cpumask_var(conn->conn_cpumask);
 
 	kfree(conn->conn_ops);
 
@@ -1206,6 +1203,9 @@ old_sess_out:
 		conn->sock = NULL;
 	}
 
+	if (conn->conn_transport->iscsit_wait_conn)
+		conn->conn_transport->iscsit_wait_conn(conn);
+
 	if (conn->conn_transport->iscsit_free_conn)
 		conn->conn_transport->iscsit_free_conn(conn);
 
@@ -1216,7 +1216,7 @@ old_sess_out:
 static int __iscsi_target_login_thread(struct iscsi_np *np)
 {
 	u8 *buffer, zero_tsih = 0;
-	int ret = 0, rc, stop;
+	int ret = 0, rc;
 	struct iscsi_conn *conn = NULL;
 	struct iscsi_login *login;
 	struct iscsi_portal_group *tpg = NULL;
@@ -1230,6 +1230,9 @@ static int __iscsi_target_login_thread(struct iscsi_np *np)
 	if (np->np_thread_state == ISCSI_NP_THREAD_RESET) {
 		np->np_thread_state = ISCSI_NP_THREAD_ACTIVE;
 		complete(&np->np_restart_comp);
+	} else if (np->np_thread_state == ISCSI_NP_THREAD_SHUTDOWN) {
+		spin_unlock_bh(&np->np_thread_lock);
+		goto exit;
 	} else {
 		np->np_thread_state = ISCSI_NP_THREAD_ACTIVE;
 	}
@@ -1265,8 +1268,6 @@ static int __iscsi_target_login_thread(struct iscsi_np *np)
 			iscsit_put_transport(conn->conn_transport);
 			kfree(conn);
 			conn = NULL;
-			if (ret == -ENODEV)
-				goto out;
 			/* Get another socket */
 			return 1;
 		}
@@ -1365,6 +1366,9 @@ static int __iscsi_target_login_thread(struct iscsi_np *np)
 	}
 	login->zero_tsih = zero_tsih;
 
+	conn->sess->se_sess->sup_prot_ops =
+		conn->conn_transport->iscsit_get_sup_prot_ops(conn);
+
 	tpg = conn->tpg;
 	if (!tpg) {
 		pr_err("Unable to locate struct iscsi_conn->tpg\n");
@@ -1422,10 +1426,8 @@ old_sess_out:
 	}
 
 out:
-	stop = kthread_should_stop();
-	/* Wait for another socket.. */
-	if (!stop)
-		return 1;
+	return 1;
+
 exit:
 	iscsi_stop_login_thread_timer(np);
 	spin_lock_bh(&np->np_thread_lock);
@@ -1442,7 +1444,7 @@ int iscsi_target_login_thread(void *arg)
 
 	allow_signal(SIGINT);
 
-	while (!kthread_should_stop()) {
+	while (1) {
 		ret = __iscsi_target_login_thread(np);
 		/*
 		 * We break and exit here unless another sock_accept() call

@@ -2,7 +2,7 @@
  * Copyright (C) 2005, 2006
  * Avishay Traeger (avishay@gmail.com)
  * Copyright (C) 2008, 2009
- * Boaz Harrosh <bharrosh@panasas.com>
+ * Boaz Harrosh <ooo@electrozaur.com>
  *
  * Copyrights for code taken from ext2:
  *     Copyright (C) 1992, 1993, 1994, 1995
@@ -964,7 +964,7 @@ static void exofs_invalidatepage(struct page *page, unsigned int offset,
 
  /* TODO: Should be easy enough to do proprly */
 static ssize_t exofs_direct_IO(int rw, struct kiocb *iocb,
-		const struct iovec *iov, loff_t offset, unsigned long nr_segs)
+		struct iov_iter *iter, loff_t offset)
 {
 	return 0;
 }

@@ -25,73 +25,76 @@
 #include "iss_video.h"
 #include "iss.h"
 
+static unsigned debug;
+module_param(debug, uint, 0644);
+MODULE_PARM_DESC(debug, "activates debug info");
 
 /* -----------------------------------------------------------------------------
  * Helper functions
  */
 
 static struct iss_format_info formats[] = {
-	{ V4L2_MBUS_FMT_Y8_1X8, V4L2_MBUS_FMT_Y8_1X8,
-	  V4L2_MBUS_FMT_Y8_1X8, V4L2_MBUS_FMT_Y8_1X8,
+	{ MEDIA_BUS_FMT_Y8_1X8, MEDIA_BUS_FMT_Y8_1X8,
+	  MEDIA_BUS_FMT_Y8_1X8, MEDIA_BUS_FMT_Y8_1X8,
 	  V4L2_PIX_FMT_GREY, 8, "Greyscale 8 bpp", },
-	{ V4L2_MBUS_FMT_Y10_1X10, V4L2_MBUS_FMT_Y10_1X10,
-	  V4L2_MBUS_FMT_Y10_1X10, V4L2_MBUS_FMT_Y8_1X8,
+	{ MEDIA_BUS_FMT_Y10_1X10, MEDIA_BUS_FMT_Y10_1X10,
+	  MEDIA_BUS_FMT_Y10_1X10, MEDIA_BUS_FMT_Y8_1X8,
 	  V4L2_PIX_FMT_Y10, 10, "Greyscale 10 bpp", },
-	{ V4L2_MBUS_FMT_Y12_1X12, V4L2_MBUS_FMT_Y10_1X10,
-	  V4L2_MBUS_FMT_Y12_1X12, V4L2_MBUS_FMT_Y8_1X8,
+	{ MEDIA_BUS_FMT_Y12_1X12, MEDIA_BUS_FMT_Y10_1X10,
+	  MEDIA_BUS_FMT_Y12_1X12, MEDIA_BUS_FMT_Y8_1X8,
 	  V4L2_PIX_FMT_Y12, 12, "Greyscale 12 bpp", },
-	{ V4L2_MBUS_FMT_SBGGR8_1X8, V4L2_MBUS_FMT_SBGGR8_1X8,
-	  V4L2_MBUS_FMT_SBGGR8_1X8, V4L2_MBUS_FMT_SBGGR8_1X8,
+	{ MEDIA_BUS_FMT_SBGGR8_1X8, MEDIA_BUS_FMT_SBGGR8_1X8,
+	  MEDIA_BUS_FMT_SBGGR8_1X8, MEDIA_BUS_FMT_SBGGR8_1X8,
 	  V4L2_PIX_FMT_SBGGR8, 8, "BGGR Bayer 8 bpp", },
-	{ V4L2_MBUS_FMT_SGBRG8_1X8, V4L2_MBUS_FMT_SGBRG8_1X8,
-	  V4L2_MBUS_FMT_SGBRG8_1X8, V4L2_MBUS_FMT_SGBRG8_1X8,
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, MEDIA_BUS_FMT_SGBRG8_1X8,
+	  MEDIA_BUS_FMT_SGBRG8_1X8, MEDIA_BUS_FMT_SGBRG8_1X8,
 	  V4L2_PIX_FMT_SGBRG8, 8, "GBRG Bayer 8 bpp", },
-	{ V4L2_MBUS_FMT_SGRBG8_1X8, V4L2_MBUS_FMT_SGRBG8_1X8,
-	  V4L2_MBUS_FMT_SGRBG8_1X8, V4L2_MBUS_FMT_SGRBG8_1X8,
+	{ MEDIA_BUS_FMT_SGRBG8_1X8, MEDIA_BUS_FMT_SGRBG8_1X8,
+	  MEDIA_BUS_FMT_SGRBG8_1X8, MEDIA_BUS_FMT_SGRBG8_1X8,
 	  V4L2_PIX_FMT_SGRBG8, 8, "GRBG Bayer 8 bpp", },
-	{ V4L2_MBUS_FMT_SRGGB8_1X8, V4L2_MBUS_FMT_SRGGB8_1X8,
-	  V4L2_MBUS_FMT_SRGGB8_1X8, V4L2_MBUS_FMT_SRGGB8_1X8,
+	{ MEDIA_BUS_FMT_SRGGB8_1X8, MEDIA_BUS_FMT_SRGGB8_1X8,
+	  MEDIA_BUS_FMT_SRGGB8_1X8, MEDIA_BUS_FMT_SRGGB8_1X8,
 	  V4L2_PIX_FMT_SRGGB8, 8, "RGGB Bayer 8 bpp", },
-	{ V4L2_MBUS_FMT_SGRBG10_DPCM8_1X8, V4L2_MBUS_FMT_SGRBG10_DPCM8_1X8,
-	  V4L2_MBUS_FMT_SGRBG10_1X10, 0,
+	{ MEDIA_BUS_FMT_SGRBG10_DPCM8_1X8, MEDIA_BUS_FMT_SGRBG10_DPCM8_1X8,
+	  MEDIA_BUS_FMT_SGRBG10_1X10, 0,
 	  V4L2_PIX_FMT_SGRBG10DPCM8, 8, "GRBG Bayer 10 bpp DPCM8",  },
-	{ V4L2_MBUS_FMT_SBGGR10_1X10, V4L2_MBUS_FMT_SBGGR10_1X10,
-	  V4L2_MBUS_FMT_SBGGR10_1X10, V4L2_MBUS_FMT_SBGGR8_1X8,
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SBGGR10_1X10,
+	  MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SBGGR8_1X8,
 	  V4L2_PIX_FMT_SBGGR10, 10, "BGGR Bayer 10 bpp", },
-	{ V4L2_MBUS_FMT_SGBRG10_1X10, V4L2_MBUS_FMT_SGBRG10_1X10,
-	  V4L2_MBUS_FMT_SGBRG10_1X10, V4L2_MBUS_FMT_SGBRG8_1X8,
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SGBRG10_1X10,
+	  MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SGBRG8_1X8,
 	  V4L2_PIX_FMT_SGBRG10, 10, "GBRG Bayer 10 bpp", },
-	{ V4L2_MBUS_FMT_SGRBG10_1X10, V4L2_MBUS_FMT_SGRBG10_1X10,
-	  V4L2_MBUS_FMT_SGRBG10_1X10, V4L2_MBUS_FMT_SGRBG8_1X8,
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, MEDIA_BUS_FMT_SGRBG10_1X10,
+	  MEDIA_BUS_FMT_SGRBG10_1X10, MEDIA_BUS_FMT_SGRBG8_1X8,
 	  V4L2_PIX_FMT_SGRBG10, 10, "GRBG Bayer 10 bpp", },
-	{ V4L2_MBUS_FMT_SRGGB10_1X10, V4L2_MBUS_FMT_SRGGB10_1X10,
-	  V4L2_MBUS_FMT_SRGGB10_1X10, V4L2_MBUS_FMT_SRGGB8_1X8,
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, MEDIA_BUS_FMT_SRGGB10_1X10,
+	  MEDIA_BUS_FMT_SRGGB10_1X10, MEDIA_BUS_FMT_SRGGB8_1X8,
 	  V4L2_PIX_FMT_SRGGB10, 10, "RGGB Bayer 10 bpp", },
-	{ V4L2_MBUS_FMT_SBGGR12_1X12, V4L2_MBUS_FMT_SBGGR10_1X10,
-	  V4L2_MBUS_FMT_SBGGR12_1X12, V4L2_MBUS_FMT_SBGGR8_1X8,
+	{ MEDIA_BUS_FMT_SBGGR12_1X12, MEDIA_BUS_FMT_SBGGR10_1X10,
+	  MEDIA_BUS_FMT_SBGGR12_1X12, MEDIA_BUS_FMT_SBGGR8_1X8,
 	  V4L2_PIX_FMT_SBGGR12, 12, "BGGR Bayer 12 bpp", },
-	{ V4L2_MBUS_FMT_SGBRG12_1X12, V4L2_MBUS_FMT_SGBRG10_1X10,
-	  V4L2_MBUS_FMT_SGBRG12_1X12, V4L2_MBUS_FMT_SGBRG8_1X8,
+	{ MEDIA_BUS_FMT_SGBRG12_1X12, MEDIA_BUS_FMT_SGBRG10_1X10,
+	  MEDIA_BUS_FMT_SGBRG12_1X12, MEDIA_BUS_FMT_SGBRG8_1X8,
 	  V4L2_PIX_FMT_SGBRG12, 12, "GBRG Bayer 12 bpp", },
-	{ V4L2_MBUS_FMT_SGRBG12_1X12, V4L2_MBUS_FMT_SGRBG10_1X10,
-	  V4L2_MBUS_FMT_SGRBG12_1X12, V4L2_MBUS_FMT_SGRBG8_1X8,
+	{ MEDIA_BUS_FMT_SGRBG12_1X12, MEDIA_BUS_FMT_SGRBG10_1X10,
+	  MEDIA_BUS_FMT_SGRBG12_1X12, MEDIA_BUS_FMT_SGRBG8_1X8,
 	  V4L2_PIX_FMT_SGRBG12, 12, "GRBG Bayer 12 bpp", },
-	{ V4L2_MBUS_FMT_SRGGB12_1X12, V4L2_MBUS_FMT_SRGGB10_1X10,
-	  V4L2_MBUS_FMT_SRGGB12_1X12, V4L2_MBUS_FMT_SRGGB8_1X8,
+	{ MEDIA_BUS_FMT_SRGGB12_1X12, MEDIA_BUS_FMT_SRGGB10_1X10,
+	  MEDIA_BUS_FMT_SRGGB12_1X12, MEDIA_BUS_FMT_SRGGB8_1X8,
 	  V4L2_PIX_FMT_SRGGB12, 12, "RGGB Bayer 12 bpp", },
-	{ V4L2_MBUS_FMT_UYVY8_1X16, V4L2_MBUS_FMT_UYVY8_1X16,
-	  V4L2_MBUS_FMT_UYVY8_1X16, 0,
+	{ MEDIA_BUS_FMT_UYVY8_1X16, MEDIA_BUS_FMT_UYVY8_1X16,
+	  MEDIA_BUS_FMT_UYVY8_1X16, 0,
 	  V4L2_PIX_FMT_UYVY, 16, "YUV 4:2:2 (UYVY)", },
-	{ V4L2_MBUS_FMT_YUYV8_1X16, V4L2_MBUS_FMT_YUYV8_1X16,
-	  V4L2_MBUS_FMT_YUYV8_1X16, 0,
+	{ MEDIA_BUS_FMT_YUYV8_1X16, MEDIA_BUS_FMT_YUYV8_1X16,
+	  MEDIA_BUS_FMT_YUYV8_1X16, 0,
 	  V4L2_PIX_FMT_YUYV, 16, "YUV 4:2:2 (YUYV)", },
-	{ V4L2_MBUS_FMT_YUYV8_1_5X8, V4L2_MBUS_FMT_YUYV8_1_5X8,
-	  V4L2_MBUS_FMT_YUYV8_1_5X8, 0,
+	{ MEDIA_BUS_FMT_YUYV8_1_5X8, MEDIA_BUS_FMT_YUYV8_1_5X8,
+	  MEDIA_BUS_FMT_YUYV8_1_5X8, 0,
 	  V4L2_PIX_FMT_NV12, 8, "YUV 4:2:0 (NV12)", },
 };
 
 const struct iss_format_info *
-omap4iss_video_format_info(enum v4l2_mbus_pixelcode code)
+omap4iss_video_format_info(u32 code)
 {
 	unsigned int i;
 
@@ -328,15 +331,6 @@ static int iss_video_buf_prepare(struct vb2_buffer *vb)
 	if (vb2_plane_size(vb, 0) < size)
 		return -ENOBUFS;
 
-	/* Refuse to prepare the buffer is the video node has registered an
-	 * error. We don't need to take any lock here as the operation is
-	 * inherently racy. The authoritative check will be performed in the
-	 * queue handler, which can't return an error, this check is just a best
-	 * effort to notify userspace as early as possible.
-	 */
-	if (unlikely(video->error))
-		return -EIO;
-
 	addr = vb2_dma_contig_plane_dma_addr(vb, 0);
 	if (!IS_ALIGNED(addr, 32)) {
 		dev_dbg(video->iss->dev,
@@ -360,6 +354,11 @@ static void iss_video_buf_queue(struct vb2_buffer *vb)
 
 	spin_lock_irqsave(&video->qlock, flags);
 
+	/* Mark the buffer is faulty and give it back to the queue immediately
+	 * if the video node has registered an error. vb2 will perform the same
+	 * check when preparing the buffer, but that is inherently racy, so we
+	 * need to handle the race condition with an authoritative check here.
+	 */
 	if (unlikely(video->error)) {
 		vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
 		spin_unlock_irqrestore(&video->qlock, flags);
@@ -396,7 +395,7 @@ static void iss_video_buf_queue(struct vb2_buffer *vb)
 	}
 }
 
-static struct vb2_ops iss_video_vb2ops = {
+static const struct vb2_ops iss_video_vb2ops = {
 	.queue_setup	= iss_video_queue_setup,
 	.buf_prepare	= iss_video_buf_prepare,
 	.buf_queue	= iss_video_buf_queue,
@@ -510,6 +509,7 @@ void omap4iss_video_cancel_stream(struct iss_video *video)
 		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
 	}
 
+	vb2_queue_error(video->queue);
 	video->error = true;
 
 	spin_unlock_irqrestore(&video->qlock, flags);
@@ -895,7 +895,6 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 
 	video->queue = &vfh->queue;
 	INIT_LIST_HEAD(&video->dmaqueue);
-	spin_lock_init(&video->qlock);
 	video->error = false;
 	atomic_set(&pipe->frame_number, -1);
 
@@ -909,6 +908,7 @@ iss_video_streamon(struct file *file, void *fh, enum v4l2_buf_type type)
 	 */
 	if (pipe->input == NULL) {
 		unsigned long flags;
+
 		ret = omap4iss_pipeline_set_stream(pipe,
 					      ISS_PIPELINE_STREAM_CONTINUOUS);
 		if (ret < 0)
@@ -1044,6 +1044,8 @@ static int iss_video_open(struct file *file)
 	if (handle == NULL)
 		return -ENOMEM;
 
+	video->video.debug = debug;
+
 	v4l2_fh_init(&handle->vfh, &video->video);
 	v4l2_fh_add(&handle->vfh);
 
@@ -1175,6 +1177,7 @@ int omap4iss_video_init(struct iss_video *video, const char *name)
 	if (ret < 0)
 		return ret;
 
+	spin_lock_init(&video->qlock);
 	mutex_init(&video->mutex);
 	atomic_set(&video->active, 0);
 

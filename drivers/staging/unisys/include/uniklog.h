@@ -1,6 +1,6 @@
 /* uniklog.h
  *
- * Copyright © 2010 - 2013 UNISYS CORPORATION
+ * Copyright (C) 2010 - 2013 UNISYS CORPORATION
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,6 @@
  */
 #ifndef __UNIKLOG_H__
 #define __UNIKLOG_H__
-
 
 #include <linux/printk.h>
 
@@ -121,7 +120,6 @@
 			pr_debug(fmt, ## args);				\
 		}							\
 	} while (0)
-
 
 /*
  * # LOGERR

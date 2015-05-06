@@ -72,19 +72,12 @@
 
 		internal-regs {
 			serial@12000 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
 			serial@12100 {
-				clock-frequency = <250000000>;
 				status = "okay";
 			};
-			pinctrl {
-				led_pins: led-pins-0 {
-					marvell,pins = "mpp49", "mpp51", "mpp53";
-					marvell,function = "gpio";
-				};
-			};
+
 			leds {
 				compatible = "gpio-leds";
 				pinctrl-names = "default";
@@ -187,5 +180,12 @@
 				status = "okay";
 			};
 		};
+	};
+};
+
+&pinctrl {
+	led_pins: led-pins-0 {
+		marvell,pins = "mpp49", "mpp51", "mpp53";
+		marvell,function = "gpio";
 	};
 };

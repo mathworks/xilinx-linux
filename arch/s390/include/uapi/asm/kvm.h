@@ -15,6 +15,7 @@
 #include <linux/types.h>
 
 #define __KVM_S390
+#define __KVM_HAVE_GUEST_DEBUG
 
 /* Device control API: s390-specific devices */
 #define KVM_DEV_FLIC_GET_ALL_IRQS	1
@@ -54,6 +55,13 @@ struct kvm_s390_io_adapter_req {
 	__u64 addr;
 };
 
+/* kvm attr_group  on vm fd */
+#define KVM_S390_VM_MEM_CTRL		0
+
+/* kvm attributes for mem_ctrl */
+#define KVM_S390_VM_MEM_ENABLE_CMMA	0
+#define KVM_S390_VM_MEM_CLR_CMMA	1
+
 /* for KVM_GET_REGS and KVM_SET_REGS */
 struct kvm_regs {
 	/* general purpose regs for s390 */
@@ -72,23 +80,53 @@ struct kvm_fpu {
 	__u64 fprs[16];
 };
 
+#define KVM_GUESTDBG_USE_HW_BP		0x00010000
+
+#define KVM_HW_BP			1
+#define KVM_HW_WP_WRITE			2
+#define KVM_SINGLESTEP			4
+
 struct kvm_debug_exit_arch {
+	__u64 addr;
+	__u8 type;
+	__u8 pad[7]; /* Should be set to 0 */
+};
+
+struct kvm_hw_breakpoint {
+	__u64 addr;
+	__u64 phys_addr;
+	__u64 len;
+	__u8 type;
+	__u8 pad[7]; /* Should be set to 0 */
 };
 
 /* for KVM_SET_GUEST_DEBUG */
 struct kvm_guest_debug_arch {
+	__u32 nr_hw_bp;
+	__u32 pad; /* Should be set to 0 */
+	struct kvm_hw_breakpoint __user *hw_bp;
 };
 
 #define KVM_SYNC_PREFIX (1UL << 0)
 #define KVM_SYNC_GPRS   (1UL << 1)
 #define KVM_SYNC_ACRS   (1UL << 2)
 #define KVM_SYNC_CRS    (1UL << 3)
+#define KVM_SYNC_ARCH0  (1UL << 4)
+#define KVM_SYNC_PFAULT (1UL << 5)
 /* definition of registers in kvm_run */
 struct kvm_sync_regs {
 	__u64 prefix;	/* prefix register */
 	__u64 gprs[16];	/* general purpose registers */
 	__u32 acrs[16];	/* access registers */
 	__u64 crs[16];	/* control registers */
+	__u64 todpr;	/* tod programmable register [ARCH0] */
+	__u64 cputm;	/* cpu timer [ARCH0] */
+	__u64 ckc;	/* clock comparator [ARCH0] */
+	__u64 pp;	/* program parameter [ARCH0] */
+	__u64 gbea;	/* guest breaking-event address [ARCH0] */
+	__u64 pft;	/* pfault token [PFAULT] */
+	__u64 pfs;	/* pfault select [PFAULT] */
+	__u64 pfc;	/* pfault compare [PFAULT] */
 };
 
 #define KVM_REG_S390_TODPR	(KVM_REG_S390 | KVM_REG_SIZE_U32 | 0x1)

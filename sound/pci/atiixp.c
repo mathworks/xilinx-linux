@@ -286,7 +286,7 @@ struct atiixp {
 
 /*
  */
-static DEFINE_PCI_DEVICE_TABLE(snd_atiixp_ids) = {
+static const struct pci_device_id snd_atiixp_ids[] = {
 	{ PCI_VDEVICE(ATI, 0x4341), 0 }, /* SB200 */
 	{ PCI_VDEVICE(ATI, 0x4361), 0 }, /* SB300 */
 	{ PCI_VDEVICE(ATI, 0x4370), 0 }, /* SB400 */
@@ -688,9 +688,7 @@ static void snd_atiixp_xrun_dma(struct atiixp *chip, struct atiixp_dma *dma)
 	if (! dma->substream || ! dma->running)
 		return;
 	dev_dbg(chip->card->dev, "XRUN detected (DMA %d)\n", dma->ops->type);
-	snd_pcm_stream_lock(dma->substream);
-	snd_pcm_stop(dma->substream, SNDRV_PCM_STATE_XRUN);
-	snd_pcm_stream_unlock(dma->substream);
+	snd_pcm_stop_xrun(dma->substream);
 }
 
 /*

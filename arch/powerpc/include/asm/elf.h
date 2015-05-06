@@ -28,8 +28,7 @@
    the loader.  We need to make sure that it is out of the way of the program
    that it will "exec", and that there is sufficient room for the brk.  */
 
-extern unsigned long randomize_et_dyn(unsigned long base);
-#define ELF_ET_DYN_BASE		(randomize_et_dyn(0x20000000))
+#define ELF_ET_DYN_BASE	0x20000000
 
 #define ELF_CORE_EFLAGS (is_elf2_task() ? 2 : 0)
 
@@ -90,6 +89,8 @@ typedef elf_vrregset_t elf_fpxregset_t;
 do {								\
 	if (((ex).e_flags & 0x3) == 2)				\
 		set_thread_flag(TIF_ELF2ABI);			\
+	else							\
+		clear_thread_flag(TIF_ELF2ABI);			\
 	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)		\
 		set_thread_flag(TIF_32BIT);			\
 	else							\

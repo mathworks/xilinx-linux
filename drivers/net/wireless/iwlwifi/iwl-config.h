@@ -87,6 +87,16 @@ enum iwl_device_family {
 	IWL_DEVICE_FAMILY_8000,
 };
 
+static inline bool iwl_has_secure_boot(u32 hw_rev,
+				       enum iwl_device_family family)
+{
+	/* return 1 only for family 8000 B0 */
+	if ((family == IWL_DEVICE_FAMILY_8000) && (hw_rev & 0xC))
+		return 1;
+
+	return 0;
+}
+
 /*
  * LED mode
  *    IWL_LED_DEFAULT:  use device default
@@ -120,6 +130,8 @@ enum iwl_led_mode {
 #define IWL_LONG_WD_TIMEOUT	10000
 #define IWL_MAX_WD_TIMEOUT	120000
 
+#define IWL_DEFAULT_MAX_TX_POWER 22
+
 /* Antenna presence definitions */
 #define	ANT_NONE	0x0
 #define	ANT_A		BIT(0)
@@ -146,6 +158,9 @@ static inline u8 num_of_ant(u8 mask)
  * @wd_timeout: TX queues watchdog timeout
  * @max_event_log_size: size of event log buffer size for ucode event logging
  * @shadow_reg_enable: HW shadow register support
+ * @apmg_wake_up_wa: should the MAC access REQ be asserted when a command
+ *	is in flight. This is due to a HW bug in 7260, 3160 and 7265.
+ * @scd_chain_ext_wa: should the chain extension feature in SCD be disabled.
  */
 struct iwl_base_params {
 	int eeprom_size;
@@ -160,10 +175,13 @@ struct iwl_base_params {
 	u32 max_event_log_size;
 	const bool shadow_reg_enable;
 	const bool pcie_l1_allowed;
+	const bool apmg_wake_up_wa;
+	const bool scd_chain_ext_wa;
 };
 
 /*
  * @stbc: support Tx STBC and 1*SS Rx STBC
+ * @ldpc: support Tx/Rx with LDPC
  * @use_rts_for_aggregation: use rts/cts protection for HT traffic
  * @ht40_bands: bitmap of bands (using %IEEE80211_BAND_*) that support HT40
  */
@@ -171,6 +189,7 @@ struct iwl_ht_params {
 	enum ieee80211_smps_mode smps_mode;
 	const bool ht_greenfield_support; /* if used set to true */
 	const bool stbc;
+	const bool ldpc;
 	bool use_rts_for_aggregation;
 	u8 ht40_bands;
 };
@@ -187,6 +206,11 @@ struct iwl_ht_params {
 #define EEPROM_REG_BAND_52_HT40_CHANNELS	0x92
 #define EEPROM_6000_REG_BAND_24_HT40_CHANNELS	0x80
 #define EEPROM_REGULATORY_BAND_NO_HT40		0
+
+/* lower blocks contain EEPROM image and calibration data */
+#define OTP_LOW_IMAGE_SIZE		(2 * 512 * sizeof(u16)) /* 2 KB */
+#define OTP_LOW_IMAGE_SIZE_FAMILY_7000	(16 * 512 * sizeof(u16)) /* 16 KB */
+#define OTP_LOW_IMAGE_SIZE_FAMILY_8000	(32 * 512 * sizeof(u16)) /* 32 KB */
 
 struct iwl_eeprom_params {
 	const u8 regulatory_bands[7];
@@ -216,6 +240,7 @@ struct iwl_pwr_tx_backoff {
  * @max_data_size: The maximal length of the fw data section
  * @valid_tx_ant: valid transmit antenna
  * @valid_rx_ant: valid receive antenna
+ * @non_shared_ant: the antenna that is for WiFi only
  * @nvm_ver: NVM version
  * @nvm_calib_ver: NVM calibration version
  * @lib: pointer to the lib ops
@@ -230,6 +255,12 @@ struct iwl_pwr_tx_backoff {
  * @d0i3: device uses d0i3 instead of d3
  * @nvm_hw_section_num: the ID of the HW NVM section
  * @pwr_tx_backoffs: translation table between power limits and backoffs
+ * @max_rx_agg_size: max RX aggregation size of the ADDBA request/response
+ * @max_tx_agg_size: max TX aggregation size of the ADDBA request/response
+ * @max_ht_ampdu_factor: the exponent of the max length of A-MPDU that the
+ *	station can receive in HT
+ * @max_vht_ampdu_exponent: the exponent of the max length of A-MPDU that the
+ *	station can receive in VHT
  *
  * We enable the driver to be backward compatible wrt. hardware features.
  * API differences in uCode shouldn't be handled here but through TLVs
@@ -247,6 +278,7 @@ struct iwl_cfg {
 	const u32 max_inst_size;
 	u8   valid_tx_ant;
 	u8   valid_rx_ant;
+	u8   non_shared_ant;
 	bool bt_shared_single_ant;
 	u16  nvm_ver;
 	u16  nvm_calib_ver;
@@ -264,6 +296,13 @@ struct iwl_cfg {
 	u8   nvm_hw_section_num;
 	bool lp_xtal_workaround;
 	const struct iwl_pwr_tx_backoff *pwr_tx_backoffs;
+	bool no_power_up_nic_in_init;
+	const char *default_nvm_file;
+	unsigned int max_rx_agg_size;
+	bool disable_dummy_notification;
+	unsigned int max_tx_agg_size;
+	unsigned int max_ht_ampdu_exponent;
+	unsigned int max_vht_ampdu_exponent;
 };
 
 /*
@@ -321,11 +360,18 @@ extern const struct iwl_cfg iwl7260_n_cfg;
 extern const struct iwl_cfg iwl3160_2ac_cfg;
 extern const struct iwl_cfg iwl3160_2n_cfg;
 extern const struct iwl_cfg iwl3160_n_cfg;
+extern const struct iwl_cfg iwl3165_2ac_cfg;
 extern const struct iwl_cfg iwl7265_2ac_cfg;
 extern const struct iwl_cfg iwl7265_2n_cfg;
 extern const struct iwl_cfg iwl7265_n_cfg;
+extern const struct iwl_cfg iwl7265d_2ac_cfg;
+extern const struct iwl_cfg iwl7265d_2n_cfg;
+extern const struct iwl_cfg iwl7265d_n_cfg;
+extern const struct iwl_cfg iwl8260_2n_cfg;
 extern const struct iwl_cfg iwl8260_2ac_cfg;
-extern const struct iwl_cfg iwl8260_n_cfg;
+extern const struct iwl_cfg iwl8260_2ac_sdio_cfg;
+extern const struct iwl_cfg iwl4265_2ac_sdio_cfg;
+extern const struct iwl_cfg iwl4165_2ac_sdio_cfg;
 #endif /* CONFIG_IWLMVM */
 
 #endif /* __IWL_CONFIG_H__ */

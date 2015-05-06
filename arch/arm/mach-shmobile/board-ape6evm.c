@@ -12,16 +12,14 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
+#include <linux/irqchip.h>
+#include <linux/irqchip/arm-gic.h>
 #include <linux/kernel.h>
 #include <linux/mfd/tmio.h>
 #include <linux/mmc/host.h>
@@ -33,11 +31,13 @@
 #include <linux/regulator/machine.h>
 #include <linux/sh_clk.h>
 #include <linux/smsc911x.h>
-#include <mach/common.h>
-#include <mach/irqs.h>
-#include <mach/r8a73a4.h>
+
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
+
+#include "common.h"
+#include "irqs.h"
+#include "r8a73a4.h"
 
 /* LEDS */
 static struct gpio_led ape6evm_leds[] = {
@@ -248,32 +248,48 @@ static void __init ape6evm_add_standard_devices(void)
 
 	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
 
-	platform_device_register_resndata(&platform_bus, "smsc911x", -1,
+	platform_device_register_resndata(NULL, "smsc911x", -1,
 					  lan9220_res, ARRAY_SIZE(lan9220_res),
 					  &lan9220_data, sizeof(lan9220_data));
 
 	regulator_register_always_on(1, "MMC0 Vcc", vcc_mmc0_consumers,
 				     ARRAY_SIZE(vcc_mmc0_consumers), 2800000);
-	platform_device_register_resndata(&platform_bus, "sh_mmcif", 0,
+	platform_device_register_resndata(NULL, "sh_mmcif", 0,
 					  mmcif0_resources, ARRAY_SIZE(mmcif0_resources),
 					  &mmcif0_pdata, sizeof(mmcif0_pdata));
-	platform_device_register_data(&platform_bus, "reg-fixed-voltage", 2,
+	platform_device_register_data(NULL, "reg-fixed-voltage", 2,
 				      &vcc_sdhi0_info, sizeof(vcc_sdhi0_info));
-	platform_device_register_resndata(&platform_bus, "sh_mobile_sdhi", 0,
+	platform_device_register_resndata(NULL, "sh_mobile_sdhi", 0,
 					  sdhi0_resources, ARRAY_SIZE(sdhi0_resources),
 					  &sdhi0_pdata, sizeof(sdhi0_pdata));
 	regulator_register_always_on(3, "SDHI1 Vcc", vcc_sdhi1_consumers,
 				     ARRAY_SIZE(vcc_sdhi1_consumers), 3300000);
-	platform_device_register_resndata(&platform_bus, "sh_mobile_sdhi", 1,
+	platform_device_register_resndata(NULL, "sh_mobile_sdhi", 1,
 					  sdhi1_resources, ARRAY_SIZE(sdhi1_resources),
 					  &sdhi1_pdata, sizeof(sdhi1_pdata));
-	platform_device_register_data(&platform_bus, "gpio-keys", -1,
+	platform_device_register_data(NULL, "gpio-keys", -1,
 				      &ape6evm_keys_pdata,
 				      sizeof(ape6evm_keys_pdata));
-	platform_device_register_data(&platform_bus, "leds-gpio", -1,
+	platform_device_register_data(NULL, "leds-gpio", -1,
 				      &ape6evm_leds_pdata,
 				      sizeof(ape6evm_leds_pdata));
 }
+
+static void __init ape6evm_legacy_init_time(void)
+{
+	/* Do not invoke DT-based timers via clocksource_of_init() */
+}
+
+static void __init ape6evm_legacy_init_irq(void)
+{
+	void __iomem *gic_dist_base = ioremap_nocache(0xf1001000, 0x1000);
+	void __iomem *gic_cpu_base = ioremap_nocache(0xf1002000, 0x1000);
+
+	gic_init(0, 29, gic_dist_base, gic_cpu_base);
+
+	/* Do not invoke DT-based interrupt code via irqchip_init() */
+}
+
 
 static const char *ape6evm_boards_compat_dt[] __initdata = {
 	"renesas,ape6evm",
@@ -281,7 +297,10 @@ static const char *ape6evm_boards_compat_dt[] __initdata = {
 };
 
 DT_MACHINE_START(APE6EVM_DT, "ape6evm")
-	.init_early	= r8a73a4_init_early,
+	.init_early	= shmobile_init_delay,
+	.init_irq       = ape6evm_legacy_init_irq,
 	.init_machine	= ape6evm_add_standard_devices,
+	.init_late	= shmobile_init_late,
 	.dt_compat	= ape6evm_boards_compat_dt,
+	.init_time	= ape6evm_legacy_init_time,
 MACHINE_END

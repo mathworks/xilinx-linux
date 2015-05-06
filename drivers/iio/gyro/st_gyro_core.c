@@ -103,7 +103,7 @@ static const struct iio_chan_spec st_gyro_16bit_channels[] = {
 	IIO_CHAN_SOFT_TIMESTAMP(3)
 };
 
-static const struct st_sensors st_gyro_sensors[] = {
+static const struct st_sensor_settings st_gyro_sensors_settings[] = {
 	{
 		.wai = ST_GYRO_1_WAI_EXP,
 		.sensors_supported = {
@@ -245,6 +245,9 @@ static int st_gyro_read_raw(struct iio_dev *indio_dev,
 		*val = 0;
 		*val2 = gdata->current_fullscale->gain;
 		return IIO_VAL_INT_PLUS_MICRO;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		*val = gdata->odr;
+		return IIO_VAL_INT;
 	default:
 		return -EINVAL;
 	}
@@ -262,6 +265,13 @@ static int st_gyro_write_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_SCALE:
 		err = st_sensors_set_fullscale_by_gain(indio_dev, val2);
 		break;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		if (val2)
+			return -EINVAL;
+		mutex_lock(&indio_dev->mlock);
+		err = st_sensors_set_odr(indio_dev, val);
+		mutex_unlock(&indio_dev->mlock);
+		return err;
 	default:
 		err = -EINVAL;
 	}
@@ -269,14 +279,12 @@ static int st_gyro_write_raw(struct iio_dev *indio_dev,
 	return err;
 }
 
-static ST_SENSOR_DEV_ATTR_SAMP_FREQ();
 static ST_SENSORS_DEV_ATTR_SAMP_FREQ_AVAIL();
 static ST_SENSORS_DEV_ATTR_SCALE_AVAIL(in_anglvel_scale_available);
 
 static struct attribute *st_gyro_attributes[] = {
 	&iio_dev_attr_sampling_frequency_available.dev_attr.attr,
 	&iio_dev_attr_in_anglvel_scale_available.dev_attr.attr,
-	&iio_dev_attr_sampling_frequency.dev_attr.attr,
 	NULL,
 };
 
@@ -301,8 +309,7 @@ static const struct iio_trigger_ops st_gyro_trigger_ops = {
 #define ST_GYRO_TRIGGER_OPS NULL
 #endif
 
-int st_gyro_common_probe(struct iio_dev *indio_dev,
-					struct st_sensors_platform_data *pdata)
+int st_gyro_common_probe(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *gdata = iio_priv(indio_dev);
 	int irq = gdata->get_irq_data_ready(indio_dev);
@@ -311,21 +318,25 @@ int st_gyro_common_probe(struct iio_dev *indio_dev,
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &gyro_info;
 
+	st_sensors_power_enable(indio_dev);
+
 	err = st_sensors_check_device_support(indio_dev,
-				ARRAY_SIZE(st_gyro_sensors), st_gyro_sensors);
+					ARRAY_SIZE(st_gyro_sensors_settings),
+					st_gyro_sensors_settings);
 	if (err < 0)
 		return err;
 
 	gdata->num_data_channels = ST_GYRO_NUMBER_DATA_CHANNELS;
-	gdata->multiread_bit = gdata->sensor->multi_read_bit;
-	indio_dev->channels = gdata->sensor->ch;
+	gdata->multiread_bit = gdata->sensor_settings->multi_read_bit;
+	indio_dev->channels = gdata->sensor_settings->ch;
 	indio_dev->num_channels = ST_SENSORS_NUMBER_ALL_CHANNELS;
 
 	gdata->current_fullscale = (struct st_sensor_fullscale_avl *)
-						&gdata->sensor->fs.fs_avl[0];
-	gdata->odr = gdata->sensor->odr.odr_avl[0].hz;
+					&gdata->sensor_settings->fs.fs_avl[0];
+	gdata->odr = gdata->sensor_settings->odr.odr_avl[0].hz;
 
-	err = st_sensors_init_sensor(indio_dev, pdata);
+	err = st_sensors_init_sensor(indio_dev,
+				(struct st_sensors_platform_data *)&gyro_pdata);
 	if (err < 0)
 		return err;
 
@@ -344,6 +355,9 @@ int st_gyro_common_probe(struct iio_dev *indio_dev,
 	if (err)
 		goto st_gyro_device_register_error;
 
+	dev_info(&indio_dev->dev, "registered gyroscope %s\n",
+		 indio_dev->name);
+
 	return 0;
 
 st_gyro_device_register_error:
@@ -359,6 +373,8 @@ EXPORT_SYMBOL(st_gyro_common_probe);
 void st_gyro_common_remove(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *gdata = iio_priv(indio_dev);
+
+	st_sensors_power_disable(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	if (gdata->get_irq_data_ready(indio_dev) > 0)
