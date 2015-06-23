@@ -28,141 +28,496 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 
-#include "cf_axi_adc.h"
-#include "ad9361.h"
-
 #include <linux/clk.h>
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 
-enum ad9361_clocks {
-	BB_REFCLK,
-	RX_REFCLK,
-	TX_REFCLK,
-	BBPLL_CLK,
-	ADC_CLK,
-	R2_CLK,
-	R1_CLK,
-	CLKRF_CLK,
-	RX_SAMPL_CLK,
-	DAC_CLK,
-	T2_CLK,
-	T1_CLK,
-	CLKTF_CLK,
-	TX_SAMPL_CLK,
-	RX_RFPLL,
-	TX_RFPLL,
-	NUM_AD9361_CLKS,
-};
+#include "ad9361.h"
 
-enum debugfs_cmd {
-	DBGFS_NONE,
-	DBGFS_INIT,
-	DBGFS_LOOPBACK,
-	DBGFS_BIST_PRBS,
-	DBGFS_BIST_TONE,
-	DBGFS_BIST_DT_ANALYSIS,
-	DBGFS_RXGAIN_1,
-	DBGFS_RXGAIN_2,
-	DBGFS_MCS,
-	DBGFS_CAL_SW_CTRL,
-};
+static const struct SynthLUT SynthLUT_FDD[LUT_FTDD_ENT][SYNTH_LUT_SIZE] = {
+{
+	{12605, 10, 0, 4, 0, 15, 8, 8, 12, 3, 14, 15, 11}, /* 40 MHz */
+	{12245, 10, 0, 4, 0, 15, 8, 9, 12, 3, 14, 15, 11},
+	{11906, 10, 0, 4, 0, 15, 8, 9, 12, 3, 14, 15, 11},
+	{11588, 10, 0, 4, 0, 15, 8, 10, 12, 3, 14, 15, 11},
+	{11288, 10, 0, 4, 0, 15, 8, 11, 12, 3, 14, 15, 11},
+	{11007, 10, 0, 4, 0, 15, 8, 11, 12, 3, 14, 15, 11},
+	{10742, 10, 0, 4, 0, 14, 8, 12, 12, 3, 14, 15, 11},
+	{10492, 10, 0, 5, 1, 14, 9, 13, 12, 3, 14, 15, 11},
+	{10258, 10, 0, 5, 1, 14, 9, 13, 12, 3, 14, 15, 11},
+	{10036, 10, 0, 5, 1, 14, 9, 14, 12, 3, 14, 15, 11},
+	{9827, 10, 0, 5, 1, 14, 9, 15, 12, 3, 14, 15, 11},
+	{9631, 10, 0, 5, 1, 14, 9, 15, 12, 3, 14, 15, 11},
+	{9445, 10, 0, 5, 1, 14, 9, 16, 12, 3, 14, 15, 11},
+	{9269, 10, 0, 5, 1, 14, 9, 17, 12, 3, 14, 15, 11},
+	{9103, 10, 0, 5, 1, 14, 9, 17, 12, 3, 14, 15, 11},
+	{8946, 10, 0, 5, 1, 14, 9, 18, 12, 3, 14, 15, 11},
+	{8797, 10, 1, 6, 1, 15, 11, 13, 12, 3, 14, 15, 11},
+	{8655, 10, 1, 6, 1, 15, 11, 14, 12, 3, 14, 15, 11},
+	{8520, 10, 1, 6, 1, 15, 11, 14, 12, 3, 14, 15, 11},
+	{8392, 10, 1, 6, 1, 15, 11, 15, 12, 3, 14, 15, 11},
+	{8269, 10, 1, 6, 1, 15, 11, 15, 12, 3, 14, 15, 11},
+	{8153, 10, 1, 6, 1, 15, 11, 16, 12, 3, 14, 15, 11},
+	{8041, 10, 1, 6, 1, 15, 11, 16, 12, 3, 14, 15, 11},
+	{7934, 10, 1, 6, 1, 15, 11, 17, 12, 3, 14, 15, 11},
+	{7831, 10, 1, 6, 1, 15, 11, 17, 12, 3, 14, 15, 11},
+	{7733, 10, 1, 6, 1, 15, 11, 17, 12, 3, 14, 15, 11},
+	{7638, 10, 1, 6, 1, 15, 11, 18, 12, 3, 14, 15, 11},
+	{7547, 10, 1, 6, 1, 15, 11, 18, 12, 3, 14, 15, 11},
+	{7459, 10, 1, 6, 1, 15, 11, 19, 12, 3, 14, 15, 11},
+	{7374, 10, 1, 7, 2, 15, 12, 19, 12, 3, 14, 15, 11},
+	{7291, 10, 1, 7, 2, 15, 12, 20, 12, 3, 14, 15, 11},
+	{7212, 10, 1, 7, 2, 15, 12, 20, 12, 3, 14, 15, 11},
+	{7135, 10, 1, 7, 2, 15, 14, 21, 12, 3, 14, 15, 11},
+	{7061, 10, 1, 7, 2, 15, 14, 21, 12, 3, 14, 15, 11},
+	{6988, 10, 1, 7, 2, 15, 14, 22, 12, 3, 14, 15, 11},
+	{6918, 10, 1, 7, 2, 15, 14, 22, 12, 3, 14, 15, 11},
+	{6850, 10, 1, 7, 2, 15, 14, 23, 12, 3, 14, 15, 11},
+	{6784, 10, 1, 7, 2, 15, 14, 23, 12, 3, 14, 15, 11},
+	{6720, 10, 1, 7, 2, 15, 14, 24, 12, 3, 14, 15, 11},
+	{6658, 10, 1, 7, 2, 15, 14, 24, 12, 3, 14, 15, 11},
+	{6597, 10, 1, 7, 2, 15, 14, 25, 12, 3, 14, 15, 11},
+	{6539, 10, 1, 7, 2, 15, 14, 25, 12, 3, 14, 15, 11},
+	{6482, 10, 1, 7, 2, 15, 14, 26, 12, 3, 14, 15, 11},
+	{6427, 10, 1, 7, 2, 15, 14, 26, 12, 3, 14, 15, 11},
+	{6373, 10, 3, 7, 3, 15, 12, 17, 12, 3, 14, 15, 11},
+	{6321, 10, 3, 7, 3, 15, 12, 17, 12, 3, 14, 15, 11},
+	{6270, 10, 3, 7, 3, 15, 12, 17, 12, 3, 14, 15, 11},
+	{6222, 10, 3, 7, 3, 15, 12, 18, 12, 3, 14, 15, 11},
+	{6174, 10, 3, 7, 3, 15, 12, 18, 12, 3, 14, 15, 11},
+	{6128, 10, 3, 7, 3, 15, 12, 18, 12, 3, 14, 15, 11},
+	{6083, 10, 3, 7, 3, 15, 12, 18, 12, 3, 14, 15, 11},
+	{6040, 10, 3, 7, 3, 15, 12, 19, 12, 3, 14, 15, 11},
+	{5997, 10, 3, 7, 3, 15, 12, 19, 12, 3, 14, 15, 11},
+}, {
+	{12605, 10, 0, 4, 0, 15, 8, 10, 15, 4, 13, 15, 10},  /* 60 MHz */
+	{12245, 10, 0, 4, 0, 15, 8, 11, 15, 4, 13, 15, 10},
+	{11906, 10, 0, 4, 0, 15, 8, 11, 15, 4, 13, 15, 10},
+	{11588, 10, 0, 4, 0, 15, 8, 12, 15, 4, 13, 15, 10},
+	{11288, 10, 0, 4, 0, 15, 8, 13, 15, 4, 13, 15, 10},
+	{11007, 10, 0, 4, 0, 14, 8, 14, 15, 4, 13, 15, 10},
+	{10742, 10, 0, 4, 0, 14, 8, 15, 15, 4, 13, 15, 10},
+	{10492, 10, 0, 5, 1, 14, 9, 15, 15, 4, 13, 15, 10},
+	{10258, 10, 0, 5, 1, 14, 9, 16, 15, 4, 13, 15, 10},
+	{10036, 10, 0, 5, 1, 14, 9, 17, 15, 4, 13, 15, 10},
+	{9827, 10, 0, 5, 1, 14, 9, 18, 15, 4, 13, 15, 10},
+	{9631, 10, 0, 5, 1, 14, 9, 19, 15, 4, 13, 15, 10},
+	{9445, 10, 0, 5, 1, 14, 9, 19, 15, 4, 13, 15, 10},
+	{9269, 10, 0, 5, 1, 14, 9, 20, 15, 4, 13, 15, 10},
+	{9103, 10, 0, 5, 1, 13, 9, 21, 15, 4, 13, 15, 10},
+	{8946, 10, 0, 5, 1, 13, 9, 22, 15, 4, 13, 15, 10},
+	{8797, 10, 1, 6, 1, 15, 11, 16, 15, 4, 13, 15, 10},
+	{8655, 10, 1, 6, 1, 15, 11, 17, 15, 4, 13, 15, 10},
+	{8520, 10, 1, 6, 1, 15, 11, 17, 15, 4, 13, 15, 10},
+	{8392, 10, 1, 6, 1, 15, 11, 18, 15, 4, 13, 15, 10},
+	{8269, 10, 1, 6, 1, 15, 11, 18, 15, 4, 13, 15, 10},
+	{8153, 10, 1, 6, 1, 15, 11, 19, 15, 4, 13, 15, 10},
+	{8041, 10, 1, 6, 1, 15, 11, 19, 15, 4, 13, 15, 10},
+	{7934, 10, 1, 6, 1, 15, 11, 20, 15, 4, 13, 15, 10},
+	{7831, 10, 1, 6, 1, 15, 11, 21, 15, 4, 13, 15, 10},
+	{7733, 10, 1, 6, 1, 15, 11, 21, 15, 4, 13, 15, 10},
+	{7638, 10, 1, 6, 1, 15, 11, 22, 15, 4, 13, 15, 10},
+	{7547, 10, 1, 6, 1, 15, 11, 22, 15, 4, 13, 15, 10},
+	{7459, 10, 1, 6, 1, 15, 11, 23, 15, 4, 13, 15, 10},
+	{7374, 10, 1, 7, 2, 15, 12, 23, 15, 4, 13, 15, 10},
+	{7291, 10, 1, 7, 2, 15, 12, 24, 15, 4, 13, 15, 10},
+	{7212, 10, 1, 7, 2, 15, 12, 25, 15, 4, 13, 15, 10},
+	{7135, 10, 1, 7, 2, 15, 14, 25, 15, 4, 13, 15, 10},
+	{7061, 10, 1, 7, 2, 15, 14, 26, 15, 4, 13, 15, 10},
+	{6988, 10, 1, 7, 2, 15, 14, 26, 15, 4, 13, 15, 10},
+	{6918, 10, 1, 7, 2, 15, 14, 27, 15, 4, 13, 15, 10},
+	{6850, 10, 1, 7, 2, 15, 14, 27, 15, 4, 13, 15, 10},
+	{6784, 10, 1, 7, 2, 15, 14, 28, 15, 4, 13, 15, 10},
+	{6720, 10, 1, 7, 2, 15, 14, 29, 15, 4, 13, 15, 10},
+	{6658, 10, 1, 7, 2, 15, 14, 29, 15, 4, 13, 15, 10},
+	{6597, 10, 1, 7, 2, 15, 14, 30, 15, 4, 13, 15, 10},
+	{6539, 10, 1, 7, 2, 15, 14, 30, 15, 4, 13, 15, 10},
+	{6482, 10, 1, 7, 2, 15, 14, 31, 15, 4, 13, 15, 10},
+	{6427, 10, 1, 7, 2, 15, 14, 32, 15, 4, 13, 15, 10},
+	{6373, 10, 3, 7, 3, 15, 12, 20, 15, 4, 13, 15, 10},
+	{6321, 10, 3, 7, 3, 15, 12, 21, 15, 4, 13, 15, 10},
+	{6270, 10, 3, 7, 3, 15, 12, 21, 15, 4, 13, 15, 10},
+	{6222, 10, 3, 7, 3, 15, 12, 21, 15, 4, 13, 15, 10},
+	{6174, 10, 3, 7, 3, 15, 12, 22, 15, 4, 13, 15, 10},
+	{6128, 10, 3, 7, 3, 15, 12, 22, 15, 4, 13, 15, 10},
+	{6083, 10, 3, 7, 3, 15, 12, 22, 15, 4, 13, 15, 10},
+	{6040, 10, 3, 7, 3, 15, 12, 23, 15, 4, 13, 15, 10},
+	{5997, 10, 3, 7, 3, 15, 12, 23, 15, 4, 13, 15, 10},
+}, {
+	{12605, 10, 0, 4, 0, 15, 8, 8, 13, 4, 13, 15, 9},   /* 80 MHz */
+	{12245, 10, 0, 4, 0, 15, 8, 9, 13, 4, 13, 15, 9},
+	{11906, 10, 0, 4, 0, 15, 8, 10, 13, 4, 13, 15, 9},
+	{11588, 10, 0, 4, 0, 15, 8, 11, 13, 4, 13, 15, 9},
+	{11288, 10, 0, 4, 0, 15, 8, 11, 13, 4, 13, 15, 9},
+	{11007, 10, 0, 4, 0, 14, 8, 12, 13, 4, 13, 15, 9},
+	{10742, 10, 0, 4, 0, 14, 8, 13, 13, 4, 13, 15, 9},
+	{10492, 10, 0, 5, 1, 14, 9, 13, 13, 4, 13, 15, 9},
+	{10258, 10, 0, 5, 1, 14, 9, 14, 13, 4, 13, 15, 9},
+	{10036, 10, 0, 5, 1, 14, 9, 15, 13, 4, 13, 15, 9},
+	{9827, 10, 0, 5, 1, 14, 9, 15, 13, 4, 13, 15, 9},
+	{9631, 10, 0, 5, 1, 13, 9, 16, 13, 4, 13, 15, 9},
+	{9445, 10, 0, 5, 1, 13, 9, 17, 13, 4, 13, 15, 9},
+	{9269, 10, 0, 5, 1, 13, 9, 18, 13, 4, 13, 15, 9},
+	{9103, 10, 0, 5, 1, 13, 9, 18, 13, 4, 13, 15, 9},
+	{8946, 10, 0, 5, 1, 13, 9, 19, 13, 4, 13, 15, 9},
+	{8797, 10, 1, 6, 1, 15, 11, 14, 13, 4, 13, 15, 9},
+	{8655, 10, 1, 6, 1, 15, 11, 14, 13, 4, 13, 15, 9},
+	{8520, 10, 1, 6, 1, 15, 11, 15, 13, 4, 13, 15, 9},
+	{8392, 10, 1, 6, 1, 15, 11, 15, 13, 4, 13, 15, 9},
+	{8269, 10, 1, 6, 1, 15, 11, 16, 13, 4, 13, 15, 9},
+	{8153, 10, 1, 6, 1, 15, 11, 16, 13, 4, 13, 15, 9},
+	{8041, 10, 1, 6, 1, 15, 11, 17, 13, 4, 13, 15, 9},
+	{7934, 10, 1, 6, 1, 15, 11, 17, 13, 4, 13, 15, 9},
+	{7831, 10, 1, 6, 1, 15, 11, 18, 13, 4, 13, 15, 9},
+	{7733, 10, 1, 6, 1, 15, 11, 18, 13, 4, 13, 15, 9},
+	{7638, 10, 1, 6, 1, 15, 11, 19, 13, 4, 13, 15, 9},
+	{7547, 10, 1, 6, 1, 15, 11, 19, 13, 4, 13, 15, 9},
+	{7459, 10, 1, 6, 1, 15, 11, 20, 13, 4, 13, 15, 9},
+	{7374, 10, 1, 7, 2, 15, 12, 20, 13, 4, 13, 15, 9},
+	{7291, 10, 1, 7, 2, 15, 12, 21, 13, 4, 13, 15, 9},
+	{7212, 10, 1, 7, 2, 15, 12, 21, 13, 4, 13, 15, 9},
+	{7135, 10, 1, 7, 2, 15, 14, 22, 13, 4, 13, 15, 9},
+	{7061, 10, 1, 7, 2, 15, 14, 22, 13, 4, 13, 15, 9},
+	{6988, 10, 1, 7, 2, 15, 14, 23, 13, 4, 13, 15, 9},
+	{6918, 10, 1, 7, 2, 15, 14, 23, 13, 4, 13, 15, 9},
+	{6850, 10, 1, 7, 2, 15, 14, 24, 13, 4, 13, 15, 9},
+	{6784, 10, 1, 7, 2, 15, 14, 24, 13, 4, 13, 15, 9},
+	{6720, 10, 1, 7, 2, 15, 14, 25, 13, 4, 13, 15, 9},
+	{6658, 10, 1, 7, 2, 15, 14, 25, 13, 4, 13, 15, 9},
+	{6597, 10, 1, 7, 2, 15, 14, 26, 13, 4, 13, 15, 9},
+	{6539, 10, 1, 7, 2, 15, 14, 26, 13, 4, 13, 15, 9},
+	{6482, 10, 1, 7, 2, 15, 14, 27, 13, 4, 13, 15, 9},
+	{6427, 10, 1, 7, 2, 15, 14, 27, 13, 4, 13, 15, 9},
+	{6373, 10, 3, 7, 3, 15, 12, 18, 13, 4, 13, 15, 9},
+	{6321, 10, 3, 7, 3, 15, 12, 18, 13, 4, 13, 15, 9},
+	{6270, 10, 3, 7, 3, 15, 12, 18, 13, 4, 13, 15, 9},
+	{6222, 10, 3, 7, 3, 15, 12, 19, 13, 4, 13, 15, 9},
+	{6174, 10, 3, 7, 3, 15, 12, 19, 13, 4, 13, 15, 9},
+	{6128, 10, 3, 7, 3, 15, 12, 19, 13, 4, 13, 15, 9},
+	{6083, 10, 3, 7, 3, 15, 12, 19, 13, 4, 13, 15, 9},
+	{6040, 10, 3, 7, 3, 15, 12, 20, 13, 4, 13, 15, 9},
+	{5997, 10, 3, 7, 3, 15, 12, 20, 13, 4, 13, 15, 9},
+}};
 
-enum ad9361_bist_mode {
-	BIST_DISABLE,
-	BIST_INJ_TX,
-	BIST_INJ_RX,
-};
+static struct SynthLUT SynthLUT_TDD[LUT_FTDD_ENT][SYNTH_LUT_SIZE] = {
+{
+	{12605, 13, 0, 4, 0, 14, 0, 10, 12, 3, 14, 15, 11},   /* 40 MHz */
+	{12245, 13, 0, 4, 0, 13, 0, 10, 12, 3, 14, 15, 11},
+	{11906, 13, 0, 4, 0, 12, 0, 11, 12, 3, 14, 15, 11},
+	{11588, 13, 0, 4, 0, 12, 0, 12, 12, 3, 14, 15, 11},
+	{11288, 13, 0, 4, 0, 12, 0, 13, 12, 3, 14, 15, 11},
+	{11007, 13, 0, 4, 0, 11, 0, 13, 12, 3, 14, 15, 11},
+	{10742, 13, 0, 4, 0, 11, 0, 14, 12, 3, 14, 15, 11},
+	{10492, 13, 0, 5, 1, 11, 0, 15, 12, 3, 14, 15, 11},
+	{10258, 13, 0, 5, 1, 10, 0, 16, 12, 3, 14, 15, 11},
+	{10036, 13, 0, 5, 1, 10, 0, 17, 12, 3, 14, 15, 11},
+	{9827, 13, 0, 5, 1, 10, 0, 17, 12, 3, 14, 15, 11},
+	{9631, 13, 0, 5, 1, 10, 0, 18, 12, 3, 14, 15, 11},
+	{9445, 13, 0, 5, 1, 9, 0, 19, 12, 3, 14, 15, 11},
+	{9269, 10, 0, 6, 1, 12, 0, 17, 12, 3, 14, 15, 11},
+	{9103, 10, 0, 6, 1, 12, 0, 17, 12, 3, 14, 15, 11},
+	{8946, 10, 0, 6, 1, 11, 0, 18, 12, 3, 14, 15, 11},
+	{8797, 10, 0, 6, 1, 11, 0, 19, 12, 3, 14, 15, 11},
+	{8655, 10, 0, 6, 1, 11, 0, 19, 12, 3, 14, 15, 11},
+	{8520, 10, 0, 6, 1, 11, 0, 20, 12, 3, 14, 15, 11},
+	{8392, 10, 0, 6, 1, 11, 0, 21, 12, 3, 14, 15, 11},
+	{8269, 10, 0, 6, 1, 11, 0, 21, 12, 3, 14, 15, 11},
+	{8153, 10, 0, 6, 1, 11, 0, 22, 12, 3, 14, 15, 11},
+	{8041, 10, 0, 6, 1, 11, 0, 23, 12, 3, 14, 15, 11},
+	{7934, 10, 0, 6, 1, 11, 0, 23, 12, 3, 14, 15, 11},
+	{7831, 10, 0, 6, 1, 10, 0, 24, 12, 3, 14, 15, 11},
+	{7733, 10, 0, 6, 1, 10, 0, 25, 12, 3, 14, 15, 11},
+	{7638, 10, 0, 6, 1, 10, 0, 25, 12, 3, 14, 15, 11},
+	{7547, 10, 0, 6, 1, 10, 0, 26, 12, 3, 14, 15, 11},
+	{7459, 10, 0, 6, 1, 10, 0, 27, 12, 3, 14, 15, 11},
+	{7374, 10, 0, 7, 2, 10, 0, 27, 12, 3, 14, 15, 11},
+	{7291, 10, 0, 7, 2, 9, 0, 28, 12, 3, 14, 15, 11},
+	{7212, 10, 0, 7, 2, 9, 0, 29, 12, 3, 14, 15, 11},
+	{7135, 10, 0, 7, 2, 9, 0, 29, 12, 3, 14, 15, 11},
+	{7061, 10, 0, 7, 2, 9, 0, 30, 12, 3, 14, 15, 11},
+	{6988, 10, 0, 7, 2, 9, 0, 31, 12, 3, 14, 15, 11},
+	{6918, 10, 0, 7, 2, 9, 0, 31, 12, 3, 14, 15, 11},
+	{6850, 10, 0, 7, 2, 8, 0, 32, 12, 3, 14, 15, 11},
+	{6784, 10, 0, 7, 2, 8, 0, 33, 12, 3, 14, 15, 11},
+	{6720, 10, 0, 7, 2, 8, 0, 33, 12, 3, 14, 15, 11},
+	{6658, 10, 0, 7, 2, 8, 0, 34, 12, 3, 14, 15, 11},
+	{6597, 10, 0, 7, 2, 8, 0, 35, 12, 3, 14, 15, 11},
+	{6539, 10, 0, 7, 2, 8, 0, 35, 12, 3, 14, 15, 11},
+	{6482, 10, 0, 7, 2, 8, 0, 36, 12, 3, 14, 15, 11},
+	{6427, 10, 0, 7, 2, 7, 0, 37, 12, 3, 14, 15, 11},
+	{6373, 10, 0, 7, 3, 7, 0, 37, 12, 3, 14, 15, 11},
+	{6321, 10, 0, 7, 3, 7, 0, 38, 12, 3, 14, 15, 11},
+	{6270, 10, 0, 7, 3, 7, 0, 39, 12, 3, 14, 15, 11},
+	{6222, 10, 0, 7, 3, 7, 0, 39, 12, 3, 14, 15, 11},
+	{6174, 10, 0, 7, 3, 7, 0, 40, 12, 3, 14, 15, 11},
+	{6128, 10, 0, 7, 3, 7, 0, 41, 12, 3, 14, 15, 11},
+	{6083, 10, 0, 7, 3, 7, 0, 41, 12, 3, 14, 15, 11},
+	{6040, 10, 0, 7, 3, 6, 0, 42, 12, 3, 14, 15, 11},
+	{5997, 10, 0, 7, 3, 6, 0, 42, 12, 3, 14, 15, 11},
+}, {
+	{12605, 13, 0, 4, 0, 14, 0, 12, 15, 4, 13, 15, 10},   /* 60 MHz */
+	{12245, 13, 0, 4, 0, 13, 0, 13, 15, 4, 13, 15, 10},
+	{11906, 13, 0, 4, 0, 13, 0, 14, 15, 4, 13, 15, 10},
+	{11588, 13, 0, 4, 0, 12, 0, 14, 15, 4, 13, 15, 10},
+	{11288, 13, 0, 4, 0, 12, 0, 15, 15, 4, 13, 15, 10},
+	{11007, 13, 0, 4, 0, 12, 0, 16, 15, 4, 13, 15, 10},
+	{10742, 13, 0, 4, 0, 11, 0, 17, 15, 4, 13, 15, 10},
+	{10492, 13, 0, 5, 1, 11, 0, 18, 15, 4, 13, 15, 10},
+	{10258, 13, 0, 5, 1, 11, 0, 19, 15, 4, 13, 15, 10},
+	{10036, 13, 0, 5, 1, 10, 0, 20, 15, 4, 13, 15, 10},
+	{9827, 13, 0, 5, 1, 10, 0, 21, 15, 4, 13, 15, 10},
+	{9631, 13, 0, 5, 1, 10, 0, 22, 15, 4, 13, 15, 10},
+	{9445, 13, 0, 5, 1, 10, 0, 23, 15, 4, 13, 15, 10},
+	{9269, 10, 0, 6, 1, 12, 0, 20, 15, 4, 13, 15, 10},
+	{9103, 10, 0, 6, 1, 12, 0, 21, 15, 4, 13, 15, 10},
+	{8946, 10, 0, 6, 1, 12, 0, 22, 15, 4, 13, 15, 10},
+	{8797, 10, 0, 6, 1, 12, 0, 23, 15, 4, 13, 15, 10},
+	{8655, 10, 0, 6, 1, 12, 0, 23, 15, 4, 13, 15, 10},
+	{8520, 10, 0, 6, 1, 12, 0, 24, 15, 4, 13, 15, 10},
+	{8392, 10, 0, 6, 1, 12, 0, 25, 15, 4, 13, 15, 10},
+	{8269, 10, 0, 6, 1, 12, 0, 26, 15, 4, 13, 15, 10},
+	{8153, 10, 0, 6, 1, 12, 0, 27, 15, 4, 13, 15, 10},
+	{8041, 10, 0, 6, 1, 12, 0, 27, 15, 4, 13, 15, 10},
+	{7934, 10, 0, 6, 1, 11, 0, 28, 15, 4, 13, 15, 10},
+	{7831, 10, 0, 6, 1, 11, 0, 29, 15, 4, 13, 15, 10},
+	{7733, 10, 0, 6, 1, 11, 0, 30, 15, 4, 13, 15, 10},
+	{7638, 10, 0, 6, 1, 11, 0, 31, 15, 4, 13, 15, 10},
+	{7547, 10, 0, 6, 1, 11, 0, 31, 15, 4, 13, 15, 10},
+	{7459, 10, 0, 6, 1, 11, 0, 32, 15, 4, 13, 15, 10},
+	{7374, 10, 0, 7, 2, 11, 0, 33, 15, 4, 13, 15, 10},
+	{7291, 10, 0, 7, 2, 11, 0, 34, 15, 4, 13, 15, 10},
+	{7212, 10, 0, 7, 2, 11, 0, 35, 15, 4, 13, 15, 10},
+	{7135, 10, 0, 7, 2, 10, 0, 35, 15, 4, 13, 15, 10},
+	{7061, 10, 0, 7, 2, 10, 0, 36, 15, 4, 13, 15, 10},
+	{6988, 10, 0, 7, 2, 10, 0, 37, 15, 4, 13, 15, 10},
+	{6918, 10, 0, 7, 2, 10, 0, 38, 15, 4, 13, 15, 10},
+	{6850, 10, 0, 7, 2, 10, 0, 39, 15, 4, 13, 15, 10},
+	{6784, 10, 0, 7, 2, 10, 0, 39, 15, 4, 13, 15, 10},
+	{6720, 10, 0, 7, 2, 10, 0, 40, 15, 4, 13, 15, 10},
+	{6658, 10, 0, 7, 2, 9, 0, 41, 15, 4, 13, 15, 10},
+	{6597, 10, 0, 7, 2, 9, 0, 42, 15, 4, 13, 15, 10},
+	{6539, 10, 0, 7, 2, 9, 0, 43, 15, 4, 13, 15, 10},
+	{6482, 10, 0, 7, 2, 9, 0, 43, 15, 4, 13, 15, 10},
+	{6427, 10, 0, 7, 2, 9, 0, 44, 15, 4, 13, 15, 10},
+	{6373, 10, 0, 7, 3, 9, 0, 45, 15, 4, 13, 15, 10},
+	{6321, 10, 0, 7, 3, 9, 0, 46, 15, 4, 13, 15, 10},
+	{6270, 10, 0, 7, 3, 9, 0, 47, 15, 4, 13, 15, 10},
+	{6222, 10, 0, 7, 3, 9, 0, 47, 15, 4, 13, 15, 10},
+	{6174, 10, 0, 7, 3, 9, 0, 48, 15, 4, 13, 15, 10},
+	{6128, 10, 0, 7, 3, 9, 0, 49, 15, 4, 13, 15, 10},
+	{6083, 10, 0, 7, 3, 9, 0, 50, 15, 4, 13, 15, 10},
+	{6040, 10, 0, 7, 3, 9, 0, 51, 15, 4, 13, 15, 10},
+	{5997, 10, 0, 7, 3, 8, 0, 51, 15, 4, 13, 15, 10},
+}, {
+	{12605, 13, 0, 4, 0, 14, 0, 10, 13, 4, 13, 15, 9},   /* 80 MHz */
+	{12245, 13, 0, 4, 0, 13, 0, 11, 13, 4, 13, 15, 9},
+	{11906, 13, 0, 4, 0, 12, 0, 12, 13, 4, 13, 15, 9},
+	{11588, 13, 0, 4, 0, 12, 0, 13, 13, 4, 13, 15, 9},
+	{11288, 13, 0, 4, 0, 12, 0, 13, 13, 4, 13, 15, 9},
+	{11007, 13, 0, 4, 0, 11, 0, 14, 13, 4, 13, 15, 9},
+	{10742, 13, 0, 4, 0, 11, 0, 15, 13, 4, 13, 15, 9},
+	{10492, 13, 0, 5, 1, 11, 0, 16, 13, 4, 13, 15, 9},
+	{10258, 13, 0, 5, 1, 10, 0, 17, 13, 4, 13, 15, 9},
+	{10036, 13, 0, 5, 1, 10, 0, 17, 13, 4, 13, 15, 9},
+	{9827, 13, 0, 5, 1, 10, 0, 18, 13, 4, 13, 15, 9},
+	{9631, 13, 0, 5, 1, 10, 0, 19, 13, 4, 13, 15, 9},
+	{9445, 13, 0, 5, 1, 9, 0, 20, 13, 4, 13, 15, 9},
+	{9269, 10, 0, 6, 1, 12, 0, 18, 13, 4, 13, 15, 9},
+	{9103, 10, 0, 6, 1, 12, 0, 18, 13, 4, 13, 15, 9},
+	{8946, 10, 0, 6, 1, 11, 0, 19, 13, 4, 13, 15, 9},
+	{8797, 10, 0, 6, 1, 11, 0, 20, 13, 4, 13, 15, 9},
+	{8655, 10, 0, 6, 1, 11, 0, 20, 13, 4, 13, 15, 9},
+	{8520, 10, 0, 6, 1, 11, 0, 21, 13, 4, 13, 15, 9},
+	{8392, 10, 0, 6, 1, 11, 0, 22, 13, 4, 13, 15, 9},
+	{8269, 10, 0, 6, 1, 11, 0, 22, 13, 4, 13, 15, 9},
+	{8153, 10, 0, 6, 1, 11, 0, 23, 13, 4, 13, 15, 9},
+	{8041, 10, 0, 6, 1, 11, 0, 24, 13, 4, 13, 15, 9},
+	{7934, 10, 0, 6, 1, 11, 0, 25, 13, 4, 13, 15, 9},
+	{7831, 10, 0, 6, 1, 10, 0, 25, 13, 4, 13, 15, 9},
+	{7733, 10, 0, 6, 1, 10, 0, 26, 13, 4, 13, 15, 9},
+	{7638, 10, 0, 6, 1, 10, 0, 27, 13, 4, 13, 15, 9},
+	{7547, 10, 0, 6, 1, 10, 0, 27, 13, 4, 13, 15, 9},
+	{7459, 10, 0, 6, 1, 10, 0, 28, 13, 4, 13, 15, 9},
+	{7374, 10, 0, 7, 2, 10, 0, 29, 13, 4, 13, 15, 9},
+	{7291, 10, 0, 7, 2, 9, 0, 29, 13, 4, 13, 15, 9},
+	{7212, 10, 0, 7, 2, 9, 0, 30, 13, 4, 13, 15, 9},
+	{7135, 10, 0, 7, 2, 9, 0, 31, 13, 4, 13, 15, 9},
+	{7061, 10, 0, 7, 2, 9, 0, 32, 13, 4, 13, 15, 9},
+	{6988, 10, 0, 7, 2, 9, 0, 32, 13, 4, 13, 15, 9},
+	{6918, 10, 0, 7, 2, 9, 0, 33, 13, 4, 13, 15, 9},
+	{6850, 10, 0, 7, 2, 8, 0, 34, 13, 4, 13, 15, 9},
+	{6784, 10, 0, 7, 2, 8, 0, 34, 13, 4, 13, 15, 9},
+	{6720, 10, 0, 7, 2, 8, 0, 35, 13, 4, 13, 15, 9},
+	{6658, 10, 0, 7, 2, 8, 0, 36, 13, 4, 13, 15, 9},
+	{6597, 10, 0, 7, 2, 8, 0, 36, 13, 4, 13, 15, 9},
+	{6539, 10, 0, 7, 2, 8, 0, 37, 13, 4, 13, 15, 9},
+	{6482, 10, 0, 7, 2, 8, 0, 38, 13, 4, 13, 15, 9},
+	{6427, 10, 0, 7, 2, 7, 0, 39, 13, 4, 13, 15, 9},
+	{6373, 10, 0, 7, 3, 7, 0, 39, 13, 4, 13, 15, 9},
+	{6321, 10, 0, 7, 3, 7, 0, 40, 13, 4, 13, 15, 9},
+	{6270, 10, 0, 7, 3, 7, 0, 41, 13, 4, 13, 15, 9},
+	{6222, 10, 0, 7, 3, 7, 0, 41, 13, 4, 13, 15, 9},
+	{6174, 10, 0, 7, 3, 7, 0, 42, 13, 4, 13, 15, 9},
+	{6128, 10, 0, 7, 3, 7, 0, 43, 13, 4, 13, 15, 9},
+	{6083, 10, 0, 7, 3, 7, 0, 44, 13, 4, 13, 15, 9},
+	{6040, 10, 0, 7, 3, 6, 0, 44, 13, 4, 13, 15, 9},
+	{5997, 10, 0, 7, 3, 6, 0, 44, 13, 4, 13, 15, 9},
+}};
 
-enum {
-	ID_AD9361,
-	ID_AD9364,
-	ID_AD9361_2,
-};
+/* Rx Gain Tables */
 
-struct ad9361_rf_phy;
-struct ad9361_debugfs_entry {
-	struct ad9361_rf_phy *phy;
-	const char *propname;
-	void *out_value;
-	u32 val;
-	u8 size;
-	u8 cmd;
-};
+#define SIZE_FULL_TABLE		77
 
-struct ad9361_fastlock_entry {
-#define FASTLOOK_INIT	1
-	u8 flags;
-	u8 alc_orig;
-	u8 alc_written;
-};
+static const u8 full_gain_table[RXGAIN_TBLS_END][SIZE_FULL_TABLE][3] =
+{{  /* 800 MHz */
+	{0x00, 0x00, 0x20}, {0x00, 0x00, 0x00}, {0x00, 0x00, 0x00},
+	{0x00, 0x01, 0x00}, {0x00, 0x02, 0x00}, {0x00, 0x03, 0x00},
+	{0x00, 0x04, 0x00}, {0x00, 0x05, 0x00}, {0x01, 0x03, 0x20},
+	{0x01, 0x04, 0x00}, {0x01, 0x05, 0x00}, {0x01, 0x06, 0x00},
+	{0x01, 0x07, 0x00}, {0x01, 0x08, 0x00}, {0x01, 0x09, 0x00},
+	{0x01, 0x0A, 0x00}, {0x01, 0x0B, 0x00}, {0x01, 0x0C, 0x00},
+	{0x01, 0x0D, 0x00}, {0x01, 0x0E, 0x00}, {0x02, 0x09, 0x20},
+	{0x02, 0x0A, 0x00}, {0x02, 0x0B, 0x00}, {0x02, 0x0C, 0x00},
+	{0x02, 0x0D, 0x00}, {0x02, 0x0E, 0x00}, {0x02, 0x0F, 0x00},
+	{0x02, 0x10, 0x00}, {0x02, 0x2B, 0x20}, {0x02, 0x2C, 0x00},
+	{0x04, 0x28, 0x20}, {0x04, 0x29, 0x00}, {0x04, 0x2A, 0x00},
+	{0x04, 0x2B, 0x00}, {0x24, 0x20, 0x20}, {0x24, 0x21, 0x00},
+	{0x44, 0x20, 0x20}, {0x44, 0x21, 0x00}, {0x44, 0x22, 0x00},
+	{0x44, 0x23, 0x00}, {0x44, 0x24, 0x00}, {0x44, 0x25, 0x00},
+	{0x44, 0x26, 0x00}, {0x44, 0x27, 0x00}, {0x44, 0x28, 0x00},
+	{0x44, 0x29, 0x00}, {0x44, 0x2A, 0x00}, {0x44, 0x2B, 0x00},
+	{0x44, 0x2C, 0x00}, {0x44, 0x2D, 0x00}, {0x44, 0x2E, 0x00},
+	{0x44, 0x2F, 0x00}, {0x44, 0x30, 0x00}, {0x44, 0x31, 0x00},
+	{0x44, 0x32, 0x00}, {0x64, 0x2E, 0x20}, {0x64, 0x2F, 0x00},
+	{0x64, 0x30, 0x00}, {0x64, 0x31, 0x00}, {0x64, 0x32, 0x00},
+	{0x64, 0x33, 0x00}, {0x64, 0x34, 0x00}, {0x64, 0x35, 0x00},
+	{0x64, 0x36, 0x00}, {0x64, 0x37, 0x00}, {0x64, 0x38, 0x00},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20}
+},{  /* 2300 MHz */
+	{0x00, 0x00, 0x20}, {0x00, 0x00, 0x00}, {0x00, 0x00, 0x00},
+	{0x00, 0x01, 0x00}, {0x00, 0x02, 0x00}, {0x00, 0x03, 0x00},
+	{0x00, 0x04, 0x00}, {0x00, 0x05, 0x00}, {0x01, 0x03, 0x20},
+	{0x01, 0x04, 0x00}, {0x01, 0x05, 0x00}, {0x01, 0x06, 0x00},
+	{0x01, 0x07, 0x00}, {0x01, 0x08, 0x00}, {0x01, 0x09, 0x00},
+	{0x01, 0x0A, 0x00}, {0x01, 0x0B, 0x00}, {0x01, 0x0C, 0x00},
+	{0x01, 0x0D, 0x00}, {0x01, 0x0E, 0x00}, {0x02, 0x09, 0x20},
+	{0x02, 0x0A, 0x00}, {0x02, 0x0B, 0x00}, {0x02, 0x0C, 0x00},
+	{0x02, 0x0D, 0x00}, {0x02, 0x0E, 0x00}, {0x02, 0x0F, 0x00},
+	{0x02, 0x10, 0x00}, {0x02, 0x2B, 0x20}, {0x02, 0x2C, 0x00},
+	{0x04, 0x27, 0x20}, {0x04, 0x28, 0x00}, {0x04, 0x29, 0x00},
+	{0x04, 0x2A, 0x00}, {0x04, 0x2B, 0x00}, {0x24, 0x21, 0x20},
+	{0x24, 0x22, 0x00}, {0x44, 0x20, 0x20}, {0x44, 0x21, 0x00},
+	{0x44, 0x22, 0x00}, {0x44, 0x23, 0x00}, {0x44, 0x24, 0x00},
+	{0x44, 0x25, 0x00}, {0x44, 0x26, 0x00}, {0x44, 0x27, 0x00},
+	{0x44, 0x28, 0x00}, {0x44, 0x29, 0x00}, {0x44, 0x2A, 0x00},
+	{0x44, 0x2B, 0x00}, {0x44, 0x2C, 0x00}, {0x44, 0x2D, 0x00},
+	{0x44, 0x2E, 0x00}, {0x44, 0x2F, 0x00}, {0x44, 0x30, 0x00},
+	{0x44, 0x31, 0x00}, {0x64, 0x2E, 0x20}, {0x64, 0x2F, 0x00},
+	{0x64, 0x30, 0x00}, {0x64, 0x31, 0x00}, {0x64, 0x32, 0x00},
+	{0x64, 0x33, 0x00}, {0x64, 0x34, 0x00}, {0x64, 0x35, 0x00},
+	{0x64, 0x36, 0x00}, {0x64, 0x37, 0x00}, {0x64, 0x38, 0x00},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20},
+},{  /* 5500 MHz */
+	{0x00, 0x00, 0x20}, {0x00, 0x00, 0x00}, {0x00, 0x00, 0x00},
+	{0x00, 0x00, 0x00}, {0x00, 0x00, 0x00}, {0x00, 0x01, 0x00},
+	{0x00, 0x02, 0x00}, {0x00, 0x03, 0x00}, {0x01, 0x01, 0x20},
+	{0x01, 0x02, 0x00}, {0x01, 0x03, 0x00}, {0x01, 0x04, 0x20},
+	{0x01, 0x05, 0x00}, {0x01, 0x06, 0x00}, {0x01, 0x07, 0x00},
+	{0x01, 0x08, 0x00}, {0x01, 0x09, 0x00}, {0x01, 0x0A, 0x00},
+	{0x01, 0x0B, 0x00}, {0x01, 0x0C, 0x00}, {0x02, 0x08, 0x20},
+	{0x02, 0x09, 0x00}, {0x02, 0x0A, 0x00}, {0x02, 0x0B, 0x20},
+	{0x02, 0x0C, 0x00}, {0x02, 0x0D, 0x00}, {0x02, 0x0E, 0x00},
+	{0x02, 0x0F, 0x00}, {0x02, 0x2A, 0x20}, {0x02, 0x2B, 0x00},
+	{0x04, 0x27, 0x20}, {0x04, 0x28, 0x00}, {0x04, 0x29, 0x00},
+	{0x04, 0x2A, 0x00}, {0x04, 0x2B, 0x00}, {0x04, 0x2C, 0x00},
+	{0x04, 0x2D, 0x00}, {0x24, 0x20, 0x20}, {0x24, 0x21, 0x00},
+	{0x24, 0x22, 0x00}, {0x44, 0x20, 0x20}, {0x44, 0x21, 0x00},
+	{0x44, 0x22, 0x00}, {0x44, 0x23, 0x00}, {0x44, 0x24, 0x00},
+	{0x44, 0x25, 0x00}, {0x44, 0x26, 0x00}, {0x44, 0x27, 0x00},
+	{0x44, 0x28, 0x00}, {0x44, 0x29, 0x00}, {0x44, 0x2A, 0x00},
+	{0x44, 0x2B, 0x00}, {0x44, 0x2C, 0x00}, {0x44, 0x2D, 0x00},
+	{0x44, 0x2E, 0x00}, {0x64, 0x2E, 0x20}, {0x64, 0x2F, 0x00},
+	{0x64, 0x30, 0x00}, {0x64, 0x31, 0x00}, {0x64, 0x32, 0x00},
+	{0x64, 0x33, 0x00}, {0x64, 0x34, 0x00}, {0x64, 0x35, 0x00},
+	{0x64, 0x36, 0x00}, {0x64, 0x37, 0x00}, {0x64, 0x38, 0x00},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20}
+}};
 
-struct ad9361_fastlock {
-	u8 save_profile;
-	u8 current_profile[2];
-	struct ad9361_fastlock_entry entry[2][8];
-};
+#define SIZE_SPLIT_TABLE		41
 
-struct refclk_scale {
-	struct clk_hw		hw;
-	struct spi_device	*spi;
-	struct ad9361_rf_phy	*phy;
-	u32			mult;
-	u32			div;
-	enum ad9361_clocks 	source;
-};
+static const u8 split_gain_table[RXGAIN_TBLS_END][SIZE_SPLIT_TABLE][3] =
+{{  /* 800 MHz */
+	{0x00, 0x18, 0x20}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x20}, {0x01, 0x18, 0x20}, {0x02, 0x18, 0x20},
+	{0x04, 0x18, 0x20}, {0x04, 0x38, 0x20}, {0x05, 0x38, 0x20},
+	{0x06, 0x38, 0x20}, {0x07, 0x38, 0x20}, {0x08, 0x38, 0x20},
+	{0x09, 0x38, 0x20}, {0x0A, 0x38, 0x20}, {0x0B, 0x38, 0x20},
+	{0x0C, 0x38, 0x20}, {0x0D, 0x38, 0x20}, {0x0E, 0x38, 0x20},
+	{0x0F, 0x38, 0x20}, {0x24, 0x38, 0x20}, {0x25, 0x38, 0x20},
+	{0x44, 0x38, 0x20}, {0x45, 0x38, 0x20}, {0x46, 0x38, 0x20},
+	{0x47, 0x38, 0x20}, {0x48, 0x38, 0x20}, {0x64, 0x38, 0x20},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20},
+},{  /* 2300 MHz */
+	{0x00, 0x18, 0x20}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x00, 0x18, 0x20}, {0x01, 0x18, 0x20},
+	{0x02, 0x18, 0x20}, {0x04, 0x18, 0x20}, {0x04, 0x38, 0x20},
+	{0x05, 0x38, 0x20}, {0x06, 0x38, 0x20}, {0x07, 0x38, 0x20},
+	{0x08, 0x38, 0x20}, {0x09, 0x38, 0x20}, {0x0A, 0x38, 0x20},
+	{0x0B, 0x38, 0x20}, {0x0C, 0x38, 0x20}, {0x0D, 0x38, 0x20},
+	{0x0E, 0x38, 0x20}, {0x0F, 0x38, 0x20}, {0x25, 0x38, 0x20},
+	{0x26, 0x38, 0x20}, {0x44, 0x38, 0x20}, {0x45, 0x38, 0x20},
+	{0x46, 0x38, 0x20}, {0x47, 0x38, 0x20}, {0x64, 0x38, 0x20},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20},
+},{  /* 5500 MHz */
+	{0x00, 0x18, 0x20}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x00, 0x18, 0x00}, {0x00, 0x18, 0x00},
+	{0x00, 0x18, 0x00}, {0x01, 0x18, 0x20}, {0x02, 0x18, 0x20},
+	{0x04, 0x18, 0x20}, {0x04, 0x38, 0x20}, {0x05, 0x38, 0x20},
+	{0x06, 0x38, 0x20}, {0x07, 0x38, 0x20}, {0x08, 0x38, 0x20},
+	{0x09, 0x38, 0x20}, {0x0A, 0x38, 0x20}, {0x0B, 0x38, 0x20},
+	{0x0C, 0x38, 0x20}, {0x0D, 0x38, 0x20}, {0x0E, 0x38, 0x20},
+	{0x0F, 0x38, 0x20}, {0x62, 0x38, 0x20}, {0x25, 0x38, 0x20},
+	{0x26, 0x38, 0x20}, {0x44, 0x38, 0x20}, {0x64, 0x38, 0x20},
+	{0x65, 0x38, 0x20}, {0x66, 0x38, 0x20}, {0x67, 0x38, 0x20},
+	{0x68, 0x38, 0x20}, {0x69, 0x38, 0x20}, {0x6A, 0x38, 0x20},
+	{0x6B, 0x38, 0x20}, {0x6C, 0x38, 0x20}, {0x6D, 0x38, 0x20},
+	{0x6E, 0x38, 0x20}, {0x6F, 0x38, 0x20},
+}};
 
-struct ad9361_rf_phy {
-	struct spi_device 	*spi;
-	struct clk 		*clk_refin;
-	struct clk 		*clks[NUM_AD9361_CLKS];
-	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
-	struct clk_onecell_data	clk_data;
-	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[170];
-	struct bin_attribute 	bin;
-	struct iio_dev 		*indio_dev;
-	struct work_struct 	work;
-	struct completion       complete;
-	u32 			ad9361_debugfs_entry_index;
-	u8 			prev_ensm_state;
-	u8			curr_ensm_state;
-	struct rx_gain_info rx_gain[RXGAIN_TBLS_END];
-	enum rx_gain_table_name current_table;
-	bool 			ensm_pin_ctl_en;
+/* Mixer GM Sub-table */
 
-	bool			auto_cal_en;
-	u64			last_tx_quad_cal_freq;
-	u32			last_tx_quad_cal_phase;
-	unsigned long		flags;
-	unsigned long		cal_threshold_freq;
-	u32			current_rx_bw_Hz;
-	u32			current_tx_bw_Hz;
-	u32			rxbbf_div;
-	u32			rate_governor;
-	bool			bypass_rx_fir;
-	bool			bypass_tx_fir;
-	bool			rx_eq_2tx;
-	bool			filt_valid;
-	unsigned long		filt_rx_path_clks[NUM_RX_CLOCKS];
-	unsigned long		filt_tx_path_clks[NUM_TX_CLOCKS];
-	u32			filt_rx_bw_Hz;
-	u32			filt_tx_bw_Hz;
-	u8			tx_fir_int;
-	u8			tx_fir_ntaps;
-	u8			rx_fir_dec;
-	u8			rx_fir_ntaps;
-	u8			agc_mode[2];
-	bool			rfdc_track_en;
-	bool			bbdc_track_en;
-	bool			quad_track_en;
-	bool			txmon_tdd_en;
-	u16 			auxdac1_value;
-	u16 			auxdac2_value;
-	struct ad9361_fastlock	fastlock;
-};
+static const u8 gm_st_gain[16]= {0x78, 0x74, 0x70, 0x6C, 0x68, 0x64, 0x60,
+			 0x5C, 0x58, 0x54, 0x50, 0x4C, 0x48, 0x30, 0x18, 0x0};
+static const u8 gm_st_ctrl[16]= {0x0, 0xD, 0x15, 0x1B, 0x21, 0x25, 0x29,
+			 0x2C, 0x2F, 0x31, 0x33, 0x34, 0x35, 0x3A, 0x3D, 0x3E};
 
-static int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq);
+
+static const s8 lna_table[RXGAIN_TBLS_END][4] = {
+	{5, 17, 19, 24}, {3, 14, 17, 21}, {-4, 10, 13, 14}};
+static const s8 tia_table[] = {-6, 0};
+static const s8 mixer_table[RXGAIN_TBLS_END][16] = {
+	{0, 3, 9, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25},
+	{0, 3, 9, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26},
+	{0, 3, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}};
+
 
 #ifdef _DEBUG
 struct ad9361_trace {
@@ -261,7 +616,7 @@ static int ad9361_spi_readm(struct spi_device *spi, u32 reg,
 	return 0;
 }
 
-static int ad9361_spi_read(struct spi_device *spi, u32 reg)
+int ad9361_spi_read(struct spi_device *spi, u32 reg)
 {
 	u8 buf;
 	int ret;
@@ -272,6 +627,7 @@ static int ad9361_spi_read(struct spi_device *spi, u32 reg)
 
 	return buf;
 }
+EXPORT_SYMBOL(ad9361_spi_read);
 
 static int __ad9361_spi_readf(struct spi_device *spi, u32 reg,
 				 u32 mask, u32 offset)
@@ -295,7 +651,7 @@ static int __ad9361_spi_readf(struct spi_device *spi, u32 reg,
 #define ad9361_spi_readf(spi, reg, mask) \
 	__ad9361_spi_readf(spi, reg, mask, __ffs(mask))
 
-static int ad9361_spi_write(struct spi_device *spi,
+int ad9361_spi_write(struct spi_device *spi,
 			 u32 reg, u32 val)
 {
 	u8 buf[3];
@@ -319,6 +675,7 @@ static int ad9361_spi_write(struct spi_device *spi,
 
 	return 0;
 }
+EXPORT_SYMBOL(ad9361_spi_write);
 
 static int __ad9361_spi_writef(struct spi_device *spi, u32 reg,
 				 u32 mask, u32 offset, u32 val)
@@ -375,7 +732,7 @@ static int ad9361_spi_writem(struct spi_device *spi,
 	return 0;
 }
 
-static int ad9361_find_opt(u8 *field, u32 size, u32 *ret_start)
+int ad9361_find_opt(u8 *field, u32 size, u32 *ret_start)
 {
 	int i, cnt = 0, max_cnt = 0, start, max_start = 0;
 
@@ -403,6 +760,7 @@ static int ad9361_find_opt(u8 *field, u32 size, u32 *ret_start)
 
 	return max_cnt;
 }
+EXPORT_SYMBOL(ad9361_find_opt);
 
 static int ad9361_reset(struct ad9361_rf_phy *phy)
 {
@@ -428,43 +786,7 @@ static int ad9361_reset(struct ad9361_rf_phy *phy)
 	return -ENODEV;
 }
 
-static int ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
-{
-	struct axiadc_converter *conv = spi_get_drvdata(phy->spi);
-	struct axiadc_state *st = iio_priv(conv->indio_dev);
-	unsigned reg, addr, chan;
-
-	unsigned version = axiadc_read(st, 0x4000);
-
-	/* Still there but implemented a bit different */
-	if (PCORE_VERSION_MAJOR(version) > 7)
-		addr = 0x4418;
-	else
-		addr = 0x4414;
-
-	for (chan = 0; chan < conv->chip_info->num_channels; chan++) {
-		reg = axiadc_read(st, addr + (chan) * 0x40);
-
-		if (PCORE_VERSION_MAJOR(version) > 7) {
-		/* FIXME: May cause problems if DMA is selected */
-			if (enable)
-				reg = 0x8;
-			else
-				reg = 0x0;
-		} else {
-		/* DAC_LB_ENB If set enables loopback of receive data */
-			if (enable)
-				reg |= BIT(1);
-			else
-				reg &= ~BIT(1);
-		}
-		axiadc_write(st, addr + (chan) * 0x40, reg);
-	}
-
-	return 0;
-}
-
-static int ad9361_bist_loopback(struct ad9361_rf_phy *phy, unsigned mode)
+int ad9361_bist_loopback(struct ad9361_rf_phy *phy, unsigned mode)
 {
 	u32 sp_hd, reg;
 
@@ -501,8 +823,9 @@ static int ad9361_bist_loopback(struct ad9361_rf_phy *phy, unsigned mode)
 		return -EINVAL;
 	}
 }
+EXPORT_SYMBOL(ad9361_bist_loopback);
 
-static int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
+int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 {
 	u32 reg = 0;
 
@@ -522,6 +845,7 @@ static int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mod
 
 	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
 }
+EXPORT_SYMBOL(ad9361_bist_prbs);
 
 static int ad9361_bist_tone(struct ad9361_rf_phy *phy,
 			    enum ad9361_bist_mode mode, u32 freq_Hz,
@@ -563,64 +887,6 @@ static int ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, reg1);
 
 	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
-}
-
-static ssize_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
-						   char *buf, unsigned buflen)
-{
-	struct axiadc_converter *conv = spi_get_drvdata(phy->spi);
-	struct axiadc_state *st = iio_priv(conv->indio_dev);
-	int ret, i, j, chan, len = 0;
-	u8 field[16][16];
-	u8 rx;
-
-	rx = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
-
-	ad9361_bist_prbs(phy, BIST_INJ_RX);
-
-	for (i = 0; i < 16; i++) {
-		for (j = 0; j < 16; j++) {
-			ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
-					DATA_CLK_DELAY(j) | RX_DATA_DELAY(i));
-			for (chan = 0; chan < 4; chan++)
-				axiadc_write(st, ADI_REG_CHAN_STATUS(chan),
-					ADI_PN_ERR | ADI_PN_OOS);
-
-			mdelay(1);
-
-			if (axiadc_read(st, ADI_REG_STATUS) & ADI_STATUS) {
-				for (chan = 0, ret = 0; chan < 4; chan++)
-					ret |= axiadc_read(st, ADI_REG_CHAN_STATUS(chan));
-			} else {
-				ret = 1;
-			}
-
-			field[i][j] = ret;
-		}
-	}
-
-	ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY, rx);
-
-	ad9361_bist_prbs(phy, BIST_DISABLE);
-
-	len += snprintf(buf + len, buflen, "CLK: %lu Hz 'o' = PASS\n",
-		       clk_get_rate(phy->clks[RX_SAMPL_CLK]));
-	len += snprintf(buf + len, buflen, "DC");
-	for (i = 0; i < 16; i++)
-		len += snprintf(buf + len, buflen, "%x:", i);
-	len += snprintf(buf + len, buflen, "\n");
-
-	for (i = 0; i < 16; i++) {
-		len += snprintf(buf + len, buflen, "%x:", i);
-		for (j = 0; j < 16; j++) {
-			len += snprintf(buf + len, buflen, "%c ",
-					(field[i][j] ? '.' : 'o'));
-		}
-		len += snprintf(buf + len, buflen, "\n");
-	}
-	len += snprintf(buf + len, buflen, "\n");
-
-	return len;
 }
 
 static int ad9361_check_cal_done(struct ad9361_rf_phy *phy, u32 reg,
@@ -1049,7 +1315,7 @@ out:
 	return rc;
 }
 
-static void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, u8 ensm_state)
+void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, u8 ensm_state)
 {
 	struct spi_device *spi = phy->spi;
 	struct device *dev = &phy->spi->dev;
@@ -1114,8 +1380,9 @@ out:
 	return;
 
 }
+EXPORT_SYMBOL(ad9361_ensm_force_state);
 
-static void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy)
+void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy)
 {
 	struct spi_device *spi = phy->spi;
 	struct device *dev = &phy->spi->dev;
@@ -1168,6 +1435,7 @@ static void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy)
 out:
 	return;
 }
+EXPORT_SYMBOL(ad9361_ensm_restore_prev_state);
 
 static int set_split_table_gain(struct ad9361_rf_phy *phy, u32 idx_reg,
 		struct rf_rx_gain *rx_gain)
@@ -1901,9 +2169,9 @@ static int ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 	dev_dbg(&phy->spi->dev, "%s : ref_clk_hz %lu : is_tx %d",
 		__func__, ref_clk_hz, tx);
 
-	/* REVIST:
-	 * ad9361_spi_write(phy->spi, REG_RX_CP_LEVEL_DETECT + offs, 0x17);
-	 */
+	/* REVIST:*/
+	ad9361_spi_write(phy->spi, REG_RX_CP_LEVEL_DETECT + offs, 0x17);
+
 	ad9361_spi_write(phy->spi, REG_RX_DSM_SETUP_1 + offs, 0x0);
 
 	ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE + offs, 0x00);
@@ -2240,20 +2508,24 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	ad9361_spi_write(spi, REG_QUAD_SETTLE_COUNT, 0xF0);
 	ad9361_spi_write(spi, REG_TX_QUAD_LPF_GAIN, 0x00);
 
-	ret = __ad9361_tx_quad_calib(phy, __rx_phase, rxnco_word, decim, &val);
+	if (rx_phase != -2) {
+		ret = __ad9361_tx_quad_calib(phy, __rx_phase, rxnco_word, decim, &val);
 
-	dev_dbg(dev, "LO leakage: %d Quadrature Calibration: %d : rx_phase %d\n",
-		!!(val & TX1_LO_CONV), !!(val & TX1_SSB_CONV), __rx_phase);
+		dev_dbg(dev, "LO leakage: %d Quadrature Calibration: %d : rx_phase %d\n",
+			!!(val & TX1_LO_CONV), !!(val & TX1_SSB_CONV), __rx_phase);
 
-	/* Calibration failed -> try last phase offset */
-	if (val != (TX1_LO_CONV | TX1_SSB_CONV)) {
-		if (phy->last_tx_quad_cal_phase < 31)
-			ret = __ad9361_tx_quad_calib(phy, phy->last_tx_quad_cal_phase,
-						     rxnco_word, decim, &val);
+		/* Calibration failed -> try last phase offset */
+		if (val != (TX1_LO_CONV | TX1_SSB_CONV)) {
+			if (phy->last_tx_quad_cal_phase < 31)
+				ret = __ad9361_tx_quad_calib(phy, phy->last_tx_quad_cal_phase,
+							rxnco_word, decim, &val);
+		} else {
+			phy->last_tx_quad_cal_phase = __rx_phase;
+		}
 	} else {
-		phy->last_tx_quad_cal_phase = __rx_phase;
+		/* force phase search */
+		val = 0;
 	}
-
 	/* Calibration failed -> loop through all 32 phase offsets */
 	if (val != (TX1_LO_CONV | TX1_SSB_CONV))
 		ret = ad9361_tx_quad_phase_search(phy, rxnco_word, decim);
@@ -2324,45 +2596,57 @@ static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 				      bool tx, bool enable)
 {
 	unsigned val = enable ? ~0 : 0;
+	int ret;
 
-	dev_dbg(&phy->spi->dev, "%s : state %d",
-		__func__, enable);
+	/* REVIST:
+	 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
+	 */
+
+	bool mcs_rf_enable = ad9361_spi_readf(phy->spi,
+		REG_MULTICHIP_SYNC_AND_TX_MON_CTRL, MCS_RF_ENABLE);
+
+	dev_dbg(&phy->spi->dev, "%s : %s state %d",__func__,
+		tx ? "TX" : "RX", enable);
 
 	if (tx) {
-		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_TX_SYNTH, enable);
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+				  POWER_DOWN_TX_SYNTH, mcs_rf_enable ? 0 : enable);
 
-		ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
-				  TX_VCO_DIVIDER(~0), 0x7);
+		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+				  TX_VCO_DIVIDER(~0), enable ? 7 :
+				  phy->cached_tx_rfpll_div);
 
-		ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+		ret |= ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
 				enable ? TX_SYNTH_VCO_ALC_POWER_DOWN |
 				TX_SYNTH_PTAT_POWER_DOWN |
 				TX_SYNTH_VCO_POWER_DOWN : 0);
 
-		ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
 				  TX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
 
-		return ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
+		ret |= ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
 					TX_LO_GEN_POWER_MODE(val));
 	} else {
-		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_RX_SYNTH, enable);
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+				  POWER_DOWN_RX_SYNTH, mcs_rf_enable ? 0 : enable);
 
-		ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
-				  RX_VCO_DIVIDER(~0), 0x7);
+		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+				  RX_VCO_DIVIDER(~0), enable ? 7 :
+				  phy->cached_rx_rfpll_div);
 
-		ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
+		ret |= ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
 				enable ? RX_SYNTH_VCO_ALC_POWER_DOWN |
 				RX_SYNTH_PTAT_POWER_DOWN |
 				RX_SYNTH_VCO_POWER_DOWN : 0);
 
-		ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
 				  RX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
 
-		return ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
+		ret |= ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
 					RX_LO_GEN_POWER_MODE(val));
 	}
+
+	return ret;
 }
 
 /* REFERENCE CLOCK DELAY UNIT COUNTER REGISTER */
@@ -3307,7 +3591,7 @@ static int ad9361_validate_trx_clock_chain(struct ad9361_rf_phy *phy,
 	return -EINVAL;
 }
 
-static int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
+int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 				      unsigned long *rx_path_clks,
 				      unsigned long *tx_path_clks)
 {
@@ -3354,6 +3638,7 @@ static int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 	}
 	return ad9361_bb_clk_change_handler(phy);
 }
+EXPORT_SYMBOL(ad9361_set_trx_clock_chain);
 
 static int ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy, unsigned long *rx_path_clks,
 				      unsigned long *tx_path_clks)
@@ -3496,7 +3781,7 @@ static int ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 	return 0;
 }
 
-static int ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
+int ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 					  unsigned long freq)
 {
 	unsigned long rx[6], tx[6];
@@ -3508,8 +3793,9 @@ static int ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 		return ret;
 	return ad9361_set_trx_clock_chain(phy, rx, tx);
 }
+EXPORT_SYMBOL(ad9361_set_trx_clock_chain_freq);
 
-static int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl)
+int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl)
 {
 	struct ad9361_phy_platform_data *pd = phy->pdata;
 	int ret;
@@ -3517,11 +3803,8 @@ static int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctr
 
 	ad9361_spi_write(phy->spi, REG_ENSM_MODE, fdd ? FDD_MODE : 0);
 
-	if (pd->use_ext_rx_lo)
-		val |= POWER_DOWN_RX_SYNTH;
-
-	if (pd->use_ext_tx_lo)
-		val |= POWER_DOWN_TX_SYNTH;
+	val = ad9361_spi_read(phy->spi, REG_ENSM_CONFIG_2);
+	val &= POWER_DOWN_RX_SYNTH | POWER_DOWN_TX_SYNTH;
 
 	if (fdd)
 		ret = ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_2,
@@ -3535,6 +3818,7 @@ static int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctr
 
 	return ret;
 }
+EXPORT_SYMBOL(ad9361_set_ensm_mode);
 
 /* Fast Lock */
 
@@ -3776,14 +4060,15 @@ static int ad9361_fastlock_save(struct ad9361_rf_phy *phy, bool tx,
 
 static int ad9361_mcs(struct ad9361_rf_phy *phy, unsigned step)
 {
-	unsigned mcs_mask = MCS_BBPLL_ENABLE | MCS_DIGITAL_CLK_ENABLE | MCS_BB_ENABLE;
+	unsigned mcs_mask = MCS_RF_ENABLE | MCS_BBPLL_ENABLE |
+		MCS_DIGITAL_CLK_ENABLE | MCS_BB_ENABLE;
 
 	dev_dbg(&phy->spi->dev, "%s: MCS step %d", __func__, step);
 
 	switch (step) {
 	case 1:
 		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-			mcs_mask, MCS_BB_ENABLE | MCS_BBPLL_ENABLE);
+			mcs_mask, MCS_BB_ENABLE | MCS_BBPLL_ENABLE | MCS_RF_ENABLE);
 		ad9361_spi_writef(phy->spi, REG_CP_BLEED_CURRENT,
 			MCS_REFCLK_SCALE_EN, 1);
 		break;
@@ -3800,7 +4085,7 @@ static int ad9361_mcs(struct ad9361_rf_phy *phy, unsigned step)
 		break;
 	case 3:
 		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-			mcs_mask, MCS_BB_ENABLE | MCS_DIGITAL_CLK_ENABLE);
+			mcs_mask, MCS_BB_ENABLE | MCS_DIGITAL_CLK_ENABLE | MCS_RF_ENABLE);
 		break;
 	case 4:
 		if (IS_ERR(phy->pdata->sync_gpio))
@@ -3809,13 +4094,15 @@ static int ad9361_mcs(struct ad9361_rf_phy *phy, unsigned step)
 		gpiod_set_value(phy->pdata->sync_gpio, 0);
 		break;
 	case 0:
+		/* REVIST:
+		 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
+		 */
+		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+				  POWER_DOWN_TX_SYNTH | POWER_DOWN_RX_SYNTH, 0);
 	case 5:
 		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-			mcs_mask, 0);
+			mcs_mask, MCS_RF_ENABLE);
 		break;
-
-	case 6:
-		ad9361_dig_tune(phy, 0);
 	}
 
 	return 0;
@@ -3833,6 +4120,7 @@ static void ad9361_clear_state(struct ad9361_rf_phy *phy)
 	phy->prev_ensm_state = 0;
 	phy->curr_ensm_state = 0;
 	phy->auto_cal_en = false;
+	phy->manual_tx_quad_cal_en = false;
 	phy->last_tx_quad_cal_freq = 0;
 	phy->flags = 0;
 	phy->current_rx_bw_Hz = 0;
@@ -4012,11 +4300,6 @@ static int ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	/* REVISIT : add EXT LO clock */
-	if (pd->use_ext_rx_lo)
-		ad9361_trx_ext_lo_control(phy, false, pd->use_ext_rx_lo);
-
-
 	/* Skip quad cal here we do it later again */
 	phy->last_tx_quad_cal_freq = pd->tx_synth_freq;
 	ret = clk_set_rate(phy->clks[TX_RFPLL], ad9361_to_clk(pd->tx_synth_freq));
@@ -4030,9 +4313,13 @@ static int ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	/* REVISIT : add EXT LO clock */
-	if (pd->use_ext_tx_lo)
-		ad9361_trx_ext_lo_control(phy, true, pd->use_ext_tx_lo);
+	clk_set_parent(phy->clks[RX_RFPLL],
+			pd->use_ext_rx_lo ? phy->clk_ext_lo_rx :
+			phy->clks[RX_RFPLL_INT]);
+
+	clk_set_parent(phy->clks[TX_RFPLL],
+			pd->use_ext_tx_lo ? phy->clk_ext_lo_tx :
+			phy->clks[TX_RFPLL_INT]);
 
 	ret = ad9361_load_mixer_gm_subtable(phy);
 	if (ret < 0)
@@ -4132,6 +4419,8 @@ static int ad9361_do_calib_run(struct ad9361_rf_phy *phy, u32 cal, int arg)
 {
 	int ret;
 
+	dev_dbg(&phy->spi->dev, "%s: CAL %u ARG %d", __func__, cal, arg);
+
 	ret = ad9361_tracking_control(phy, false, false, false);
 	if (ret < 0)
 		return ret;
@@ -4177,9 +4466,11 @@ static int ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	phy->current_rx_bw_Hz = rf_rx_bw;
 	phy->current_tx_bw_Hz = rf_tx_bw;
 
-	ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
-	if (ret < 0)
-		return ret;
+	if (phy->manual_tx_quad_cal_en == false) {
+		ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 			phy->rfdc_track_en, phy->quad_track_en);
@@ -5095,12 +5386,12 @@ static unsigned long ad9361_rfpll_recalc_rate(struct clk_hw *hw,
 		__func__, parent_rate);
 
 	switch (clk_priv->source) {
-	case RX_RFPLL:
+	case RX_RFPLL_INT:
 		reg = REG_RX_FRACT_BYTE_2;
 		div_mask = RX_VCO_DIVIDER(~0);
 		profile = phy->fastlock.current_profile[0];
 		break;
-	case TX_RFPLL:
+	case TX_RFPLL_INT:
 		reg = REG_TX_FRACT_BYTE_2;
 		div_mask = TX_VCO_DIVIDER(~0);
 		profile = phy->fastlock.current_profile[1];
@@ -5110,7 +5401,7 @@ static unsigned long ad9361_rfpll_recalc_rate(struct clk_hw *hw,
 	}
 
 	if (profile) {
-		bool tx = clk_priv->source == TX_RFPLL;
+		bool tx = clk_priv->source == TX_RFPLL_INT;
 		profile = profile - 1;
 
 		buf[0] = ad9361_fastlock_readval(phy->spi, tx, profile, 4);
@@ -5135,6 +5426,9 @@ static unsigned long ad9361_rfpll_recalc_rate(struct clk_hw *hw,
 static long ad9361_rfpll_round_rate(struct clk_hw *hw, unsigned long rate,
 				unsigned long *prate)
 {
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	dev_dbg(&clk_priv->spi->dev, "%s: Rate %lu Hz", __func__, rate);
+
 	if (ad9361_from_clk(rate) > MAX_CARRIER_FREQ_HZ ||
 		ad9361_from_clk(rate) < MIN_CARRIER_FREQ_HZ)
 		return -EINVAL;
@@ -5155,7 +5449,7 @@ static int ad9361_rfpll_set_rate(struct clk_hw *hw, unsigned long rate,
 	dev_dbg(&clk_priv->spi->dev, "%s: Rate %lu Hz Parent Rate %lu Hz",
 		__func__, rate, parent_rate);
 
-	ad9361_fastlock_prepare(phy, clk_priv->source == TX_RFPLL, 0, false);
+	ad9361_fastlock_prepare(phy, clk_priv->source == TX_RFPLL_INT, 0, false);
 
 	ret = ad9361_calc_rfpll_divder(ad9361_from_clk(rate), parent_rate,
 				&integer, &fract, &vco_div, &vco);
@@ -5163,15 +5457,17 @@ static int ad9361_rfpll_set_rate(struct clk_hw *hw, unsigned long rate,
 		return ret;
 
 	switch (clk_priv->source) {
-	case RX_RFPLL:
+	case RX_RFPLL_INT:
 		reg = REG_RX_FRACT_BYTE_2;
 		lock_reg = REG_RX_CP_OVERRANGE_VCO_LOCK;
 		div_mask = RX_VCO_DIVIDER(~0);
+		phy->cached_rx_rfpll_div = vco_div;
 		break;
-	case TX_RFPLL:
+	case TX_RFPLL_INT:
 		reg = REG_TX_FRACT_BYTE_2;
 		lock_reg = REG_TX_CP_OVERRANGE_VCO_LOCK;
 		div_mask = TX_VCO_DIVIDER(~0);
+		phy->cached_tx_rfpll_div = vco_div;
 		break;
 	default:
 		return -EINVAL;
@@ -5180,7 +5476,7 @@ static int ad9361_rfpll_set_rate(struct clk_hw *hw, unsigned long rate,
 
 	/* Option to skip VCO cal in TDD mode when moving from TX/RX to Alert */
 	if (phy->pdata->tdd_skip_vco_cal)
-		ad9361_trx_vco_cal_control(phy, clk_priv->source == TX_RFPLL,
+		ad9361_trx_vco_cal_control(phy, clk_priv->source == TX_RFPLL_INT,
 					   true);
 
 	ad9361_rfpll_vco_init(phy, div_mask == TX_VCO_DIVIDER(~0),
@@ -5197,39 +5493,119 @@ static int ad9361_rfpll_set_rate(struct clk_hw *hw, unsigned long rate,
 	ad9361_spi_writem(clk_priv->spi, reg, buf, 5);
 	ad9361_spi_writef(clk_priv->spi, REG_RFPLL_DIVIDERS, div_mask, vco_div);
 
-	/* Load Gain Table */
-	if (clk_priv->source == RX_RFPLL) {
-		ret = ad9361_load_gt(phy, ad9361_from_clk(rate), GT_RX1 + GT_RX2);
-		if (ret < 0)
-			return ret;
-	}
-
-	/* For RX LO we typically have the tracking option enabled
-	 * so for now do nothing here.
-	 */
-	if (phy->auto_cal_en && (clk_priv->source == TX_RFPLL))
-		if (abs(phy->last_tx_quad_cal_freq - ad9361_from_clk(rate)) >
-			phy->cal_threshold_freq) {
-
-			set_bit(0, &phy->flags);
-			reinit_completion(&phy->complete);
-			schedule_work(&phy->work);
-			phy->last_tx_quad_cal_freq = ad9361_from_clk(rate);
-		}
-
 	ret = ad9361_check_cal_done(phy, lock_reg, VCO_LOCK, 1);
 
 	if (phy->pdata->tdd_skip_vco_cal)
-		ad9361_trx_vco_cal_control(phy, clk_priv->source == TX_RFPLL,
+		ad9361_trx_vco_cal_control(phy, clk_priv->source == TX_RFPLL_INT,
 					   false);
 
 	return ret;
 }
 
-static const struct clk_ops rfpll_clk_ops = {
+static const struct clk_ops rfpll_clk_ops_int = {
 	.round_rate = ad9361_rfpll_round_rate,
 	.set_rate = ad9361_rfpll_set_rate,
 	.recalc_rate = ad9361_rfpll_recalc_rate,
+};
+
+static unsigned long ad9361_rfpll_dummy_recalc_rate(struct clk_hw *hw,
+		unsigned long parent_rate)
+{
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	return clk_priv->rate;
+}
+
+static int ad9361_rfpll_dummy_set_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long parent_rate)
+{
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	clk_priv->rate = rate;
+
+	return 0;
+}
+
+static const struct clk_ops rfpll_dummy_clk_ops_int = {
+	.round_rate = ad9361_rfpll_round_rate,
+	.set_rate = ad9361_rfpll_dummy_set_rate,
+	.recalc_rate = ad9361_rfpll_dummy_recalc_rate,
+};
+
+
+static u8 ad9361_clk_mux_get_parent(struct clk_hw *hw)
+{
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	dev_dbg(&clk_priv->spi->dev, "%s: index %d", __func__, clk_priv->mult);
+
+	return clk_priv->mult;
+}
+
+static int ad9361_clk_mux_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	struct ad9361_rf_phy *phy = clk_priv->phy;
+	int ret;
+
+	dev_dbg(&clk_priv->spi->dev, "%s: index %d", __func__, index);
+
+	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+
+	ret = ad9361_trx_ext_lo_control(phy, clk_priv->source == TX_RFPLL, index == 1);
+	if (ret >= 0)
+		clk_priv->mult = index;
+
+	ad9361_ensm_restore_prev_state(phy);
+
+	return ret;
+}
+
+long ad9361_clk_mux_determine_rate(struct clk_hw *hw, unsigned long rate,
+			      unsigned long min_rate,
+			      unsigned long max_rate,
+			      unsigned long *best_parent_rate,
+			      struct clk_hw **best_parent_p)
+{
+	struct refclk_scale *clk_priv = to_clk_priv(hw);
+	struct ad9361_rf_phy *phy = clk_priv->phy;
+	unsigned long best_rate;
+	int ret;
+
+	long best = __clk_mux_determine_rate(hw, rate, min_rate, max_rate,
+			best_parent_rate, best_parent_p);
+	best_rate = (unsigned long) best;
+
+	dev_dbg(&clk_priv->spi->dev, "%s: Rate %lu Hz", __func__, best);
+
+	switch (clk_priv->source) {
+	case RX_RFPLL:
+		ret = ad9361_load_gt(phy, ad9361_from_clk(best_rate), GT_RX1 + GT_RX2);
+		if (ret < 0)
+			best = ret;
+		break;
+	case TX_RFPLL:
+		/* For RX LO we typically have the tracking option enabled
+		* so for now do nothing here.
+		*/
+		if (phy->auto_cal_en)
+			if (abs(phy->last_tx_quad_cal_freq - ad9361_from_clk(best_rate)) >
+				phy->cal_threshold_freq) {
+
+				set_bit(0, &phy->flags);
+				reinit_completion(&phy->complete);
+				schedule_work(&phy->work);
+				phy->last_tx_quad_cal_freq = ad9361_from_clk(best_rate);
+			}
+		break;
+	default:
+		best = -EINVAL;
+	}
+
+	return best;
+}
+
+static const struct clk_ops rfpll_clk_ops = {
+	.get_parent = ad9361_clk_mux_get_parent,
+	.set_parent = ad9361_clk_mux_set_parent,
+	.determine_rate = ad9361_clk_mux_determine_rate,
 };
 
 #define AD9361_MAX_CLK_NAME 79
@@ -5238,6 +5614,9 @@ static char *ad9361_clk_set_dev_name(struct ad9361_rf_phy *phy,
 					 char *dest, const char *name)
 {
 	size_t len = 0;
+
+	if (name == NULL)
+		return NULL;
 
 	if (*name == '-')
 		len = strlcpy(dest, dev_name(&phy->spi->dev),
@@ -5249,14 +5628,15 @@ static char *ad9361_clk_set_dev_name(struct ad9361_rf_phy *phy,
 }
 
 static int ad9361_clk_register(struct ad9361_rf_phy *phy,
-		const char *name, const char *parent_name, unsigned long flags,
+		const char *name, const char *parent_name,
+		const char *parent_name2, unsigned long flags,
 		u32 source)
 {
 	struct refclk_scale *clk_priv = &phy->clk_priv[source];
 	struct clk_init_data init;
 	struct clk *clk;
-	char c_name[AD9361_MAX_CLK_NAME + 1], p_name[AD9361_MAX_CLK_NAME + 1];
-	const char *_parent_name;
+	char c_name[AD9361_MAX_CLK_NAME + 1], p_name[2][AD9361_MAX_CLK_NAME + 1];
+	const char *_parent_name[2];
 
 	/* struct refclk_scale assignments */
 	clk_priv->source = source;
@@ -5264,9 +5644,29 @@ static int ad9361_clk_register(struct ad9361_rf_phy *phy,
 	clk_priv->spi = phy->spi;
 	clk_priv->phy = phy;
 
+	_parent_name[0] = ad9361_clk_set_dev_name(phy, p_name[0], parent_name);
+	_parent_name[1] = ad9361_clk_set_dev_name(phy, p_name[1], parent_name2);
+
+	init.name = ad9361_clk_set_dev_name(phy, c_name, name);;
+	init.flags = flags;
+	init.parent_names = &_parent_name[0];
+	init.num_parents = _parent_name[1] ? 2 : _parent_name[0] ? 1 : 0;
+
 	switch (source) {
 	case BBPLL_CLK:
 		init.ops = &bbpll_clk_ops;
+		break;
+	case RX_RFPLL_INT:
+	case TX_RFPLL_INT:
+		init.ops = &rfpll_clk_ops_int;
+		break;
+	case RX_RFPLL_DUMMY:
+		init.ops = &rfpll_dummy_clk_ops_int;
+		clk_priv->rate = ad9361_to_clk(phy->pdata->rx_synth_freq);
+		break;
+	case TX_RFPLL_DUMMY:
+		init.ops = &rfpll_dummy_clk_ops_int;
+		clk_priv->rate = ad9361_to_clk(phy->pdata->tx_synth_freq);
 		break;
 	case RX_RFPLL:
 	case TX_RFPLL:
@@ -5275,13 +5675,6 @@ static int ad9361_clk_register(struct ad9361_rf_phy *phy,
 	default:
 		init.ops = &refclk_scale_ops;
 	}
-
-	_parent_name = ad9361_clk_set_dev_name(phy, p_name, parent_name);
-
-	init.name = ad9361_clk_set_dev_name(phy, c_name, name);;
-	init.flags = flags;
-	init.parent_names = &_parent_name;
-	init.num_parents = 1;
 
 	clk = devm_clk_register(&phy->spi->dev, &clk_priv->hw);
 	phy->clks[source] = clk;
@@ -5310,484 +5703,99 @@ static int ad9361_clks_resync(struct ad9361_rf_phy *phy)
 static int register_clocks(struct ad9361_rf_phy *phy)
 {
 	const char *parent_name;
+	const char *ext_tx_lo = NULL;
+	const char *ext_rx_lo = NULL;
 	u32 flags = CLK_GET_RATE_NOCACHE;
 
-	parent_name = of_clk_get_parent_name(phy->spi->dev.of_node, 0);
-	if (!parent_name)
-		return -EINVAL;
+	parent_name = __clk_get_name(phy->clk_refin);
 
 	phy->clk_data.clks = phy->clks;
 	phy->clk_data.clk_num = NUM_AD9361_CLKS;
 
+	/* Dummy Clock in case no external LO clock given */
+
+	phy->clk_ext_lo_rx = devm_clk_get(&phy->spi->dev, "ext_rx_lo");
+	phy->clk_ext_lo_tx = devm_clk_get(&phy->spi->dev, "ext_tx_lo");
+
+	if (IS_ERR_OR_NULL(phy->clk_ext_lo_rx)) {
+		ad9361_clk_register(phy, "-rx_lo_dummy", NULL, NULL,
+			CLK_IGNORE_UNUSED, RX_RFPLL_DUMMY);
+
+		phy->clk_ext_lo_rx = phy->clks[RX_RFPLL_DUMMY];
+		ext_rx_lo = "-rx_lo_dummy";
+	} else {
+		ext_rx_lo = __clk_get_name(phy->clk_ext_lo_rx);
+	}
+
+	if (IS_ERR_OR_NULL(phy->clk_ext_lo_tx)) {
+		ad9361_clk_register(phy, "-tx_lo_dummy", NULL, NULL,
+			CLK_IGNORE_UNUSED, TX_RFPLL_DUMMY);
+
+		phy->clk_ext_lo_tx = phy->clks[TX_RFPLL_DUMMY];
+		ext_tx_lo = "-tx_lo_dummy";
+	} else {
+		ext_tx_lo = __clk_get_name(phy->clk_ext_lo_tx);
+	}
+
 	/* Scaled Reference Clocks */
-	ad9361_clk_register(phy, "-tx_refclk", parent_name,
+	ad9361_clk_register(phy, "-tx_refclk", parent_name, NULL,
 		flags | CLK_IGNORE_UNUSED, TX_REFCLK);
 
-	ad9361_clk_register(phy, "-rx_refclk", parent_name,
+	ad9361_clk_register(phy, "-rx_refclk", parent_name, NULL,
 		flags | CLK_IGNORE_UNUSED, RX_REFCLK);
 
-	ad9361_clk_register(phy, "-bb_refclk", parent_name,
+	ad9361_clk_register(phy, "-bb_refclk", parent_name, NULL,
 		flags | CLK_IGNORE_UNUSED, BB_REFCLK);
 
 	/* Base Band PLL Clock */
-	ad9361_clk_register(phy, "-bbpll_clk", "-bb_refclk",
+	ad9361_clk_register(phy, "-bbpll_clk", "-bb_refclk", NULL,
 		flags | CLK_IGNORE_UNUSED, BBPLL_CLK);
 
-	ad9361_clk_register(phy, "-adc_clk", "-bbpll_clk",
+	ad9361_clk_register(phy, "-adc_clk", "-bbpll_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, ADC_CLK);
 
-	ad9361_clk_register(phy, "-r2_clk", "-adc_clk",
+	ad9361_clk_register(phy, "-r2_clk", "-adc_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, R2_CLK);
 
-	ad9361_clk_register(phy, "-r1_clk", "-r2_clk",
+	ad9361_clk_register(phy, "-r1_clk", "-r2_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, R1_CLK);
 
-	ad9361_clk_register(phy, "-clkrf_clk", "-r1_clk",
+	ad9361_clk_register(phy, "-clkrf_clk", "-r1_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, CLKRF_CLK);
 
-	ad9361_clk_register(phy, "-rx_sampl_clk", "-clkrf_clk",
+	ad9361_clk_register(phy, "-rx_sampl_clk", "-clkrf_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, RX_SAMPL_CLK);
 
-	ad9361_clk_register(phy, "-dac_clk", "-adc_clk",
+	ad9361_clk_register(phy, "-dac_clk", "-adc_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, DAC_CLK);
 
-	ad9361_clk_register(phy, "-t2_clk", "-dac_clk",
+	ad9361_clk_register(phy, "-t2_clk", "-dac_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, T2_CLK);
 
-	ad9361_clk_register(phy, "-t1_clk", "-t2_clk",
+	ad9361_clk_register(phy, "-t1_clk", "-t2_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, T1_CLK);
 
-	ad9361_clk_register(phy, "-clktf_clk", "-t1_clk",
+	ad9361_clk_register(phy, "-clktf_clk", "-t1_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, CLKTF_CLK);
 
-	ad9361_clk_register(phy, "-tx_sampl_clk", "-clktf_clk",
+	ad9361_clk_register(phy, "-tx_sampl_clk", "-clktf_clk", NULL,
 		flags | CLK_IGNORE_UNUSED, TX_SAMPL_CLK);
 
-	ad9361_clk_register(phy, "-rx_rfpll", "-rx_refclk",
-		flags | CLK_IGNORE_UNUSED, RX_RFPLL);
+	ad9361_clk_register(phy, "-rx_rfpll_int", "-rx_refclk", NULL,
+		flags | CLK_IGNORE_UNUSED, RX_RFPLL_INT);
 
-	ad9361_clk_register(phy, "-tx_rfpll", "-tx_refclk",
-		flags | CLK_IGNORE_UNUSED, TX_RFPLL);
+	ad9361_clk_register(phy, "-tx_rfpll_int", "-tx_refclk", NULL,
+		flags | CLK_IGNORE_UNUSED, TX_RFPLL_INT);
 
+	ad9361_clk_register(phy, "-rx_rfpll", "-rx_rfpll_int", ext_rx_lo,
+		flags | CLK_IGNORE_UNUSED | CLK_SET_RATE_NO_REPARENT |
+		CLK_SET_RATE_PARENT, RX_RFPLL);
 
-	return 0;
-}
-
-#define AIM_CHAN(_chan, _si, _bits, _sign)			\
-	{ .type = IIO_VOLTAGE,						\
-	  .indexed = 1,							\
-	  .channel = _chan,						\
-	  .info_mask_separate = BIT(IIO_CHAN_INFO_CALIBSCALE) |		\
-			BIT(IIO_CHAN_INFO_CALIBBIAS) |			\
-			BIT(IIO_CHAN_INFO_CALIBPHASE),			\
-	  .info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),	\
-	/*.ext_info = axiadc_ext_info,*/			\
-	  .scan_index = _si,						\
-	  .scan_type = {						\
-		.sign = _sign,						\
-		.realbits = _bits,					\
-		.storagebits = 16,					\
-		.shift = 0,						\
-	  },								\
-	}
-
-#define AIM_MC_CHAN(_chan, _si, _bits, _sign)			\
-	{ .type = IIO_VOLTAGE,						\
-	  .indexed = 1,							\
-	  .channel = _chan,						\
-	  .scan_index = _si,						\
-	  .scan_type = {						\
-		.sign = _sign,						\
-		.realbits = _bits,					\
-		.storagebits = 16,					\
-		.shift = 0,						\
-	  },								\
-	}
-
-
-static const unsigned long ad9361_2x2_available_scan_masks[] = {
-	0x01, 0x02, 0x04, 0x08, 0x03, 0x0C, /* 1 & 2 chan */
-	0x10, 0x20, 0x40, 0x80, 0x30, 0xC0, /* 1 & 2 chan */
-	0x33, 0xCC, 0xC3, 0x3C, 0x0F, 0xF0, /* 4 chan */
-	0xFF,				   /* 8 chan */
-	0x00,
-};
-
-static const unsigned long ad9361_available_scan_masks[] = {
-	0x01, 0x02, 0x04, 0x08, 0x03, 0x0C, 0x0F,
-	0x00,
-};
-
-static const struct axiadc_chip_info axiadc_chip_info_tbl[] = {
-	[ID_AD9361] = {
-		.name = "AD9361",
-		.max_rate = 61440000UL,
-		.max_testmode = 0,
-		.num_channels = 4,
-		.scan_masks = ad9361_available_scan_masks,
-		.channel[0] = AIM_CHAN(0, 0, 12, 'S'),
-		.channel[1] = AIM_CHAN(1, 1, 12, 'S'),
-		.channel[2] = AIM_CHAN(2, 2, 12, 'S'),
-		.channel[3] = AIM_CHAN(3, 3, 12, 'S'),
-	},
-	[ID_AD9361_2] = { /* MCS/MIMO 2x AD9361 */
-		.name = "AD9361-2",
-		.max_rate = 61440000UL,
-		.max_testmode = 0,
-		.num_channels = 8,
-		.num_shadow_slave_channels = 4,
-		.scan_masks = ad9361_2x2_available_scan_masks,
-		.channel[0] = AIM_CHAN(0, 0, 12, 'S'),
-		.channel[1] = AIM_CHAN(1, 1, 12, 'S'),
-		.channel[2] = AIM_CHAN(2, 2, 12, 'S'),
-		.channel[3] = AIM_CHAN(3, 3, 12, 'S'),
-		.channel[4] = AIM_MC_CHAN(4, 4, 12, 'S'),
-		.channel[5] = AIM_MC_CHAN(5, 5, 12, 'S'),
-		.channel[6] = AIM_MC_CHAN(6, 6, 12, 'S'),
-		.channel[7] = AIM_MC_CHAN(7, 7, 12, 'S'),
-	},
-	[ID_AD9364] = {
-		.name = "AD9361",
-		.max_rate = 61440000UL,
-		.max_testmode = 0,
-		.num_channels = 2,
-		.channel[0] = AIM_CHAN(0, 0, 12, 'S'),
-		.channel[1] = AIM_CHAN(1, 1, 12, 'S'),
-	},
-
-};
-
-static int ad9361_read_raw(struct iio_dev *indio_dev,
-			   struct iio_chan_spec const *chan,
-			   int *val,
-			   int *val2,
-			   long m)
-{
-	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
-
-	switch (m) {
-	case IIO_CHAN_INFO_SAMP_FREQ:
-		if (!conv->clk)
-			return -ENODEV;
-
-		*val = conv->adc_clk = clk_get_rate(conv->clk);
-
-		return IIO_VAL_INT;
-
-	}
-	return -EINVAL;
-}
-
-static int ad9361_write_raw(struct iio_dev *indio_dev,
-			       struct iio_chan_spec const *chan,
-			       int val,
-			       int val2,
-			       long mask)
-{
-	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
-	unsigned long r_clk;
-	int ret;
-
-	switch (mask) {
-	case IIO_CHAN_INFO_SAMP_FREQ:
-		if (!conv->clk)
-			return -ENODEV;
-
-		if (chan->extend_name)
-			return -ENODEV;
-
-		r_clk = clk_round_rate(conv->clk, val);
-		if (r_clk < 0 || r_clk > conv->chip_info->max_rate) {
-			dev_warn(&conv->spi->dev,
-				"Error setting ADC sample rate %ld", r_clk);
-			return -EINVAL;
-		}
-
-		ret = clk_set_rate(conv->clk, r_clk);
-		if (ret < 0)
-			return ret;
-
-		return 0;
-		break;
-	default:
-		return -EINVAL;
-	}
+	ad9361_clk_register(phy, "-tx_rfpll", "-tx_rfpll_int", ext_tx_lo,
+		flags | CLK_IGNORE_UNUSED | CLK_SET_RATE_NO_REPARENT |
+		CLK_SET_RATE_PARENT, TX_RFPLL);
 
 	return 0;
-}
-
-static int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq)
-{
-	struct axiadc_converter *conv = spi_get_drvdata(phy->spi);
-	struct axiadc_state *st = iio_priv(conv->indio_dev);
-	int ret, i, j, k, chan, t, num_chan, err = 0;
-	u32 s0, s1, c0, c1, tmp, saved = 0;
-	u8 field[2][16];
-	u32 saved_dsel[4], saved_chan_ctrl6[4];
-
-	unsigned hdl_dac_version = axiadc_read(st, 0x4000);
-
-	if (phy->pdata->dig_interface_tune_skipmode == 2) {
-	/* skip completely and use defaults */
-		ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
-				phy->pdata->port_ctrl.rx_clk_data_delay);
-
-		ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
-				phy->pdata->port_ctrl.tx_clk_data_delay);
-
-		return 0;
-	}
-
-	if (!phy->pdata->fdd) {
-		ad9361_set_ensm_mode(phy, true, false);
-		ad9361_ensm_force_state(phy, ENSM_STATE_FDD);
-	} else {
-		ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-		ad9361_ensm_restore_prev_state(phy);
-	}
-
-	num_chan = (conv->chip_info->num_channels > 4) ? 4 : conv->chip_info->num_channels;
-
-	ad9361_bist_prbs(phy, BIST_INJ_RX);
-
-	for (t = 0; t < 2; t++) {
-		memset(field, 0, 32);
-		for (k = 0; k < 2; k++) {
-			if (max_freq)
-				ad9361_set_trx_clock_chain_freq(phy, k ? max_freq : 10000000UL);
-		for (i = 0; i < 2; i++) {
-			for (j = 0; j < 16; j++) {
-				ad9361_spi_write(phy->spi,
-						REG_RX_CLOCK_DATA_DELAY + t,
-						RX_DATA_DELAY(i == 0 ? j : 0) |
-						DATA_CLK_DELAY(i ? j : 0));
-				for (chan = 0; chan < num_chan; chan++)
-					axiadc_write(st, ADI_REG_CHAN_STATUS(chan),
-						ADI_PN_ERR | ADI_PN_OOS);
-				mdelay(4);
-
-				if ((t == 1) || (axiadc_read(st, ADI_REG_STATUS) & ADI_STATUS)) {
-					for (chan = 0, ret = 0; chan < num_chan; chan++) {
-						ret |= axiadc_read(st, ADI_REG_CHAN_STATUS(chan));
-					}
-				} else {
-					ret = 1;
-				}
-
-				field[i][j] |= ret;
-			}
-		}
-		}
-#ifdef _DEBUG
-		printk("SAMPL CLK: %lu\n", clk_get_rate(phy->clks[RX_SAMPL_CLK]));
-		printk("  ");
-		for (i = 0; i < 16; i++)
-			printk("%x:", i);
-		printk("\n");
-
-		for (i = 0; i < 2; i++) {
-			printk("%x:", i);
-			for (j = 0; j < 16; j++) {
-				printk("%c ", (field[i][j] ? '#' : 'o'));
-			}
-			printk("\n");
-		}
-		printk("\n");
-#endif
-		c0 = ad9361_find_opt(&field[0][0], 16, &s0);
-		c1 = ad9361_find_opt(&field[1][0], 16, &s1);
-
-		if (!c0 && !c1) {
-			dev_err(&phy->spi->dev, "%s: Tuning %s FAILED!", __func__,
-				t ? "TX" : "RX");
-			err |= -EIO;
-		}
-
-		if (c1 > c0)
-			ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY + t,
-					DATA_CLK_DELAY(s1 + c1 / 2) |
-					RX_DATA_DELAY(0));
-		else
-			ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY + t,
-					DATA_CLK_DELAY(0) |
-					RX_DATA_DELAY(s0 + c0 / 2));
-
-		if (t == 0) {
-			/* Now do the loopback and tune the digital out */
-
-			ad9361_bist_prbs(phy, BIST_DISABLE);
-
-			if (phy->pdata->dig_interface_tune_skipmode == 1) {
-			/* skip TX */
-
-				phy->pdata->port_ctrl.rx_clk_data_delay =
-					ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
-
-				if (!phy->pdata->fdd) {
-					ad9361_set_ensm_mode(phy, phy->pdata->fdd,
-							     phy->pdata->ensm_pin_ctrl);
-					ad9361_ensm_restore_prev_state(phy);
-				}
-				return 0;
-			}
-
-			ad9361_bist_loopback(phy, 1);
-
-			for (chan = 0; chan < num_chan; chan++) {
-				axiadc_write(st, ADI_REG_CHAN_CNTRL(chan),
-					ADI_FORMAT_SIGNEXT | ADI_FORMAT_ENABLE |
-					ADI_ENABLE | ADI_IQCOR_ENB);
-				axiadc_set_pnsel(st, chan, ADC_PN_CUSTOM);
-				saved_chan_ctrl6[chan] = axiadc_read(st, 0x4414 + (chan) * 0x40);
-				if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
-					saved_dsel[chan] = axiadc_read(st, 0x4418 + (chan) * 0x40);
-					axiadc_write(st, 0x4418 + (chan) * 0x40, 9);
-					axiadc_write(st, 0x4414 + (chan) * 0x40, 0); /* !IQCOR_ENB */
-					axiadc_write(st, 0x4044, 1);
-				} else {
-					axiadc_write(st, 0x4414 + (chan) * 0x40, 1); /* DAC_PN_ENB */
-				}
-			}
-			if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8) {
-				saved = tmp = axiadc_read(st, 0x4048);
-				tmp &= ~0xF;
-				tmp |= 1;
-				axiadc_write(st, 0x4048, tmp);
-
-			}
-		} else {
-			ad9361_bist_loopback(phy, 0);
-
-			if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8)
-				axiadc_write(st, 0x4048, saved);
-
-			for (chan = 0; chan < num_chan; chan++) {
-				axiadc_write(st, ADI_REG_CHAN_CNTRL(chan),
-					ADI_FORMAT_SIGNEXT | ADI_FORMAT_ENABLE |
-					ADI_ENABLE | ADI_IQCOR_ENB);
-				axiadc_set_pnsel(st, chan, ADC_PN9);
-				if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
-					axiadc_write(st, 0x4418 + (chan) * 0x40, saved_dsel[chan]);
-					axiadc_write(st, 0x4044, 1);
-				}
-
-				axiadc_write(st, 0x4414 + (chan) * 0x40, saved_chan_ctrl6[chan]);
-			}
-
-			if (err == -EIO) {
-
-				ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
-						phy->pdata->port_ctrl.rx_clk_data_delay);
-
-				ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
-						phy->pdata->port_ctrl.tx_clk_data_delay);
-				err = 0;
-			} else {
-				phy->pdata->port_ctrl.rx_clk_data_delay =
-					ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
-				phy->pdata->port_ctrl.tx_clk_data_delay =
-					ad9361_spi_read(phy->spi, REG_TX_CLOCK_DATA_DELAY);
-			}
-
-			if (!phy->pdata->fdd) {
-				ad9361_set_ensm_mode(phy, phy->pdata->fdd, phy->pdata->ensm_pin_ctrl);
-				ad9361_ensm_restore_prev_state(phy);
-			}
-
-			return err;
-		}
-	}
-
-	return -EINVAL;
-}
-
-static int ad9361_post_setup(struct iio_dev *indio_dev)
-{
-	struct axiadc_state *st = iio_priv(indio_dev);
-	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
-	struct ad9361_rf_phy *phy = conv->phy;
-	unsigned rx2tx2 = phy->pdata->rx2tx2;
-	unsigned tmp, num_chan;
-	int i, ret;
-
-	num_chan = (conv->chip_info->num_channels > 4) ? 4 : conv->chip_info->num_channels;
-
-	conv->indio_dev = indio_dev;
-	axiadc_write(st, ADI_REG_CNTRL, rx2tx2 ? 0 : ADI_R1_MODE);
-	tmp = axiadc_read(st, 0x4048);
-
-	if (!rx2tx2) {
-		axiadc_write(st, 0x4048, tmp | BIT(5)); /* R1_MODE */
-		axiadc_write(st, 0x404c, 1); /* RATE */
-	} else {
-		tmp &= ~BIT(5);
-		axiadc_write(st, 0x4048, tmp);
-		axiadc_write(st, 0x404c, 3); /* RATE */
-	}
-
-	for (i = 0; i < num_chan; i++) {
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_1(i),
-			     ADI_DCFILT_OFFSET(0));
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_2(i),
-			     (i & 1) ? 0x00004000 : 0x40000000);
-		axiadc_write(st, ADI_REG_CHAN_CNTRL(i),
-			     ADI_FORMAT_SIGNEXT | ADI_FORMAT_ENABLE |
-			     ADI_ENABLE | ADI_IQCOR_ENB);
-	}
-
-	ret = ad9361_dig_tune(phy, (axiadc_read(st, ADI_REG_ID)) ?
-		0 : 61440000);
-	if (ret < 0)
-		return ret;
-
-	ret = ad9361_set_trx_clock_chain(phy,
-					 phy->pdata->rx_path_clks,
-					 phy->pdata->tx_path_clks);
-
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-	ad9361_ensm_restore_prev_state(phy);
-
-	return ret;
-}
-
-static int ad9361_register_axi_converter(struct ad9361_rf_phy *phy)
-{
-	struct axiadc_converter *conv;
-	struct spi_device *spi = phy->spi;
-	int ret;
-
-	conv = devm_kzalloc(&spi->dev, sizeof(*conv), GFP_KERNEL);
-	if (conv == NULL)
-		return -ENOMEM;
-
-	conv->id = ad9361_spi_read(spi, REG_PRODUCT_ID) & PRODUCT_ID_MASK;
-	if (conv->id != PRODUCT_ID_9361) {
-		dev_err(&spi->dev, "Unrecognized CHIP_ID 0x%X\n", conv->id);
-  		ret = -ENODEV;
-  		goto out;
-	}
-
-	conv->chip_info = &axiadc_chip_info_tbl[
-		(spi_get_device_id(spi)->driver_data == ID_AD9361_2) ?
-		ID_AD9361_2 : phy->pdata->rx2tx2 ? ID_AD9361 : ID_AD9364];
-	conv->adc_output_mode = OUTPUT_MODE_TWOS_COMPLEMENT;
-	conv->write = ad9361_spi_write;
-	conv->read = ad9361_spi_read;
-	conv->write_raw = ad9361_write_raw;
-	conv->read_raw = ad9361_read_raw;
-	conv->post_setup = ad9361_post_setup;
-	conv->spi = spi;
-	conv->phy = phy;
-
-	conv->clk = phy->clks[RX_SAMPL_CLK];
-	conv->adc_clk = clk_get_rate(conv->clk);
-
-	spi_set_drvdata(spi, conv); /* Take care here */
-
-	return 0;
-out:
-	spi_set_drvdata(spi, NULL);
-	return ret;
 }
 
 enum ad9361_iio_dev_attr {
@@ -5941,12 +5949,17 @@ static ssize_t ad9361_phy_store(struct device *dev,
 		break;
 	case AD9361_CALIB_MODE:
 		val = 0;
-		if (sysfs_streq(buf, "auto"))
+		if (sysfs_streq(buf, "auto")) {
 			phy->auto_cal_en = true;
-		else if (sysfs_streq(buf, "manual"))
+			phy->manual_tx_quad_cal_en = false;
+		} else if (sysfs_streq(buf, "manual")) {
 			phy->auto_cal_en = false;
-		else if (!strncmp(buf, "tx_quad", 7)) {
-			ret = sscanf(buf, "tx_quad %u", &arg);
+			phy->manual_tx_quad_cal_en = false;
+		} else if (sysfs_streq(buf, "manual_tx_quad")) {
+			phy->auto_cal_en = false;
+			phy->manual_tx_quad_cal_en = true;
+		} else if (!strncmp(buf, "tx_quad", 7)) {
+			ret = sscanf(buf, "tx_quad %d", &arg);
 			if (ret != 1)
 				arg = -1;
 			val = TX_QUAD_CAL;
@@ -6075,10 +6088,13 @@ static ssize_t ad9361_phy_show(struct device *dev,
 		ret = sprintf(buf, "%d\n", !phy->bypass_tx_fir && !phy->bypass_rx_fir);
 		break;
 	case AD9361_CALIB_MODE_AVAIL:
-		ret = sprintf(buf, "auto manual tx_quad rf_dc_offs\n");
+		ret = sprintf(buf, "auto manual manual_tx_quad tx_quad rf_dc_offs\n");
 		break;
 	case AD9361_CALIB_MODE:
-		ret = sprintf(buf, "%s\n", phy->auto_cal_en ? "auto" : "manual");
+		if (phy->manual_tx_quad_cal_en)
+			ret = sprintf(buf, "manual_tx_quad %d\n", phy->last_tx_quad_cal_phase);
+		else
+			ret = sprintf(buf, "%s\n", phy->auto_cal_en ? "auto" : "manual");
 		break;
 	case AD9361_BBDC_OFFS_ENABLE:
 		ret = sprintf(buf, "%d\n", phy->bbdc_track_en);
@@ -6251,6 +6267,7 @@ enum lo_ext_info {
 	LOEXT_RECALL,
 	LOEXT_LOAD,
 	LOEXT_SAVE,
+	LOEXT_EXTERNAL,
 };
 
 static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
@@ -6277,26 +6294,16 @@ static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
 	case LOEXT_FREQ:
 		switch (chan->channel) {
 		case 0:
-			if (phy->pdata->use_ext_rx_lo) {
-				ret = -EINVAL;
-				break;
-			}
 			tmp = clk_set_rate(phy->clks[RX_RFPLL],
 					ad9361_to_clk(readin));
 			break;
-
 		case 1:
-			if (phy->pdata->use_ext_tx_lo) {
-				ret = -EINVAL;
-				break;
-			}
 			tmp = clk_set_rate(phy->clks[TX_RFPLL],
 					ad9361_to_clk(readin));
 			if (test_bit(0, &phy->flags))
 				wait_for_completion(&phy->complete);
 
 			break;
-
 		default:
 			ret = -EINVAL;
 		}
@@ -6336,6 +6343,31 @@ static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
 	case LOEXT_SAVE:
 		phy->fastlock.save_profile = readin;
 		break;
+	case LOEXT_EXTERNAL:
+		switch (chan->channel) {
+		case 0:
+			if (phy->clk_ext_lo_rx)
+				ret = clk_set_parent(phy->clks[RX_RFPLL],
+				       readin ? phy->clk_ext_lo_rx :
+				       phy->clks[RX_RFPLL_INT]);
+			else
+				ret = -ENODEV;
+			break;
+
+		case 1:
+			if (phy->clk_ext_lo_tx)
+				ret = clk_set_parent(phy->clks[TX_RFPLL],
+				       readin ? phy->clk_ext_lo_tx :
+				       phy->clks[TX_RFPLL_INT]);
+			else
+				ret = -ENODEV;
+			break;
+
+		default:
+			ret = -EINVAL;
+		}
+		break;
+
 	}
 	mutex_unlock(&indio_dev->mlock);
 
@@ -6354,23 +6386,8 @@ static ssize_t ad9361_phy_lo_read(struct iio_dev *indio_dev,
 	mutex_lock(&indio_dev->mlock);
 	switch (private) {
 	case LOEXT_FREQ:
-		switch (chan->channel) {
-		case 0:
-			if (phy->pdata->use_ext_rx_lo)
-				val = 0;
-			else
-				val = ad9361_from_clk(clk_get_rate(phy->clks[RX_RFPLL]));
-			break;
-
-		case 1:
-			if (phy->pdata->use_ext_tx_lo)
-				val = 0;
-			else
-				val = ad9361_from_clk(clk_get_rate(phy->clks[TX_RFPLL]));
-			break;
-		default:
-			ret = -EINVAL;
-		}
+		val = ad9361_from_clk(clk_get_rate(phy->clks[chan->channel ?
+			TX_RFPLL : RX_RFPLL]));
 		break;
 	case LOEXT_SAVE: {
 		u8 faslock_vals[16];
@@ -6393,6 +6410,18 @@ static ssize_t ad9361_phy_lo_read(struct iio_dev *indio_dev,
 			ret = -EINVAL;
 		else
 			val = ret - 1;
+		break;
+	case LOEXT_EXTERNAL:
+		switch (chan->channel) {
+		case 0:
+			val = clk_get_parent(phy->clks[RX_RFPLL]) != phy->clks[RX_RFPLL_INT];
+			break;
+		case 1:
+			val = clk_get_parent(phy->clks[TX_RFPLL]) != phy->clks[TX_RFPLL_INT];
+			break;
+		default:
+			ret = -EINVAL;
+		}
 		break;
 	default:
 		ret = 0;
@@ -6420,6 +6449,7 @@ static const struct iio_chan_spec_ext_info ad9361_phy_ext_info[] = {
 	_AD9361_EXT_LO_INFO("fastlock_recall", LOEXT_RECALL),
 	_AD9361_EXT_LO_INFO("fastlock_load", LOEXT_LOAD),
 	_AD9361_EXT_LO_INFO("fastlock_save", LOEXT_SAVE),
+	_AD9361_EXT_LO_INFO("external", LOEXT_EXTERNAL),
 	{ },
 };
 
@@ -7015,6 +7045,17 @@ static ssize_t ad9361_debugfs_write(struct file *file,
 
 		entry->val = val;
 		return count;
+	case DBGFS_DIGITAL_TUNE:
+		if (ret != 2)
+			return -EINVAL;
+		mutex_lock(&phy->indio_dev->mlock);
+		ret = ad9361_dig_tune(phy, val, val2);
+		mutex_unlock(&phy->indio_dev->mlock);
+		if (ret < 0)
+			return ret;
+
+		entry->val = val;
+		return count;
 	default:
 		break;
 	}
@@ -7083,6 +7124,7 @@ static int ad9361_register_debugfs(struct iio_dev *indio_dev)
 	ad9361_add_debugfs_entry(phy, "multichip_sync", DBGFS_MCS);
 	ad9361_add_debugfs_entry(phy, "calibration_switch_control",
 					 DBGFS_CAL_SW_CTRL);
+	ad9361_add_debugfs_entry(phy, "digital_tune", DBGFS_DIGITAL_TUNE);
 
 	for (i = 0; i < phy->ad9361_debugfs_entry_index; i++)
 		d = debugfs_create_file(
@@ -7852,8 +7894,7 @@ out_iio_device_free:
 
 static int ad9361_remove(struct spi_device *spi)
 {
-	struct axiadc_converter *conv = spi_get_drvdata(spi);
-	struct ad9361_rf_phy *phy = conv->phy;
+	struct ad9361_rf_phy *phy = ad9361_spi_to_phy(spi);
 
 	sysfs_remove_bin_file(&phy->indio_dev->dev.kobj, &phy->bin);
 	iio_device_unregister(phy->indio_dev);

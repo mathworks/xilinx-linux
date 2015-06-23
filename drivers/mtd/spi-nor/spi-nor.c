@@ -170,6 +170,20 @@ static inline int write_sr(struct spi_nor *nor, u8 val)
 }
 
 /*
+ * Write status Register and configuration register with 2 bytes
+ * The first byte will be written to the status register, while the
+ * second byte will be written to the configuration register.
+ * Return negative if error occured.
+ */
+static int write_sr_cr(struct spi_nor *nor, u16 val)
+{
+	nor->cmd_buf[0] = val & 0xff;
+	nor->cmd_buf[1] = (val >> 8);
+
+	return nor->write_reg(nor, SPINOR_OP_WRSR, nor->cmd_buf, 2, 0);
+}
+
+/*
  * Set write enable latch with Write Enable command.
  * Returns negative if error occurred.
  */
@@ -597,6 +611,7 @@ static int write_sr_modify_protection(struct spi_nor *nor, uint8_t status,
 				      uint8_t lock_bits)
 {
 	uint8_t status_new, bp_mask;
+	u16 val;
 
 	status_new = status & ~SR_BP_BIT_MASK;
 	bp_mask = (lock_bits << SR_BP_BIT_OFFSET) & SR_BP_BIT_MASK;
@@ -613,8 +628,17 @@ static int write_sr_modify_protection(struct spi_nor *nor, uint8_t status,
 	status_new |= bp_mask;
 
 	write_enable(nor);
-	if (write_sr(nor, status_new) < 0)
-		return 1;
+
+	/* For spansion flashes */
+	if (nor->jedec_id == CFI_MFR_AMD) {
+		val = read_cr(nor) << 8;
+		val |= status_new;
+		if (write_sr_cr(nor, val) < 0)
+			return 1;
+	} else {
+		if (write_sr(nor, status_new) < 0)
+			return 1;
+	}
 	return 0;
 }
 
@@ -828,6 +852,7 @@ static const struct spi_device_id spi_nor_ids[] = {
 	/* GigaDevice */
 	{ "gd25q32", INFO(0xc84016, 0, 64 * 1024,  64, SECT_4K) },
 	{ "gd25q64", INFO(0xc84017, 0, 64 * 1024, 128, SECT_4K) },
+	{ "gd25q128", INFO(0xc84018, 0, 64 * 1024, 256, SECT_4K) },
 
 	/* Intel/Numonyx -- xxxs33b */
 	{ "160s33b",  INFO(0x898911, 0, 64 * 1024,  32, 0) },
@@ -850,13 +875,13 @@ static const struct spi_device_id spi_nor_ids[] = {
 	{ "mx66l1g55g",  INFO(0xc2261b, 0, 64 * 1024, 2048, SPI_NOR_QUAD_READ) },
 
 	/* Micron */
-	{ "n25q032",	 INFO(0x20ba16, 0, 64 * 1024,   64, 0) },
-	{ "n25q064",     INFO(0x20ba17, 0, 64 * 1024,  128, 0) },
+	{ "n25q032",	 INFO(0x20ba16, 0, 64 * 1024,   64, SPI_NOR_QUAD_READ) },
+	{ "n25q064",     INFO(0x20ba17, 0, 64 * 1024,  128, SPI_NOR_QUAD_READ) },
 	{ "n25q128a11",  INFO(0x20bb18, 0, 64 * 1024,  256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_FLASH_LOCK) },
 	{ "n25q128a13",  INFO(0x20ba18, 0, 64 * 1024,  256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_FLASH_LOCK) },
-	{ "n25q256a11",  INFO(0x20bb19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
+	{ "n25q256a",    INFO(0x20bb19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
 	{ "n25q256a13",  INFO(0x20ba19, 0, 64 * 1024,  512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
-	{ "n25q512a11",  INFO(0x20bb20, 0, 64 * 1024, 1024, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
+	{ "n25q512a",    INFO(0x20bb20, 0, 64 * 1024, 1024, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
 	{ "n25q512a13",  INFO(0x20ba20, 0, 64 * 1024, 1024, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
 	{ "n25q512ax3",  INFO(0x20ba20, 0, 64 * 1024, 1024, USE_FSR | SPI_NOR_FLASH_LOCK) },
 	{ "n25q00",      INFO(0x20ba21, 0, 64 * 1024, 2048, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | USE_FSR | SPI_NOR_FLASH_LOCK) },
@@ -1018,6 +1043,7 @@ static int spi_nor_read_ext(struct mtd_info *mtd, loff_t from, size_t len,
 	u32 read_count = 0;
 	u32 rem_bank_len = 0;
 	u8 bank = 0;
+	u8 stack_shift = 0;
 	int ret;
 
 #define OFFSET_16_MB 0x1000000
@@ -1029,25 +1055,18 @@ static int spi_nor_read_ext(struct mtd_info *mtd, loff_t from, size_t len,
 		return ret;
 	if (nor->isparallel)
 		nor->spi->master->flags |= SPI_DATA_STRIPE;
-	if (nor->addr_width == 4) {
-		/* Wait till previous write/erase is done. */
-		ret = spi_nor_wait_till_ready(nor);
-		if (ret)
-			goto read_err;
-		/* Die cross over issue is not handled */
-		if (nor->isparallel)
-			from /= 2;
-		ret = nor->read(nor, from, len, retlen, buf);
-		goto read_err;
-	}
+
 	while (len) {
-		bank = addr / (OFFSET_16_MB << nor->shift);
-		rem_bank_len = ((OFFSET_16_MB << nor->shift) * (bank + 1)) -
-				addr;
+		if (nor->addr_width == 3) {
+			bank = addr / (OFFSET_16_MB << nor->shift);
+			rem_bank_len = ((OFFSET_16_MB << nor->shift) *
+							(bank + 1)) - addr;
+		}
 		offset = addr;
 		if (nor->isparallel == 1)
 			offset /= 2;
 		if (nor->isstacked == 1) {
+			stack_shift = 1;
 			if (offset >= (nor->mtd->size / 2)) {
 				offset = offset - (nor->mtd->size / 2);
 				nor->spi->master->flags |= SPI_MASTER_U_PAGE;
@@ -1055,11 +1074,22 @@ static int spi_nor_read_ext(struct mtd_info *mtd, loff_t from, size_t len,
 				nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
 			}
 		}
-		write_ear(nor, offset);
+		/* Die cross over issue is not handled */
+		if (nor->addr_width == 4) {
+			rem_bank_len = (nor->mtd->size >> stack_shift) -
+					(offset << nor->shift);
+		}
+		if (nor->addr_width == 3)
+			write_ear(nor, offset);
 		if (len < rem_bank_len)
 			read_len = len;
 		else
 			read_len = rem_bank_len;
+
+		/* Wait till previous write/erase is done. */
+		ret = spi_nor_wait_till_ready(nor);
+		if (ret)
+			goto read_err;
 
 		ret = spi_nor_read(mtd, offset, read_len, &actual_len, buf);
 		if (ret)
@@ -1206,6 +1236,7 @@ static int spi_nor_write_ext(struct mtd_info *mtd, loff_t to, size_t len,
 	u32 write_count = 0;
 	u32 rem_bank_len = 0;
 	u8 bank = 0;
+	u8 stack_shift = 0;
 	int ret;
 
 #define OFFSET_16_MB 0x1000000
@@ -1217,19 +1248,18 @@ static int spi_nor_write_ext(struct mtd_info *mtd, loff_t to, size_t len,
 		return ret;
 	if (nor->isparallel)
 		nor->spi->master->flags |= SPI_DATA_STRIPE;
-	if (nor->addr_width == 4) {
-		/* Die cross over issue is not handled */
-		ret = spi_nor_write(mtd, offset, len, retlen, buf);
-		goto write_err;
-	}
+
 	while (len) {
 		actual_len = 0;
-		bank = addr / (OFFSET_16_MB << nor->shift);
-		rem_bank_len = ((OFFSET_16_MB << nor->shift) * (bank + 1)) -
-				addr;
+		if (nor->addr_width == 3) {
+			bank = addr / (OFFSET_16_MB << nor->shift);
+			rem_bank_len = ((OFFSET_16_MB << nor->shift) *
+							(bank + 1)) - addr;
+		}
 		offset = addr;
 
 		if (nor->isstacked == 1) {
+			stack_shift = 1;
 			if (offset >= (nor->mtd->size / 2)) {
 				offset = offset - (nor->mtd->size / 2);
 				nor->spi->master->flags |= SPI_MASTER_U_PAGE;
@@ -1237,7 +1267,11 @@ static int spi_nor_write_ext(struct mtd_info *mtd, loff_t to, size_t len,
 				nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
 			}
 		}
-		write_ear(nor, (offset >> nor->shift));
+		/* Die cross over issue is not handled */
+		if (nor->addr_width == 4)
+			rem_bank_len = (nor->mtd->size >> stack_shift) - offset;
+		if (nor->addr_width == 3)
+			write_ear(nor, (offset >> nor->shift));
 		if (len < rem_bank_len)
 			write_len = len;
 		else
@@ -1284,24 +1318,13 @@ static int macronix_quad_enable(struct spi_nor *nor)
 	return 0;
 }
 
-/*
- * Write status Register and configuration register with 2 bytes
- * The first byte will be written to the status register, while the
- * second byte will be written to the configuration register.
- * Return negative if error occured.
- */
-static int write_sr_cr(struct spi_nor *nor, u16 val)
-{
-	nor->cmd_buf[0] = val & 0xff;
-	nor->cmd_buf[1] = (val >> 8);
-
-	return nor->write_reg(nor, SPINOR_OP_WRSR, nor->cmd_buf, 2, 0);
-}
-
 static int __maybe_unused spansion_quad_enable(struct spi_nor *nor)
 {
 	int ret;
 	int quad_en = CR_QUAD_EN_SPAN << 8;
+
+	quad_en |= read_sr(nor);
+	quad_en |= (read_cr(nor) << 8);
 
 	write_enable(nor);
 
@@ -1322,6 +1345,45 @@ static int __maybe_unused spansion_quad_enable(struct spi_nor *nor)
 	return 0;
 }
 
+static int micron_quad_enable(struct spi_nor *nor)
+{
+	int ret;
+	u8 val;
+
+	ret = nor->read_reg(nor, SPINOR_OP_RD_EVCR, &val, 1);
+	if (ret < 0) {
+		dev_err(nor->dev, "error %d reading EVCR\n", ret);
+		return ret;
+	}
+
+	write_enable(nor);
+
+	/* set EVCR, enable quad I/O */
+	nor->cmd_buf[0] = val & ~EVCR_QUAD_EN_MICRON;
+	ret = nor->write_reg(nor, SPINOR_OP_WD_EVCR, nor->cmd_buf, 1, 0);
+	if (ret < 0) {
+		dev_err(nor->dev, "error while writing EVCR register\n");
+		return ret;
+	}
+
+	ret = spi_nor_wait_till_ready(nor);
+	if (ret)
+		return ret;
+
+	/* read EVCR and check it */
+	ret = nor->read_reg(nor, SPINOR_OP_RD_EVCR, &val, 1);
+	if (ret < 0) {
+		dev_err(nor->dev, "error %d reading EVCR\n", ret);
+		return ret;
+	}
+	if (val & EVCR_QUAD_EN_MICRON) {
+		dev_err(nor->dev, "Micron EVCR Quad bit not clear\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int set_quad_mode(struct spi_nor *nor, struct flash_info *info)
 {
 	int status;
@@ -1332,6 +1394,13 @@ static int set_quad_mode(struct spi_nor *nor, struct flash_info *info)
 		status = macronix_quad_enable(nor);
 		if (status) {
 			dev_err(nor->dev, "Macronix quad-read not enabled\n");
+			return -EINVAL;
+		}
+		return status;
+	case CFI_MFR_ST:
+		status = micron_quad_enable(nor);
+		if (status) {
+			dev_err(nor->dev, "Micron quad-read not enabled\n");
 			return -EINVAL;
 		}
 		return status;
@@ -1466,10 +1535,25 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 					nor->isstacked = 1;
 					nor->isparallel = 0;
 #else
-					/* single */
-					nor->shift = 0;
-					nor->isstacked = 0;
-					nor->isparallel = 0;
+					u32 is_stacked;
+					if (of_property_read_u32(np_spi,
+							"is-stacked",
+							&is_stacked) < 0) {
+						is_stacked = 0;
+					}
+					if (is_stacked) {
+						/* dual stacked */
+						nor->shift = 0;
+						mtd->size <<= 1;
+						info->n_sectors <<= 1;
+						nor->isstacked = 1;
+						nor->isparallel = 0;
+					} else {
+						/* single */
+						nor->shift = 0;
+						nor->isstacked = 0;
+						nor->isparallel = 0;
+					}
 #endif
 				}
 			}
@@ -1627,6 +1711,11 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 			mtd->erasesize = info->sector_size;
 		} else
 			set_4byte(nor, info, 1);
+			if (nor->isstacked) {
+				nor->spi->master->flags |= SPI_MASTER_U_PAGE;
+				set_4byte(nor, info, 1);
+				nor->spi->master->flags &= ~SPI_MASTER_U_PAGE;
+			}
 #ifdef CONFIG_OF
 		}
 #endif
