@@ -1,6 +1,6 @@
 /dts-v1/;
 
-/include/ "zynq-zed.dtsi"
+/include/ "zynq-zc706.dtsi"
 
 / {
 	fpga_axi: fpga-axi@0 {
@@ -45,7 +45,6 @@
 						adi,hsync-polarity = <0x02>;
 						adi,tdms-clock-inversion;
 						adi,clock-delay = <0x03>;
-
 						gpios = <&pca9534 4 0>;
 					};
 				};
@@ -60,6 +59,7 @@
 						reg = <0x4c>;
 						#address-cells = <0x1>;
 						#size-cells = <0x0>;
+						reset-gpios = <&pca9534 0 0>;
 						interrupt-parent = <&gpio>;
 						interrupts = <86 4>;
 
@@ -177,49 +177,7 @@
 				adi,type = <0>;
 			};
 		};
-	};
 
-	leds {
-		compatible = "gpio-leds";
-		ld0 {
-			label = "ld0:red";
-			gpios = <&gpio 73 0>;
-		};
-
-		ld1 {
-			label = "ld1:red";
-			gpios = <&gpio 74 0>;
-		};
-
-		ld2 {
-			label = "ld2:red";
-			gpios = <&gpio 75 0>;
-		};
-
-		ld3 {
-			label = "ld3:red";
-			gpios = <&gpio 76 0>;
-		};
-
-		ld4 {
-			label = "ld4:red";
-			gpios = <&gpio 77 0>;
-		};
-
-		ld5 {
-			label = "ld5:red";
-			gpios = <&gpio 78 0>;
-		};
-
-		ld6 {
-			label = "ld6:red";
-			gpios = <&gpio 79 0>;
-		};
-
-		ld7 {
-			label = "ld7:red";
-			gpios = <&gpio 80 0>;
-		};
 	};
 };
 

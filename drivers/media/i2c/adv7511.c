@@ -32,6 +32,7 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dv-timings.h>
+#include <media/v4l2-event.h>
 #include <media/adv7511.h>
 
 static int debug;
@@ -658,6 +659,8 @@ static const struct v4l2_subdev_core_ops adv7511_core_ops = {
 #endif
 	.s_power = adv7511_s_power,
 	.interrupt_service_routine = adv7511_isr,
+	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
+	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 };
 
 /* ------------------------------ VIDEO OPS ------------------------------ */
@@ -697,6 +700,23 @@ static int adv7511_s_dv_timings(struct v4l2_subdev *sd,
 
 	/* save timings */
 	state->dv_timings = *timings;
+
+	if (state->cfg.embedded_sync) {
+		const struct v4l2_bt_timings *bt = &timings->bt;
+		unsigned int vfrontporch;
+
+		/* The hardware vsync generator has a off-by-one bug */
+		vfrontporch = bt->vfrontporch + 1;
+
+		adv7511_wr(sd, 0x30, (bt->hfrontporch >> 2) & 0xff);
+		adv7511_wr(sd, 0x31, ((bt->hfrontporch & 3) << 6) |
+			((bt->hsync >> 4) & 0x3f));
+		adv7511_wr(sd, 0x32, ((bt->hsync & 0xf) << 4) |
+			((vfrontporch >> 6) & 0xf));
+		adv7511_wr(sd, 0x33, ((vfrontporch & 0x3f) << 2) |
+			((bt->vsync >> 8) & 0x3));
+		adv7511_wr(sd, 0x34, bt->vsync & 0xff);
+	}
 
 	/* update quantization range based on new dv_timings */
 	adv7511_set_rgb_quantization_mode(sd, state->rgb_quantization_range_ctrl);
@@ -1805,6 +1825,7 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 
 	v4l2_i2c_subdev_init(sd, client, &adv7511_ops);
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_EVENTS;
 	adv7511_subdev(sd);
 	hdl = &state->hdl;
 	v4l2_ctrl_handler_init(hdl, 10);
@@ -1881,15 +1902,6 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 	err = v4l2_async_register_subdev(sd);
 	if (err)
 		goto err_unreg_cec;
-
-#ifdef CONFIG_VIDEO_IMAGEON_BRIDGE
-	/* Recommended Register Settings for Embedded Sync Processing - 1080p-60 */
-	adv7511_wr(sd, 0x30, 0x16);
-	adv7511_wr(sd, 0x31, 0x2);
-	adv7511_wr(sd, 0x32, 0xc0);
-	adv7511_wr(sd, 0x33, 0x10);
-	adv7511_wr(sd, 0x34, 0x5);
-#endif
 
 	return 0;
 

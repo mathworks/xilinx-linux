@@ -3636,6 +3636,33 @@ int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 			return ret;
 		}
 	}
+
+	/*
+	 * Workaround for clock framework since clocks don't change we
+	 * manually need to enable the filter
+	 */
+
+	if (phy->rx_fir_dec == 1 || phy->bypass_rx_fir) {
+		ad9361_spi_writef(phy->spi, REG_RX_ENABLE_FILTER_CTRL,
+			RX_FIR_ENABLE_DECIMATION(~0), !phy->bypass_rx_fir);
+	}
+
+	if (phy->tx_fir_int == 1 || phy->bypass_tx_fir) {
+		ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
+			TX_FIR_ENABLE_INTERPOLATION(~0), !phy->bypass_tx_fir);
+	}
+
+	/* The FIR filter once enabled causes the interface timing to change.
+	 * It's typically not a problem if the timing margin is big enough.
+	 * However at 61.44 MSPS it causes problems on some systems.
+	 * So we always run the digital tune in case the filter is enabled.
+	 * If it is disabled we restore the values from the initial calibration.
+	 */
+
+	if (!phy->pdata->dig_interface_tune_fir_disable &&
+		!(phy->bypass_tx_fir && phy->bypass_rx_fir))
+		ret = ad9361_dig_tune(phy, 0, SKIP_STORE_RESULT);
+
 	return ad9361_bb_clk_change_handler(phy);
 }
 EXPORT_SYMBOL(ad9361_set_trx_clock_chain);
@@ -3866,6 +3893,7 @@ static int ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 {
 	u32 offs = 0;
 	int i, ret = 0;
+	u8 buf[4];
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %d:",
 		__func__, tx ? "TX" : "RX", profile);
@@ -3873,9 +3901,21 @@ static int ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
 
-	for (i = 0; i < RX_FAST_LOCK_CONFIG_WORD_NUM; i++)
-		ret |= ad9361_fastlock_writeval(phy->spi, tx, profile,
-						i, values[i], i == 0xF);
+	buf[0] = values[0];
+	buf[1] = RX_FAST_LOCK_PROFILE_ADDR(profile) | RX_FAST_LOCK_PROFILE_WORD(0);
+	ad9361_spi_writem(phy->spi, REG_RX_FAST_LOCK_PROGRAM_DATA + offs, buf, 2);
+
+	for (i = 1; i < RX_FAST_LOCK_CONFIG_WORD_NUM; i++) {
+		buf[0] = RX_FAST_LOCK_PROGRAM_WRITE | RX_FAST_LOCK_PROGRAM_CLOCK_ENABLE;
+		buf[1] = 0;
+		buf[2] = values[i];
+		buf[3] = RX_FAST_LOCK_PROFILE_ADDR(profile) | RX_FAST_LOCK_PROFILE_WORD(i);
+		ad9361_spi_writem(phy->spi, REG_RX_FAST_LOCK_PROGRAM_CTRL + offs, buf, 4);
+	}
+
+	ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_PROGRAM_CTRL + offs,
+			 RX_FAST_LOCK_PROGRAM_WRITE | RX_FAST_LOCK_PROGRAM_CLOCK_ENABLE);
+	ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_PROGRAM_CTRL + offs, 0);
 
 	phy->fastlock.entry[tx][profile].flags = FASTLOOK_INIT;
 	phy->fastlock.entry[tx][profile].alc_orig = values[15];
@@ -4055,6 +4095,7 @@ static int ad9361_fastlock_save(struct ad9361_rf_phy *phy, bool tx,
 	for (i = 0; i < RX_FAST_LOCK_CONFIG_WORD_NUM; i++)
 		values[i] = ad9361_fastlock_readval(phy->spi, tx, profile, i);
 
+
 	return 0;
 }
 
@@ -4067,6 +4108,12 @@ static int ad9361_mcs(struct ad9361_rf_phy *phy, unsigned step)
 
 	switch (step) {
 	case 1:
+		/* REVIST:
+		 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
+		 */
+		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+				  POWER_DOWN_TX_SYNTH | POWER_DOWN_RX_SYNTH, 0);
+
 		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
 			mcs_mask, MCS_BB_ENABLE | MCS_BBPLL_ENABLE | MCS_RF_ENABLE);
 		ad9361_spi_writef(phy->spi, REG_CP_BLEED_CURRENT,
@@ -4093,12 +4140,6 @@ static int ad9361_mcs(struct ad9361_rf_phy *phy, unsigned step)
 		gpiod_set_value(phy->pdata->sync_gpio, 1);
 		gpiod_set_value(phy->pdata->sync_gpio, 0);
 		break;
-	case 0:
-		/* REVIST:
-		 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
-		 */
-		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_TX_SYNTH | POWER_DOWN_RX_SYNTH, 0);
 	case 5:
 		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
 			mcs_mask, MCS_RF_ENABLE);
@@ -4517,6 +4558,7 @@ static int ad9361_verify_fir_filter_coef(struct ad9361_rf_phy *phy,
 		ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
 				 FIR_NUM_TAPS(ntaps / 16 - 1) |
 				 FIR_SELECT(sel) | FIR_START_CLK);
+
 		for (val = 0; val < ntaps; val++) {
 			short tmp;
 			ad9361_spi_write(spi, REG_TX_FILTER_COEF_ADDR + offs, val);
@@ -4559,6 +4601,8 @@ static int ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 
 		return -EINVAL;
 	}
+
+	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
 
 	if (dest & FIR_IS_RX) {
 		val = 3 - (gain_dB + 12) / 6;
@@ -4609,6 +4653,8 @@ static int ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 	else
 		ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
 			TX_FIR_ENABLE_INTERPOLATION(~0), fir_enable);
+
+	ad9361_ensm_restore_prev_state(phy);
 
 	return ad9361_verify_fir_filter_coef(phy, dest, ntaps, coef);
 }
@@ -4850,20 +4896,10 @@ static int ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	/*
-	 * Workaround for clock framework since clocks don't change we
-	 * manually need to enable the filter
-	 */
-
-	if (phy->rx_fir_dec == 1 || phy->bypass_rx_fir) {
-		ad9361_spi_writef(phy->spi, REG_RX_ENABLE_FILTER_CTRL,
-			RX_FIR_ENABLE_DECIMATION(~0), !phy->bypass_rx_fir);
-	}
-
-	if (phy->tx_fir_int == 1 || phy->bypass_tx_fir) {
-		ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
-			TX_FIR_ENABLE_INTERPOLATION(~0), !phy->bypass_tx_fir);
-	}
+	/* See also: ad9361_set_trx_clock_chain() */
+	if (!phy->pdata->dig_interface_tune_fir_disable &&
+		phy->bypass_tx_fir && phy->bypass_rx_fir)
+		ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
 
 	return ad9361_update_rf_bandwidth(phy,
 		valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
@@ -5817,6 +5853,7 @@ enum ad9361_iio_dev_attr {
 	AD9361_QUAD_ENABLE,
 	AD9361_DCXO_TUNE_COARSE,
 	AD9361_DCXO_TUNE_FINE,
+	AD9361_MCS_SYNC,
 };
 
 static ssize_t ad9361_phy_store(struct device *dev,
@@ -6018,6 +6055,12 @@ static ssize_t ad9361_phy_store(struct device *dev,
 		ret = ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse,
 					   phy->pdata->dcxo_fine);
 		break;
+	case AD9361_MCS_SYNC:
+		ret = kstrtol(buf, 10, &readin);
+		if (ret)
+			break;
+		ret = ad9361_mcs(phy, readin);
+		break;
 	default:
 		ret = -EINVAL;
 	}
@@ -6215,6 +6258,11 @@ static IIO_DEVICE_ATTR(dcxo_tune_fine, S_IRUGO | S_IWUSR,
 			ad9361_phy_store,
 			AD9361_DCXO_TUNE_FINE);
 
+static IIO_DEVICE_ATTR(multichip_sync, S_IWUSR,
+			NULL,
+			ad9361_phy_store,
+			AD9361_MCS_SYNC);
+
 static struct attribute *ad9361_phy_attributes[] = {
 	&iio_dev_attr_in_voltage_filter_fir_en.dev_attr.attr,
 	&iio_dev_attr_out_voltage_filter_fir_en.dev_attr.attr,
@@ -6234,6 +6282,7 @@ static struct attribute *ad9361_phy_attributes[] = {
 	&iio_dev_attr_in_voltage_quadrature_tracking_en.dev_attr.attr,
 	&iio_dev_attr_dcxo_tune_coarse.dev_attr.attr,
 	&iio_dev_attr_dcxo_tune_fine.dev_attr.attr,
+	&iio_dev_attr_multichip_sync.dev_attr.attr,
 	NULL,
 };
 
@@ -7320,6 +7369,9 @@ static struct ad9361_phy_platform_data
 
 	ad9361_of_get_u32(iodev, np, "adi,digital-interface-tune-skip-mode", 0,
 			  &pdata->dig_interface_tune_skipmode);
+
+	ad9361_of_get_bool(iodev, np, "adi,digital-interface-tune-fir-disable",
+			   &pdata->dig_interface_tune_fir_disable);
 
 	ad9361_of_get_bool(iodev, np, "adi,2rx-2tx-mode-enable", &pdata->rx2tx2);
 

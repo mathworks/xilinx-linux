@@ -382,7 +382,8 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 	st = iio_priv(conv->indio_dev);
 	hdl_dac_version = axiadc_read(st, 0x4000);
 
-	if (phy->pdata->dig_interface_tune_skipmode == 2) {
+	if ((phy->pdata->dig_interface_tune_skipmode == 2) ||
+		(flags & RESTORE_DEFAULT)) {
 	/* skip completely and use defaults */
 		ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
 				phy->pdata->port_ctrl.rx_clk_data_delay);
@@ -474,11 +475,14 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 			/* Now do the loopback and tune the digital out */
 			ad9361_bist_prbs(phy, BIST_DISABLE);
 
+			axiadc_write(st, ADI_REG_RSTN, ADI_MMCM_RSTN);
+			axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
+
 			if (phy->pdata->dig_interface_tune_skipmode == 1) {
 			/* skip TX */
-
-				phy->pdata->port_ctrl.rx_clk_data_delay =
-					ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
+				if (!(flags & SKIP_STORE_RESULT))
+					phy->pdata->port_ctrl.rx_clk_data_delay =
+						ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
 
 				if (!phy->pdata->fdd) {
 					ad9361_set_ensm_mode(phy, phy->pdata->fdd,
@@ -544,7 +548,7 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 						phy->pdata->port_ctrl.tx_clk_data_delay);
 				if (!max_freq)
 					err = 0;
-			} else {
+			} else if (!(flags & SKIP_STORE_RESULT)) {
 				phy->pdata->port_ctrl.rx_clk_data_delay =
 					ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
 				phy->pdata->port_ctrl.tx_clk_data_delay =
@@ -555,6 +559,9 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 				ad9361_set_ensm_mode(phy, phy->pdata->fdd, phy->pdata->ensm_pin_ctrl);
 				ad9361_ensm_restore_prev_state(phy);
 			}
+
+			axiadc_write(st, ADI_REG_RSTN, ADI_MMCM_RSTN);
+			axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
 			return err;
 		}
