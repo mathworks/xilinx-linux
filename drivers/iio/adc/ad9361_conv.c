@@ -41,6 +41,8 @@ ssize_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 	if (!conv)
 		return -ENODEV;
 
+	dev_dbg(&phy->spi->dev, "%s:\n", __func__);
+
 	st = iio_priv(conv->indio_dev);
 
 	rx = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
@@ -258,11 +260,12 @@ int ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 		reg = axiadc_read(st, addr + (chan) * 0x40);
 
 		if (PCORE_VERSION_MAJOR(version) > 7) {
-		/* FIXME: May cause problems if DMA is selected */
-			if (enable)
+			if (enable && reg != 0x8) {
+				conv->scratch_reg[chan] = reg;
 				reg = 0x8;
-			else
-				reg = 0x0;
+			} else if (reg == 0x8) {
+				reg = conv->scratch_reg[chan];
+			}
 		} else {
 		/* DAC_LB_ENB If set enables loopback of receive data */
 			if (enable)
@@ -378,6 +381,9 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 
 	if (!conv)
 		return -ENODEV;
+
+	dev_dbg(&phy->spi->dev, "%s: freq %lu flags 0x%X\n", __func__,
+		max_freq, flags);
 
 	st = iio_priv(conv->indio_dev);
 	hdl_dac_version = axiadc_read(st, 0x4000);

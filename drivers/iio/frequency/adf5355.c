@@ -175,6 +175,7 @@ struct adf5355_state {
 	u32			rf_div_sel;
 	u32			delay_us;
 	u32			regs[ADF5355_REG_NUM];
+	u32			clock_shift;
 	bool			all_synced;
 	bool			is_5355;
 	/*
@@ -656,9 +657,7 @@ static struct adf5355_platform_data *adf5355_parse_dt(struct device *dev)
 
 	strncpy(&pdata->name[0], np->name, SPI_NAME_SIZE - 1);
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,power-up-frequency", &tmp);
-	pdata->power_up_frequency = tmp;
+	of_property_read_u64(np, "adi,power-up-frequency", &pdata->power_up_frequency);
 
 	tmp = 0;
 	of_property_read_u32(np, "adi,reference-div-factor", &tmp);
@@ -709,6 +708,9 @@ static struct adf5355_platform_data *adf5355_parse_dt(struct device *dev)
 	pdata->cp_neg_bleed_en = of_property_read_bool(np, "adi,charge-pump-negative-bleed-enable");
 	pdata->cp_gated_bleed_en = of_property_read_bool(np, "adi,charge-pump-gated-bleed-enable");
 
+	pdata->clock_shift = 1;
+	of_property_read_u32(np, "adi,clock-shift", &pdata->clock_shift);
+
 	return pdata;
 }
 #else
@@ -726,7 +728,7 @@ static unsigned long adf5355_clk_recalc_rate(struct clk_hw *hw,
 
 	rate = adf5355_pll_fract_n_get_rate(to_clk_priv(hw)->st, 0);
 
-	return rate >> 1;
+	return rate >> to_clk_priv(hw)->st->pdata->clock_shift;
 }
 
 static long adf5355_clk_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -743,7 +745,8 @@ static int adf5355_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (parent_rate != st->clkin)
 		adf5355_setup(st, parent_rate);
 
-	return adf5355_set_freq(st, rate << 1, 0);
+	return adf5355_set_freq(st, (unsigned long long)rate <<
+		to_clk_priv(hw)->st->pdata->clock_shift, 0);
 }
 
 static int adf5355_clk_enable(struct clk_hw *hw)
@@ -891,7 +894,8 @@ static int adf5355_probe(struct spi_device *spi)
 		if (IS_ERR(clk_out))
 			kfree(clk_priv);
 
-		of_clk_add_provider(spi->dev.of_node, of_clk_src_simple_get, clk_out);
+		if (!IS_ERR(clk_out))
+			of_clk_add_provider(spi->dev.of_node, of_clk_src_simple_get, clk_out);
 	}
 
 	return 0;
@@ -919,6 +923,9 @@ static int adf5355_remove(struct spi_device *spi)
 
 	if (st->clk)
 		clk_disable_unprepare(st->clk);
+
+	if (IS_ENABLED(CONFIG_OF))
+		of_clk_del_provider(spi->dev.of_node);
 
 	if (!IS_ERR(reg)) {
 		regulator_disable(reg);

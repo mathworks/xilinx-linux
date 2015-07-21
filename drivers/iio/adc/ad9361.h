@@ -3007,6 +3007,7 @@ struct elna_control {
 	u32			settling_delay_ns;
 	bool			elna_1_control_en; /* GPO0 */
 	bool			elna_2_control_en; /* GPO1 */
+	bool			elna_in_gaintable_all_index_en;
 };
 
 struct auxadc_control {
@@ -3289,10 +3290,12 @@ struct ad9361_rf_phy {
 	struct clk 		*clk_ext_lo_rx;
 	struct clk 		*clk_ext_lo_tx;
 	struct clk 		*clks[NUM_AD9361_CLKS];
+	struct notifier_block   clk_nb_tx;
+	struct notifier_block   clk_nb_rx;
 	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[172];
+	struct ad9361_debugfs_entry debugfs_entry[173];
 	struct bin_attribute 	bin;
 	struct iio_dev 		*indio_dev;
 	struct work_struct 	work;
