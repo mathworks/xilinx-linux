@@ -32,6 +32,7 @@
 
 #define DRIVER_NAME "mwipcore"
 #define MAX_DEVICES 4
+#define MAX_CHANNELS 8
 
 #ifdef _DEBUG
 #define MW_DBG_text(txt) printk(KERN_INFO DRIVER_NAME txt)

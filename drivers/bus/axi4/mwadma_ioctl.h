@@ -1,4 +1,4 @@
-/* Copyright 2013 - 2014, The MathWorks, Inc */
+/* Copyright 2013-2015 The MathWorks, Inc. */
 #ifndef _MWADMA_IOCTL_H_
 #define _MWADMA_IOCTL_H_
 
