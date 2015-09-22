@@ -162,6 +162,17 @@ static void xilinx_spi_rx(struct xilinx_spi *xspi)
 	xspi->rx_ptr += xspi->bytes_per_word;
 }
 
+static void xilinx_spi_wait_and_rx(struct xilinx_spi *xspi)
+{
+		unsigned int sr;
+
+		do {
+			sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
+		} while (sr & XSPI_SR_RX_EMPTY_MASK);
+
+		xilinx_spi_rx(xspi);
+}
+
 static void xspi_init_hw(struct xilinx_spi *xspi)
 {
 	void __iomem *regs_base = xspi->regs;
@@ -249,27 +260,32 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 	xspi->tx_ptr = t->tx_buf;
 	xspi->rx_ptr = t->rx_buf;
 	remaining_words = t->len / xspi->bytes_per_word;
-	reinit_completion(&xspi->done);
 
 	if (xspi->irq >= 0 &&  remaining_words > xspi->buffer_size) {
+		u32 isr;
 		use_irq = true;
-		xspi->write_fn(XSPI_INTR_TX_EMPTY,
-				xspi->regs + XIPIF_V123B_IISR_OFFSET);
-		/* Enable the global IPIF interrupt */
-		xspi->write_fn(XIPIF_V123B_GINTR_ENABLE,
-				xspi->regs + XIPIF_V123B_DGIER_OFFSET);
 		/* Inhibit irq to avoid spurious irqs on tx_empty*/
 		cr = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 		xspi->write_fn(cr | XSPI_CR_TRANS_INHIBIT,
 			       xspi->regs + XSPI_CR_OFFSET);
+		/* ACK old irqs (if any) */
+		isr = xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET);
+		if (isr)
+			xspi->write_fn(isr,
+				       xspi->regs + XIPIF_V123B_IISR_OFFSET);
+		/* Enable the global IPIF interrupt */
+		xspi->write_fn(XIPIF_V123B_GINTR_ENABLE,
+				xspi->regs + XIPIF_V123B_DGIER_OFFSET);
+		reinit_completion(&xspi->done);
 	}
 
 	while (remaining_words) {
 		int n_words, tx_words, rx_words;
 
 		n_words = min(remaining_words, xspi->buffer_size);
-
+		rx_words = n_words;
 		tx_words = n_words;
+
 		while (tx_words--)
 			xilinx_spi_tx(xspi);
 
@@ -280,30 +296,31 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 		if (use_irq) {
 			xspi->write_fn(cr, xspi->regs + XSPI_CR_OFFSET);
 			wait_for_completion(&xspi->done);
-		} else
-			while (!(xspi->read_fn(xspi->regs + XSPI_SR_OFFSET) &
-						XSPI_SR_TX_EMPTY_MASK))
-				;
 
-		/* A transmit has just completed. Process received data and
-		 * check for more data to transmit. Always inhibit the
-		 * transmitter while the Isr refills the transmit register/FIFO,
-		 * or make sure it is stopped if we're done.
-		 */
-		if (use_irq)
+			/* A transmit has just completed. Process received data and
+			 * check for more data to transmit. Always inhibit the
+			 * transmitter while the Isr refills the transmit register/FIFO,
+			 * or make sure it is stopped if we're done.
+			 */
 			xspi->write_fn(cr | XSPI_CR_TRANS_INHIBIT,
 			       xspi->regs + XSPI_CR_OFFSET);
 
-		/* Read out all the data from the Rx FIFO */
-		rx_words = n_words;
-		while (rx_words--)
-			xilinx_spi_rx(xspi);
+			/* Read out all the data from the Rx FIFO */
+			while (rx_words--)
+				xilinx_spi_rx(xspi);
+		} else {
+			/* Read data when it becomes available */
+			while (rx_words--)
+				xilinx_spi_wait_and_rx(xspi);
+		}
 
 		remaining_words -= n_words;
 	}
 
-	if (use_irq)
+	if (use_irq) {
 		xspi->write_fn(0, xspi->regs + XIPIF_V123B_DGIER_OFFSET);
+		xspi->write_fn(cr, xspi->regs + XSPI_CR_OFFSET);
+	}
 
 	return t->len;
 }

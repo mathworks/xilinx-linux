@@ -120,6 +120,10 @@ static int imageon_bridge_async_bound(struct v4l2_async_notifier *notifier,
 		ret = v4l2_subdev_call(subdev, pad, set_edid, &edid);
 		if (ret)
 			return ret;
+
+		/* enable hotplug after 100 ms */
+		mdelay(100);
+		gpio_set_value_cansleep(bridge->gpio_rx_hotplug, 1);
 	}
 
 	if (bridge->imageon_subdev[OUTPUT_SUBDEV].asd.match.of.node
@@ -225,10 +229,6 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 
 	gpio_set_value_cansleep(bridge->gpio_rx_hotplug, 0);
 
-	mdelay(100);
-
-	gpio_set_value_cansleep(bridge->gpio_rx_hotplug, 1);
-
 	ret = imageon_bridge_load_input_edid(pdev, bridge);
 	if (ret < 0)
 		goto err;
@@ -317,3 +317,6 @@ static struct platform_driver imageon_bridge_driver = {
 	.remove = imageon_bridge_remove,
 };
 module_platform_driver(imageon_bridge_driver);
+
+MODULE_DESCRIPTION("Imageon video bridge");
+MODULE_LICENSE("GPL v2");
