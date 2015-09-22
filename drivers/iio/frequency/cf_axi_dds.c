@@ -487,7 +487,6 @@ static int cf_axi_dds_write_raw(struct iio_dev *indio_dev,
 			break;
 		}
 
-		st->cached_freq[chan->channel] = val;
 		cf_axi_dds_stop(st);
 		reg = dds_read(st, ADI_REG_CHAN_CNTRL_2_IIOCHAN(chan->channel));
 		reg &= ~ADI_DDS_INCR(~0);
@@ -495,6 +494,11 @@ static int cf_axi_dds_write_raw(struct iio_dev *indio_dev,
 		do_div(val64, st->dac_clk);
 		reg |= ADI_DDS_INCR(val64) | 1;
 		dds_write(st, ADI_REG_CHAN_CNTRL_2_IIOCHAN(chan->channel), reg);
+
+		val64 = (u64)ADI_TO_DDS_INCR(reg) * (u64)st->dac_clk;
+		do_div(val64, 0xFFFF);
+		st->cached_freq[chan->channel] = val64;
+
 		cf_axi_dds_start_sync(st, 0);
 		break;
 	case IIO_CHAN_INFO_PHASE:
@@ -811,6 +815,30 @@ static struct cf_axi_dds_chip_info cf_axi_dds_chip_info_tbl[] = {
 		.num_dp_disable_channels = 5,
 		.num_dds_channels = 8,
 		.num_buf_channels = 4,
+	},
+	[ID_AD9152] = {
+		.name = "AD9152",
+		.channel = {
+			{
+				.type = IIO_TEMP,
+				.indexed = 1,
+				.channel = 0,
+				.scan_index = -1,
+				.info_mask_separate =
+					BIT(IIO_CHAN_INFO_PROCESSED) |
+					BIT(IIO_CHAN_INFO_CALIBBIAS),
+			},
+			CF_AXI_DDS_CHAN_BUF(0),
+			CF_AXI_DDS_CHAN_BUF(1),
+			CF_AXI_DDS_CHAN(0, 0, "1A"),
+			CF_AXI_DDS_CHAN(1, 0, "1B"),
+			CF_AXI_DDS_CHAN(2, 0, "2A"),
+			CF_AXI_DDS_CHAN(3, 0, "2B"),
+		},
+		.num_channels = 7,
+		.num_dp_disable_channels = 3,
+		.num_dds_channels = 4,
+		.num_buf_channels = 2,
 	},
 };
 
