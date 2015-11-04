@@ -17,16 +17,9 @@
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/cdev.h>
-/* Open firmware includes */
-#include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/kfifo.h>
+#include <linux/mm.h>
 
-
-#define	IP2DEV(x)	(x->pdev->dev)
+#define DRIVER_NAME "mwgeneric"
 
 struct mw_dma_info {
 	void				*virt;
@@ -34,11 +27,12 @@ struct mw_dma_info {
 	size_t				size;
 };
 
+/* Struct types */
 struct ipcore_info {
     const char 			        *name;
     struct resource 		    *mem;
     void __iomem 		        *regs;
-    struct platform_device 	    *pdev;
+    struct device               *dev;
     struct device				*class_device;
 	struct cdev 		        cdev;
     dev_t 			            dev_id;
