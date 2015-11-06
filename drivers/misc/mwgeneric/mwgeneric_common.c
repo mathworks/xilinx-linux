@@ -158,7 +158,7 @@ int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
 	int status = 0;
 	vma->vm_private_data = thisIpcore;
 	
-	dev_info(thisIpcore->dev, "[MMAP] size:%X pgoff: %lx\n", size, vma->vm_pgoff);
+	dev_info(thisIpcore->dev, "[MMAP] size:%X pgoff: %lx\n", (unsigned int)size, vma->vm_pgoff);
  
 	switch(vma->vm_pgoff) {
 		case 0: 
@@ -275,6 +275,5 @@ int mwgeneric_setup_cdev(struct ipcore_info *thisIpcore, dev_t *dev_id)
        dev_err(thisIpcore->dev, "Error: failed to create device node %s, err %d\n", thisIpcore->name, status);
        cdev_del(&thisIpcore->cdev);
    }
-   thisIpcore->class_device = thisDevice;
    return status;
 }

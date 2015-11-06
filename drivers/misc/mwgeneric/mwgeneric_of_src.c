@@ -88,13 +88,6 @@ int mwgeneric_get_info(struct ipcore_info *thisIpcore, struct mwgeneric_info **t
 	
 }
 
-
-static void mwgeneric_init(struct ipcore_info *thisIpcore)
-{
-    printk(KERN_INFO DRIVER_NAME ": Initialization done.\n");
-}
-
-
 static const struct of_device_id mwgeneric_of_match[] = {
     { .compatible = "mathworks,mwgeneric-v1.00",},
     {},
@@ -206,7 +199,7 @@ static int mwgeneric_of_probe(struct platform_device *pdev)
 			dev_info(thisIpcore->dev, "%s : Adding link to %s[%s]\n", nodePointer->name, thisIpcore->i2c->adapter->name, thisIpcore->i2c->name);
 			
 			/* add a link to the i2c device */
-			status = sysfs_create_link(&thisIpcore->class_device->kobj, &thisIpcore->i2c->dev.kobj, "i2c_device");
+			status = sysfs_create_link(&thisIpcore->char_device->kobj, &thisIpcore->i2c->dev.kobj, "i2c_device");
 			if (status < 0)
 				goto dev_add_err;
 			
@@ -221,9 +214,6 @@ static int mwgeneric_of_probe(struct platform_device *pdev)
 		thisIpcore->i2c = NULL;
 	}
 	
-    mwgeneric_init(thisIpcore);
-
-
     device_num++;
     return status;
 	
@@ -268,7 +258,7 @@ static int mwgeneric_of_remove(struct platform_device *pdev)
 		/* Remove the i2c adapter link */
 		sysfs_remove_link(&thisIpcore->i2c->dev.kobj, "i2c_adapter");
 		/* Remove the i2c device link */
-		sysfs_remove_link(&thisIpcore->class_device->kobj, "i2c_device");
+		sysfs_remove_link(&thisIpcore->char_device->kobj, "i2c_device");
 	}
 	
     if(thisIpcore->regs)
@@ -297,7 +287,8 @@ static int mwgeneric_of_remove(struct platform_device *pdev)
     if(&thisIpcore->cdev)
     {
         dev_info(thisIpcore->dev, "Destroy character dev\n");
-        device_destroy(mwgeneric_class, thisIpcore->dev_id);
+		sysfs_remove_link(&thisIpcore->char_device->kobj, "driver");     
+	    device_destroy(mwgeneric_class, thisIpcore->dev_id);
         cdev_del(&thisIpcore->cdev);
     }
 	mwgeneric_get_info(thisIpcore, &dev_entry);

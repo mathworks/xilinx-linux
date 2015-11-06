@@ -10,3 +10,5 @@
 #include <linux/of_irq.h>
 
 #define ip_to_pdev(x)  (container_of(x->dev, struct platform_device, dev))
+
+#define DRIVER_NAME "mwgeneric_of"

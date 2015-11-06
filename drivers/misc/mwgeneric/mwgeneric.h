@@ -19,8 +19,6 @@
 #include <linux/cdev.h>
 #include <linux/mm.h>
 
-#define DRIVER_NAME "mwgeneric"
-
 struct mw_dma_info {
 	void				*virt;
 	dma_addr_t			phys;
@@ -33,7 +31,7 @@ struct ipcore_info {
     struct resource 		    *mem;
     void __iomem 		        *regs;
     struct device               *dev;
-    struct device				*class_device;
+    struct device				*char_device;
 	struct cdev 		        cdev;
     dev_t 			            dev_id;
     int 			            irq;
@@ -60,6 +58,8 @@ struct ipcore_info {
 
 struct mwgeneric_info {
 	char			devname[MWGENERIC_DEVNAME_LEN];
+	u16				ss_vid;
+	u16				ss_did;
 	dev_t			devid;
 	int				devcnt;
 };
