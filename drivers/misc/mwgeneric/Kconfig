@@ -4,9 +4,24 @@
 
 menu "Mathworks Generic IP Drivers"
 
+config MWGENERIC
+	tristate "Mathworks Generic Drivers"
+	depends on (OF_ADDRESS && OF_IRQ) || PCI
+	default m
+	help
+		Say Y here if you want to add support for the MathWorks Generic
+		drivers
+
+		If unsure, say N.
+
+		To compile this driver as a module, choose M here:
+		the module will be called mwgeneric_common
+
+if MWGENERIC
+
 config MWGENERIC_OF
 	tristate "Mathworks Generic OF Driver"
-	depends on ARM_AMBA && USE_OF
+	depends on OF_ADDRESS && OF_IRQ
 	default m
 	help
 		Say Y here if you want to add support for the MathWorks Generic
@@ -29,6 +44,7 @@ config MWGENERIC_PCI
 
 		To compile this driver as a module, choose M here:
 		the module will be called mwgeneric_pci
-
+				
+endif #if MWGENERIC
 endmenu
 

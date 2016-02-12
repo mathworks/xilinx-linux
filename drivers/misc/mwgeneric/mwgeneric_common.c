@@ -1,10 +1,24 @@
-#include "mwgeneric_common.h"
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/dma-mapping.h>
+#include "mwgeneric.h"
+
+#define DRIVER_NAME "mwgeneric"
 
 /*Device structure for IPCore information*/
-dev_t mwgeneric_dev_id = 0;
-unsigned int device_num = 0;
-struct class *mwgeneric_class = NULL;
-struct mwgeneric_info dev_table[MWGENERIC_MAX_DEVTYPE] = {{{0}}};
+static struct class *mwgeneric_class = NULL;
+static struct mwgeneric_info dev_table[MWGENERIC_MAX_DEVTYPE] = {{{0}}};
+
+static irqreturn_t mwgeneric_intr_handler(int irq, void * theIpcore)
+{
+    struct ipcore_info *thisIpcore = (struct ipcore_info*) theIpcore;
+
+    dev_dbg(thisIpcore->dev, "IRQ %d Handled\n", irq);
+    return IRQ_HANDLED;
+
+}
 
 static int mwgeneric_fasync_impl(int fd, struct file* fp, int mode)
 {
@@ -29,7 +43,7 @@ static int mwgeneric_close(struct inode *inode, struct file *fp)
     return 0;
 }
 
-int mwgeneric_dma_alloc(struct ipcore_info *thisIpcore, size_t size) {
+static int mwgeneric_dma_alloc(struct ipcore_info *thisIpcore, size_t size) {
 
 	struct mw_dma_info *dinfo = &thisIpcore->dma_info;
 	
@@ -38,7 +52,7 @@ int mwgeneric_dma_alloc(struct ipcore_info *thisIpcore, size_t size) {
 		return -EEXIST;
 	}
 	
-	dinfo->virt = dma_alloc_coherent(thisIpcore->dev, size,
+	dinfo->virt = dmam_alloc_coherent(thisIpcore->dev, size,
 						&dinfo->phys, GFP_KERNEL);
 	if(!dinfo->virt){
 		dev_err(thisIpcore->dev, "failed to allocate DMA memory\n");		
@@ -50,7 +64,7 @@ int mwgeneric_dma_alloc(struct ipcore_info *thisIpcore, size_t size) {
 
 }
 
-int	mwgeneric_dma_info(struct ipcore_info *thisIpcore, void *arg)
+static int	mwgeneric_dma_info(struct ipcore_info *thisIpcore, void *arg)
 {
 	
 	struct mwgeneric_dma_info dinfo;
@@ -73,7 +87,7 @@ int	mwgeneric_dma_info(struct ipcore_info *thisIpcore, void *arg)
 
 }
 
-int	mwgeneric_reg_info(struct ipcore_info *thisIpcore, void *arg)
+static int	mwgeneric_reg_info(struct ipcore_info *thisIpcore, void *arg)
 {
 	struct mwgeneric_reg_info rinfo;
 
@@ -94,6 +108,54 @@ int	mwgeneric_reg_info(struct ipcore_info *thisIpcore, void *arg)
 	return 0;
 }
 
+static int mwgeneric_get_devinfo(struct ipcore_info *thisIpcore)
+{
+	int i, devname_len, status;
+	char devname[MWGENERIC_DEVNAME_LEN];
+	char *tgtDevname;
+	struct mwgeneric_info *thisDev;
+
+	thisIpcore->ops->get_devname(thisIpcore,devname);
+	devname_len = strlen(devname);
+	for (i = 0; i < MWGENERIC_MAX_DEVTYPE; i++)
+	{
+		/* Search for the device in the table */
+		thisDev = &dev_table[i];
+		tgtDevname=thisDev->devname;
+		if(*tgtDevname == 0){
+			dev_info(thisIpcore->dev, "'%s' device not found, creating\n", devname);
+			break;
+		}
+		if(strncasecmp(tgtDevname,devname,devname_len) == 0)
+		{
+			dev_info(thisIpcore->dev, "'%s' device found, adding\n", devname);
+			thisIpcore->dev_info = thisDev;
+			return 0;
+		}
+	}
+	if ((*tgtDevname == 0) && i < MWGENERIC_MAX_DEVTYPE)
+	{
+		/* Add in a new device to the table */
+		strncpy(tgtDevname,devname,devname_len);
+
+		status = alloc_chrdev_region(&thisDev->devid, 0, MWGENERIC_MAX_DEVTYPE, devname);
+		if (status)
+		{
+			dev_err(thisIpcore->dev, "Character dev. region not allocated: %d\n", status);
+			return status;
+		}
+		dev_info(thisIpcore->dev, "Char dev region registered: major num:%d\n", MAJOR(thisDev->devid));
+		dev_info(thisIpcore->dev, "'%s' device created\n", devname);
+		thisIpcore->dev_info = thisDev;
+		return 0;
+	}
+
+	/* Not found and table full */
+	thisIpcore->dev_info = NULL;
+	return -ENOMEM;
+
+}
+
 static void mwgeneric_mmap_dma_open(struct vm_area_struct *vma)
 {
     struct ipcore_info * thisIpcore = vma->vm_private_data;
@@ -107,7 +169,7 @@ static void mwgeneric_mmap_dma_close(struct vm_area_struct *vma)
 	dev_info(thisIpcore->dev, "DMA VMA close.\n");
 	
 	/* Free the memory DMA */
-	dma_free_coherent(thisIpcore->dev,thisIpcore->dma_info.size,
+	dmam_free_coherent(thisIpcore->dev,thisIpcore->dma_info.size,
 				thisIpcore->dma_info.virt, thisIpcore->dma_info.phys);
 	
 	/* Set the size to zero to indicate no memory is allocated */
@@ -140,18 +202,18 @@ static int mwgeneric_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf
     return 0;
 }
 
-struct vm_operations_struct mwgeneric_mmap_ops = {
+static struct vm_operations_struct mwgeneric_mmap_ops = {
     .open   = mwgeneric_mmap_open,
     .close  = mwgeneric_mmap_close,
     .fault = mwgeneric_mmap_fault,
 }; 
 
-struct vm_operations_struct mwgeneric_mmap_dma_ops = {
+static struct vm_operations_struct mwgeneric_mmap_dma_ops = {
     .open   = mwgeneric_mmap_dma_open,
     .close  = mwgeneric_mmap_dma_close,
 }; 
 
-int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
+static int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
 {
     struct ipcore_info *thisIpcore = fp->private_data;
     size_t	size = vma->vm_end - vma->vm_start;
@@ -162,7 +224,7 @@ int mwgeneric_mmap(struct file *fp, struct vm_area_struct *vma)
  
 	switch(vma->vm_pgoff) {
 		case 0: 
-            if (thisIpcore->memtype == MWGENERIC_MEMTYPE_NOMEM) {
+            if (!thisIpcore->mem) {
         		return -ENOMEM;
         	}
 			/* mmap the MMIO base address */
@@ -210,8 +272,12 @@ static long mwgeneric_ioctl(struct file *fp, unsigned int cmd, unsigned long arg
 
     switch(cmd) {
 	case MWGENERIC_GET_PARAM:
-  
-		status = mwgeneric_get_param(thisIpcore, (void *)arg);
+		if (thisIpcore->ops->get_param) {
+			status = thisIpcore->ops->get_param(thisIpcore, (void *)arg);
+		} else {
+			status = -ENODEV;
+		}
+
 		break;
 		
 	case MWGENERIC_DMA_INFO:
@@ -232,8 +298,28 @@ static long mwgeneric_ioctl(struct file *fp, unsigned int cmd, unsigned long arg
 
 
 
+static void mwgeneric_remove_cdev(void *opaque){
+	struct ipcore_info *thisIpcore = opaque;
 
-struct file_operations mwgeneric_cdev_fops = {
+	if(&thisIpcore->cdev)
+	{
+		dev_info(thisIpcore->dev, "Destroy character dev\n");
+		device_destroy(mwgeneric_class, thisIpcore->dev_id);
+		cdev_del(&thisIpcore->cdev);
+	}
+
+	if (thisIpcore->dev_info){
+		thisIpcore->dev_info->devcnt--;
+
+		if(thisIpcore->dev_info->devcnt == 0)
+		{
+			dev_info(thisIpcore->dev, "release device region\n");
+			unregister_chrdev_region(thisIpcore->dev_info->devid, MWGENERIC_MAX_DEVTYPE);
+		}
+	}
+}
+
+static struct file_operations mwgeneric_cdev_fops = {
     .owner 		= THIS_MODULE,
     .open 		= mwgeneric_open,
     .fasync 		= mwgeneric_fasync_impl,
@@ -242,38 +328,125 @@ struct file_operations mwgeneric_cdev_fops = {
     .unlocked_ioctl	= mwgeneric_ioctl,
 };
 
-int mwgeneric_setup_cdev(struct ipcore_info *thisIpcore, dev_t *dev_id)
+static int mwgeneric_setup_cdev(struct ipcore_info *thisIpcore)
 {
     int status = 0;
-    struct device * thisDevice;
 	struct mwgeneric_info *dev_entry;
    
-   cdev_init(&thisIpcore->cdev, &mwgeneric_cdev_fops);
-   thisIpcore->cdev.owner = THIS_MODULE;
-   thisIpcore->cdev.ops = &mwgeneric_cdev_fops;
+	if(mwgeneric_class == NULL){
+		return -EPROBE_DEFER;
+	}
+	cdev_init(&thisIpcore->cdev, &mwgeneric_cdev_fops);
+	thisIpcore->cdev.owner = THIS_MODULE;
+	thisIpcore->cdev.ops = &mwgeneric_cdev_fops;
    
-   /* Find the device name */
-   status = mwgeneric_get_info(thisIpcore, &dev_entry); 
-   if (status)
-   {
+	/* Find the device name */
+	status = mwgeneric_get_devinfo(thisIpcore);
+	if (status)
+	{
 		return status;
-   }
+	}
+	dev_entry = thisIpcore->dev_info;
 
-   *dev_id = MKDEV(MAJOR(dev_entry->devid), dev_entry->devcnt);
-   status = cdev_add(&thisIpcore->cdev, *dev_id, 1);
+	thisIpcore->dev_id = MKDEV(MAJOR(dev_entry->devid), dev_entry->devcnt);
+	status = cdev_add(&thisIpcore->cdev, thisIpcore->dev_id, 1);
+	if (status) {
+	   goto add_err;
+	}
 
-   if (status < 0) {
-       unregister_chrdev_region(dev_entry->devid, 16);
+	thisIpcore->char_device = device_create(mwgeneric_class, thisIpcore->dev, thisIpcore->dev_id, NULL, "%s%d", dev_entry->devname, dev_entry->devcnt++);
+
+	if(IS_ERR(thisIpcore->char_device))
+	{
+	   status = PTR_ERR(thisIpcore->char_device);
+	   dev_err(thisIpcore->dev, "Error: failed to create device node %s, err %d\n", thisIpcore->name, status);
+	   goto create_err;
+	}
+
+	status = devm_add_action(thisIpcore->dev, mwgeneric_remove_cdev, thisIpcore);
+	if(status){
+	   mwgeneric_remove_cdev(thisIpcore);
 	   return status;
-   } 
-   
-   thisDevice = device_create(mwgeneric_class, NULL, *dev_id, NULL, "%s%d", dev_entry->devname, dev_entry->devcnt++);
-   
-   if(IS_ERR(thisDevice)) 
-   {
-       status = PTR_ERR(thisDevice);
-       dev_err(thisIpcore->dev, "Error: failed to create device node %s, err %d\n", thisIpcore->name, status);
-       cdev_del(&thisIpcore->cdev);
-   }
-   return status;
+	}
+
+	return status;
+create_err:
+	dev_entry->devcnt--;
+	cdev_del(&thisIpcore->cdev);
+add_err:
+	if(dev_entry->devcnt == 0)
+		unregister_chrdev_region(dev_entry->devid, MWGENERIC_MAX_DEVTYPE);
+	return status;
 }
+
+static void mwgeneric_unregister(void *opaque){
+	struct ipcore_info *thisIpcore = opaque;
+	dev_set_drvdata(thisIpcore->dev, NULL);
+}
+
+int devm_mwgeneric_register(struct ipcore_info *thisIpcore){
+	int status;
+
+	status = mwgeneric_setup_cdev(thisIpcore);
+	if(status)
+	{
+		dev_err(thisIpcore->dev, "mwipcore device addition failed: %d\n", status);
+		return status;
+	}
+
+	/* It is possible that we have not required any interrupt */
+	if (thisIpcore->irq)
+	{
+		int irq_idx;
+		for (irq_idx = 0; irq_idx < thisIpcore->nirq; irq_idx++) {
+			status = devm_request_irq(thisIpcore->dev,
+					thisIpcore->irq+irq_idx,
+					mwgeneric_intr_handler,
+					0,
+					thisIpcore->name,
+					thisIpcore);
+			if(status)
+			{
+				dev_err(thisIpcore->dev, "mwgeneric interrupt request addition failed.\n");
+				return status;
+			}
+		}
+
+		dev_info(thisIpcore->dev, "Enabled %d irqs from %d\n", thisIpcore->nirq, thisIpcore->irq);
+	}
+
+	dev_set_drvdata(thisIpcore->dev, thisIpcore);
+	/* Add the release logic */
+	status = devm_add_action(thisIpcore->dev, mwgeneric_unregister, thisIpcore);
+	if(status){
+		mwgeneric_unregister(thisIpcore);
+		return status;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_mwgeneric_register);
+
+static int __init mwgeneric_init(void)
+{
+	mwgeneric_class = class_create(THIS_MODULE, DRIVER_NAME);
+	if (IS_ERR(mwgeneric_class))
+		return PTR_ERR(mwgeneric_class);
+	pr_info("Registered mwgeneric class\n");
+	return 0;
+}
+
+static void __exit mwgeneric_exit(void)
+{
+
+	class_destroy(mwgeneric_class);
+	mwgeneric_class = NULL;
+}
+
+module_init(mwgeneric_init);
+module_exit(mwgeneric_exit);
+
+MODULE_AUTHOR("MathWorks, Inc");
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("MathWorks Generic driver framework");
+MODULE_ALIAS(DRIVER_NAME);
