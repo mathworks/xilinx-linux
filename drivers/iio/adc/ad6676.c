@@ -370,6 +370,27 @@ static int ad6676_set_clk_synth(struct axiadc_converter *conv, u32 refin_Hz, u32
 	return 0;
 }
 
+static int ad6676_set_extclk_cntl(struct axiadc_converter *conv, u32 freq)
+{
+	struct spi_device *spi = conv->spi;
+	int ret;
+
+	dev_dbg(&spi->dev, "%s: frequency %u\n",
+		__func__, freq);
+
+	ret = ad6676_spi_write(spi, AD6676_CLKSYN_LOGEN, 0x5);
+	if (ret < 0)
+		return ret;
+
+	/* Enable EXT CLK and ADC clock */
+	ret = ad6676_spi_write(spi, AD6676_CLKSYN_ENABLE, /* 2A0 */
+		EN_EXT_CK | EN_ADC_CK);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
 static int ad6676_jesd_setup(struct axiadc_converter *conv, struct ad6676_jesd_conf *conf)
 {
 	struct spi_device *spi = conv->spi;
@@ -414,16 +435,17 @@ static int ad6676_shuffle_setup(struct axiadc_converter *conv, struct ad6676_shu
 static int ad6676_calibrate(struct axiadc_converter *conv, unsigned cal)
 {
 	struct spi_device *spi = conv->spi;
-	int tout_i = 2, tout_o = 2;
+	int tout_i, tout_o = 2;
 	u32 done;
 
 	do {
 		ad6676_spi_write(spi, AD6676_CAL_CMD, cal);
+		tout_i = 2;
 
 		do {
 			mdelay(250);
 			done = ad6676_spi_read(spi, AD6676_CAL_DONE) & CAL_DONE;
-		} while (!done && tout_i--);
+		} while (tout_i-- && !done);
 
 		if (!done) {
 			dev_dbg(&spi->dev, "CAL timeout (0x%X)\n", cal);
@@ -472,7 +494,10 @@ static int ad6676_setup(struct axiadc_converter *conv)
 	if (ret < 0)
 		return ret;
 
-	ad6676_set_clk_synth(conv, phy->ref_clk, pdata->base.f_adc_hz);
+	if (!pdata->base.use_extclk)
+		ad6676_set_clk_synth(conv, phy->ref_clk, pdata->base.f_adc_hz);
+	else
+		ad6676_set_extclk_cntl(conv, pdata->base.f_adc_hz);
 
 	ad6676_jesd_setup(conv, &phy->pdata->jesd);
 
@@ -945,26 +970,58 @@ struct gpio_board_cfg {
 	unsigned value;
 };
 
-static struct gpio_board_cfg board_cfg[] = {
-	{"oen", 0},
-	{"sela", 0},
-	{"selb", 1},
-	{"s0", 0},
-	{"s1", 1},
-};
-
-static int ad6676_gpio_config(struct spi_device *spi)
+static int ad6676_gpio_config(struct axiadc_converter *conv)
 {
-	struct gpio_desc	 *gpio;
+	struct ad6676_platform_data *pdata = conv_to_phy(conv)->pdata;
+	struct spi_device *spi = conv->spi;
+	struct gpio_board_cfg board_cfg[5];
+	enum gpiod_flags flags;
 	int i, ret;
 
+	board_cfg[0].gpio_name = "oen";
+	board_cfg[1].gpio_name = "sela";
+	board_cfg[2].gpio_name = "selb";
+	board_cfg[3].gpio_name = "s0";
+	board_cfg[4].gpio_name = "s1";
+
+	board_cfg[0].value = 0;
+
+	switch (pdata->base.decimation) {
+	case 12:
+		board_cfg[3].value = 1;
+		board_cfg[4].value = 1;
+		break;
+	case 16:
+		board_cfg[3].value = 0;
+		board_cfg[4].value = 1;
+		break;
+	case 24:
+		board_cfg[3].value = 1;
+		board_cfg[4].value = 0;
+		break;
+	case 32:
+		board_cfg[3].value = 0;
+		board_cfg[4].value = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (pdata->base.use_extclk) {
+		board_cfg[1].value = 1;
+		board_cfg[2].value = 0;
+	} else {
+		board_cfg[1].value = 0;
+		board_cfg[2].value = 1;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(board_cfg); i++) {
-		gpio = devm_gpiod_get(&spi->dev, board_cfg[i].gpio_name);
-		if (!IS_ERR(gpio)) {
-			ret = gpiod_direction_output(gpio, board_cfg[i].value);
-			if (ret < 0)
-				return ret;
-		}
+		if (board_cfg[i].value)
+			flags = GPIOD_OUT_HIGH;
+		else
+			flags = GPIOD_OUT_LOW;
+
+		devm_gpiod_get(&spi->dev, board_cfg[i].gpio_name, flags);
 	}
 
 	return 0;
@@ -1072,13 +1129,10 @@ static int ad6676_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	ad6676_gpio_config(spi);
+	ad6676_gpio_config(conv);
 
 	/* RESET here */
-	conv->pwrdown_gpio = devm_gpiod_get(&spi->dev, "reset");
-	if (!IS_ERR(conv->pwrdown_gpio)) {
-		ret = gpiod_direction_output(conv->pwrdown_gpio, 1);
-	}
+	conv->pwrdown_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_HIGH);
 
 	mdelay(100);
 

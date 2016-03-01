@@ -952,8 +952,11 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	sysref_ctrl = AD9528_SYSREF_PATTERN_MODE(SYSREF_PATTERN_CONTINUOUS) |
-			AD9528_SYSREF_SOURCE(pdata->sysref_src);
+	sysref_ctrl = AD9528_SYSREF_PATTERN_MODE(pdata->sysref_pattern_mode) |
+		AD9528_SYSREF_SOURCE(pdata->sysref_src) |
+		AD9528_SYSREF_NSHOT_MODE(pdata->sysref_nshot_mode) |
+		AD9528_SYSREF_PATTERN_TRIGGER_CTRL(pdata->sysref_req_trigger_mode) |
+		(pdata->sysref_req_en ? AD9528_SYSREF_REQUEST_BY_PIN : 0);
 	ret = ad9528_write(indio_dev, AD9528_SYSREF_CTRL, sysref_ctrl);
 	if (ret < 0)
 		return ret;
@@ -1053,8 +1056,23 @@ static struct ad9528_platform_data *ad9528_parse_dt(struct device *dev)
 	pdata->ref_mode = tmp;
 	of_property_read_u32(np, "adi,sysref-src", &tmp);
 	pdata->sysref_src = tmp;
+
+	tmp = SYSREF_PATTERN_CONTINUOUS;
+	of_property_read_u32(np, "adi,sysref-pattern-mode", &tmp);
+	pdata->sysref_pattern_mode = tmp;
+
 	of_property_read_u32(np, "adi,sysref-k-div", &tmp);
 	pdata->sysref_k_div = tmp;
+
+	tmp = 0;
+	of_property_read_u32(np, "adi,sysref-nshot-mode", &tmp);
+	pdata->sysref_nshot_mode = tmp;
+
+	pdata->sysref_req_en = of_property_read_bool(np, "adi,sysref-request-enable");
+
+	tmp = 0;
+	of_property_read_u32(np, "adi,sysref-request-trigger-mode", &tmp);
+	pdata->sysref_req_trigger_mode = tmp;
 
 	/* PLL2 Setting */
 	of_property_read_u32(np, "adi,pll2-charge-pump-current-nA",
@@ -1171,30 +1189,19 @@ static int ad9528_probe(struct spi_device *spi)
 			return ret;
 	}
 
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "status0");
-	if (!IS_ERR(st->pwrdown_gpio)) {
-		ret = gpiod_direction_output(st->pwrdown_gpio, 0);
-	}
+	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "status0", GPIOD_OUT_LOW);
+	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown",
+		GPIOD_OUT_HIGH);
 
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown");
-	if (!IS_ERR(st->pwrdown_gpio)) {
-		ret = gpiod_direction_output(st->pwrdown_gpio, 1);
-	}
-
-	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset");
+	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
 	if (!IS_ERR(st->reset_gpio)) {
-		ret = gpiod_direction_output(st->reset_gpio, 0);
 		udelay(1);
-
 		ret = gpiod_direction_output(st->reset_gpio, 1);
 	}
 
 	mdelay(10);
 
-	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync");
-	if (!IS_ERR(st->sync_gpio)) {
-		ret = gpiod_direction_output(st->sync_gpio, 1);
-	}
+	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync", GPIOD_OUT_HIGH);
 
 	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
