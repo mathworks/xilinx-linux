@@ -16,6 +16,7 @@
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
+#include <linux/of_graph.h>
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-event.h>
@@ -77,7 +78,7 @@ struct axi_hdmi_rx {
 };
 
 struct axi_hdmi_rx_buffer {
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head head;
 };
 
@@ -106,7 +107,8 @@ static struct axi_hdmi_rx_stream *axi_hdmi_rx_file_to_stream(struct file *file)
 
 static struct axi_hdmi_rx_buffer *vb2_buf_to_hdmi_rx_buf(struct vb2_buffer *vb)
 {
-	return container_of(vb, struct axi_hdmi_rx_buffer, vb);
+	struct vb2_v4l2_buffer *v4l2_buf = to_vb2_v4l2_buffer(vb);
+	return container_of(v4l2_buf, struct axi_hdmi_rx_buffer, vb);
 }
 
 static const struct v4l2_file_operations axi_hdmi_rx_fops = {
@@ -120,9 +122,10 @@ static const struct v4l2_file_operations axi_hdmi_rx_fops = {
 };
 
 static int axi_hdmi_rx_queue_setup(struct vb2_queue *q,
-	const struct v4l2_format *fmt, unsigned int *num_buffers,
+	const void *parg, unsigned int *num_buffers,
 	unsigned int *num_planes, unsigned int sizes[], void *alloc_ctxs[])
 {
+	const struct v4l2_format *fmt = parg;
 	struct axi_hdmi_rx *hdmi_rx = vb2_get_drv_priv(q);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
 
@@ -162,7 +165,7 @@ static int axi_hdmi_rx_buf_prepare(struct vb2_buffer *vb)
 static void axi_hdmi_rx_dma_done(void *arg)
 {
 	struct axi_hdmi_rx_buffer *buf = arg;
-	struct vb2_queue *q = buf->vb.vb2_queue;
+	struct vb2_queue *q = buf->vb.vb2_buf.vb2_queue;
 	struct axi_hdmi_rx *hdmi_rx = vb2_get_drv_priv(q);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
 	unsigned long flags;
@@ -171,8 +174,8 @@ static void axi_hdmi_rx_dma_done(void *arg)
 	list_del(&buf->head);
 	spin_unlock_irqrestore(&s->spinlock, flags);
 
-	v4l2_get_timestamp(&buf->vb.v4l2_buf.timestamp);
-	vb2_buffer_done(&buf->vb, VB2_BUF_STATE_DONE);
+	v4l2_get_timestamp(&buf->vb.timestamp);
+	vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
 static void axi_hdmi_rx_buf_queue(struct vb2_buffer *vb)
@@ -270,7 +273,7 @@ static void axi_hdmi_rx_stop_streaming(struct vb2_queue *q)
 	spin_lock_irqsave(&s->spinlock, flags);
 
 	list_for_each_entry(buf, &s->queued_buffers, head)
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 
 	INIT_LIST_HEAD(&s->queued_buffers);
 
@@ -666,8 +669,6 @@ static int axi_hdmi_rx_enum_input(struct file *file, void *priv_fh,
 
 static int axi_hdmi_rx_g_input(struct file *file, void *priv_fh, unsigned int *i)
 {
-	struct axi_hdmi_rx *hdmi_rx = video_drvdata(file);
-
 	*i = 0;
 	return 0;
 }
@@ -903,14 +904,14 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		goto err_dma_cleanup_ctx;
 	}
 
-	ep_node = v4l2_of_get_next_endpoint(pdev->dev.of_node, NULL);
+	ep_node = of_graph_get_next_endpoint(pdev->dev.of_node, NULL);
 	if (!ep_node) {
 		ret = -EINVAL;
 		goto err_device_unregister;
 	}
 
 	hdmi_rx->asd.match_type = V4L2_ASYNC_MATCH_OF;
-	hdmi_rx->asd.match.of.node = v4l2_of_get_remote_port_parent(ep_node);
+	hdmi_rx->asd.match.of.node = of_graph_get_remote_port_parent(ep_node);
 
 	hdmi_rx->asds[0] = &hdmi_rx->asd;
 	hdmi_rx->notifier.subdevs = hdmi_rx->asds;

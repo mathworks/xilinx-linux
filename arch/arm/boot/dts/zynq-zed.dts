@@ -30,16 +30,17 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyPS0,115200 root=/dev/ram rw earlyprintk";
-		linux,stdout-path = &uart1;
-		stdout-path = &uart1;
+		bootargs = "root=/dev/ram rw earlyprintk";
+		stdout-path = "serial0:115200n8";
 	};
 
 	usb_phy0: phy0 {
-		compatible = "usb-nop-xceiv";
+		compatible = "ulpi-phy";
 		#phy-cells = <0>;
+		reg = <0xe0002000 0x1000>;
+		view-port = <0x0170>;
+		drv-vbus;
 	};
-
 };
 
 &qspi {

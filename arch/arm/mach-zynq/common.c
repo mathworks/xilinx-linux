@@ -151,11 +151,9 @@ out:
 
 static void __init zynq_timer_init(void)
 {
-	zynq_early_slcr_init();
-
 	zynq_clock_init();
 	of_clk_init(NULL);
-	clocksource_of_init();
+	clocksource_probe();
 }
 
 static struct map_desc zynq_cortex_a9_scu_map __initdata = {
@@ -187,13 +185,8 @@ static void __init zynq_map_io(void)
 
 static void __init zynq_irq_init(void)
 {
-	gic_arch_extn.flags = IRQCHIP_SKIP_SET_WAKE | IRQCHIP_MASK_ON_SUSPEND;
+	zynq_early_slcr_init();
 	irqchip_init();
-}
-
-static void zynq_system_reset(enum reboot_mode mode, const char *cmd)
-{
-	zynq_slcr_system_reset();
 }
 
 static const char * const zynq_dt_match[] = {
@@ -202,10 +195,15 @@ static const char * const zynq_dt_match[] = {
 };
 
 DT_MACHINE_START(XILINX_EP107, "Xilinx Zynq Platform")
+#ifndef CONFIG_XILINX_APF
 	/* 64KB way size, 8-way associativity, parity disabled */
-#ifdef CONFIG_XILINX_PREFETCH
+# ifdef CONFIG_XILINX_PREFETCH
 	.l2c_aux_val	= 0x30400000,
 	.l2c_aux_mask	= 0xcfbfffff,
+# else
+	.l2c_aux_val	= 0x00400000,
+	.l2c_aux_mask	= 0xffbfffff,
+# endif
 #else
 	.l2c_aux_val	= 0x00400000,
 	.l2c_aux_mask	= 0xffbfffff,
@@ -218,5 +216,4 @@ DT_MACHINE_START(XILINX_EP107, "Xilinx Zynq Platform")
 	.init_time	= zynq_timer_init,
 	.dt_compat	= zynq_dt_match,
 	.reserve	= zynq_memory_init,
-	.restart	= zynq_system_reset,
 MACHINE_END

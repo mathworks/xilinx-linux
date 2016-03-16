@@ -74,6 +74,7 @@
 
 		adi,rx-sys-clk-select = <3>;
 		adi,rx-out-clk-select = <4>;
+		adi,lanes = <8>;
 
 		xlnx,pcore-cpll-fbdiv = <0x2>;
 		xlnx,pcore-device-type = <0x0>;
@@ -104,6 +105,6 @@
 #include "adi-fmcadc4.dtsi"
 
 &clk0_ad9528 {
-	reset-gpios = <&gpio 86 0>;
-	status0-gpios = <&gpio 87 0>;
+	reset-gpios = <&gpio0 86 0>;
+	status0-gpios = <&gpio0 87 0>;
 };

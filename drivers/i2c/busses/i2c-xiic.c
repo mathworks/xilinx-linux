@@ -63,13 +63,14 @@ enum xiic_endian {
  * @state:	See STATE_
  * @rx_msg:	Current RX message
  * @rx_pos:	Position within current RX message
+ * @endianness: big/little-endian byte order
  */
 struct xiic_i2c {
 	void __iomem		*base;
 	wait_queue_head_t	wait;
 	struct i2c_adapter	adap;
 	struct i2c_msg		*tx_msg;
-	spinlock_t		lock;
+	struct mutex		lock;
 	unsigned int		tx_pos;
 	unsigned int		nmsgs;
 	enum xilinx_i2c_state	state;
@@ -361,7 +362,6 @@ static irqreturn_t xiic_process(int irq, void *dev_id)
 {
 	struct xiic_i2c *i2c = dev_id;
 	u32 pend, isr, ier;
-	unsigned long flags;
 	u32 clr = 0;
 
 	/* Get the interrupt Status from the IPIF. There is no clearing of
@@ -369,7 +369,7 @@ static irqreturn_t xiic_process(int irq, void *dev_id)
 	 * To find which interrupts are pending; AND interrupts pending with
 	 * interrupts masked.
 	 */
-	spin_lock(&i2c->lock);
+	mutex_lock(&i2c->lock);
 	isr = xiic_getreg32(i2c, XIIC_IISR_OFFSET);
 	ier = xiic_getreg32(i2c, XIIC_IIER_OFFSET);
 	pend = isr & ier;
@@ -403,7 +403,6 @@ static irqreturn_t xiic_process(int irq, void *dev_id)
 			xiic_wakeup(i2c, STATE_ERROR);
 		if (i2c->tx_msg)
 			xiic_wakeup(i2c, STATE_ERROR);
-
 	}
 	if (pend & XIIC_INTR_RX_FULL_MASK) {
 		/* Receive register/FIFO is full */
@@ -457,7 +456,6 @@ static irqreturn_t xiic_process(int irq, void *dev_id)
 			xiic_wakeup(i2c, STATE_DONE);
 		else
 			xiic_wakeup(i2c, STATE_ERROR);
-
 	}
 	if (pend & (XIIC_INTR_TX_EMPTY_MASK | XIIC_INTR_TX_HALF_MASK)) {
 		/* Transmit register/FIFO is empty or ½ empty */
@@ -499,7 +497,7 @@ out:
 	dev_dbg(i2c->adap.dev.parent, "%s clr: 0x%x\n", __func__, clr);
 
 	xiic_setreg32(i2c, XIIC_IISR_OFFSET, clr);
-	spin_unlock(&i2c->lock);
+	mutex_unlock(&i2c->lock);
 	return IRQ_HANDLED;
 }
 
@@ -602,7 +600,7 @@ static irqreturn_t xiic_isr(int irq, void *dev_id)
 {
 	struct xiic_i2c *i2c = dev_id;
 	u32 pend, isr, ier;
-	irqreturn_t ret = IRQ_HANDLED;
+	irqreturn_t ret = IRQ_NONE;
 	/* Do not processes a devices interrupts if the device has no
 	 * interrupts pending
 	 */
@@ -664,10 +662,10 @@ static void __xiic_start_xfer(struct xiic_i2c *i2c)
 
 static void xiic_start_xfer(struct xiic_i2c *i2c)
 {
-	unsigned long flags;
-
-
+	mutex_lock(&i2c->lock);
+	xiic_reinit(i2c);
 	__xiic_start_xfer(i2c);
+	mutex_unlock(&i2c->lock);
 }
 
 static int xiic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
@@ -694,7 +692,6 @@ static int xiic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 		i2c->tx_msg = NULL;
 		i2c->rx_msg = NULL;
 		i2c->nmsgs = 0;
-		dev_err(adap->dev.parent, "Controller timed out\n");
 		return -ETIMEDOUT;
 	}
 }
@@ -748,7 +745,7 @@ static int xiic_i2c_probe(struct platform_device *pdev)
 	i2c->adap.dev.parent = &pdev->dev;
 	i2c->adap.dev.of_node = pdev->dev.of_node;
 
-	spin_lock_init(&i2c->lock);
+	mutex_init(&i2c->lock);
 	init_waitqueue_head(&i2c->wait);
 
 	ret = devm_request_threaded_irq(&pdev->dev, irq, xiic_isr,

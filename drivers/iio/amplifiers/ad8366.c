@@ -236,10 +236,8 @@ static int ad8366_probe(struct spi_device *spi)
 	case ID_ADL5240:
 	case ID_HMC271:
 
-		st->reset_gpio = devm_gpiod_get(&spi->dev, "reset");
-		if (!IS_ERR(st->reset_gpio)) {
-			gpiod_direction_output(st->reset_gpio, 1);
-		}
+		st->reset_gpio = devm_gpiod_get(&spi->dev, "reset",
+			GPIOD_OUT_HIGH);
 
 		indio_dev->channels = ada4961_channels;
 		indio_dev->num_channels = ARRAY_SIZE(ada4961_channels);
@@ -290,11 +288,11 @@ static const struct spi_device_id ad8366_id[] = {
 	{"hmc271", ID_HMC271},
 	{}
 };
+MODULE_DEVICE_TABLE(spi, ad8366_id);
 
 static struct spi_driver ad8366_driver = {
 	.driver = {
 		.name	= KBUILD_MODNAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ad8366_probe,
 	.remove		= ad8366_remove,

@@ -31,14 +31,16 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyPS0,115200 root=/dev/ram rw earlyprintk";
-		linux,stdout-path = &uart1;
-		stdout-path = &uart1;
+		bootargs = "root=/dev/ram rw earlyprintk";
+		stdout-path = "serial0:115200n8";
 	};
 
 	usb_phy0: phy0 {
-		compatible = "usb-nop-xceiv";
+		compatible = "ulpi-phy";
 		#phy-cells = <0>;
+		reg = <0xe0002000 0x1000>;
+		view-port = <0x0170>;
+		drv-vbus;
 	};
 };
 
@@ -121,6 +123,21 @@
 				reg = <0x5d>;
 				factory-fout = <156250000>;
 				clock-frequency = <148500000>;
+			};
+		};
+
+		i2c@1 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <1>;
+			adv7511: hdmi-tx@39 {
+				compatible = "adi,adv7511";
+				reg = <0x39>;
+				adi,input-depth = <8>;
+				adi,input-colorspace = "yuv422";
+				adi,input-clock = "1x";
+				adi,input-style = <3>;
+				adi,input-justification = "evenly";
 			};
 		};
 
