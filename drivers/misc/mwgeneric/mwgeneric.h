@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/cdev.h>
 #include <linux/interrupt.h>
+#include <linux/uaccess.h>
 #include "mwgeneric_ioctl.h"
 
 #define MWGENERIC_MEMTYPE_NORMAL		0
