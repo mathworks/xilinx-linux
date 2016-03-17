@@ -15,11 +15,39 @@
 #include <asm/dcc.h>
 #include <asm/processor.h>
 
+#include <linux/serial.h>
+#include <linux/console.h>
+#include <linux/serial_core.h>
+
 #include "hvc_console.h"
 
 /* DCC Status Bits */
 #define DCC_STATUS_RX		(1 << 30)
 #define DCC_STATUS_TX		(1 << 29)
+
+static void dcc_uart_console_putchar(struct uart_port *port, int ch)
+{
+	while (__dcc_getstatus() & DCC_STATUS_TX)
+		cpu_relax();
+
+	__dcc_putchar(ch);
+}
+
+static void dcc_early_write(struct console *con, const char *s, unsigned n)
+{
+	struct earlycon_device *dev = con->data;
+
+	uart_console_write(&dev->port, s, n, dcc_uart_console_putchar);
+}
+
+static int __init dcc_early_console_setup(struct earlycon_device *device,
+                                         const char *opt)
+{
+	device->con->write = dcc_early_write;
+
+	return 0;
+}
+EARLYCON_DECLARE(dcc, dcc_early_console_setup);
 
 static int hvc_dcc_put_chars(uint32_t vt, const char *buf, int count)
 {
@@ -70,20 +98,27 @@ static const struct hv_ops hvc_dcc_get_put_ops = {
 
 static int __init hvc_dcc_console_init(void)
 {
+	int ret;
+
 	if (!hvc_dcc_check())
 		return -ENODEV;
 
-	hvc_instantiate(0, 0, &hvc_dcc_get_put_ops);
-	return 0;
+	/* Returns -1 if error */
+	ret = hvc_instantiate(0, 0, &hvc_dcc_get_put_ops);
+
+	return ret < 0 ? -ENODEV : 0;
 }
 console_initcall(hvc_dcc_console_init);
 
 static int __init hvc_dcc_init(void)
 {
+	struct hvc_struct *p;
+
 	if (!hvc_dcc_check())
 		return -ENODEV;
 
-	hvc_alloc(0, 0, &hvc_dcc_get_put_ops, 128);
-	return 0;
+	p = hvc_alloc(0, 0, &hvc_dcc_get_put_ops, 128);
+
+	return PTR_ERR_OR_ZERO(p);
 }
 device_initcall(hvc_dcc_init);

@@ -17,6 +17,8 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_gpio.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -97,7 +99,7 @@ static int ad7606_read_raw(struct iio_dev *indio_dev,
 
 		if (ret < 0)
 			return ret;
-		*val = (short) ret;
+		*val = (short)ret;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		*val = st->range * 2;
@@ -108,7 +110,7 @@ static int ad7606_read_raw(struct iio_dev *indio_dev,
 }
 
 static ssize_t ad7606_show_range(struct device *dev,
-			struct device_attribute *attr, char *buf)
+				 struct device_attribute *attr, char *buf)
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ad7606_state *st = iio_priv(indio_dev);
@@ -117,7 +119,8 @@ static ssize_t ad7606_show_range(struct device *dev,
 }
 
 static ssize_t ad7606_store_range(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ad7606_state *st = iio_priv(indio_dev);
@@ -145,7 +148,8 @@ static IIO_DEVICE_ATTR(in_voltage_range, S_IRUGO | S_IWUSR,
 static IIO_CONST_ATTR(in_voltage_range_available, "5000 10000");
 
 static ssize_t ad7606_show_oversampling_ratio(struct device *dev,
-			struct device_attribute *attr, char *buf)
+					      struct device_attribute *attr,
+					      char *buf)
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ad7606_state *st = iio_priv(indio_dev);
@@ -166,7 +170,8 @@ static int ad7606_oversampling_get_index(unsigned val)
 }
 
 static ssize_t ad7606_store_oversampling_ratio(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+					       struct device_attribute *attr,
+					       const char *buf, size_t count)
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ad7606_state *st = iio_priv(indio_dev);
@@ -459,15 +464,106 @@ static const struct iio_info ad7606_info_range = {
 	.attrs = &ad7606_attribute_group_range,
 };
 
-struct iio_dev *ad7606_probe(struct device *dev, int irq,
-			      void __iomem *base_address,
-			      unsigned id,
-			      const struct ad7606_bus_ops *bops)
+#ifdef CONFIG_OF
+static int ad7606_parse_dt(struct device *dev)
 {
-	struct ad7606_platform_data *pdata = dev->platform_data;
+	struct device_node *np = dev->of_node;
+	struct ad7606_platform_data *pdata;
+	int ret;
+
+	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return -ENOMEM;
+
+	ret = of_property_read_u8(np, "default-os",
+			(u8 *) &pdata->default_os);
+	if (ret < 0)
+		pdata->default_os = 0;
+
+	ret = of_property_read_u16(np, "default-range",
+			(u16 *) &pdata->default_range);
+	if (ret < 0)
+		pdata->default_range = 10000;
+
+	ret = of_get_named_gpio(np, "convst-gpio", 0);
+	if (ret < 0) {
+		dev_err(dev, "convst-gpio property not found\n");
+		goto error_free;
+	}
+	pdata->gpio_convst = ret;
+
+	ret = of_get_named_gpio(np, "reset-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_reset = -1;
+	else
+		pdata->gpio_reset = ret;
+
+	ret = of_get_named_gpio(np, "range-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_range = -1;
+	else
+		pdata->gpio_range = ret;
+
+	ret = of_get_named_gpio(np, "os0-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_os0 = -1;
+	else
+		pdata->gpio_os0 = ret;
+
+	ret = of_get_named_gpio(np, "os1-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_os1 = -1;
+	else
+		pdata->gpio_os1 = ret;
+
+	ret = of_get_named_gpio(np, "os2-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_os2 = -1;
+	else
+		pdata->gpio_os2 = ret;
+
+	ret = of_get_named_gpio(np, "frstdata-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_frstdata = -1;
+	else
+		pdata->gpio_frstdata = ret;
+
+	ret = of_get_named_gpio(np, "stby-gpio", 0);
+	if (ret < 0)
+		pdata->gpio_stby = -1;
+	else
+		pdata->gpio_stby = ret;
+
+	dev->platform_data = pdata;
+
+	return 1;
+
+error_free:
+	devm_kfree(dev, pdata);
+	return ret;
+};
+#else
+static int ad7606_parse_dt(struct device *dev)
+{
+	return 0;
+}
+#endif
+
+struct iio_dev *ad7606_probe(struct device *dev, int irq,
+			     void __iomem *base_address,
+			     unsigned id,
+			     const struct ad7606_bus_ops *bops)
+{
+	struct ad7606_platform_data *pdata;
 	struct ad7606_state *st;
 	int ret;
 	struct iio_dev *indio_dev;
+
+	ret = ad7606_parse_dt(dev);
+	if (ret < 0)
+		return ERR_PTR(ret);
+
+	pdata = dev->platform_data;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
 	if (!indio_dev)
@@ -529,7 +625,7 @@ struct iio_dev *ad7606_probe(struct device *dev, int irq,
 		dev_warn(st->dev, "failed to RESET: no RESET GPIO specified\n");
 
 	ret = request_irq(irq, ad7606_interrupt,
-		IRQF_TRIGGER_FALLING, st->chip_info->name, indio_dev);
+			  IRQF_TRIGGER_FALLING, st->chip_info->name, indio_dev);
 	if (ret)
 		goto error_free_gpios;
 
@@ -591,7 +687,7 @@ void ad7606_resume(struct iio_dev *indio_dev)
 	if (gpio_is_valid(st->pdata->gpio_stby)) {
 		if (gpio_is_valid(st->pdata->gpio_range))
 			gpio_set_value(st->pdata->gpio_range,
-					st->range == 10000);
+				       st->range == 10000);
 
 		gpio_set_value(st->pdata->gpio_stby, 1);
 		ad7606_reset(st);
