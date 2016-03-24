@@ -1,0 +1,21 @@
+#
+# mwgeneric driver configuration
+#
+
+menu "Mathworks IP Drivers"
+
+config MATHWORKS_AXI_DMA
+	tristate "Mathworks AXI DMA Driver"
+	depends on OF && XILINX_AXIDMA
+	default m
+	help
+		Say Y here if you want to add support for the MathWorks AXI DMA
+		drivers
+
+		If unsure, say N.
+
+		To compile this driver as a module, choose M here:
+		the module will be called mwadma
+
+endmenu
+
