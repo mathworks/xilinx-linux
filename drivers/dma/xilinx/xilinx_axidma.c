@@ -699,9 +699,9 @@ static irqreturn_t dma_intr_handler(int irq, void *data)
 		chan->start_transfer(chan);
     }
 
-    /*tasklet_hi_schedule(&chan->tasklet);*/
+    tasklet_hi_schedule(&chan->tasklet);
     /*printk(KERN_INFO" >> INTERRUPT");*/
-    dma_do_tasklet((unsigned long)chan);
+    /*dma_do_tasklet((unsigned long)chan);*/
 	return IRQ_HANDLED;
 }
 

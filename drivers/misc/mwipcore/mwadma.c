@@ -3,6 +3,7 @@
  *
  */
 
+
 #define COHERENT_MMAPPING
 #include "mwadma.h"  /* IOCTL */
 #include <linux/amba/xilinx_dma.h>
@@ -11,7 +12,6 @@
 #include <asm/cacheflush.h>
 
 dev_t mwadma_dev_id = 0;
-
 
 static unsigned int device_num = 0;
 static unsigned int cur_minor = 0;
@@ -49,6 +49,10 @@ static void mwdma_test_loopback(struct mwadma_dev * mwdev,
         struct mw_axidma_params chn_prm);
 
 int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan);
+static irqreturn_t fifoirq_handler(int irq, void *data);
+static int mwadma_fifo_probe(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan);
+static int mwadma_fifo_reset_configure(struct mwadma_chan *mwchan, int overflow_en, int underflow_en);
+static int mwadma_fifo_poll_count(struct mwadma_chan *mwchan);
 
 /*************************************************************************/
 /*
@@ -283,16 +287,13 @@ void mwadma_tx_cb_single_signal(struct mwadma_dev *mwdev)
 void mwadma_tx_cb_continuous_signal_dataflow(struct mwadma_dev *mwdev)
 {
     struct mwadma_chan *mwchan = mwdev->tx;
-    long current_transfers_queued;
+    long waiting_transfers;
     struct device *dev = &IP2DEV(mwdev);
 
-    spin_lock_bh(&mwchan->slock);
     mwchan->transfer_count++;
     mwchan->completed = mwchan->prev;
-    current_transfers_queued = mwchan->transfer_queued;
-    spin_unlock_bh(&mwchan->slock);
+    waiting_transfers = mwchan->transfer_queued;
 
-    /* dev_dbg(dev,"Queue fill level = %ld\n",current_transfers_queued);*/
     /*dev_dbg(dev, "Completed buffer %d to DMA, direction = %d\n",mwchan->completed->buffer_index,mwchan->direction);*/
 
     /* Make sure that the DMA engine is running when trying to deal with
@@ -301,53 +302,54 @@ void mwadma_tx_cb_continuous_signal_dataflow(struct mwadma_dev *mwdev)
      * are reading since there is likely to be a DMA transfer in progress while
      * processing the interrupt from the last transfer */
 
-    if(mwchan->status == running) /* since we are running, transfer in progress */
-    {
-        /* We can start preparing the next transfer */
-        if(current_transfers_queued + 1 >= tx_wm.prime)
-        {
-            /* Prepare next ring */
-            mwadma_start(mwdev,mwchan);
-            mwchan->error = TX_ERROR_QPRIME;
-            return;
-        }
-        else if(current_transfers_queued >= 0) /* Low */
-        {
-            /* Prepare next ring even though it may be invalid */
-            mwadma_start(mwdev,mwchan);
-            mwchan->error = TX_ERROR_QLOW;
-            /* Signal userspace */
-            if (likely(mwdev->asyncq))
-            {
-                kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT); 
-            }
-            sysfs_notify(&dev->kobj, NULL, "dma_ch2");
-            dev_dbg(dev, "Low tx condition\n");
-        }
-        /* Not enough data arrived for this last DMA transfer to be valid */
-        else 
-        {
-            spin_lock_bh(&mwchan->slock);
-            mwchan->error = TX_ERROR_QUNDERFLOW;
-            mwchan->status = finishing; /* There is one transfer in progress which we need to wait for */
-            spin_unlock_bh(&mwchan->slock);
-            /* Signal userspace */
-            if (likely(mwdev->asyncq))
-            {
-                kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT); 
-            }
-            sysfs_notify(&dev->kobj, NULL, "dma_ch2");
-            dev_dbg(dev, "Tx underflow\n");
 
+    /*dev_info(dev,"Waiting transfers = %ld\n",waiting_transfers);*/
+    if((mwchan->status == running) && (waiting_transfers > 0))
+    {
+        /* prepare to start waiting transfers */
+        mwadma_start(mwdev,mwchan);
+        /* Prepare next ring */
+        if(waiting_transfers == tx_wm.full)
+        {
+            mwchan->error = TX_ERROR_QFULL;
+            /*dev_info(dev, "Tx full\n");*/
+        }
+        else if(waiting_transfers >= tx_wm.prime)
+        {
+            mwchan->error = TX_ERROR_QPRIME;
+            /*dev_info(dev, "Tx prime\n");*/
+        }
+        else
+        {
+            mwchan->error = TX_ERROR_QLOW;
+            /*dev_info(dev, "Low tx condition\n");*/
         }
     }
-    else if(mwchan->status == finishing) /* We had an underflow, wait for re-priming */
+    /* Even if we are only low here, we should not pre-emptively start a new transfer, this can be done by the enqueue function */
+    else if((mwchan->status != finishing) && (waiting_transfers == 0))
     {
-        spin_lock_bh(&mwchan->slock);
+            mwchan->error = TX_ERROR_QLOW;
+            mwchan->status = finishing; /* There will be at least one transfer completion still */
+    }
+    /* We've transmitted ALL pending transfers. Priming must start from 0 level */
+    else 
+    {
+        mwchan->error = TX_ERROR_QUNDERFLOW;
         mwchan->status = waiting;
-        spin_unlock_bh(&mwchan->slock);
+        dev_info(dev, "Tx software underflow: requires re-priming\n");
+
+    }
+    /* For I/O data flow no need to signal normal state */
+    if(mwchan->error == TX_ERROR_QPRIME)
+    {
         return;
     }
+    /* Signal userspace */
+    if (likely(mwdev->asyncq))
+    {
+        kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT); 
+    }
+    sysfs_notify(&dev->kobj, NULL, "dma_ch2");
 }
 
 
@@ -358,6 +360,7 @@ void mwadma_tx_cb_continuous_free(struct mwadma_dev *mwdev)
     static int ct = 1;
     spin_lock_bh(&mwchan->slock);
     mwchan->transfer_count++;
+    mwchan->transfer_queued++; /* Always assume transfers queued */
     spin_unlock_bh(&mwchan->slock);
     
     mwadma_start(mwdev,mwchan);
@@ -374,7 +377,9 @@ void mwadma_tx_cb_single_signal_burst(struct mwadma_dev *mwdev)
     
     if(mwchan->transfer_count < (mwchan->ring_total - 2))
     {
+  
         mwadma_start(mwdev,mwchan);
+
     }
     if(mwchan->transfer_count == mwchan->ring_total)
     {
@@ -394,6 +399,7 @@ void mwadma_tx_cb_continuous_signal_first(struct mwadma_dev *mwdev)
     static int ct = 1;
     spin_lock_bh(&mwchan->slock);
     mwchan->transfer_count++;
+    mwchan->transfer_queued++; /* Used in repeating transmit mode */
     spin_unlock_bh(&mwchan->slock);
     
     mwadma_start(mwdev,mwchan);
@@ -411,20 +417,62 @@ void mwadma_tx_cb_continuous_signal_first(struct mwadma_dev *mwdev)
 void mwadma_tx_cb_continuous_signal(struct mwadma_dev *mwdev)
 {
     struct mwadma_chan *mwchan = mwdev->tx;
+    long waiting_transfers;
     struct device *dev = &IP2DEV(mwdev);
-    static int ct = 1;
-    spin_lock_bh(&mwchan->slock);
+
     mwchan->transfer_count++;
-    mwchan->status = ready;
-    spin_unlock_bh(&mwchan->slock);
-    
-    mwadma_start(mwdev,mwchan);
+    mwchan->completed = mwchan->prev;
+    waiting_transfers = mwchan->transfer_queued;
+
+    /*dev_dbg(dev, "Completed buffer %d to DMA, direction = %d\n",mwchan->completed->buffer_index,mwchan->direction);*/
+
+    /* Make sure that the DMA engine is running when trying to deal with
+     * interrupts. 
+     * We must be careful when thinking about the number of queued transfers we
+     * are reading since there is likely to be a DMA transfer in progress while
+     * processing the interrupt from the last transfer */
+
+
+    if((mwchan->status == running) && (waiting_transfers > 0))
+    {
+        /* prepare to start waiting transfers */
+        mwadma_start(mwdev,mwchan);
+        /* Prepare next ring */
+        if(waiting_transfers == tx_wm.full)
+        {
+            mwchan->error = TX_ERROR_QFULL;
+            /*dev_info(dev, "Tx full\n");*/
+        }
+        else if(waiting_transfers >= tx_wm.prime)
+        {
+            mwchan->error = TX_ERROR_QPRIME;
+            /*dev_info(dev, "Tx prime\n");*/
+        }
+        else
+        {
+            mwchan->error = TX_ERROR_QLOW;
+            /*dev_info(dev, "Low tx condition\n");*/
+        }
+    }
+    /* If no new transfers are queued  in time to have continuous transmit */
+    else if((mwchan->status != finishing) && (waiting_transfers == 0))
+    {
+            mwchan->error = TX_ERROR_QLOW;
+            mwchan->status = finishing; /* Wait for pending transfer */
+    }
+    /* We've transmitted ALL pending transfers, now we can actually re-prime transfers */
+    else 
+    {
+        mwchan->error = TX_ERROR_QUNDERFLOW;
+        mwchan->status = waiting;
+        dev_info(dev, "Tx software underflow: requires re-priming\n");
+
+    }
     /* Signal userspace */
     if (likely(mwdev->asyncq))
     {
-         kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT); 
+        kill_fasync(&mwdev->asyncq, SIGIO, POLL_OUT); 
     }
-    dev_dbg(dev, "Notify from %s : count:%d\n",__func__,ct++);
     sysfs_notify(&dev->kobj, NULL, "dma_ch2");
 }
 
@@ -491,6 +539,7 @@ void mwadma_rx_cb_burst(struct mwadma_dev *mwdev)
         spin_unlock_bh(&mwchan->slock);
 
     }
+    mwadma_fifo_poll_count(mwchan);
 }
 
 void mwadma_rx_cb_pseudoburst_signal(struct mwadma_dev *mwdev)
@@ -540,6 +589,7 @@ void mwadma_rx_cb_pseudoburst_signal(struct mwadma_dev *mwdev)
 
     dev_dbg(dev, "Notify from %s : count:%ld\n",__func__,current_transfers_completed);
     sysfs_notify(&dev->kobj, NULL, "dma_ch1");
+    mwadma_fifo_poll_count(mwchan);
 
 }
 
@@ -596,6 +646,7 @@ void mwadma_rx_cb_continuous_signal(struct mwadma_dev *mwdev)
     }
     dev_dbg(dev, "Notify from %s : count:%ld\n",__func__,current_transfers_completed);
     sysfs_notify(&dev->kobj, NULL, "dma_ch1");
+    mwadma_fifo_poll_count(mwchan);
 }
 
 /*
@@ -609,6 +660,22 @@ int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan)
         ret = - ENODEV;
         goto start_failed;
     }
+    spin_lock_bh(&mwchan->slock);
+    /* Don't prepare a frame for DMA transmit if there are none queued */
+    if(mwchan->direction == DMA_MEM_TO_DEV)
+    {
+        if(mwchan->transfer_queued > 0)
+        {
+            mwchan->transfer_queued--;
+        }
+        else
+        {
+            dev_err(&IP2DEV(mwdev), "Attempted to prepare transmit with no data available\n");
+            ret = -EINVAL;
+            spin_unlock_bh(&mwchan->slock);
+            goto start_failed;
+        }
+    }
     /* Fresh buffer or has been used previously */
     /*dev_dbg(&IP2DEV(mwdev),"mwchan:0x%p, mwchan->chan:0x%p, DMA_CHAN:%s\n", \
             mwchan, mwchan->chan, dma_chan_name(mwchan->chan));        
@@ -619,6 +686,7 @@ int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan)
         mwadma_unmap_desc(mwdev, mwchan, mwchan->curr);
         dev_err(&IP2DEV(mwdev), "Failed to prep slave\n");
         ret = -ENOMEM;
+        spin_unlock_bh(&mwchan->slock);
         goto start_failed;
     }
     mwchan->curr->desc->callback = mwchan->callback;
@@ -627,17 +695,13 @@ int mwadma_start(struct mwadma_dev *mwdev,struct mwadma_chan *mwchan)
     if (dma_submit_error(mwchan->curr->desc->cookie)) {
         dev_err(&IP2DEV(mwdev), "Failure to submit cookie\n");
         ret = -EINVAL;
+        spin_unlock_bh(&mwchan->slock);
         goto start_failed;
     }
     /*dev_info(&IP2DEV(mwdev), "prep+submitted index = %d\n", mwchan->curr->buffer_index);*/
-    spin_lock_bh(&mwchan->slock);
     new = list_entry(mwchan->curr->list.next,struct mwadma_slist,list);
     mwchan->prev = mwchan->curr;
     mwchan->curr = new;
-    if(mwchan->direction == DMA_MEM_TO_DEV)
-    {
-        mwchan->transfer_queued--;
-    }
     spin_unlock_bh(&mwchan->slock);
     return ret;
 
@@ -724,18 +788,17 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                 default:
                     mwchan->callback = (dma_async_tx_callback)mwadma_rx_cb_continuous_signal;
             }
-            spin_lock_bh(&mwchan->slock);
+            
+            spin_lock(&mwchan->slock);
             mwchan->error = 0;
             mwchan->transfer_count = 0;
-            spin_unlock_bh(&mwchan->slock);
-
-            mwadma_start(mwdev, mwchan);
-
-            spin_lock_bh(&mwchan->slock);
-            mwchan->status = running;
-            spin_unlock_bh(&mwchan->slock);
-
+            spin_unlock(&mwchan->slock);
+            mwadma_stop(mwdev, mwchan);
+            /*xilinx_dma_reset(mwchan->chan);*/
+            mwadma_set_counter(mwdev,mwchan->samples_per_interrupt);
+            mwadma_start(mwdev,mwchan);
             dma_async_issue_pending(mwchan->chan);
+            // check_completion(mwdev,mwchan);
             break;
         case MWADMA_RX_BURST:
             if(copy_from_user(&userval, (unsigned long *)arg, sizeof userval))
@@ -761,9 +824,7 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             /*xilinx_dma_reset(mwchan->chan);*/
             mwadma_set_counter(mwdev, mwchan->samples_per_interrupt);
             mwadma_start(mwdev,mwchan);
-            spin_lock_bh(&mwchan->slock);
             mwchan->status = running;
-            spin_unlock_bh(&mwchan->slock);
             dma_async_issue_pending(mwchan->chan);
             mwadma_start(mwdev,mwchan);
             break;
@@ -818,6 +879,7 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             mwadma_stop(mwdev, mwchan);
             /*xilinx_dma_reset(mwchan->chan);*/
             mwadma_set_counter(mwdev,mwchan->samples_per_interrupt);
+            mwadma_fifo_reset_configure(mwchan, 0, 0);
             mwadma_start(mwdev,mwchan);
             spin_lock_bh(&mwchan->slock);
             mwchan->status = running;
@@ -829,7 +891,6 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             spin_lock_bh(&mwchan->slock);
             status = (unsigned long) mwchan->status;
             spin_unlock_bh(&mwchan->slock);
-            memset(mwchan->buf, 0, mwchan->length); 
 
             if(status != ready)
             {
@@ -840,6 +901,7 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                 }
             }
 
+            mwadma_fifo_reset_configure(mwchan, 0, 0);
             spin_lock_bh(&mwchan->slock);
             mwchan->transfer_count = 0;
             mwchan->status = ready;
@@ -868,7 +930,12 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             error = mwchan->error;
             mwchan->error = 0;
             spin_unlock_bh(&mwchan->slock);
-
+            if(mwchan->of_cnt)
+            {
+                dev_info(&IP2DEV(mwdev), "Rx hardware overflow, lost samples = %d\n", mwchan->of_cnt);
+                error = ERR_RING_OVERFLOW;
+                mwadma_fifo_reset_configure(mwchan, 0, 0);
+            }
             if(copy_to_user((unsigned long *) arg, &error, sizeof(unsigned long)))
             {
                 return -EACCES;
@@ -944,11 +1011,29 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             {
                 return -EACCES;
             }
+            if(userval == 0)
+            {
+                return -EINVAL;
+            }
 
             spin_lock_bh(&mwchan->slock);
             status =  mwchan->status;
             transfer_queued = mwchan->transfer_queued;
             spin_unlock_bh(&mwchan->slock);
+            /* If we can't queue the requested buffers then we indicate a full error and return */
+            if((transfer_queued + (long)userval) > mwchan->ring_total)
+            {
+                /*dev_err(&IP2DEV(mwdev), \*/
+                        /*":queue:%ld, user-queue:%lu, ring:%d\n", \*/
+                        /*mwchan->transfer_queued, \*/
+                        /*userval, \*/
+                        /*mwchan->ring_total);*/
+                spin_lock_bh(&mwchan->slock);
+                mwchan->error = TX_ERROR_QFULL;
+                spin_unlock_bh(&mwchan->slock);
+                return -EBUSY;
+            }
+
             // if dma is stopped and queued = 0
             // get next index from list
             // else
@@ -961,7 +1046,10 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             }
             else
             {
+                spin_lock_bh(&mwchan->slock);
                 mwchan->next_index = (mwchan->next_index + 1) % mwchan->ring_total;
+                spin_unlock_bh(&mwchan->slock);
+
             }
 #ifndef COHERENT_MMAPPING
             startaddr = virt_to_phys(&mwchan->buf[mwchan->next_index*mwchan->ring_bytes]);
@@ -973,39 +1061,41 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             /*dev_info(&IP2DEV(mwdev), "Synced ring index = %d\n", mwchan->next_index);*/
 #endif
 
+            /*dev_info(&IP2DEV(mwdev),"Transfers queued = %ld\n", transfer_queued + (long)userval);*/
 
-            if(transfer_queued >= mwchan->ring_total)
-            {
-                dev_err(&IP2DEV(mwdev), \
-                        ":queue:%ld, user-queue:%lu, ring:%d\n", \
-                        mwchan->transfer_queued, \
-                        userval, \
-                        mwchan->ring_total);
-                spin_lock_bh(&mwchan->slock);
-                mwchan->error = TX_ERROR_QFULL;
-                spin_unlock_bh(&mwchan->slock);
-                return 0;
-            }
             spin_lock_bh(&mwchan->slock);
             mwchan->transfer_queued += (long)userval;
             transfer_queued = mwchan->transfer_queued;
+            status =  mwchan->status;
             spin_unlock_bh(&mwchan->slock);
 
-            /*dev_dbg(&IP2DEV(mwdev),"Transfers queued = %ld\n", transfer_queued);*/
             /* restart if required (only appropriate for continuous mode) */
-            if(unlikely((status == waiting) && (transfer_queued >= tx_wm.prime))) /* restart/reprime */
+            /* A final transfer is in progress and we have a chance to prepare a new one */
+            if(status == finishing && transfer_queued > 0)
             {
-                dev_dbg(&IP2DEV(mwdev),"Fill level reached = %ld\n", transfer_queued);
                 mwadma_start(mwdev,mwchan);
-                spin_lock_bh(&mwchan->slock);
+                mwchan->status = running;
+                /*dev_info(&IP2DEV(mwdev),"Restart transmit\n");*/
+            }
+            /* There are no transfers in progress, and we need to re-prime thwe buffers completely */
+            else if(unlikely((status == waiting) && (transfer_queued >= tx_wm.prime))) /* restart/reprime */
+            {
+                mwchan->status = priming; /* Fill first two buffers */
+                mwadma_start(mwdev,mwchan);
                 dma_async_issue_pending(mwchan->chan);
-                mwchan->status = running; /*Data ready */
-                spin_unlock_bh(&mwchan->slock);
                 mwadma_start(mwdev,mwchan);
+                if (mwchan->status == priming)
+                {
+                    mwchan->status = running; /*Data ready */
+                }
+                else
+                {
+                    mwchan->status = waiting;
+                }
+                dev_dbg(&IP2DEV(mwdev),"Tx re-primed\n");
             }
             break;
         case MWADMA_TX_SINGLE:
-            
             if(copy_from_user(&userval, (unsigned long *)arg, sizeof(userval)))
             {
                 return -EACCES;
@@ -1021,7 +1111,6 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                 default:
                     mwchan->callback = (dma_async_tx_callback)mwadma_tx_cb_single_signal;
             }
-
             if((userval == SIGNAL_BURST_COMPLETE))
             {
 #ifndef COHERENT_MMAPPING
@@ -1030,12 +1119,18 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                     __cpuc_flush_dcache_area(&mwchan->buf[0], mwchan->length);
                     outer_flush_range(startaddr,endaddr);
 #endif
+                    mwchan->status = priming; /* Fill first two buffers */
                     mwadma_start(mwdev,mwchan);
-                    spin_lock_bh(&mwchan->slock);
                     dma_async_issue_pending(mwchan->chan);
-                    mwchan->status = running; /*Data ready */
-                    spin_unlock_bh(&mwchan->slock);
                     mwadma_start(mwdev,mwchan);
+                    if (mwchan->status == priming)
+                    {
+                        mwchan->status = running; /*Data ready */
+                    }
+                    else
+                    {
+                        mwchan->status = waiting;
+                    }
                     return 0;
             }
             spin_lock_bh(&mwchan->slock);
@@ -1083,12 +1178,19 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
                     __cpuc_flush_dcache_area(&mwchan->buf[0], mwchan->length);
                     outer_flush_range(startaddr,endaddr);
 #endif
+                    mwadma_fifo_reset_configure(mwchan, 0, 0);
+                    mwchan->status = priming; /* Fill first two buffers */
                     mwadma_start(mwdev,mwchan);
-                    spin_lock_bh(&mwchan->slock);
                     dma_async_issue_pending(mwchan->chan);
-                    mwchan->status = running; /*Data ready */
-                    spin_unlock_bh(&mwchan->slock);
                     mwadma_start(mwdev,mwchan);
+                    if (mwchan->status == priming)
+                    {
+                        mwchan->status = running; /*Data ready */
+                    }
+                    else
+                    {
+                        mwchan->status = waiting;
+                    }
                     return 0;
             }
 
@@ -1096,18 +1198,23 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             transfer_queued = mwchan->transfer_queued;
             spin_unlock_bh(&mwchan->slock);
 
+            mwadma_fifo_reset_configure(mwchan, 0, 0);
             if(transfer_queued >= tx_wm.prime) /* restart if required */
             {
                 dev_dbg(&IP2DEV(mwdev),"Starting from fill level = %ld\n",transfer_queued);
 
+                mwchan->status = priming; /* Fill first two buffers */
                 mwadma_start(mwdev,mwchan);
-                spin_lock_bh(&mwchan->slock);
                 dma_async_issue_pending(mwchan->chan);
-                mwchan->status = running; /*Data ready */
-                spin_unlock_bh(&mwchan->slock);
                 mwadma_start(mwdev,mwchan);
-
-
+                if (mwchan->status == priming)
+                {
+                    mwchan->status = running; /*Data ready */
+                }
+                else
+                {
+                    mwchan->status = waiting;
+                }
             }
             else
             {
@@ -1143,18 +1250,26 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
 
             }
 
+            mwadma_fifo_reset_configure(mwchan, 0, 0);
             spin_lock_bh(&mwchan->slock);
             mwchan->transfer_queued = 0; /* Reset pending transfers */
             mwchan->transfer_count  = 0;
             spin_unlock_bh(&mwchan->slock);
             break;
         case MWADMA_TX_GET_ERROR:
-            dev_dbg(&IP2DEV(mwdev), "Requested Tx error status = %d\n",mwchan->error);
+            /*dev_info(&IP2DEV(mwdev), "Requested Tx error status = %d\n",mwchan->error);*/
 
-            spin_lock_bh(&mwchan->slock);
             userval = mwchan->error; /* error code */
-            /*mwchan->error = 0;*/
-            spin_unlock_bh(&mwchan->slock);
+            mwchan->error = TX_ERROR_QPRIME; /* error code */
+            mwadma_fifo_poll_count(mwchan); /* read register from FIFO */
+            if(mwchan->uf_cnt)
+            {
+                dev_info(&IP2DEV(mwdev), "Tx hardware underflow, skipped samples = %d\n", mwchan->uf_cnt);
+                /* Reset the fifo core */
+                userval = TX_ERROR_QUNDERFLOW;
+                mwchan->uf_cnt = 0;
+                mwadma_fifo_reset_configure(mwchan, 0, 0);
+            }
 
             if(copy_to_user((unsigned long *) arg, &userval, sizeof(unsigned long)))
             {
@@ -1173,7 +1288,7 @@ static long mwadma_tx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             }
             break;            
         case MWADMA_FREE_TX_CHANNEL:
-            mwadma_free_channel(mwdev, mwchan);
+             mwadma_free_channel(mwdev, mwchan);
             break;
         default:
             return 1;
@@ -1290,6 +1405,7 @@ static void mwadma_free_channel(struct mwadma_dev *mwdev, struct mwadma_chan *mw
     unsigned long flags;
     mwadma_stop(mwdev, mwchan);
     spin_lock_irqsave(&mwchan->slock, flags);
+    /*dma_release_channel(mwchan->chan);*/
     list_for_each_entry_safe(slist, _slist, &mwchan->scatter->list, list) {
         mwadma_unmap_desc(mwdev, mwchan, slist);
         sg_free_table(slist->sg_t);
@@ -1735,6 +1851,92 @@ static int mwadma_channel_probe(struct mwadma_dev *mwdev)
     }   
     return 0;
 }
+
+static irqreturn_t fifoirq_handler(int irq, void *data)
+{
+    struct mwadma_chan *mwchan = data;
+    iowrite32(0x0, mwchan->registers + wr_ISRE_Data_fifo_irq_ctrl_pcore);
+    iowrite32(0x3, mwchan->registers + wr_ISR_Data_fifo_irq_ctrl_pcore); /* disable pending interrupts */
+    return IRQ_HANDLED;
+}
+
+static int mwadma_fifo_reset_configure(struct mwadma_chan *mwchan, int overflow_en, int underflow_en)
+{
+    int isre = ((overflow_en << 1) | underflow_en) & 0x3; /* only two bits required here */
+    if(!mwchan->registers)
+    {
+        return -EINVAL;
+    }
+    pr_info("Resetting fifo core\n");
+    /* Reset core */
+    iowrite32(0x3, mwchan->registers + wr_CTRL_Data_fifo_irq_ctrl_pcore);
+    /* control set up */
+    iowrite32(isre, mwchan->registers + wr_ISRE_Data_fifo_irq_ctrl_pcore);
+
+    return 0;
+}
+static int mwadma_fifo_poll_count(struct mwadma_chan *mwchan)
+{
+    if(!mwchan->registers)
+    {
+        return -EINVAL;
+    }
+    mwchan->of_cnt = ioread32(mwchan->registers + rd_OFCNT_Data_fifo_irq_ctrl_pcore);
+    mwchan->uf_cnt = ioread32(mwchan->registers + rd_UFCNT_Data_fifo_irq_ctrl_pcore);
+    return 0;
+}
+static int mwadma_fifo_probe(struct mwadma_dev *mwdev, struct mwadma_chan *mwchan)
+{
+    int err = 0;
+    switch(mwchan->direction)
+    {
+        case DMA_DEV_TO_MEM: /* Rx */
+            mwchan->fifodev = of_find_compatible_node(NULL, NULL, "mathworks,axi-fifoirqctrl-rx");
+            dev_info(&IP2DEV(mwdev), "Probing Rx HW FIFO\n");
+            break;
+        case DMA_MEM_TO_DEV: /* Tx */
+            mwchan->fifodev = of_find_compatible_node(NULL, NULL, "mathworks,axi-fifoirqctrl-tx");
+            dev_info(&IP2DEV(mwdev), "Probing Tx HW FIFO\n");
+            break;
+        default:
+            return -EINVAL;
+            /* Error */
+    }
+
+    /* Probe for hw fifo */
+    if(mwchan->fifodev) /* Exists */
+    {
+        /* Set up core */
+
+        if(of_address_to_resource(mwchan->fifodev, 0, &mwchan->res))
+        {
+            return -EINVAL;
+        }
+
+        if(!request_mem_region(mwchan->res.start, resource_size(&mwchan->res),"mathworks-fifo"))
+        {
+            return -EBUSY;
+        }
+        mwchan->registers = ioremap(mwchan->res.start, resource_size(&mwchan->res));
+        if(!mwchan->registers)
+        {
+            release_mem_region(mwchan->res.start, resource_size(&mwchan->res));
+            return -ENOMEM;
+        }
+        /* Set core into default state with no interrupts enabled*/
+        mwadma_fifo_reset_configure(mwchan, 0, 0);
+        /* Probe the interrupt number and register */
+        mwchan->fifoirq = irq_of_parse_and_map(mwchan->fifodev, 0);
+        err = request_irq(mwchan->fifoirq, fifoirq_handler, IRQF_SHARED,
+                    "mathworks-fifo", mwchan);
+        if (err) {
+            dev_err(&IP2DEV(mwdev), "Unable to request FIFO IRQ\n");
+            irq_dispose_mapping(mwchan->fifoirq);
+        }
+    }
+    dev_info(&IP2DEV(mwdev), "HW FIFO Registered\n");
+    return 0;
+}
 /*
  * @brief mwadma_of_probe
  */
@@ -1832,6 +2034,9 @@ static int mwadma_of_probe(struct platform_device *op)
         dev_err(&op->dev, "Error creating the sysfs devices\n");
         goto dev_add_err;
     }
+
+    mwadma_fifo_probe(mwdev, mwdev->rx);
+    mwadma_fifo_probe(mwdev, mwdev->tx);
     return status;
     
 dev_add_err:

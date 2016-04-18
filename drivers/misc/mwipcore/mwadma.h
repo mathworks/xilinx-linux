@@ -47,6 +47,20 @@
 #define SAMPLE_COUNTER_VAL_RD_REG 0x108
 #define SAMPLE_COUNTER_RESET_RD_REG 0x10C
 
+
+
+#define  IPCore_Reset_fifo_irq_ctrl_pcore           0x0  //write 0x1 to bit 0 to reset IP core
+#define  IPCore_Enable_fifo_irq_ctrl_pcore          0x4  //enabled (by default) when bit 0 is 0x1
+#define  wr_CTRL_Data_fifo_irq_ctrl_pcore           0x100  //data register for port wr_CTRL
+#define  rd_STATUS_Data_fifo_irq_ctrl_pcore         0x104  //data register for port rd_STATUS
+#define  wr_ISR_Data_fifo_irq_ctrl_pcore            0x108  //data register for port wr_ISR
+#define  rd_ISR_Data_fifo_irq_ctrl_pcore            0x10C  //data register for port rd_ISR
+#define  wr_ISRE_Data_fifo_irq_ctrl_pcore           0x110  //data register for port wr_ISRE
+#define  rd_ISRE_Data_fifo_irq_ctrl_pcore           0x114  //data register for port rd_ISRE
+#define  rd_OFCNT_Data_fifo_irq_ctrl_pcore          0x118  //data register for port rd_OFCNT
+#define  rd_UFCNT_Data_fifo_irq_ctrl_pcore          0x11C  //data register for port rd_UFCNT
+#define  rd_FIFO_OCC_CNT_Data_fifo_irq_ctrl_pcore   0x120  //data register for port rd_FIFO_OCC_CNT
+
 enum DESCRIPTOR_STATUS {
     BD_UNALLOC = -1,
     BD_ALLOC = 0,
@@ -64,7 +78,7 @@ enum mwadma_chan_status {
     ready = 0x0, /* default state on init and reset */
     running = 0x1,
     waiting = 0x2, /* waiting on data for tx */
-    flushable = 0x3, /* final transfer can be flushed, assumes running */
+    priming = 0x3, /* we need to prime the rings for continuous transfers */
     finishing = 0x4 /* FIXME : Dirty hack to let us know that a last transfer is taking place when restarting transmit*/
 };
 
@@ -109,12 +123,20 @@ struct mwadma_chan {
     unsigned int                error;
     ktime_t                     start;
     ktime_t                     stop;
+    /* Ring paramters */
     int                         ring_total;
     unsigned int                ring_bytes;
     unsigned int                bd_bytes;
     unsigned int                sg_entries;
     unsigned int                buffer_interrupts;
     unsigned int                samples_per_interrupt;
+    /* HW FIFO */
+    struct device_node          *fifodev;
+    void __iomem                *registers;
+    struct resource             res;
+    int                         fifoirq;
+    int                         of_cnt;
+    int                         uf_cnt;
 };
 
 struct mwadma_dev {

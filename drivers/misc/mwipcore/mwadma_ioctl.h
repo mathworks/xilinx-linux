@@ -1,9 +1,9 @@
-/* Copyright 2013-2014 The MathWorks, Inc. */
+/* Copyright 2013-2016 The MathWorks, Inc. */
 #ifndef _MWADMA_IOCTL_H_
 #define _MWADMA_IOCTL_H_
 
 #define DRIVER_NAME "mwipcore"
-#define MAX_DMASIZE 1024*1024*32*2 /* 32 MB per channel */
+#define MAX_DMASIZE 1024*1024*64*2 /* 64 MB per channel */
 
 struct mw_axidma_params {
     char           *virt;
@@ -35,12 +35,12 @@ enum TX_QUEUE_ERROR {
 };
 
 struct mwadma_tx_watermarks {
-    size_t underflow;
-    size_t low;
-    size_t prime;
-    size_t full;
-    size_t overflow;
-    size_t max;
+    ssize_t underflow;
+    ssize_t low;
+    ssize_t prime;
+    ssize_t full;
+    ssize_t overflow;
+    ssize_t max;
 };
 
 #define MWADMA_MAGIC 'Q'
