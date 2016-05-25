@@ -1288,9 +1288,6 @@ static void xilinx_dma_chan_remove(struct xilinx_dma_chan *chan)
 	chan->ctrl_reg &= ~XILINX_DMA_XR_IRQ_ALL_MASK;
 	dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
 
-	if (chan->irq > 0)
-		free_irq(chan->irq, chan);
-
 	tasklet_kill(&chan->tasklet);
 
 	list_del(&chan->common.device_node);
@@ -1351,6 +1348,12 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 
 	width = value >> 3; /* Convert bits to bytes */
 
+	/* find the IRQ line, if it exists in the device tree */
+	chan->irq = of_irq_get(node, 0);
+	if (chan->irq < 0){
+		return chan->irq;
+	}
+
 	/* If data width is greater than 8 bytes, DRE is not in hw */
 	if (width > 8)
 		has_dre = false;
@@ -1386,9 +1389,8 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 
 	chan->common.device = &xdev->common;
 
-	/* find the IRQ line, if it exists in the device tree */
-	chan->irq = irq_of_parse_and_map(node, 0);
-	err = request_irq(chan->irq, xilinx_dma_irq_handler,
+	/* Request the IRQ line */
+	err = devm_request_irq(chan->dev, chan->irq, xilinx_dma_irq_handler,
 			  IRQF_SHARED,
 			  "xilinx-dma-controller", chan);
 	if (err) {
@@ -1430,9 +1432,11 @@ static int xilinx_dma_channel_probe(struct xilinx_dma_device *xdev,
 
 	xdev->nr_channels += nr_channels;
 
-	for (i = 0; i < nr_channels; i++)
-		xilinx_dma_chan_probe(xdev, node, xdev->chan_id++);
-
+	for (i = 0; i < nr_channels; i++) {
+		ret = xilinx_dma_chan_probe(xdev, node, xdev->chan_id++);
+		if(ret)
+			return ret;
+	}
 	return 0;
 }
 
