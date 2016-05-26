@@ -2362,7 +2362,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 {
 	struct xilinx_dma_chan *chan;
 	bool has_dre = false;
-	u32 value, width;
+	u32 value, chan_addr, width;
 	int err;
 
 	/* Allocate and initialize the channel structure */
@@ -2405,6 +2405,22 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	chan->irq = of_irq_get(node, 0);
 	if (chan->irq < 0)
 		return chan->irq;
+
+	err = of_property_read_u32(node, "reg", &chan_addr);
+	if (!err) {
+		/* Allow the DT to specify the channel indexing */
+		if (chan_addr >= XILINX_DMA_MAX_CHANS_PER_DEVICE) {
+			dev_err(xdev->dev, "Invalid address for channel %s: %d\n",
+					node->name, chan_addr);
+			return -EINVAL;
+		}
+		if (xdev->chan[chan_addr] != NULL) {
+			dev_err(xdev->dev, "Duplicate address for channel %s: %d\n",
+					node->name, chan_addr);
+			return -EINVAL;
+		}
+		chan_id = chan_addr;
+	}
 
 	/* If data width is greater than 8 bytes, DRE is not in hw */
 	if (width > 8)
