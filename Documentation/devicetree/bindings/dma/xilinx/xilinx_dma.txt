@@ -61,6 +61,8 @@ Required child node properties:
 	{32,64...1024}.
 
 Optional child node properties:
+- reg: Channel index; overrides probe order to ensure deterministic
+    channel numbering.
 - xlnx,include-dre: Tells hardware is configured for Data
 	Realignment Engine.
 Optional child node properties for VDMA:
