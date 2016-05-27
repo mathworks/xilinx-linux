@@ -65,6 +65,7 @@ Optional child node properties:
     channel numbering.
 - xlnx,include-dre: Tells hardware is configured for Data
 	Realignment Engine.
+- xlnx,no-coalesce: Do not coalesce interrupts.
 Optional child node properties for VDMA:
 - xlnx,genlock-mode: Tells Genlock synchronization is
 	enabled/disabled in hardware.
