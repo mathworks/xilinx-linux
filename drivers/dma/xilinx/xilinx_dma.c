@@ -162,6 +162,7 @@
 #define XILINX_DMA_CR_COALESCE_SHIFT	16
 #define XILINX_DMA_BD_SOP		BIT(27)
 #define XILINX_DMA_BD_EOP		BIT(26)
+#define XILINX_DMA_BD_CMPL      BIT(31)
 #define XILINX_DMA_COALESCE_MAX		255
 #define XILINX_DMA_NUM_DESCS		255
 #define XILINX_DMA_NUM_APP_WORDS	5
@@ -184,6 +185,9 @@
 
 /* AXI CDMA Specific Masks */
 #define XILINX_CDMA_CR_SGMODE          BIT(3)
+
+/* AXI DMA Descriptor Status Register */
+
 
 /**
  * struct xilinx_vdma_desc_hw - Hardware Descriptor
@@ -322,6 +326,7 @@ struct xilinx_dma_tx_descriptor {
  * @has_sg: Support scatter transfers
  * @cyclic: Check for cyclic transfers.
  * @genlock: Support genlock mode
+ * @no_coalesce: Do not coalesce interrupts
  * @err: Channel has errors
  * @idle: Check for channel idle
  * @has_fstoreen: Check for frame store configuration
@@ -357,6 +362,7 @@ struct xilinx_dma_chan {
 	bool has_sg;
 	bool cyclic;
 	bool genlock;
+	bool no_coalesce;
 	bool err;
 	bool idle;
 	bool has_fstoreen;
@@ -1207,7 +1213,8 @@ static void xilinx_cdma_start_transfer(struct xilinx_dma_chan *chan)
 	tail_segment = list_last_entry(&tail_desc->segments,
 				       struct xilinx_cdma_tx_segment, node);
 
-	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX) {
+	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX &&
+			!chan->no_coalesce) {
 		ctrl_reg &= ~XILINX_DMA_CR_COALESCE_MAX;
 		ctrl_reg |= chan->desc_pendingcount <<
 				XILINX_DMA_CR_COALESCE_SHIFT;
@@ -1273,7 +1280,8 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 
 	reg = dma_ctrl_read(chan, XILINX_DMA_REG_DMACR);
 
-	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX) {
+	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX &&
+			!chan->no_coalesce) {
 		reg &= ~XILINX_DMA_CR_COALESCE_MAX;
 		reg |= chan->desc_pendingcount <<
 				  XILINX_DMA_CR_COALESCE_SHIFT;
@@ -1371,12 +1379,21 @@ static void xilinx_dma_issue_pending(struct dma_chan *dchan)
 static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 {
 	struct xilinx_dma_tx_descriptor *desc, *next;
+	struct xilinx_axidma_tx_segment *segment;
 
 	/* This function was invoked with lock held */
 	if (list_empty(&chan->active_list))
 		return;
 
 	list_for_each_entry_safe(desc, next, &chan->active_list, node) {
+		if (chan->no_coalesce) {
+			/* Level interrupt may effectively coalsece */
+			segment = list_last_entry(&desc->segments,
+					struct xilinx_axidma_tx_segment, node);
+			if (!(segment->hw.status & XILINX_DMA_BD_CMPL))
+				return;
+		}
+
 		list_del(&desc->node);
 		if (!desc->cyclic)
 			dma_cookie_complete(&desc->async_tx);
@@ -1493,7 +1510,8 @@ static irqreturn_t xilinx_dma_irq_handler(int irq, void *data)
 	if (status & XILINX_DMA_DMASR_FRM_CNT_IRQ) {
 		spin_lock(&chan->lock);
 		xilinx_dma_complete_descriptor(chan);
-		chan->idle = true;
+		if (list_empty(&chan->active_list))
+			chan->idle = true;
 		chan->start_transfer(chan);
 		spin_unlock(&chan->lock);
 	}
@@ -2393,6 +2411,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 
 	chan->genlock = of_property_read_bool(node, "xlnx,genlock-mode");
 	chan->has_fstoreen = of_property_read_bool(node, "xlnx,fstore-enable");
+
+	/* The no interrupt coalesce param is optional*/
+	chan->no_coalesce = of_property_read_bool(node, "xlnx,no-coalesce");
 
 	err = of_property_read_u32(node, "xlnx,datawidth", &value);
 	if (err) {
