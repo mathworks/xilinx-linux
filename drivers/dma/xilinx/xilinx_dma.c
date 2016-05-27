@@ -201,6 +201,7 @@ struct xilinx_dma_chan {
 	bool mcdma;
 	int err;
 	bool idle;
+	bool no_coalesce;
 	struct tasklet_struct tasklet;
 	u32 residue;
 	u32 desc_pendingcount;
@@ -654,7 +655,7 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 	tail_segment = list_last_entry(&tail_desc->segments,
 				       struct xilinx_dma_tx_segment, node);
 
-	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX) {
+	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX && !chan->no_coalesce) {
 		chan->ctrl_reg &= ~XILINX_DMA_CR_COALESCE_MAX;
 		chan->ctrl_reg |= chan->desc_pendingcount <<
 				  XILINX_DMA_CR_COALESCE_SHIFT;
@@ -767,6 +768,8 @@ static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 		if (!desc->cyclic)
 			dma_cookie_complete(&desc->async_tx);
 		list_add_tail(&desc->node, &chan->done_list);
+		if (chan->no_coalesce)
+			return; /* one interrupt per desc */
 	}
 }
 
@@ -1353,6 +1356,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	if (chan->irq < 0){
 		return chan->irq;
 	}
+
+	/* check the optional parameter for no interrupt coalesce */
+	chan->no_coalesce = of_property_read_bool(node, "xlnx,no-coalesce");
 
 	err = of_property_read_u32(node, "reg", &chan_addr);
 	if(!err) {
