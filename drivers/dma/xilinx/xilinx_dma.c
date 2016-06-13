@@ -202,6 +202,7 @@ struct xilinx_dma_chan {
 	int err;
 	bool idle;
 	bool no_coalesce;
+	bool force_halt;
 	struct tasklet_struct tasklet;
 	u32 residue;
 	u32 desc_pendingcount;
@@ -225,6 +226,9 @@ struct xilinx_dma_device {
 	u32 nr_channels;
 	u32 chan_id;
 };
+
+/* Forward Declarations */
+static int xilinx_dma_chan_reset(struct xilinx_dma_chan *chan);
 
 /* Macros */
 #define to_xilinx_chan(chan) \
@@ -588,15 +592,29 @@ static enum dma_status xilinx_dma_tx_status(struct dma_chan *dchan,
 static void xilinx_dma_halt(struct xilinx_dma_chan *chan)
 {
 	int err = 0;
+	int retry_halt = 0;
 	u32 val;
 
-	chan->ctrl_reg &= ~XILINX_DMA_CR_RUNSTOP_MASK;
-	dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
+	do {
+		chan->ctrl_reg &= ~XILINX_DMA_CR_RUNSTOP_MASK;
+		dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
 
-	/* Wait for the hardware to halt */
-	err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_STATUS, val,
-				      (val & XILINX_DMA_SR_HALTED_MASK), 10,
-				      XILINX_DMA_LOOP_COUNT);
+		/* Wait for the hardware to halt */
+		err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_STATUS, val,
+						  (val & XILINX_DMA_SR_HALTED_MASK), 10,
+						  XILINX_DMA_LOOP_COUNT);
+
+		if(err && chan->force_halt && !retry_halt){
+			/* reset the entire controller */
+			xilinx_dma_chan_reset(chan);
+			retry_halt = 1;
+			dev_dbg(chan->dev, "Failed to halt channel %p, resetting\n", chan);
+		} else {
+			/* do not retry more than once */
+			retry_halt = 0;
+		}
+
+	} while(retry_halt);
 
 	if (err) {
 		dev_err(chan->dev, "Cannot stop channel %p: %x\n",
@@ -801,6 +819,7 @@ static int xilinx_dma_chan_reset(struct xilinx_dma_chan *chan)
 	}
 
 	chan->err = false;
+	chan->idle = true;
 
 	return err;
 }
@@ -1359,6 +1378,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 
 	/* check the optional parameter for no interrupt coalesce */
 	chan->no_coalesce = of_property_read_bool(node, "xlnx,no-coalesce");
+
+	/* check the optional parameter to force-halt the channel */
+	chan->force_halt = of_property_read_bool(node, "xlnx,force-halt");
 
 	err = of_property_read_u32(node, "reg", &chan_addr);
 	if(!err) {
