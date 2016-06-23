@@ -1,3 +1,7 @@
+/*
+ * Copyright 2013-2016, MathWorks, Inc.
+ *
+ */
 #ifndef _MWADMA_H_
 #define _MWADMA_H_
 
@@ -84,7 +88,7 @@ struct mwadma_chan {
     spinlock_t                  slock;
     struct mutex                lock;
     struct dma_chan             *chan;
-    int	                        chan_id;
+    int                         chan_id;
     size_t                      offset;
     enum dma_ctrl_flags         flags;
     enum dma_transfer_direction direction;
@@ -108,6 +112,7 @@ struct mwadma_chan {
     unsigned int                bd_bytes;
     unsigned int                sg_entries;
     unsigned int                buffer_interrupts;
+    struct kernfs_node          *dmanode;
 };
 
 struct mwadma_dev {
