@@ -30,13 +30,12 @@
 #include <linux/smp.h>
 #include <linux/irqchip/arm-gic.h>
 #include <asm/outercache.h>
-#include <asm/cacheflush.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
 
 #include "remoteproc_internal.h"
 
-extern int __cpuinit zynq_cpun_start(u32 address, int cpu);
+extern int zynq_cpun_start(u32 address, int cpu);
 
 /* Module parameter */
 static char *firmware;
@@ -65,9 +64,6 @@ static void handle_event(struct work_struct *work)
 {
 	struct zynq_rproc_pdata *local = platform_get_drvdata(remoteprocdev);
 
-	flush_cache_all();
-	outer_flush_range(local->mem_start, local->mem_end);
-
 	if (rproc_vq_interrupt(local->rproc, 0) == IRQ_NONE)
 		dev_dbg(&remoteprocdev->dev, "no message found in vqid 0\n");
 }
@@ -82,15 +78,13 @@ static int zynq_rproc_start(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct zynq_rproc_pdata *local = platform_get_drvdata(pdev);
 	int ret;
 
 	dev_dbg(dev, "%s\n", __func__);
 	INIT_WORK(&workqueue, handle_event);
 
-	flush_cache_all();
-	outer_flush_range(local->mem_start, local->mem_end);
 
+	mb();
 	remoteprocdev = pdev;
 	ret = zynq_cpun_start(rproc->bootaddr, 1);
 

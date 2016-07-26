@@ -49,7 +49,7 @@
 	clocks = <&clk_bus_0>;
 
 	dma-channel {
-		adi,buswidth = <64>;
+		adi,buswidth = <512>;
 		adi,type = <0>;
 	};
 };
@@ -59,7 +59,7 @@
 	clocks = <&clk_bus_0>;
 
 	dma-channel {
-		adi,buswidth = <64>;
+		adi,buswidth = <512>;
 		adi,type = <0>;
 	};
 };
@@ -73,6 +73,7 @@
 	adi,rx-sys-clk-select = <0>;
 	adi,rx-out-clk-select = <2>;
 	adi,use-cpll-enable;
+	adi,lanes = <0x4>;
 };
 
 &axi_ad9250_jesd {

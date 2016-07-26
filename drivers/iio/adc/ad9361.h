@@ -2785,7 +2785,14 @@
 #define MAX_BBPLL_DIV			64
 #define MIN_BBPLL_DIV			2
 
-#define MIN_ADC_CLK			(MIN_BBPLL_FREQ / MAX_BBPLL_DIV) /* 11.17MHz */
+/*
+ * The ADC minimum and maximum operating output data rates
+ * are 25MHz and 640MHz respectively.
+ * For more information see here: https://ez.analog.com/docs/DOC-12763
+ */
+
+#define MIN_ADC_CLK			25000000UL /* 25 MHz */
+//#define MIN_ADC_CLK			(MIN_BBPLL_FREQ / MAX_BBPLL_DIV) /* 11.17MHz */
 #define MAX_ADC_CLK			640000000UL /* 640 MHz */
 #define MAX_DAC_CLK			(MAX_ADC_CLK / 2)
 
@@ -3020,6 +3027,8 @@ struct auxadc_control {
 };
 
 struct gpo_control {
+	u32 gpo_manual_mode_enable_mask;
+	bool gpo_manual_mode_en;
 	bool gpo0_inactive_state_high_en;
 	bool gpo1_inactive_state_high_en;
 	bool gpo2_inactive_state_high_en;
@@ -3095,7 +3104,6 @@ struct ad9361_phy_platform_data {
 	bool			ensm_pin_pulse_mode;
 	bool			ensm_pin_ctrl;
 	bool			debug_mode;
-	bool			tdd_use_fdd_tables;
 	bool			tdd_use_dual_synth;
 	bool			tdd_skip_vco_cal;
 	bool			use_ext_rx_lo;
@@ -3297,7 +3305,7 @@ struct ad9361_rf_phy {
 	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[175];
+	struct ad9361_debugfs_entry debugfs_entry[177];
 	struct bin_attribute 	bin;
 	struct iio_dev 		*indio_dev;
 	struct work_struct 	work;
@@ -3315,6 +3323,10 @@ struct ad9361_rf_phy {
 	bool 			manual_tx_quad_cal_en;
 	u64			last_tx_quad_cal_freq;
 	u32			last_tx_quad_cal_phase;
+	u64			current_tx_lo_freq;
+	u64			current_rx_lo_freq;
+	bool			current_tx_use_tdd_table;
+	bool			current_rx_use_tdd_table;
 	unsigned long		flags;
 	unsigned long		cal_threshold_freq;
 	u32			current_rx_bw_Hz;

@@ -315,7 +315,7 @@ static int ad7923_probe(struct spi_device *spi)
 		return ret;
 
 	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-			&ad7923_trigger_handler);
+			&ad7923_trigger_handler, NULL);
 	if (ret)
 		goto error_disable_reg;
 
@@ -357,7 +357,6 @@ MODULE_DEVICE_TABLE(spi, ad7923_id);
 static struct spi_driver ad7923_driver = {
 	.driver = {
 		.name	= "ad7923",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ad7923_probe,
 	.remove		= ad7923_remove,

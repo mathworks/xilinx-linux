@@ -24,6 +24,7 @@
 #define __DRM_EDID_H__
 
 #include <linux/types.h>
+#include <drm/drm_crtc.h>
 
 #define EDID_LENGTH 128
 #define DDC_ADDR 0x50
@@ -215,6 +216,8 @@ struct detailed_timing {
 #define DRM_ELD_VER			0
 # define DRM_ELD_VER_SHIFT		3
 # define DRM_ELD_VER_MASK		(0x1f << 3)
+# define DRM_ELD_VER_CEA861D		(2 << 3) /* supports 861D or below */
+# define DRM_ELD_VER_CANNED		(0x1f << 3)
 
 #define DRM_ELD_BASELINE_ELD_LEN	2	/* in dwords! */
 
@@ -324,9 +327,8 @@ void drm_edid_to_eld(struct drm_connector *connector, struct edid *edid);
 int drm_edid_to_sad(struct edid *edid, struct cea_sad **sads);
 int drm_edid_to_speaker_allocation(struct edid *edid, u8 **sadb);
 int drm_av_sync_delay(struct drm_connector *connector,
-		      struct drm_display_mode *mode);
-struct drm_connector *drm_select_eld(struct drm_encoder *encoder,
-				     struct drm_display_mode *mode);
+		      const struct drm_display_mode *mode);
+struct drm_connector *drm_select_eld(struct drm_encoder *encoder);
 int drm_load_edid_firmware(struct drm_connector *connector);
 
 int
@@ -343,6 +345,25 @@ drm_hdmi_vendor_infoframe_from_display_mode(struct hdmi_vendor_infoframe *frame,
 static inline int drm_eld_mnl(const uint8_t *eld)
 {
 	return (eld[DRM_ELD_CEA_EDID_VER_MNL] & DRM_ELD_MNL_MASK) >> DRM_ELD_MNL_SHIFT;
+}
+
+/**
+ * drm_eld_sad - Get ELD SAD structures.
+ * @eld: pointer to an eld memory structure with sad_count set
+ */
+static inline const uint8_t *drm_eld_sad(const uint8_t *eld)
+{
+	unsigned int ver, mnl;
+
+	ver = (eld[DRM_ELD_VER] & DRM_ELD_VER_MASK) >> DRM_ELD_VER_SHIFT;
+	if (ver != 2 && ver != 31)
+		return NULL;
+
+	mnl = drm_eld_mnl(eld);
+	if (mnl > 16)
+		return NULL;
+
+	return eld + DRM_ELD_CEA_SAD(mnl, 0);
 }
 
 /**
@@ -381,6 +402,21 @@ static inline int drm_eld_calc_baseline_block_size(const uint8_t *eld)
 static inline int drm_eld_size(const uint8_t *eld)
 {
 	return DRM_ELD_HEADER_BLOCK_SIZE + eld[DRM_ELD_BASELINE_ELD_LEN] * 4;
+}
+
+/**
+ * drm_connector_get_edid - Get current EDID from the given connector
+ * @connector: pointer to the connector stucture
+ *
+ * This is a helper for accessing the drm blob buffered in the connector
+ * struct (if any)
+ */
+static inline struct edid *drm_connector_get_edid(struct drm_connector *connector)
+{
+	if (!connector->edid_blob_ptr)
+		return NULL;
+
+	return (struct edid *)connector->edid_blob_ptr->data;
 }
 
 struct edid *drm_do_get_edid(struct drm_connector *connector,
