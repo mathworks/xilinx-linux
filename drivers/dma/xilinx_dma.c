@@ -773,8 +773,8 @@ static irqreturn_t dma_intr_handler(int irq, void *data)
 	DMA_OUT(&chan->regs->sr, XILINX_DMA_XR_IRQ_ALL_MASK);
 
 	if (stat & XILINX_DMA_XR_IRQ_ERROR_MASK) {
-		dev_err(chan->dev, "Channel %x has errors %x, cr %x, cdr %x tdr %x\n",
-		    (unsigned int)chan, (unsigned int)stat,
+		dev_err(chan->dev, "Channel %p has errors %x, cr %x, cdr %x tdr %x\n",
+		    chan, (unsigned int)stat,
 		    (unsigned int)DMA_IN(&chan->regs->cr),
 		    (unsigned int)DMA_IN(&chan->regs->cdr),
 		    (unsigned int)DMA_IN(&chan->regs->tdr));
@@ -1286,9 +1286,7 @@ static int xilinx_dma_slave_config(struct dma_chan *dchan,
 
 static void xilinx_dma_chan_remove(struct xilinx_dma_chan *chan)
 {
-	irq_dispose_mapping(chan->irq);
 	list_del(&chan->common.device_node);
-	kfree(chan);
 }
 
 /*
@@ -1305,11 +1303,16 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	int ret;
 
 	/* alloc channel */
-	chan = kzalloc(sizeof(*chan), GFP_KERNEL);
+	chan = devm_kzalloc(xdev->dev, sizeof(*chan), GFP_KERNEL);
 	if (!chan) {
 		dev_err(xdev->dev, "no free memory for DMA channels!\n");
-		ret = -ENOMEM;
-		goto out_return;
+		return -ENOMEM;
+	}
+
+	/* find the IRQ line, if it exists in the device tree */
+	chan->irq = of_irq_get(node, 0);
+	if (chan->irq < 0){
+		return chan->irq;
 	}
 
 	spin_lock_init(&chan->lock);
@@ -1358,7 +1361,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 			chan->direction = DMA_MEM_TO_DEV;
 			if (!chan->has_SG) {
 				chan->addr_regs = (struct vdma_addr_regs *)
-				    ((u32)xdev->regs +
+				    ((char *)xdev->regs +
 					 XILINX_VDMA_DIRECT_REG_OFFSET);
 			}
 		}
@@ -1368,7 +1371,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 			chan->direction = DMA_DEV_TO_MEM;
 			if (!chan->has_SG) {
 				chan->addr_regs = (struct vdma_addr_regs *)
-				    ((u32)xdev->regs +
+				    ((char *)xdev->regs +
 					XILINX_VDMA_DIRECT_REG_OFFSET +
 					XILINX_VDMA_CHAN_DIRECT_REG_SIZE);
 			}
@@ -1379,7 +1382,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		chan->regs = (struct xdma_regs *)xdev->regs;
 		chan->id = 0;
 	} else {
-		chan->regs = (struct xdma_regs *)((u32)xdev->regs +
+		chan->regs = (struct xdma_regs *)((char *)xdev->regs +
 					XILINX_DMA_RX_CHANNEL_OFFSET);
 		chan->id = 1;
 	}
@@ -1398,19 +1401,16 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		xdev->common.copy_align = ilog2(width);
 
 	chan->dev = xdev->dev;
-	xdev->chan[chan->id] = chan;
 
 	tasklet_init(&chan->tasklet, dma_do_tasklet, (unsigned long)chan);
 
 	chan->common.device = &xdev->common;
 
-	/* find the IRQ line, if it exists in the device tree */
-	chan->irq = irq_of_parse_and_map(node, 0);
-	ret = request_irq(chan->irq, dma_intr_handler, IRQF_SHARED,
+	ret = devm_request_irq(xdev->dev, chan->irq, dma_intr_handler, IRQF_SHARED,
 				"xilinx-dma-controller", chan);
 	if (ret) {
 		dev_err(xdev->dev, "unable to request IRQ %d\n", ret);
-		goto out_free_irq;
+		goto out_free_chan;
 	}
 
 	/* Add the channel to DMA device channel list */
@@ -1422,9 +1422,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		goto out_free_chan;
 	}
 
+	xdev->chan[chan->id] = chan;
 	return 0;
-out_free_irq:
-	irq_dispose_mapping(chan->irq);
+
 out_free_chan:
 	kfree(chan);
 out_return:

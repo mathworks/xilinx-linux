@@ -1,46 +1,22 @@
-#ifndef _MWADMA_H_
-#define _MWADMA_H_
+/*
+ * MathWorks Streaming Channel
+ *
+ * Copyright 2016 The MathWorks, Inc
+ *
+ * Licensed under the GPL-2.
+ */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/errno.h>
-#include <linux/init.h>
-#include <linux/io.h>
-#include <linux/wait.h>
-#include <linux/dma-mapping.h>
+#ifndef _MW_STREAM_CHANNEL_H_
+#define _MW_STREAM_CHANNEL_H_
+
 #include <linux/dmaengine.h>
-#include <linux/delay.h>
-#include <linux/debugfs.h>
-#include <linux/uaccess.h>
-#include <linux/sched.h>
-#include <linux/interrupt.h>
-#include <linux/clk.h>
-#include <linux/fs.h>
-#include <linux/slab.h>
-#include <linux/cdev.h>
-#include <linux/ktime.h>
-#include <linux/sysfs.h>
-/* Open firmware includes */
-#include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/dma-contiguous.h>
 #include <linux/dma/xilinx_dma.h>
+#include <linux/interrupt.h>
+#include <linux/errno.h>
+
+#include "mathworks_ipcore.h"
 #include "mwadma_ioctl.h"  /* IOCTL */
-
-#define DRIVER_NAME "mwipcore"
-#define MAX_DEVICES 4
-#define MAX_CHANNELS 8
-
-#ifdef _DEBUG
-#define MW_DBG_text(txt) printk(KERN_INFO DRIVER_NAME txt)
-#define MW_DBG_printf(txt,...) printk(KERN_INFO DRIVER_NAME txt,__VA_ARGS__)
-#else
-#define MW_DBG_printf(txt,...)
-#define MW_DBG_text(txt)
-#endif
 
 enum DESCRIPTOR_STATUS {
     BD_UNALLOC = -1,
@@ -62,9 +38,6 @@ enum mwadma_chan_status {
     flushable = 0x3 /* final transfer can be flushed, assumes running */
 };
 
-
-#define	IP2DEV(x)	(x->pdev->dev)
-
 struct mwadma_slist {
     struct list_head                list;
     char                            *buf;
@@ -72,15 +45,30 @@ struct mwadma_slist {
     dma_cookie_t                    cookie;
     struct sg_table                 *sg_t;
     int                             status;
-    /* i*ring_length for each ring gives you 
+    /* i*ring_length for each ring gives you
      * offset into large shared buffer */
-    unsigned int                    buffer_index; 
+    unsigned int                    buffer_index;
 };
 
-/* structure contains common parmaters for rx/tx. 
+/* structure contains common parmaters for rx/tx.
  * Not all params are sensible for both
  */
+
+struct mwadma_chan;
+
+struct mwadma_dev {
+    struct fasync_struct 	*asyncq;
+    struct mathworks_ipcore_dev *mw_ipcore_dev;
+    /* Transmit & Receive Channels */
+    struct mwadma_chan      *rx;
+    struct mwadma_chan      *tx;
+    unsigned int 			channel_offset;
+};
+
 struct mwadma_chan {
+    struct device				dev;
+    struct mwadma_dev 			*mwdev;
+    struct kernfs_node			*irq_kn;
     spinlock_t                  slock;
     struct mutex                lock;
     struct dma_chan             *chan;
@@ -110,22 +98,20 @@ struct mwadma_chan {
     unsigned int                buffer_interrupts;
 };
 
-struct mwadma_dev {
-    const char 		    	*name;
-    struct resource 	    *mem;
-    void __iomem 		    *regs;
-    struct platform_device 	*pdev;
-    struct cdev      		cdev;
-    dev_t 			        dev_id;
-    int 		        	irq;
-    struct fasync_struct 	*asyncq;
-    unsigned long           signal_rate;
-    dma_addr_t              phys;
-    char                    *virt;
-    size_t                  size;
-    /* Transmit & Receive Channels */
-    struct mwadma_chan      *rx;
-    struct mwadma_chan      *tx;
-};
 
+/*********************************************************
+* API functions
+*********************************************************/
+#if defined(CONFIG_MWIPCORE_DMA_STREAMING) || defined(CONFIG_MWIPCORE_DMA_STREAMING_MODULE)
+extern struct mathworks_ip_ops* mw_stream_channel_get_ops(void);
+extern int mw_stream_channels_probe(struct mathworks_ipcore_dev		*mw_ipcore_dev);
+#else
+static inline struct mathworks_ip_ops* mw_stream_channel_get_ops(void) {
+	return NULL;
+}
+static inline int mw_stream_channels_probe(struct mathworks_ipcore_dev	*mw_ipcore_dev) {
+	return -ENODEV;
+}
 #endif
+
+#endif /* _MW_STREAM_CHANNEL_H_ */
