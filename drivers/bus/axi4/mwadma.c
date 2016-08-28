@@ -2,6 +2,7 @@
  * Copyright 2013-2016, MathWorks, Inc.
  *
  */
+
 #include "mwadma.h"  /* IOCTL */
 #include <linux/version.h>
 #include <linux/dma/xilinx_dma.h>
@@ -100,10 +101,9 @@ static int mwadma_allocate_desc(struct mwadma_slist **new, struct mwadma_chan *m
 {
     struct scatterlist *this_sg;
     struct mwadma_slist * tmp;
-    void *sg_buff;
     int ret, i = 0;
     size_t ring_bytes;
- 
+    
     ring_bytes = mwchan->length/mwchan->ring_total;
     tmp = (struct mwadma_slist *)kmalloc(sizeof(struct mwadma_slist),GFP_KERNEL);
     tmp->status = BD_UNALLOC;
@@ -118,23 +118,26 @@ static int mwadma_allocate_desc(struct mwadma_slist **new, struct mwadma_chan *m
         sg_free_table(tmp->sg_t);
         return -ENOMEM;
     }
-    if (mwchan->buf == NULL) {
-        tmp->buf = (char*)__get_free_pages(GFP_KERNEL|__GFP_ZERO, get_order(ring_bytes));
-        pr_err("Channel buffer was null. This should never happen.\n");
-    }
-    else {
-        /* set buffer at offset from larger buffer */
-        tmp->buf = &mwchan->buf[this_idx * ring_bytes];
-        tmp->buffer_index = this_idx;
-    }
-    
+    /* set buffer at offset from larger buffer */
+    tmp->buf = &mwchan->buf[this_idx*ring_bytes];
+    tmp->buffer_index = this_idx;
+    sg_init_table(tmp->sg_t->sgl, mwchan->sg_entries);
     for_each_sg(tmp->sg_t->sgl, this_sg, mwchan->sg_entries, i)
     {
-        sg_buff = &(tmp->buf[(mwchan->bd_bytes)*i]);
-        if (ring_bytes > mwchan->bd_bytes) {
-            sg_set_buf(this_sg,sg_buff,mwchan->bd_bytes);
+        struct page *page;
+        void * vaddr;
+        vaddr = &(tmp->buf[(mwchan->bd_bytes)*i]);
+        if (!virt_addr_valid(vaddr)) {
+            page = vmalloc_to_page(vaddr);
+            pr_debug("Using vmalloc\n");
         } else {
-            sg_set_buf(this_sg,sg_buff,ring_bytes);
+            page = virt_to_page(vaddr);
+            pr_debug("Using virt_to_page\n");
+        }
+        if (ring_bytes > mwchan->bd_bytes) {
+            sg_set_page(this_sg,page,mwchan->bd_bytes,offset_in_page(vaddr));
+        } else {
+            sg_set_page(this_sg,page,ring_bytes,offset_in_page(vaddr));
         }
         ring_bytes -= mwchan->bd_bytes;
         if (ring_bytes < 0) {
@@ -151,8 +154,8 @@ static int mwadma_allocate_desc(struct mwadma_slist **new, struct mwadma_chan *m
  */
 static void mwadma_unmap_desc(struct mwadma_dev *mwdev, struct mwadma_chan *mwchan, struct mwadma_slist *input_slist)
 {
-    dma_unmap_sg(&IP2DEV(mwdev), input_slist->sg_t->sgl, mwchan->sg_entries, mwchan->direction);
-    input_slist->status = BD_UNALLOC;
+  dma_unmap_sg(&IP2DEV(mwdev), input_slist->sg_t->sgl, mwchan->sg_entries, mwchan->direction);
+  input_slist->status = BD_UNALLOC;
 }
 
 /*
@@ -387,6 +390,7 @@ int mwadma_start(struct mwadma_dev *mwdev, struct mwadma_chan *mwchan)
             goto start_failed;
         }
     }
+
     mwchan->curr->desc = dmaengine_prep_slave_sg(mwchan->chan, mwchan->curr->sg_t->sgl, mwchan->sg_entries, mwchan->direction, mwchan->flags);
     if (NULL == mwchan->curr->desc) {
         mwadma_unmap_desc(mwdev, mwchan, mwchan->curr);
@@ -981,12 +985,11 @@ static int mwadma_mmap(struct file *fp, struct vm_area_struct *vma)
 			break;
 		default:
                       /* mmap the DMA region */
-                     status = mw_axidma_alloc(mwdev, size);
-                     if ((status) && (status != -EEXIST))  {
-                         return -ENOMEM;
-                     }
+                    status = mw_axidma_alloc(mwdev, size);
+                    if ((status) && (status != -EEXIST))  {
+                        return -ENOMEM;
+                    }
                     dev_dbg(&IP2DEV(mwdev), "dma setup_cdev successful\n");
-
                     status = 0;
 			if (mwdev->virt == NULL){
                             return -EINVAL;
@@ -1025,14 +1028,11 @@ static int mw_axidma_alloc(struct mwadma_dev *mwdev, size_t bufferSize)
     mwdev->virt = dma_alloc_coherent(&IP2DEV(mwdev), bufferSize, \
             &mwdev->phys, \
             GFP_KERNEL);
-    if (mwdev->virt == NULL)
-    {
-        dev_err(&IP2DEV(mwdev), "Failed to allocate continguous memory\nUsing multiple buffers\n");
-    }
-    
-    else {
+    if (mwdev->virt == NULL) {
+        dev_err(&IP2DEV(mwdev), "Failed to allocate continguous memory\n");
+    } else {
         dev_info(&IP2DEV(mwdev), "Virtual address:0x%p, Physical address:0x%p, Length=%u bytes\n", \
-                mwdev->virt, (void *)virt_to_phys(mwdev->virt),bufferSize);
+                mwdev->virt, (void*)mwdev->phys, bufferSize);
         mwdev->size = bufferSize;
     }
     return 0;
