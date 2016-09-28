@@ -106,6 +106,12 @@
 	readl_poll_timeout(chan->xdev->regs + chan->ctrl_offset + reg, val, \
 			   cond, delay_us, timeout_us)
 
+enum xilinx_dma_halt_mode {
+	XILINX_DMA_HALT_MODE_NORMAL = 0x0,
+	XILINX_DMA_HALT_MODE_RETRY_FORCE,
+	XILINX_DMA_HALT_MODE_ALWAYS_FORCE,
+};
+
 /**
  * struct xilinx_dma_desc_hw - Hardware Descriptor
  * @next_desc: Next Descriptor Pointer @0x00
@@ -202,7 +208,7 @@ struct xilinx_dma_chan {
 	int err;
 	bool idle;
 	bool no_coalesce;
-	bool force_halt;
+	enum xilinx_dma_halt_mode halt_mode;
 	struct tasklet_struct tasklet;
 	u32 residue;
 	u32 desc_pendingcount;
@@ -597,6 +603,13 @@ static void xilinx_dma_halt(struct xilinx_dma_chan *chan)
 
 	do {
 		chan->ctrl_reg &= ~XILINX_DMA_CR_RUNSTOP_MASK;
+
+		if (!retry_halt &&
+				chan->halt_mode == XILINX_DMA_HALT_MODE_ALWAYS_FORCE){
+			/* Force the reset on the first attempt */
+			xilinx_dma_chan_reset(chan);
+			dev_dbg(chan->dev, "Forcing reset of channel %p\n", chan);
+		}
 		dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
 
 		/* Wait for the hardware to halt */
@@ -604,8 +617,10 @@ static void xilinx_dma_halt(struct xilinx_dma_chan *chan)
 						  (val & XILINX_DMA_SR_HALTED_MASK), 10,
 						  XILINX_DMA_LOOP_COUNT);
 
-		if(err && chan->force_halt && !retry_halt){
-			/* reset the entire controller */
+		if(err && !retry_halt &&
+					(chan->halt_mode == XILINX_DMA_HALT_MODE_RETRY_FORCE ||
+					chan->halt_mode == XILINX_DMA_HALT_MODE_ALWAYS_FORCE)){
+			/* Reset if the first attempt failed */
 			xilinx_dma_chan_reset(chan);
 			retry_halt = 1;
 			dev_dbg(chan->dev, "Failed to halt channel %p, resetting\n", chan);
@@ -1348,6 +1363,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	int err;
 	bool has_dre;
 	u32 value, chan_addr, width = 0;
+	int halt_mode;
 
 	/* alloc channel */
 	chan = devm_kzalloc(xdev->dev, sizeof(*chan), GFP_KERNEL);
@@ -1380,7 +1396,15 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	chan->no_coalesce = of_property_read_bool(node, "xlnx,no-coalesce");
 
 	/* check the optional parameter to force-halt the channel */
-	chan->force_halt = of_property_read_bool(node, "xlnx,force-halt");
+	chan->halt_mode = XILINX_DMA_HALT_MODE_NORMAL;
+	halt_mode = of_property_match_string(node, "xlnx,halt-mode", "retry-force");
+	if(halt_mode >= 0)
+		chan->halt_mode = XILINX_DMA_HALT_MODE_RETRY_FORCE;
+	halt_mode = of_property_match_string(node, "xlnx,halt-mode", "always-force");
+	if(halt_mode >= 0)
+		chan->halt_mode = XILINX_DMA_HALT_MODE_ALWAYS_FORCE;
+
+	dev_dbg(xdev->dev, "halt-mode: 0x%X\n", chan->halt_mode);
 
 	err = of_property_read_u32(node, "reg", &chan_addr);
 	if(!err) {
