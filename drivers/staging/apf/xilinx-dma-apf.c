@@ -48,9 +48,12 @@
 static DEFINE_MUTEX(dma_list_mutex);
 static LIST_HEAD(dma_device_list);
 /* IO accessors */
+#define DMA_OUT_64(addr, val)   (writeq(val, addr))
 #define DMA_OUT(addr, val)      (iowrite32(val, addr))
 #define DMA_IN(addr)            (ioread32(addr))
 
+#define GET_LOW(x) ((u32)((x) & 0xFFFFFFFF))
+#define GET_HI(x) ((u32)((x) / 0x100000000))
 
 static int unpin_user_pages(struct scatterlist *sglist, unsigned int cnt);
 /* Driver functions */
@@ -194,7 +197,7 @@ static void xilinx_chan_desc_cleanup(struct xdma_chan *chan)
 	spin_lock_irqsave(&chan->lock, flags);
 #define XDMA_BD_STS_RXEOF_MASK 0x04000000
 	desc = chan->bds[chan->bd_cur];
-	while ((desc->status & XDMA_BD_STS_ALL_MASK)) {
+	while (desc->status & XDMA_BD_STS_ALL_MASK) {
 		if ((desc->status & XDMA_BD_STS_RXEOF_MASK) &&
 		    !(desc->dmahead)) {
 			pr_info("ERROR: premature EOF on DMA\n");
@@ -352,8 +355,8 @@ static void xdma_start_transfer(struct xdma_chan *chan,
 				int start_index,
 				int end_index)
 {
-	dma_addr_t cur_phys;
-	dma_addr_t tail_phys;
+	xlnk_intptr_type cur_phys;
+	xlnk_intptr_type tail_phys;
 	u32 regval;
 
 	if (chan->err)
@@ -365,12 +368,19 @@ static void xdma_start_transfer(struct xdma_chan *chan,
 					sizeof(struct xdma_desc_hw));
 	/* If hardware is busy, move the tail & return */
 	if (dma_is_running(chan) || dma_is_idle(chan)) {
-		/* Update tail ptr register and start the transfer */
+#if XLNK_SYS_BIT_WIDTH == 32
 		DMA_OUT(&chan->regs->tdr, tail_phys);
+#else
+		DMA_OUT_64(&chan->regs->tdr, tail_phys);
+#endif
 		return;
 	}
 
+#if XLNK_SYS_BIT_WIDTH == 32
 	DMA_OUT(&chan->regs->cdr, cur_phys);
+#else
+	DMA_OUT_64(&chan->regs->cdr, cur_phys);
+#endif
 
 	dma_start(chan);
 
@@ -381,7 +391,11 @@ static void xdma_start_transfer(struct xdma_chan *chan,
 	DMA_OUT(&chan->regs->cr, regval);
 
 	/* Update tail ptr register and start the transfer */
+#if XLNK_SYS_BIT_WIDTH == 32
 	DMA_OUT(&chan->regs->tdr, tail_phys);
+#else
+	DMA_OUT_64(&chan->regs->tdr, tail_phys);
+#endif
 }
 
 static int xdma_setup_hw_desc(struct xdma_chan *chan,
@@ -401,9 +415,10 @@ static int xdma_setup_hw_desc(struct xdma_chan *chan,
 	int status;
 	unsigned long flags;
 	unsigned int bd_used_saved;
-
-	if (!chan)
+	if (!chan) {
+		pr_err("Requested transfer on invalid channel\n");
 		return -ENODEV;
+	}
 
 	/* if we almost run out of bd, try to recycle some */
 	if ((chan->poll_mode) && (chan->bd_used >= XDMA_BD_CLEANUP_THRESHOLD))
@@ -481,7 +496,7 @@ static int xdma_setup_hw_desc(struct xdma_chan *chan,
 		goto out_unlock;
 	}
 
-	bd->dmahead = (u32) dmahead;
+	bd->dmahead = (xlnk_intptr_type) dmahead;
 	bd->sw_flag = chan->poll_mode ? XDMA_BD_SF_POLL_MODE_MASK : 0;
 	dmahead->last_bd_index = end_index2;
 
@@ -493,7 +508,6 @@ static int xdma_setup_hw_desc(struct xdma_chan *chan,
 	xdma_start_transfer(chan, start_index, end_index2);
 
 	spin_unlock_irqrestore(&chan->lock, flags);
-
 	return 0;
 
 out_clean:
@@ -611,13 +625,14 @@ static unsigned int sgl_merge(struct scatterlist *sgl, unsigned int sgl_len,
 	return sg_merged_num;
 }
 
-static struct page *mapped_pages[XDMA_MAX_BD_CNT];
-static int pin_user_pages(unsigned long uaddr,
-			   unsigned int ulen,
-			   int write,
-			   struct scatterlist **scatterpp,
-			   unsigned int *cntp,
-			   unsigned int user_flags)
+static int mapped_pages_count;
+static struct page **mapped_pages;
+static int pin_user_pages(xlnk_intptr_type uaddr,
+			  unsigned int ulen,
+			  int write,
+			  struct scatterlist **scatterpp,
+			  unsigned int *cntp,
+			  unsigned int user_flags)
 {
 	int status;
 	struct mm_struct *mm = current->mm;
@@ -635,6 +650,16 @@ static int pin_user_pages(unsigned long uaddr,
 	first_page = uaddr / PAGE_SIZE;
 	last_page = (uaddr + ulen - 1) / PAGE_SIZE;
 	num_pages = last_page - first_page + 1;
+	if (mapped_pages_count < num_pages) {
+		if (mapped_pages)
+			vfree(mapped_pages);
+		mapped_pages_count = num_pages * 2;
+		mapped_pages = vmalloc(sizeof(*mapped_pages) *
+				       mapped_pages_count);
+		if (!mapped_pages)
+			return -ENOMEM;
+	}
+
 	down_read(&mm->mmap_sem);
 	status = get_user_pages(curr_task, mm, uaddr, num_pages, write, 1,
 				mapped_pages, NULL);
@@ -680,7 +705,7 @@ static int pin_user_pages(unsigned long uaddr,
 
 		return 0;
 	} else {
-
+		pr_err("Failed to pin user pages\n");
 		for (pgidx = 0; pgidx < status; pgidx++) {
 			page_cache_release(mapped_pages[pgidx]);
 		}
@@ -768,7 +793,8 @@ static void xdma_release(struct device *dev)
 }
 
 int xdma_submit(struct xdma_chan *chan,
-			void *userbuf,
+			xlnk_intptr_type userbuf,
+			void *kaddr,
 			unsigned int size,
 			unsigned int nappwords_i,
 			u32 *appwords_i,
@@ -782,9 +808,7 @@ int xdma_submit(struct xdma_chan *chan,
 	unsigned int sgcnt, sgcnt_dma;
 	enum dma_data_direction dmadir;
 	int status;
-	void *kaddr;
 	DEFINE_DMA_ATTRS(attrs);
-
 
 	dmahead = kzalloc(sizeof(struct xdma_head), GFP_KERNEL);
 	if (!dmahead)
@@ -797,7 +821,13 @@ int xdma_submit(struct xdma_chan *chan,
 	dmahead->userflag = user_flags;
 	dmadir = chan->direction;
 	if (dp) {
+
 		if (!dp->is_mapped) {
+			struct scatterlist *sg;
+			int cpy_size;
+			int i;
+			unsigned int remaining_size = size;
+
 			dp->dbuf_attach = dma_buf_attach(dp->dbuf, chan->dev);
 			dp->dbuf_sg_table = dma_buf_map_attachment(
 				dp->dbuf_attach, chan->direction);
@@ -807,15 +837,35 @@ int xdma_submit(struct xdma_chan *chan,
 					__func__, (int)dp->dbuf_sg_table);
 				return -EINVAL;
 			}
+			cpy_size = dp->dbuf_sg_table->nents *
+				sizeof(struct scatterlist);
+			dp->sg_list = kmalloc(cpy_size, GFP_KERNEL);
+			if (!dp->sg_list)
+				return -ENOMEM;
+			dp->sg_list_cnt = 0;
+			memcpy(dp->sg_list, dp->dbuf_sg_table->sgl, cpy_size);
+			for_each_sg(dp->sg_list,
+				    sg,
+				    dp->dbuf_sg_table->nents,
+				    i) {
+				if (remaining_size == 0) {
+					sg_dma_len(sg) = 0;
+				} else if (sg_dma_len(sg) > remaining_size) {
+					sg_dma_len(sg) = remaining_size;
+					dp->sg_list_cnt++;
+				} else {
+					remaining_size -= sg_dma_len(sg);
+					dp->sg_list_cnt++;
+				}
+			}
 			dp->is_mapped = 1;
 		}
 
-		sglist_dma = dp->dbuf_sg_table->sgl;
-		sglist = dp->dbuf_sg_table->sgl;
-		sgcnt = dp->dbuf_sg_table->nents;
-		sgcnt_dma = dp->dbuf_sg_table->nents;
-
-		dmahead->userbuf = (void *)dp->dbuf_sg_table->sgl->dma_address;
+		sglist_dma = dp->sg_list;
+		sglist = dp->sg_list;
+		sgcnt = dp->sg_list_cnt;
+		sgcnt_dma = dp->sg_list_cnt;
+		dmahead->userbuf = (xlnk_intptr_type)sglist->dma_address;
 		dmahead->is_dmabuf = 1;
 	} else if (user_flags & CF_FLAG_PHYSICALLY_CONTIGUOUS) {
 		/*
@@ -829,17 +879,25 @@ int xdma_submit(struct xdma_chan *chan,
 		sglist_dma = sglist;
 		sgcnt_dma = sgcnt;
 		if (user_flags & CF_FLAG_CACHE_FLUSH_INVALIDATE) {
-			__cpuc_flush_dcache_area(kaddr, size);
-			outer_clean_range((phys_addr_t)userbuf,
-					  (u32)userbuf + size);
-			if (dmadir == DMA_FROM_DEVICE) {
-				outer_inv_range((phys_addr_t)userbuf,
-						(u32)userbuf + size);
+			if (!kaddr) {
+				pr_err("Whoops, cannot flush without an address\n");
+				return -EINVAL;
 			}
+#if XLNK_SYS_BIT_WIDTH == 32
+			__cpuc_flush_dcache_area(kaddr, size);
+			outer_clean_range(userbuf,
+					  userbuf + size);
+			if (dmadir == DMA_FROM_DEVICE) {
+				outer_inv_range(userbuf,
+						userbuf + size);
+			}
+#else
+			__dma_map_area(kaddr, size, dmadir);
+#endif
 		}
 	} else {
 		/* pin user pages is monitored separately */
-		status = pin_user_pages((unsigned long)userbuf, size,
+		status = pin_user_pages(userbuf, size,
 					dmadir != DMA_TO_DEVICE,
 					&sglist, &sgcnt, user_flags);
 		if (status < 0) {
@@ -889,25 +947,33 @@ int xdma_submit(struct xdma_chan *chan,
 							 sgcnt, dmadir, &attrs);
 			unpin_user_pages(sglist, sgcnt);
 		}
-
 		return -ENOMEM;
 	}
 
 	*dmaheadpp = dmahead;
-
 	return 0;
 }
 EXPORT_SYMBOL(xdma_submit);
 
-int xdma_wait(struct xdma_head *dmahead, unsigned int user_flags)
+int xdma_wait(struct xdma_head *dmahead,
+	      unsigned int user_flags,
+	      unsigned int *operating_flags)
 {
 	struct xdma_chan *chan = dmahead->chan;
 	DEFINE_DMA_ATTRS(attrs);
-
-	if (chan->poll_mode)
+	if (chan->poll_mode) {
 		xilinx_chan_desc_cleanup(chan);
-	else
-		wait_for_completion(&dmahead->cmp);
+		*operating_flags |= XDMA_FLAGS_WAIT_COMPLETE;
+	} else {
+		if (*operating_flags & XDMA_FLAGS_TRYWAIT) {
+			if (!wait_for_completion_timeout(&dmahead->cmp, 1))
+				return 0;
+			*operating_flags |= XDMA_FLAGS_WAIT_COMPLETE;
+		} else {
+			wait_for_completion(&dmahead->cmp);
+			*operating_flags |= XDMA_FLAGS_WAIT_COMPLETE;
+		}
+	}
 
 	if (dmahead->is_dmabuf) {
 		dmahead->is_dmabuf = 0;
@@ -915,9 +981,11 @@ int xdma_wait(struct xdma_head *dmahead, unsigned int user_flags)
 		if (!(user_flags & CF_FLAG_CACHE_FLUSH_INVALIDATE))
 			dma_set_attr(DMA_ATTR_SKIP_CPU_SYNC, &attrs);
 
-		get_dma_ops(chan->dev)->unmap_sg(chan->dev, dmahead->sglist,
+		get_dma_ops(chan->dev)->unmap_sg(chan->dev,
+						 dmahead->sglist,
 						 dmahead->sgcnt,
-						 dmahead->dmadir, &attrs);
+						 dmahead->dmadir,
+						 &attrs);
 
 		unpin_user_pages(dmahead->sglist, dmahead->sgcnt);
 	}
@@ -977,7 +1045,11 @@ unsigned int xlate_irq(unsigned int hwirq)
 	irq_data.np = gic_node;
 	irq_data.args_count = 3;
 	irq_data.args[0] = 0;
+#if XLNK_SYS_BIT_WIDTH == 32
 	irq_data.args[1] = hwirq - 32; /* GIC SPI offset */
+#else
+	irq_data.args[1] = hwirq;
+#endif
 	irq_data.args[2] = IRQ_TYPE_LEVEL_HIGH;
 
 	irq = irq_create_of_mapping(&irq_data);
@@ -997,7 +1069,7 @@ static int xdma_probe(struct platform_device *pdev)
 	struct resource *res;
 	int err, i, j;
 	struct xdma_chan *chan;
-	struct dma_device_config *dma_config;
+	struct xdma_device_config *dma_config;
 	int dma_chan_dir;
 	int dma_chan_reg_offset;
 
@@ -1012,7 +1084,7 @@ static int xdma_probe(struct platform_device *pdev)
 	}
 	xdev->dev = &(pdev->dev);
 
-	dma_config = (struct dma_device_config *)xdev->dev->platform_data;
+	dma_config = (struct xdma_device_config *)xdev->dev->platform_data;
 	if (dma_config->channel_count < 1 || dma_config->channel_count > 2)
 		return -EFAULT;
 

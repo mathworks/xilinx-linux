@@ -23,6 +23,8 @@ ZRELADDR    := $(zreladdr-y)
 PARAMS_PHYS := $(params_phys-y)
 INITRD_PHYS := $(initrd_phys-y)
 
+DTC_FLAGS ?= -p 1024
+
 export ZRELADDR INITRD_PHYS PARAMS_PHYS
 
 targets := Image zImage xipImage bootpImage uImage
@@ -88,7 +90,7 @@ $(obj)/bootpImage: $(obj)/bootp/bootp FORCE
 	$(call if_changed,objcopy)
 	@$(kecho) '  Kernel: $@ is ready'
 
-PHONY += initrd FORCE
+PHONY += initrd
 initrd:
 	@test "$(INITRD_PHYS)" != "" || \
 	(echo This machine does not support INITRD; exit -1)
@@ -106,13 +108,5 @@ zinstall:
 uinstall:
 	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh "$(KERNELRELEASE)" \
 	$(obj)/uImage System.map "$(INSTALL_PATH)"
-
-zi:
-	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh "$(KERNELRELEASE)" \
-	$(obj)/zImage System.map "$(INSTALL_PATH)"
-
-i:
-	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh "$(KERNELRELEASE)" \
-	$(obj)/Image System.map "$(INSTALL_PATH)"
 
 subdir-	    := bootp compressed dts

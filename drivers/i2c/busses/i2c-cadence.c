@@ -135,7 +135,6 @@
  * @xfer_done:		Transfer complete status
  * @p_send_buf:		Pointer to transmit buffer
  * @p_recv_buf:		Pointer to receive buffer
- * @suspended:		Flag holding the device's PM status
  * @send_count:		Number of bytes still expected to send
  * @recv_count:		Number of bytes still expected to receive
  * @curr_recv_count:	Number of bytes to be received in current transfer
@@ -157,7 +156,6 @@ struct cdns_i2c {
 	struct completion xfer_done;
 	unsigned char *p_send_buf;
 	unsigned char *p_recv_buf;
-	u8 suspended;
 	unsigned int send_count;
 	unsigned int recv_count;
 	unsigned int curr_recv_count;
@@ -835,7 +833,7 @@ static int cdns_i2c_clk_notifier_cb(struct notifier_block *nb, unsigned long
 	struct clk_notifier_data *ndata = data;
 	struct cdns_i2c *id = to_cdns_i2c(nb);
 
-	if (id->suspended)
+	if (pm_runtime_suspended(id->dev))
 		return NOTIFY_OK;
 
 	switch (event) {
@@ -889,7 +887,6 @@ static int __maybe_unused cdns_i2c_runtime_suspend(struct device *dev)
 	struct cdns_i2c *xi2c = platform_get_drvdata(pdev);
 
 	clk_disable(xi2c->clk);
-	xi2c->suspended = 1;
 
 	return 0;
 }
@@ -934,8 +931,6 @@ static int __maybe_unused cdns_i2c_runtime_resume(struct device *dev)
 		return ret;
 	}
 	cdns_i2c_init(xi2c);
-
-	xi2c->suspended = 0;
 
 	return 0;
 }
@@ -1013,10 +1008,10 @@ static int cdns_i2c_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err(&pdev->dev, "Unable to enable clock.\n");
 
-	pm_runtime_enable(id->dev);
 	pm_runtime_set_autosuspend_delay(id->dev, CNDS_I2C_PM_TIMEOUT);
 	pm_runtime_use_autosuspend(id->dev);
 	pm_runtime_set_active(id->dev);
+	pm_runtime_enable(id->dev);
 
 	id->clk_rate_change_nb.notifier_call = cdns_i2c_clk_notifier_cb;
 	if (clk_notifier_register(id->clk, &id->clk_rate_change_nb))
@@ -1058,8 +1053,8 @@ static int cdns_i2c_probe(struct platform_device *pdev)
 
 err_clk_dis:
 	clk_disable_unprepare(id->clk);
-	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 	return ret;
 }
 
@@ -1074,6 +1069,10 @@ err_clk_dis:
 static int cdns_i2c_remove(struct platform_device *pdev)
 {
 	struct cdns_i2c *id = platform_get_drvdata(pdev);
+
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 
 	i2c_del_adapter(&id->adap);
 	clk_notifier_unregister(id->clk, &id->clk_rate_change_nb);

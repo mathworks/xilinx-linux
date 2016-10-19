@@ -549,13 +549,16 @@ static const struct iio_info axiadc_info = {
 static int axiadc_attach_spi_client(struct device *dev, void *data)
 {
 	struct axiadc_spidev *axiadc_spidev = data;
+	int ret = 0;
 
+	device_lock(dev);
 	if ((axiadc_spidev->of_nspi == dev->of_node) && dev->driver) {
 		axiadc_spidev->dev_spi = dev;
-		return 1;
+		ret = 1;
 	}
+	device_unlock(dev);
 
-	return 0;
+	return ret;
 }
 
 static const struct axiadc_core_info ad9467_core_1_00_a_info = {
@@ -594,6 +597,7 @@ static const struct of_device_id axiadc_of_match[] = {
 	{ .compatible = "adi,axi-ad9680-1.0", .data = &ad9680_6_00_a_info },
 	{ .compatible = "adi,axi-ad9625-1.0", .data = &ad9680_6_00_a_info },
 	{ .compatible = "adi,axi-ad6676-1.0", .data = &ad9680_6_00_a_info },
+	{ .compatible = "adi,axi-ad9684-1.0", .data = &ad9680_6_00_a_info },
 	{ /* end of list */ },
 };
 MODULE_DEVICE_TABLE(of, axiadc_of_match);
@@ -683,6 +687,12 @@ static int axiadc_probe(struct platform_device *pdev)
 	}
 
 	conv = to_converter(st->dev_spi);
+	if (IS_ERR(conv)) {
+		dev_err(&pdev->dev, "Failed to get converter device: %d\n",
+				(int)PTR_ERR(conv));
+		return PTR_ERR(conv);
+	}
+
 	iio_device_set_drvdata(indio_dev, conv);
 	conv->indio_dev = indio_dev;
 
@@ -701,6 +711,9 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	/* Reset all HDL Cores */
 	axiadc_write(st, ADI_REG_RSTN, 0);
+	mdelay(10);
+	axiadc_write(st, ADI_REG_RSTN, ADI_MMCM_RSTN);
+	mdelay(10);
 	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
 	st->pcore_version = axiadc_read(st, ADI_REG_VERSION);

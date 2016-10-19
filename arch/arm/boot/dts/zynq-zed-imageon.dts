@@ -11,10 +11,12 @@
 
 		axi_iic_imageon: i2c@43c40000 {
 			compatible = "xlnx,axi-iic-1.02.a", "xlnx,xps-iic-2.00.a";
+			reg = <0x43c40000 0x10000>;
 			interrupt-parent = <&intc>;
 			interrupts = <0 55 4>;
-			reg = <0x43c40000 0x10000>;
-			bus-id = <1>;
+			clocks = <&clkc 15>;
+			clock-names = "pclk";
+
 			#size-cells = <0>;
 			#address-cells = <1>;
 
@@ -47,6 +49,8 @@
 						adi,clock-delay = <0x03>;
 
 						pd-gpios = <&pca9534 4 0>;
+
+						#sound-dai-cells = <0>;
 
 						ports {
 							#address-cells = <1>;
@@ -160,12 +164,29 @@
 			dma-names = "tx";
 			clocks = <&clkc 15>, <&audio_clock>;
 			clock-names = "axi", "ref";
+
+			#sound-dai-cells = <0>;
 		};
 
-		adv7511_hdmi_snd: adv7511_hdmi_snd {
-			compatible = "adv7511-hdmi-snd";
-			audio-codec = <&adv7511>;
-			cpu-dai = <&axi_spdif_tx_0>;
+		adv7511_hdmi_snd {
+			compatible = "simple-audio-card";
+			simple-audio-card,name = "HDMI monitor";
+			simple-audio-card,widgets =
+				"Speaker", "Speaker";
+			simple-audio-card,routing =
+				"Speaker", "TMDS";
+
+			simple-audio-card,dai-link@0 {
+				format = "spdif";
+				cpu {
+					sound-dai = <&axi_spdif_tx_0>;
+					frame-master;
+					bitclock-master;
+				};
+				codec {
+					sound-dai = <&adv7511>;
+				};
+			};
 		};
 
 		axi_hdmi_rx_core: axi-hdmi-rx@43100000 {
