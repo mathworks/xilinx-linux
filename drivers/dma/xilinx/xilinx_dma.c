@@ -2465,6 +2465,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	list_add_tail(&chan->common.device_node, &xdev->common.channels);
 	xdev->chan[chan->id] = chan;
 
+	/* Add the DMA Direction to the common capabilities */
+	xdev->common.directions |= BIT(chan->direction);
+
 	/* Reset the channel */
 	err = xilinx_dma_chan_reset(chan);
 	if (err < 0) {
