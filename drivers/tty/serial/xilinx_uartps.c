@@ -242,7 +242,7 @@ static void cdns_uart_handle_rx(void *dev_id, unsigned int isrstatus)
 	struct uart_port *port = (struct uart_port *)dev_id;
 	struct cdns_uart *cdns_uart = port->private_data;
 	unsigned int data;
-	unsigned int rxbs_status;
+	unsigned int rxbs_status = 0;
 	unsigned int status_mask;
 	unsigned int framerrprocessed = 0;
 	char status = TTY_NORMAL;
@@ -726,6 +726,9 @@ static void cdns_uart_set_termios(struct uart_port *port,
 	ctrl_reg |= CDNS_UART_CR_TXRST | CDNS_UART_CR_RXRST;
 	cdns_uart_writel(ctrl_reg, CDNS_UART_CR_OFFSET);
 
+	while (readl(port->membase + CDNS_UART_CR_OFFSET) &
+		(CDNS_UART_CR_TXRST | CDNS_UART_CR_RXRST))
+		cpu_relax();
 	/*
 	 * Clear the RX disable and TX disable bits and then set the TX enable
 	 * bit and RX enable bit to enable the transmitter and receiver.
@@ -828,6 +831,10 @@ static int cdns_uart_startup(struct uart_port *port)
 	 */
 	cdns_uart_writel(CDNS_UART_CR_TXRST | CDNS_UART_CR_RXRST,
 				CDNS_UART_CR_OFFSET);
+
+	while (readl(port->membase + CDNS_UART_CR_OFFSET) &
+		(CDNS_UART_CR_TXRST | CDNS_UART_CR_RXRST))
+		cpu_relax();
 
 	status = cdns_uart_readl(CDNS_UART_CR_OFFSET);
 

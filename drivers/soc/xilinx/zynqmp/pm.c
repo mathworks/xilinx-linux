@@ -65,6 +65,9 @@ enum pm_api_id {
 	RESET_GET_STATUS,
 	MMIO_WRITE,
 	MMIO_READ,
+	PM_INIT,
+	FPGA_LOAD,
+	FPGA_GET_STATUS,
 };
 
 /* PMU-FW return status codes */
@@ -240,6 +243,7 @@ static int invoke_pm_fn(u32 pm_api_id, u32 arg0, u32 arg1, u32 arg2, u32 arg3,
 
 /* PM-APIs for suspending of APU */
 
+#ifdef CONFIG_ZYNQMP_PM_API_DEBUGFS
 /**
  * zynqmp_pm_self_suspend - PM call for master to suspend itself
  * @node:	Node ID of the master or subsystem
@@ -254,6 +258,35 @@ static int zynqmp_pm_self_suspend(const u32 node,
 {
 	return invoke_pm_fn(SELF_SUSPEND, node, latency, state, 0, NULL);
 }
+
+/**
+ * zynqmp_pm_abort_suspend - PM call to announce that a prior suspend request
+ *				is to be aborted.
+ * @reason:	Reason for the abort
+ *
+ * Return:	Returns status, either success or error+reason
+ */
+static int zynqmp_pm_abort_suspend(const enum zynqmp_pm_abort_reason reason)
+{
+	return invoke_pm_fn(ABORT_SUSPEND, reason, 0, 0, 0, NULL);
+}
+
+/**
+ * zynqmp_pm_register_notifier - Register the PU to be notified of PM events
+ * @node:	Node ID of the slave
+ * @event:	The event to be notified about
+ * @wake:	Wake up on event
+ * @enable:	Enable or disable the notifier
+ *
+ * Return:	Returns status, either success or error+reason
+ */
+static int zynqmp_pm_register_notifier(const u32 node, const u32 event,
+				       const u32 wake, const u32 enable)
+{
+	return invoke_pm_fn(REGISTER_NOTIFIER, node, event,
+						wake, enable, NULL);
+}
+#endif
 
 /**
  * zynqmp_pm_request_suspend - PM call to request for another PU or subsystem to
@@ -289,18 +322,6 @@ int zynqmp_pm_force_powerdown(const u32 target,
 	return invoke_pm_fn(FORCE_POWERDOWN, target, ack, 0, 0, NULL);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_force_powerdown);
-
-/**
- * zynqmp_pm_abort_suspend - PM call to announce that a prior suspend request
- *				is to be aborted.
- * @reason:	Reason for the abort
- *
- * Return:	Returns status, either success or error+reason
- */
-static int zynqmp_pm_abort_suspend(const enum zynqmp_pm_abort_reason reason)
-{
-	return invoke_pm_fn(ABORT_SUSPEND, reason, 0, 0, 0, NULL);
-}
 
 /**
  * zynqmp_pm_request_wakeup - PM call for to wake up selected master or subsystem
@@ -482,22 +503,6 @@ int zynqmp_pm_get_operating_characteristic(const u32 node,
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_get_operating_characteristic);
 
-/**
- * zynqmp_pm_register_notifier - Register the PU to be notified of PM events
- * @node:	Node ID of the slave
- * @event:	The event to be notified about
- * @wake:	Wake up on event
- * @enable:	Enable or disable the notifier
- *
- * Return:	Returns status, either success or error+reason
- */
-static int zynqmp_pm_register_notifier(const u32 node, const u32 event,
-				       const u32 wake, const u32 enable)
-{
-	return invoke_pm_fn(REGISTER_NOTIFIER, node, event,
-						wake, enable, NULL);
-}
-
 /* Direct-Control API functions */
 
 /**
@@ -578,6 +583,58 @@ int zynqmp_pm_mmio_read(const u32 address, u32 *value)
 	return zynqmp_pm_ret_code((enum pm_ret_status)ret_payload[0]);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_mmio_read);
+
+/**
+ * zynqmp_pm_fpga_load - Perform the fpga load
+ * @address:    Address to write to
+ * @size        pl bitstream size
+ * @flags:
+ *	BIT(0) - Bit-stream type.
+ *		 0 - Full Bit-stream.
+ *		 1 - Partial Bit-stream.
+ *	BIT(1) - Authentication.
+ *		 1 - Enable.
+ *		 0 - Disable.
+ *	BIT(2) - Encryption.
+ *		 1 - Enable.
+ *		 0 - Disable.
+ * NOTE -
+ *	The current implementation supports only Full Bit-stream.
+ *
+ * This function provides access to xilfpga library to transfer
+ * the required bitstream into PL.
+ *
+ * Return:      Returns status, either success or error+reason
+ */
+int zynqmp_pm_fpga_load(const u64 address, const u32 size, const u32 flags)
+{
+	return invoke_pm_fn(FPGA_LOAD, (u32)address,
+			((u32)(address >> 32)), size, flags, NULL);
+}
+EXPORT_SYMBOL_GPL(zynqmp_pm_fpga_load);
+
+/**
+ * zynqmp_pm_fpga_get_status - Read value from PCAP status register
+ * @value:      Value to read
+ *
+ *This function provides access to the xilfpga library to get
+ *the PCAP status
+ *
+ * Return:      Returns status, either success or error+reason
+ */
+int zynqmp_pm_fpga_get_status(u32 *value)
+{
+	u32 ret_payload[PAYLOAD_ARG_CNT];
+
+	if (!value)
+		return -EINVAL;
+
+	invoke_pm_fn(FPGA_GET_STATUS, 0, 0, 0, 0, ret_payload);
+	*value = ret_payload[1];
+
+	return zynqmp_pm_ret_code((enum pm_ret_status)ret_payload[0]);
+}
+EXPORT_SYMBOL_GPL(zynqmp_pm_fpga_get_status);
 
 #ifdef CONFIG_ZYNQMP_PM_API_DEBUGFS
 /**
@@ -906,28 +963,12 @@ static int zynqmp_pm_api_debugfs_init(void)
 	return err;
 }
 
-/**
- * zynqmp_pm_api_debugfs_remove - Remove debugfs functionality
- *
- * Return:	Returns 0
- */
-static int zynqmp_pm_api_debugfs_remove(void)
-{
-	debugfs_remove_recursive(zynqmp_pm_debugfs_dir);
-	zynqmp_pm_debugfs_dir = NULL;
-	return 0;
-}
-
 #else
 static int zynqmp_pm_api_debugfs_init(void)
 {
 	return 0;
 }
 
-static int zynqmp_pm_api_debugfs_remove(void)
-{
-	return 0;
-}
 #endif /* CONFIG_ZYNQMP_PM_API_DEBUGFS */
 
 static const struct of_device_id pm_of_match[] = {
@@ -980,9 +1021,39 @@ static void get_set_conduit_method(struct device_node *np)
  */
 static int zynqmp_pm_probe(struct platform_device *pdev)
 {
-	struct device_node *np;
 
-	np = pdev->dev.of_node;
+	/* Check PM API version number */
+	if (pm_api_version != ZYNQMP_PM_VERSION)
+		return -ENODEV;
+
+	pr_info("%s Power management API v%d.%d\n", __func__,
+		ZYNQMP_PM_VERSION_MAJOR, ZYNQMP_PM_VERSION_MINOR);
+
+	zynqmp_pm_api_debugfs_init();
+
+	return 0;
+}
+
+static struct platform_driver zynqmp_pm_platform_driver = {
+	.probe   = zynqmp_pm_probe,
+	.driver  = {
+			.name             = DRIVER_NAME,
+			.of_match_table   = pm_of_match,
+		   },
+};
+builtin_platform_driver(zynqmp_pm_platform_driver);
+
+static int __init zynqmp_plat_init(void)
+{
+	struct device_node *np;
+	int ret = 0;
+
+	np = of_find_compatible_node(NULL, NULL, "xlnx,zynqmp-pm");
+	if (!np) {
+		pr_err("%s: pm node not found\n", __func__);
+		ret = -ENXIO;
+		goto np_err;
+	}
 
 	get_set_conduit_method(np);
 
@@ -995,42 +1066,14 @@ static int zynqmp_pm_probe(struct platform_device *pdev)
 		       pm_api_version >> 16, pm_api_version & 0xffff);
 
 		do_fw_call = do_fw_call_fail;
-
-		return -EIO;
 	}
 
 	pr_info("%s Power management API v%d.%d\n", __func__,
 		ZYNQMP_PM_VERSION_MAJOR, ZYNQMP_PM_VERSION_MINOR);
 
-	zynqmp_pm_api_debugfs_init();
-
-	return 0;
+np_err:
+	of_node_put(np);
+	return ret;
 }
 
-/**
- * zynqmp_pm_remove - Remove debugfs interface
- *
- * @pdev:	Pointer to the platform_device structure
- *
- * Return:	Returns 0
- */
-static int zynqmp_pm_remove(struct platform_device *pdev)
-{
-	zynqmp_pm_api_debugfs_remove();
-
-	return 0;
-}
-
-static struct platform_driver zynqmp_pm_platform_driver = {
-	.probe   = zynqmp_pm_probe,
-	.remove  = zynqmp_pm_remove,
-	.driver  = {
-			.name             = DRIVER_NAME,
-			.of_match_table   = pm_of_match,
-		   },
-};
-
-module_platform_driver(zynqmp_pm_platform_driver);
-
-MODULE_DESCRIPTION("Xilinx Zynq MPSoC Power Management API platform driver.");
-MODULE_LICENSE("GPL");
+early_initcall(zynqmp_plat_init);

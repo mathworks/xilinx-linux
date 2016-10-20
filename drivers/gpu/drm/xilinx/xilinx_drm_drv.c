@@ -364,6 +364,14 @@ static int xilinx_drm_unload(struct drm_device *drm)
 	return 0;
 }
 
+int xilinx_drm_open(struct drm_device *dev, struct drm_file *file)
+{
+	if (drm_is_control_client(file))
+		file->universal_planes = 1;
+
+	return 0;
+}
+
 /* preclose */
 static void xilinx_drm_preclose(struct drm_device *drm, struct drm_file *file)
 {
@@ -402,6 +410,7 @@ static struct drm_driver xilinx_drm_driver = {
 					  DRIVER_PRIME,
 	.load				= xilinx_drm_load,
 	.unload				= xilinx_drm_unload,
+	.open				= xilinx_drm_open,
 	.preclose			= xilinx_drm_preclose,
 	.lastclose			= xilinx_drm_lastclose,
 	.set_busid			= drm_platform_set_busid,
@@ -434,7 +443,7 @@ static struct drm_driver xilinx_drm_driver = {
 	.minor				= DRIVER_MINOR,
 };
 
-#if defined(CONFIG_PM_SLEEP) || defined(CONFIG_PM_RUNTIME)
+#if defined(CONFIG_PM_SLEEP)
 /* suspend xilinx drm */
 static int xilinx_drm_pm_suspend(struct device *dev)
 {
@@ -483,7 +492,6 @@ static int xilinx_drm_pm_resume(struct device *dev)
 
 static const struct dev_pm_ops xilinx_drm_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(xilinx_drm_pm_suspend, xilinx_drm_pm_resume)
-	SET_RUNTIME_PM_OPS(xilinx_drm_pm_suspend, xilinx_drm_pm_resume, NULL)
 };
 
 /* init xilinx drm platform */

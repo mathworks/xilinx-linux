@@ -101,7 +101,8 @@
  * @msi_pages: MSI pages
  * @root_busno: Root Bus number
  * @dev: Device pointer
- * @irq_domain: IRQ domain pointer
+ * @msi_domain: MSI IRQ domain pointer
+ * @leg_domain: Legacy IRQ domain pointer
  * @resources: Bus Resources
  */
 struct xilinx_pcie_port {
@@ -110,7 +111,8 @@ struct xilinx_pcie_port {
 	unsigned long msi_pages;
 	u8 root_busno;
 	struct device *dev;
-	struct irq_domain *irq_domain;
+	struct irq_domain *msi_domain;
+	struct irq_domain *leg_domain;
 	struct list_head resources;
 };
 
@@ -168,13 +170,6 @@ static bool xilinx_pcie_valid_device(struct pci_bus *bus, unsigned int devfn)
 	if (bus->number == port->root_busno && devfn > 0)
 		return false;
 
-	/*
-	 * Do not read more than one device on the bus directly attached
-	 * to RC.
-	 */
-	if (bus->primary == port->root_busno && devfn > 0)
-		return false;
-
 	return true;
 }
 
@@ -219,13 +214,15 @@ static void xilinx_pcie_destroy_msi(unsigned int irq)
 {
 	struct msi_desc *msi;
 	struct xilinx_pcie_port *port;
+	struct irq_data *d = irq_get_irq_data(irq);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
 
-	if (!test_bit(irq, msi_irq_in_use)) {
+	if (!test_bit(hwirq, msi_irq_in_use)) {
 		msi = irq_get_msi_desc(irq);
 		port = msi_desc_to_pci_sysdata(msi);
 		dev_err(port->dev, "Trying to free unused MSI#%d\n", irq);
 	} else {
-		clear_bit(irq, msi_irq_in_use);
+		clear_bit(hwirq, msi_irq_in_use);
 	}
 }
 
@@ -257,6 +254,7 @@ static void xilinx_msi_teardown_irq(struct msi_controller *chip,
 				    unsigned int irq)
 {
 	xilinx_pcie_destroy_msi(irq);
+	irq_dispose_mapping(irq);
 }
 
 /**
@@ -281,7 +279,7 @@ static int xilinx_pcie_msi_setup_irq(struct msi_controller *chip,
 	if (hwirq < 0)
 		return hwirq;
 
-	irq = irq_create_mapping(port->irq_domain, hwirq);
+	irq = irq_create_mapping(port->msi_domain, hwirq);
 	if (!irq)
 		return -EINVAL;
 
@@ -432,7 +430,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 		/* Check whether interrupt valid */
 		if (!(val & XILINX_PCIE_RPIFR1_INTR_VALID)) {
 			dev_warn(port->dev, "RP Intr FIFO1 read error\n");
-			return IRQ_HANDLED;
+			goto error;
 		}
 
 		if (!(val & XILINX_PCIE_RPIFR1_MSI_INTR)) {
@@ -443,7 +441,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 			/* Handle INTx Interrupt */
 			val = ((val & XILINX_PCIE_RPIFR1_INTR_MASK) >>
 				XILINX_PCIE_RPIFR1_INTR_SHIFT) + 1;
-			generic_handle_irq(irq_find_mapping(port->irq_domain,
+			generic_handle_irq(irq_find_mapping(port->leg_domain,
 							    val));
 		}
 	}
@@ -454,7 +452,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 
 		if (!(val & XILINX_PCIE_RPIFR1_INTR_VALID)) {
 			dev_warn(port->dev, "RP Intr FIFO1 read error\n");
-			return IRQ_HANDLED;
+			goto error;
 		}
 
 		if (val & XILINX_PCIE_RPIFR1_MSI_INTR) {
@@ -499,6 +497,7 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 	if (status & XILINX_PCIE_INTR_MST_ERRP)
 		dev_warn(port->dev, "Master error poison\n");
 
+error:
 	/* Clear the Interrupt Decode register */
 	pcie_write(port, status, XILINX_PCIE_REG_IDR);
 
@@ -526,12 +525,14 @@ static void xilinx_pcie_free_irq_domain(struct xilinx_pcie_port *port)
 	}
 
 	for (i = 0; i < num_irqs; i++) {
-		irq = irq_find_mapping(port->irq_domain, i);
+		irq = irq_find_mapping(port->leg_domain, i + 1);
 		if (irq > 0)
 			irq_dispose_mapping(irq);
 	}
-
-	irq_domain_remove(port->irq_domain);
+	if (port->leg_domain)
+		irq_domain_remove(port->leg_domain);
+	if (port->msi_domain)
+		irq_domain_remove(port->msi_domain);
 }
 
 /**
@@ -553,23 +554,23 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
 		return PTR_ERR(pcie_intc_node);
 	}
 
-	port->irq_domain = irq_domain_add_linear(pcie_intc_node, 4,
+	port->leg_domain = irq_domain_add_linear(pcie_intc_node, 4,
 						 &intx_domain_ops,
 						 port);
-	if (!port->irq_domain) {
+	if (!port->leg_domain) {
 		dev_err(dev, "Failed to get a INTx IRQ domain\n");
-		return PTR_ERR(port->irq_domain);
+		return PTR_ERR(port->leg_domain);
 	}
 
 	/* Setup MSI */
 	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-		port->irq_domain = irq_domain_add_linear(node,
+		port->msi_domain = irq_domain_add_linear(node,
 							 XILINX_NUM_MSI_IRQS,
 							 &msi_domain_ops,
 							 &xilinx_pcie_msi_chip);
-		if (!port->irq_domain) {
+		if (!port->msi_domain) {
 			dev_err(dev, "Failed to get a MSI IRQ domain\n");
-			return PTR_ERR(port->irq_domain);
+			return PTR_ERR(port->msi_domain);
 		}
 
 		xilinx_pcie_enable_msi(port);
