@@ -40,6 +40,11 @@ Required properties for VDMA:
 Optional properties:
 - xlnx,include-sg: Tells configured for Scatter-mode in
 	the hardware.
+- xlnx,halt-mode: Enables driver to reset DMA engine on halt
+    "reset-retry": Will reset the DMA engine, then retry the halt on failure
+    "reset-always": Will always reset the DMA engine before halting
+    NOTE: The reset is device-wide, so this should be considered when enabling
+    this option
 Optional properties for AXI DMA:
 - xlnx,mcdma: Tells whether configured for multi-channel mode in the hardware.
 Optional properties for VDMA:

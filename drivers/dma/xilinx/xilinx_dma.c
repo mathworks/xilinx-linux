@@ -307,6 +307,18 @@ struct xilinx_dma_tx_descriptor {
 };
 
 /**
+ * enum xilinx_dma_halt_mode - Halt modes for DMA engines
+ * @XILINX_DMA_HALT_MODE_NORMAL: Perform halt via CR access
+ * @XILINX_DMA_HALT_MODE_RESET_RETRY: Reset the DMA engine if the halt fails
+ * @XILINX_DMA_HALT_MODE_RESET_ALWAYS: Always reset the DMA engine to halt
+ */
+enum xilinx_dma_halt_mode {
+	XILINX_DMA_HALT_MODE_NORMAL = 0x0,
+	XILINX_DMA_HALT_MODE_RESET_RETRY,
+	XILINX_DMA_HALT_MODE_RESET_ALWAYS,
+};
+
+/**
  * struct xilinx_dma_chan - Driver specific DMA channel structure
  * @xdev: Driver specific device structure
  * @ctrl_offset: Control registers offset
@@ -398,6 +410,7 @@ struct xilinx_dma_config {
  * @has_sg: Specifies whether Scatter-Gather is present or not
  * @mcdma: Specifies whether Multi-Channel is present or not
  * @flush_on_fsync: Flush on frame sync
+ * @halt_mode: How to halt the DMA engine
  * @ext_addr: Indicates 64 bit addressing is supported by dma device
  * @pdev: Platform device structure pointer
  * @dma_config: DMA config structure
@@ -418,6 +431,7 @@ struct xilinx_dma_device {
 	bool has_sg;
 	bool mcdma;
 	u32 flush_on_fsync;
+	enum xilinx_dma_halt_mode halt_mode;
 	bool ext_addr;
 	struct platform_device  *pdev;
 	const struct xilinx_dma_config *dma_config;
@@ -429,6 +443,9 @@ struct xilinx_dma_device {
 	u32 nr_channels;
 	u32 chan_id;
 };
+
+/* Forward Declarations */
+static int xilinx_dma_reset(struct xilinx_dma_chan *chan);
 
 /* Macros */
 #define to_xilinx_chan(chan) \
@@ -989,15 +1006,40 @@ static enum dma_status xilinx_dma_tx_status(struct dma_chan *dchan,
  */
 static void xilinx_dma_halt(struct xilinx_dma_chan *chan)
 {
-	int err;
-	u32 val;
+	int err, do_retry = 0;
+	u32 val, ctrl_reg;
 
-	dma_ctrl_clr(chan, XILINX_DMA_REG_DMACR, XILINX_DMA_DMACR_RUNSTOP);
+	/* Preserve the ctrl reg state if we need to reset */
+	ctrl_reg = dma_ctrl_read(chan, XILINX_DMA_REG_DMACR);
+	ctrl_reg &= ~XILINX_DMA_DMACR_RUNSTOP;
 
-	/* Wait for the hardware to halt */
-	err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMASR, val,
-				      (val & XILINX_DMA_DMASR_HALTED), 0,
-				      XILINX_DMA_LOOP_COUNT);
+	if (chan->xdev->halt_mode == XILINX_DMA_HALT_MODE_RESET_ALWAYS) {
+		xilinx_dma_reset(chan);
+		dev_dbg(chan->dev, "Forcing reset of channel %p\n", chan);
+	}
+
+	do {
+		dma_ctrl_write(chan, XILINX_DMA_REG_DMACR, ctrl_reg);
+
+		/* Wait for the hardware to halt */
+		err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_DMASR, val,
+						  (val & XILINX_DMA_DMASR_HALTED), 0,
+						  XILINX_DMA_LOOP_COUNT);
+
+		if (err && !do_retry &&
+				(chan->xdev->halt_mode == XILINX_DMA_HALT_MODE_RESET_RETRY ||
+				chan->xdev->halt_mode == XILINX_DMA_HALT_MODE_RESET_ALWAYS)) {
+			/* Reset the DMA engine if the halt attempt failed */
+			xilinx_dma_reset(chan);
+			do_retry = 1;
+			dev_dbg(chan->dev, "Failed to halt channel %p, resetting\n",
+					chan);
+		} else {
+			/* Do not retry more than once */
+			do_retry = 0;
+		}
+
+	} while (do_retry);
 
 	if (err) {
 		dev_err(chan->dev, "Cannot stop channel %p: %x\n",
@@ -2442,7 +2484,6 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		}
 		chan_id = chan_addr;
 	}
-
 	/* If data width is greater than 8 bytes, DRE is not in hw */
 	if (width > 8)
 		has_dre = false;
@@ -2614,7 +2655,7 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 	struct device_node *child, *np = pdev->dev.of_node;
 	struct resource *io;
 	u32 num_frames, addr_width;
-	int i, err;
+	int i, halt_mode, err;
 
 	/* Allocate and initialize the DMA engine structure */
 	xdev = devm_kzalloc(&pdev->dev, sizeof(*xdev), GFP_KERNEL);
@@ -2647,6 +2688,16 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 	xdev->has_sg = of_property_read_bool(node, "xlnx,include-sg");
 	if (xdev->dma_config->dmatype == XDMA_TYPE_AXIDMA)
 		xdev->mcdma = of_property_read_bool(node, "xlnx,mcdma");
+
+	xdev->halt_mode = XILINX_DMA_HALT_MODE_NORMAL;
+	halt_mode = of_property_match_string(node,
+			"xlnx,halt-mode", "reset-retry");
+	if (halt_mode >= 0)
+		xdev->halt_mode = XILINX_DMA_HALT_MODE_RESET_RETRY;
+	halt_mode = of_property_match_string(node,
+			"xlnx,halt-mode", "reset-always");
+	if (halt_mode >= 0)
+		xdev->halt_mode = XILINX_DMA_HALT_MODE_RESET_ALWAYS;
 
 	if (xdev->dma_config->dmatype == XDMA_TYPE_VDMA) {
 		err = of_property_read_u32(node, "xlnx,num-fstores",
