@@ -106,6 +106,12 @@
 	readl_poll_timeout(chan->xdev->regs + chan->ctrl_offset + reg, val, \
 			   cond, delay_us, timeout_us)
 
+enum xilinx_dma_halt_mode {
+	XILINX_DMA_HALT_MODE_NORMAL = 0x0,
+	XILINX_DMA_HALT_MODE_RETRY_FORCE,
+	XILINX_DMA_HALT_MODE_ALWAYS_FORCE,
+};
+
 /**
  * struct xilinx_dma_desc_hw - Hardware Descriptor
  * @next_desc: Next Descriptor Pointer @0x00
@@ -201,6 +207,8 @@ struct xilinx_dma_chan {
 	bool mcdma;
 	int err;
 	bool idle;
+	bool no_coalesce;
+	enum xilinx_dma_halt_mode halt_mode;
 	struct tasklet_struct tasklet;
 	u32 residue;
 	u32 desc_pendingcount;
@@ -224,6 +232,9 @@ struct xilinx_dma_device {
 	u32 nr_channels;
 	u32 chan_id;
 };
+
+/* Forward Declarations */
+static int xilinx_dma_chan_reset(struct xilinx_dma_chan *chan);
 
 /* Macros */
 #define to_xilinx_chan(chan) \
@@ -587,15 +598,38 @@ static enum dma_status xilinx_dma_tx_status(struct dma_chan *dchan,
 static void xilinx_dma_halt(struct xilinx_dma_chan *chan)
 {
 	int err = 0;
+	int retry_halt = 0;
 	u32 val;
 
-	chan->ctrl_reg &= ~XILINX_DMA_CR_RUNSTOP_MASK;
-	dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
+	do {
+		chan->ctrl_reg &= ~XILINX_DMA_CR_RUNSTOP_MASK;
 
-	/* Wait for the hardware to halt */
-	err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_STATUS, val,
-				      (val & XILINX_DMA_SR_HALTED_MASK), 10,
-				      XILINX_DMA_LOOP_COUNT);
+		if (!retry_halt &&
+				chan->halt_mode == XILINX_DMA_HALT_MODE_ALWAYS_FORCE){
+			/* Force the reset on the first attempt */
+			xilinx_dma_chan_reset(chan);
+			dev_dbg(chan->dev, "Forcing reset of channel %p\n", chan);
+		}
+		dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
+
+		/* Wait for the hardware to halt */
+		err = xilinx_dma_poll_timeout(chan, XILINX_DMA_REG_STATUS, val,
+						  (val & XILINX_DMA_SR_HALTED_MASK), 10,
+						  XILINX_DMA_LOOP_COUNT);
+
+		if(err && !retry_halt &&
+					(chan->halt_mode == XILINX_DMA_HALT_MODE_RETRY_FORCE ||
+					chan->halt_mode == XILINX_DMA_HALT_MODE_ALWAYS_FORCE)){
+			/* Reset if the first attempt failed */
+			xilinx_dma_chan_reset(chan);
+			retry_halt = 1;
+			dev_dbg(chan->dev, "Failed to halt channel %p, resetting\n", chan);
+		} else {
+			/* do not retry more than once */
+			retry_halt = 0;
+		}
+
+	} while(retry_halt);
 
 	if (err) {
 		dev_err(chan->dev, "Cannot stop channel %p: %x\n",
@@ -654,7 +688,7 @@ static void xilinx_dma_start_transfer(struct xilinx_dma_chan *chan)
 	tail_segment = list_last_entry(&tail_desc->segments,
 				       struct xilinx_dma_tx_segment, node);
 
-	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX) {
+	if (chan->desc_pendingcount <= XILINX_DMA_COALESCE_MAX && !chan->no_coalesce) {
 		chan->ctrl_reg &= ~XILINX_DMA_CR_COALESCE_MAX;
 		chan->ctrl_reg |= chan->desc_pendingcount <<
 				  XILINX_DMA_CR_COALESCE_SHIFT;
@@ -767,6 +801,8 @@ static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 		if (!desc->cyclic)
 			dma_cookie_complete(&desc->async_tx);
 		list_add_tail(&desc->node, &chan->done_list);
+		if (chan->no_coalesce)
+			return; /* one interrupt per desc */
 	}
 }
 
@@ -798,6 +834,7 @@ static int xilinx_dma_chan_reset(struct xilinx_dma_chan *chan)
 	}
 
 	chan->err = false;
+	chan->idle = true;
 
 	return err;
 }
@@ -1288,9 +1325,6 @@ static void xilinx_dma_chan_remove(struct xilinx_dma_chan *chan)
 	chan->ctrl_reg &= ~XILINX_DMA_XR_IRQ_ALL_MASK;
 	dma_ctrl_write(chan, XILINX_DMA_REG_CONTROL, chan->ctrl_reg);
 
-	if (chan->irq > 0)
-		free_irq(chan->irq, chan);
-
 	tasklet_kill(&chan->tasklet);
 
 	list_del(&chan->common.device_node);
@@ -1328,7 +1362,8 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	struct xilinx_dma_chan *chan;
 	int err;
 	bool has_dre;
-	u32 value, width = 0;
+	u32 value, chan_addr, width = 0;
+	int halt_mode;
 
 	/* alloc channel */
 	chan = devm_kzalloc(xdev->dev, sizeof(*chan), GFP_KERNEL);
@@ -1350,6 +1385,40 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	}
 
 	width = value >> 3; /* Convert bits to bytes */
+
+	/* find the IRQ line, if it exists in the device tree */
+	chan->irq = of_irq_get(node, 0);
+	if (chan->irq < 0){
+		return chan->irq;
+	}
+
+	/* check the optional parameter for no interrupt coalesce */
+	chan->no_coalesce = of_property_read_bool(node, "xlnx,no-coalesce");
+
+	/* check the optional parameter to force-halt the channel */
+	chan->halt_mode = XILINX_DMA_HALT_MODE_NORMAL;
+	halt_mode = of_property_match_string(node, "xlnx,halt-mode", "retry-force");
+	if(halt_mode >= 0)
+		chan->halt_mode = XILINX_DMA_HALT_MODE_RETRY_FORCE;
+	halt_mode = of_property_match_string(node, "xlnx,halt-mode", "always-force");
+	if(halt_mode >= 0)
+		chan->halt_mode = XILINX_DMA_HALT_MODE_ALWAYS_FORCE;
+
+	dev_dbg(xdev->dev, "halt-mode: 0x%X\n", chan->halt_mode);
+
+	err = of_property_read_u32(node, "reg", &chan_addr);
+	if(!err) {
+		/* Allow the DT to specify the channel indexing */
+		if (chan_addr >= XILINX_DMA_MAX_CHANS_PER_DEVICE) {
+			dev_err(xdev->dev, "Invalid channel address for channel %s: %d\n", node->name, chan_addr);
+			return -EINVAL;
+		}
+		if (xdev->chan[chan_addr] != NULL) {
+			dev_err(xdev->dev, "Duplicate channel address for channel %s: %d\n", node->name, chan_addr);
+			return -EINVAL;
+		}
+		chan_id = chan_addr;
+	}
 
 	/* If data width is greater than 8 bytes, DRE is not in hw */
 	if (width > 8)
@@ -1386,9 +1455,8 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 
 	chan->common.device = &xdev->common;
 
-	/* find the IRQ line, if it exists in the device tree */
-	chan->irq = irq_of_parse_and_map(node, 0);
-	err = request_irq(chan->irq, xilinx_dma_irq_handler,
+	/* Request the IRQ line */
+	err = devm_request_irq(chan->dev, chan->irq, xilinx_dma_irq_handler,
 			  IRQF_SHARED,
 			  "xilinx-dma-controller", chan);
 	if (err) {
@@ -1430,9 +1498,11 @@ static int xilinx_dma_channel_probe(struct xilinx_dma_device *xdev,
 
 	xdev->nr_channels += nr_channels;
 
-	for (i = 0; i < nr_channels; i++)
-		xilinx_dma_chan_probe(xdev, node, xdev->chan_id++);
-
+	for (i = 0; i < nr_channels; i++) {
+		ret = xilinx_dma_chan_probe(xdev, node, xdev->chan_id++);
+		if(ret)
+			return ret;
+	}
 	return 0;
 }
 

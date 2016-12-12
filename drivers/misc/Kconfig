@@ -535,7 +535,6 @@ config VEXPRESS_SYSCFG
 
 config XILINX_TRAFGEN
 	tristate "Xilinx Traffic Generator"
-	depends on MICROBLAZE || ARCH_ZYNQ
 	help
 	  This option enables support for the Xilinx Traffic Generator driver.
 	  It is designed to generate AXI4 traffic which can be used to stress
@@ -554,7 +553,7 @@ source "drivers/misc/ti-st/Kconfig"
 source "drivers/misc/lis3lv02d/Kconfig"
 source "drivers/misc/altera-stapl/Kconfig"
 source "drivers/misc/mei/Kconfig"
-source "drivers/misc/mwgeneric/Kconfig"
+source "drivers/misc/mathworks/Kconfig"
 source "drivers/misc/vmw_vmci/Kconfig"
 source "drivers/misc/mic/Kconfig"
 source "drivers/misc/genwqe/Kconfig"

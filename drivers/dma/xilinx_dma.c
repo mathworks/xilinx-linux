@@ -773,8 +773,8 @@ static irqreturn_t dma_intr_handler(int irq, void *data)
 	DMA_OUT(&chan->regs->sr, XILINX_DMA_XR_IRQ_ALL_MASK);
 
 	if (stat & XILINX_DMA_XR_IRQ_ERROR_MASK) {
-		dev_err(chan->dev, "Channel %x has errors %x, cr %x, cdr %x tdr %x\n",
-		    (unsigned int)chan, (unsigned int)stat,
+		dev_err(chan->dev, "Channel %p has errors %x, cr %x, cdr %x tdr %x\n",
+		    chan, (unsigned int)stat,
 		    (unsigned int)DMA_IN(&chan->regs->cr),
 		    (unsigned int)DMA_IN(&chan->regs->cdr),
 		    (unsigned int)DMA_IN(&chan->regs->tdr));
@@ -1286,9 +1286,7 @@ static int xilinx_dma_slave_config(struct dma_chan *dchan,
 
 static void xilinx_dma_chan_remove(struct xilinx_dma_chan *chan)
 {
-	irq_dispose_mapping(chan->irq);
 	list_del(&chan->common.device_node);
-	kfree(chan);
 }
 
 /*
@@ -1305,11 +1303,16 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	int ret;
 
 	/* alloc channel */
-	chan = kzalloc(sizeof(*chan), GFP_KERNEL);
+	chan = devm_kzalloc(xdev->dev, sizeof(*chan), GFP_KERNEL);
 	if (!chan) {
 		dev_err(xdev->dev, "no free memory for DMA channels!\n");
-		ret = -ENOMEM;
-		goto out_return;
+		return -ENOMEM;
+	}
+
+	/* find the IRQ line, if it exists in the device tree */
+	chan->irq = of_irq_get(node, 0);
+	if (chan->irq < 0){
+		return chan->irq;
 	}
 
 	spin_lock_init(&chan->lock);
@@ -1358,7 +1361,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 			chan->direction = DMA_MEM_TO_DEV;
 			if (!chan->has_SG) {
 				chan->addr_regs = (struct vdma_addr_regs *)
-				    ((u32)xdev->regs +
+				    ((char *)xdev->regs +
 					 XILINX_VDMA_DIRECT_REG_OFFSET);
 			}
 		}
@@ -1368,7 +1371,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 			chan->direction = DMA_DEV_TO_MEM;
 			if (!chan->has_SG) {
 				chan->addr_regs = (struct vdma_addr_regs *)
-				    ((u32)xdev->regs +
+				    ((char *)xdev->regs +
 					XILINX_VDMA_DIRECT_REG_OFFSET +
 					XILINX_VDMA_CHAN_DIRECT_REG_SIZE);
 			}
@@ -1379,7 +1382,7 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		chan->regs = (struct xdma_regs *)xdev->regs;
 		chan->id = 0;
 	} else {
-		chan->regs = (struct xdma_regs *)((u32)xdev->regs +
+		chan->regs = (struct xdma_regs *)((char *)xdev->regs +
 					XILINX_DMA_RX_CHANNEL_OFFSET);
 		chan->id = 1;
 	}
@@ -1398,19 +1401,16 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		xdev->common.copy_align = ilog2(width);
 
 	chan->dev = xdev->dev;
-	xdev->chan[chan->id] = chan;
 
 	tasklet_init(&chan->tasklet, dma_do_tasklet, (unsigned long)chan);
 
 	chan->common.device = &xdev->common;
 
-	/* find the IRQ line, if it exists in the device tree */
-	chan->irq = irq_of_parse_and_map(node, 0);
-	ret = request_irq(chan->irq, dma_intr_handler, IRQF_SHARED,
+	ret = devm_request_irq(xdev->dev, chan->irq, dma_intr_handler, IRQF_SHARED,
 				"xilinx-dma-controller", chan);
 	if (ret) {
 		dev_err(xdev->dev, "unable to request IRQ %d\n", ret);
-		goto out_free_irq;
+		goto out_free_chan;
 	}
 
 	/* Add the channel to DMA device channel list */
@@ -1422,9 +1422,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 		goto out_free_chan;
 	}
 
+	xdev->chan[chan->id] = chan;
 	return 0;
-out_free_irq:
-	irq_dispose_mapping(chan->irq);
+
 out_free_chan:
 	kfree(chan);
 out_return:
@@ -1463,7 +1463,7 @@ static int xilinx_dma_of_probe(struct platform_device *pdev)
 
 	/* Axi DMA and VDMA only do slave transfers
 	 */
-	if (of_device_is_compatible(node, "xlnx,axi-dma")) {
+	if (of_device_is_compatible(node, "xlnx,axi-adi-dma")) {
 		xdev->feature |= XILINX_DMA_IP_DMA;
 		value = (int *)of_get_property(node,
 				"xlnx,sg-include-stscntrl-strm",
@@ -1484,7 +1484,7 @@ static int xilinx_dma_of_probe(struct platform_device *pdev)
 		xdev->common.device_issue_pending = xilinx_dma_issue_pending;
 	}
 
-	if (of_device_is_compatible(node, "xlnx,axi-vdma")) {
+	if (of_device_is_compatible(node, "xlnx,axi-adi-vdma")) {
 		xdev->feature |= XILINX_DMA_IP_VDMA;
 
 		of_property_read_u32(node, "xlnx,include-sg", &include_sg);
@@ -1576,14 +1576,15 @@ static int xilinx_dma_of_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xilinx_dma_of_ids[] = {
-	{ .compatible = "xlnx,axi-dma" },
-	{ .compatible = "xlnx,axi-vdma" },
+	{ .compatible = "xlnx,axi-adi-dma" },
+	{ .compatible = "xlnx,axi-adi-vdma" },
 	{}
 };
+MODULE_DEVICE_TABLE(of, xilinx_dma_of_ids);
 
 static struct platform_driver xilinx_dma_of_driver = {
 	.driver = {
-		.name = "xilinx-dma",
+		.name = "xilinx-adi-dma",
 		.owner = THIS_MODULE,
 		.of_match_table = xilinx_dma_of_ids,
 	},
@@ -1591,17 +1592,7 @@ static struct platform_driver xilinx_dma_of_driver = {
 	.remove = xilinx_dma_of_remove,
 };
 
-static int __init xilinx_dma_init(void)
-{
-	return platform_driver_register(&xilinx_dma_of_driver);
-}
-subsys_initcall(xilinx_dma_init);
-
-static void __exit xilinx_dma_exit(void)
-{
-	platform_driver_unregister(&xilinx_dma_of_driver);
-}
-module_exit(xilinx_dma_exit);
+module_platform_driver(xilinx_dma_of_driver);
 
 MODULE_DESCRIPTION("Xilinx DMA/VDMA driver");
 MODULE_LICENSE("GPL");
