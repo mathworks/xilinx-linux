@@ -1165,7 +1165,7 @@ static int xilinx_dma_terminate_all(struct dma_chan *dchan)
 	   DMA_IN(&chan->regs->cr) & ~XILINX_DMA_XR_IRQ_ALL_MASK);
 */
 	/* Halt the DMA engine */
-	if (1)
+	if (0)
 		dma_halt(chan);
 	else
 		xilinx_dma_reset(chan);
