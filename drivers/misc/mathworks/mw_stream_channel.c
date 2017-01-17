@@ -1125,7 +1125,6 @@ static void mwdma_test_loopback(struct mwadma_dev * mwdev,
     dma_async_issue_pending(mwdev->tx->chan);
 }
 
-
 static ssize_t mwdma_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len)
 {
     dev_dbg(dev,"sysfs_notify :%s\n", attr->attr.name);
@@ -1310,7 +1309,6 @@ static struct mwadma_chan* __must_check mw_stream_chan_probe(
 		sysfs_put(mwchan->irq_kn);
 		return ERR_PTR(status);
 	}
-
 	return mwchan;
 }
 
@@ -1346,12 +1344,18 @@ int mw_stream_channels_probe(struct mathworks_ipcore_dev *mw_ipcore_dev) {
 	}
 
 	mwdev->tx = mw_stream_chan_probe(mwdev, DMA_MEM_TO_DEV, "mm2s");
-	if (IS_ERR(mwdev->tx))
-		return PTR_ERR(mwdev->tx);
 	mwdev->rx = mw_stream_chan_probe(mwdev, DMA_DEV_TO_MEM, "s2mm");
-	if (IS_ERR(mwdev->rx))
+        if (nchan < 2) {
+            if (IS_ERR(mwdev->tx) && IS_ERR(mwdev->rx))
+                return PTR_ERR(mwdev->tx);
+        } else {
+            if (IS_ERR(mwdev->tx)) {
+                return PTR_ERR(mwdev->tx);
+            }
+            if (IS_ERR(mwdev->rx)) {
 		return PTR_ERR(mwdev->rx);
-
+            }
+        }
 	status = sysfs_create_group(&dev->kobj, &mwdma_attr_group);
 	if (status) {
 		dev_err(IP2DEVP(mwdev), "Error creating the sysfs devices\n");

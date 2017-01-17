@@ -364,11 +364,16 @@ static int mathworks_ip_setup_cdev(struct mathworks_ip_info *thisIpcore)
 	if (status) {
 	   goto add_err;
 	}
+        
+        if (dev_entry->devcnt == 0) {
+            thisIpcore->char_device = device_create(mathworks_ip_class, thisIpcore->dev, thisIpcore->dev_id, NULL, "%s", dev_entry->devname);
+        }
+        else {
+            thisIpcore->char_device = device_create(mathworks_ip_class, thisIpcore->dev, thisIpcore->dev_id, NULL, "%s%d", dev_entry->devname, dev_entry->devcnt);
+        }
+        dev_entry->devcnt++;
 
-	thisIpcore->char_device = device_create(mathworks_ip_class, thisIpcore->dev, thisIpcore->dev_id, NULL, "%s%d", dev_entry->devname, dev_entry->devcnt++);
-
-
-	if(IS_ERR(thisIpcore->char_device))
+        if(IS_ERR(thisIpcore->char_device))
 	{
 	   status = PTR_ERR(thisIpcore->char_device);
 	   dev_err(thisIpcore->dev, "Error: failed to create device node %s, err %d\n", thisIpcore->name, status);
