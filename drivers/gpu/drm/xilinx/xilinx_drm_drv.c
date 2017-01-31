@@ -53,6 +53,7 @@ struct xilinx_drm_private {
 	struct drm_crtc *crtc;
 	struct drm_fb_helper *fb;
 	struct platform_device *pdev;
+	bool is_master;
 };
 
 /**
@@ -72,16 +73,30 @@ struct xilinx_video_format_desc {
 };
 
 static const struct xilinx_video_format_desc xilinx_video_formats[] = {
-	{ "yuv422", 16, 16, XILINX_VIDEO_FORMAT_YUV422, DRM_FORMAT_YUYV },
-	{ "yuv444", 24, 24, XILINX_VIDEO_FORMAT_YUV444, DRM_FORMAT_YUV444 },
-	{ "rgb888", 24, 24, XILINX_VIDEO_FORMAT_RGB, DRM_FORMAT_RGB888 },
 	{ "yuv420", 16, 16, XILINX_VIDEO_FORMAT_YUV420, DRM_FORMAT_YUV420 },
-	{ "xrgb8888", 24, 32, XILINX_VIDEO_FORMAT_XRGB, DRM_FORMAT_XRGB8888 },
-	{ "rgba8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_RGBA8888 },
-	{ "rgb565", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_RGB565 },
-	{ "xbgr8888", 24, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_XBGR8888 },
-	{ "abgr8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_ABGR8888 },
+	{ "uvy422", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_UYVY },
+	{ "vuy422", 16, 16, XILINX_VIDEO_FORMAT_YUV422, DRM_FORMAT_VYUY },
+	{ "yuv422", 16, 16, XILINX_VIDEO_FORMAT_YUV422, DRM_FORMAT_YUYV },
+	{ "yvu422", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_YVYU },
+	{ "yuv444", 24, 24, XILINX_VIDEO_FORMAT_YUV444, DRM_FORMAT_YUV444 },
+	{ "nv12", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_NV12 },
+	{ "nv21", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_NV21 },
 	{ "nv16", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_NV16 },
+	{ "nv61", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_NV61 },
+	{ "abgr1555", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_ABGR1555 },
+	{ "argb1555", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_ARGB1555 },
+	{ "rgba4444", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_RGBA4444 },
+	{ "bgra4444", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_BGRA4444 },
+	{ "bgr565", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_BGR565 },
+	{ "rgb565", 16, 16, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_RGB565 },
+	{ "bgr888", 24, 24, XILINX_VIDEO_FORMAT_RGB, DRM_FORMAT_BGR888 },
+	{ "rgb888", 24, 24, XILINX_VIDEO_FORMAT_RGB, DRM_FORMAT_RGB888 },
+	{ "xbgr8888", 24, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_XBGR8888 },
+	{ "xrgb8888", 24, 32, XILINX_VIDEO_FORMAT_XRGB, DRM_FORMAT_XRGB8888 },
+	{ "abgr8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_ABGR8888 },
+	{ "argb8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_ARGB8888 },
+	{ "bgra8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_BGRA8888 },
+	{ "rgba8888", 32, 32, XILINX_VIDEO_FORMAT_NONE, DRM_FORMAT_RGBA8888 },
 };
 
 /**
@@ -366,8 +381,13 @@ static int xilinx_drm_unload(struct drm_device *drm)
 
 int xilinx_drm_open(struct drm_device *dev, struct drm_file *file)
 {
-	if (drm_is_control_client(file))
-		file->universal_planes = 1;
+	struct xilinx_drm_private *private = dev->dev_private;
+
+	if (!(drm_is_primary_client(file) && !file->minor->master) &&
+			capable(CAP_SYS_ADMIN)) {
+		file->is_master = 1;
+		private->is_master = true;
+	}
 
 	return 0;
 }
@@ -379,6 +399,11 @@ static void xilinx_drm_preclose(struct drm_device *drm, struct drm_file *file)
 
 	/* cancel pending page flip request */
 	xilinx_drm_crtc_cancel_page_flip(private->crtc, file);
+
+	if (private->is_master) {
+		private->is_master = false;
+		file->is_master = 0;
+	}
 }
 
 /* restore the default mode when xilinx drm is released */
@@ -389,6 +414,11 @@ static void xilinx_drm_lastclose(struct drm_device *drm)
 	xilinx_drm_crtc_restore(private->crtc);
 
 	xilinx_drm_fb_restore_mode(private->fb);
+}
+
+static int xilinx_drm_set_busid(struct drm_device *dev, struct drm_master *master)
+{
+	return 0;
 }
 
 static const struct file_operations xilinx_drm_fops = {
@@ -413,7 +443,7 @@ static struct drm_driver xilinx_drm_driver = {
 	.open				= xilinx_drm_open,
 	.preclose			= xilinx_drm_preclose,
 	.lastclose			= xilinx_drm_lastclose,
-	.set_busid			= drm_platform_set_busid,
+	.set_busid			= xilinx_drm_set_busid,
 
 	.get_vblank_counter		= drm_vblank_no_hw_counter,
 	.enable_vblank			= xilinx_drm_enable_vblank,

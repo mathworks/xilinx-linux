@@ -32,6 +32,7 @@
 
 /* SMC SIP service Call Function Identifier Prefix */
 #define PM_SIP_SVC	0xC2000000
+#define GET_CALLBACK_DATA 0xa01
 
 /* Number of 32bits values in payload */
 #define PAYLOAD_ARG_CNT	5U
@@ -68,6 +69,7 @@ enum pm_api_id {
 	PM_INIT,
 	FPGA_LOAD,
 	FPGA_GET_STATUS,
+	GET_CHIPID,
 };
 
 /* PMU-FW return status codes */
@@ -361,9 +363,9 @@ EXPORT_SYMBOL_GPL(zynqmp_pm_set_wakeup_source);
  *
  * Return:	Returns status, either success or error+reason
  */
-int zynqmp_pm_system_shutdown(const u32 restart)
+int zynqmp_pm_system_shutdown(const u32 type, const u32 subtype)
 {
-	return invoke_pm_fn(SYSTEM_SHUTDOWN, restart, 0, 0, 0, NULL);
+	return invoke_pm_fn(SYSTEM_SHUTDOWN, type, subtype, 0, 0, NULL);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_system_shutdown);
 
@@ -462,6 +464,29 @@ int zynqmp_pm_get_api_version(u32 *version)
 	return zynqmp_pm_ret_code((enum pm_ret_status)ret_payload[0]);
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_get_api_version);
+
+/**
+ * zynqmp_pm_get_chipid - Get silicon ID registers
+ * @idcode:	IDCODE register
+ * @version:	version register
+ *
+ * Return:	Returns the status of the operation and the idcode and version
+ *		registers in @idcode and @version.
+ */
+int zynqmp_pm_get_chipid(u32 *idcode, u32 *version)
+{
+	u32 ret_payload[PAYLOAD_ARG_CNT];
+
+	if (!idcode || !version)
+		return -EINVAL;
+
+	invoke_pm_fn(GET_CHIPID, 0, 0, 0, 0, ret_payload);
+	*idcode = ret_payload[1];
+	*version = ret_payload[2];
+
+	return zynqmp_pm_ret_code((enum pm_ret_status)ret_payload[0]);
+}
+EXPORT_SYMBOL_GPL(zynqmp_pm_get_chipid);
 
 /**
  * zynqmp_pm_set_configuration - PM call to set system configuration
@@ -636,6 +661,20 @@ int zynqmp_pm_fpga_get_status(u32 *value)
 }
 EXPORT_SYMBOL_GPL(zynqmp_pm_fpga_get_status);
 
+static void zynqmp_pm_get_callback_data(u32 *buf)
+{
+	invoke_pm_fn(GET_CALLBACK_DATA, 0, 0, 0, 0, buf);
+}
+
+static irqreturn_t zynqmp_pm_isr(int irq, void *data)
+{
+	u32 buf[PAYLOAD_ARG_CNT];
+
+	zynqmp_pm_get_callback_data(buf);
+
+	return IRQ_HANDLED;
+}
+
 #ifdef CONFIG_ZYNQMP_PM_API_DEBUGFS
 /**
  * zynqmp_pm_argument_value - Extract argument value from a PM-API request
@@ -745,6 +784,8 @@ static ssize_t zynqmp_pm_debugfs_api_write(struct file *file,
 		pm_id = MMIO_READ;
 	else if (strncasecmp(pm_api_req, "MMIO_WRITE", 10) == 0)
 		pm_id = MMIO_WRITE;
+	else if (strncasecmp(pm_api_req, "GET_CHIPID", 9) == 0)
+		pm_id = GET_CHIPID;
 	/* If no name was entered look for PM-API ID instead */
 	else if (kstrtouint(pm_api_req, 10, &pm_id))
 		ret = -EINVAL;
@@ -794,7 +835,7 @@ static ssize_t zynqmp_pm_debugfs_api_write(struct file *file,
 					pm_api_arg[1], pm_api_arg[2]);
 		break;
 	case SYSTEM_SHUTDOWN:
-		ret = zynqmp_pm_system_shutdown(pm_api_arg[0]);
+		ret = zynqmp_pm_system_shutdown(pm_api_arg[0], pm_api_arg[1]);
 		break;
 	case REQUEST_NODE:
 		ret = zynqmp_pm_request_node(pm_api_arg[0],
@@ -851,6 +892,11 @@ static ssize_t zynqmp_pm_debugfs_api_write(struct file *file,
 	case MMIO_WRITE:
 		ret = zynqmp_pm_mmio_write(pm_api_arg[0],
 				     pm_api_arg[1], pm_api_arg[2]);
+		break;
+	case GET_CHIPID:
+		ret = zynqmp_pm_get_chipid(&pm_api_arg[0], &pm_api_arg[1]);
+		pr_info("%s idcode: %#x, version:%#x\n",
+			__func__, pm_api_arg[0], pm_api_arg[1]);
 		break;
 	default:
 		pr_err("%s Unsupported PM-API request\n", __func__);
@@ -924,14 +970,14 @@ static const struct file_operations fops_zynqmp_pm_dbgfs = {
  * Return:      Returns 0 on success
  *		Corresponding error code otherwise
  */
-static int zynqmp_pm_api_debugfs_init(void)
+static int zynqmp_pm_api_debugfs_init(struct device *dev)
 {
 	int err;
 
 	/* Initialize debugfs interface */
 	zynqmp_pm_debugfs_dir = debugfs_create_dir(DRIVER_NAME, NULL);
 	if (!zynqmp_pm_debugfs_dir) {
-		pr_err("%s debugfs_create_dir failed\n", __func__);
+		dev_err(dev, "debugfs_create_dir failed\n");
 		return -ENODEV;
 	}
 
@@ -940,7 +986,7 @@ static int zynqmp_pm_api_debugfs_init(void)
 					zynqmp_pm_debugfs_dir, NULL,
 					&fops_zynqmp_pm_dbgfs);
 	if (!zynqmp_pm_debugfs_power) {
-		pr_err("%s debugfs_create_file power failed\n", __func__);
+		dev_err(dev, "debugfs_create_file power failed\n");
 		err = -ENODEV;
 		goto err_dbgfs;
 	}
@@ -950,8 +996,7 @@ static int zynqmp_pm_api_debugfs_init(void)
 					zynqmp_pm_debugfs_dir, NULL,
 					&fops_zynqmp_pm_dbgfs);
 	if (!zynqmp_pm_debugfs_api_version) {
-		pr_err("%s debugfs_create_file api_version failed\n",
-								__func__);
+		dev_err(dev, "debugfs_create_file api_version failed\n");
 		err = -ENODEV;
 		goto err_dbgfs;
 	}
@@ -964,7 +1009,7 @@ static int zynqmp_pm_api_debugfs_init(void)
 }
 
 #else
-static int zynqmp_pm_api_debugfs_init(void)
+static int zynqmp_pm_api_debugfs_init(struct device *dev)
 {
 	return 0;
 }
@@ -1021,15 +1066,28 @@ static void get_set_conduit_method(struct device_node *np)
  */
 static int zynqmp_pm_probe(struct platform_device *pdev)
 {
+	int ret, irq;
 
 	/* Check PM API version number */
 	if (pm_api_version != ZYNQMP_PM_VERSION)
 		return -ENODEV;
 
-	pr_info("%s Power management API v%d.%d\n", __func__,
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0) {
+		return -ENXIO;
+	}
+
+	ret = request_irq(irq, zynqmp_pm_isr, 0, DRIVER_NAME, pdev);
+	if (ret) {
+		dev_err(&pdev->dev, "request_irq '%d' failed with %d\n",
+			irq, ret);
+		return ret;
+	}
+
+	dev_info(&pdev->dev, "Power management API v%d.%d\n",
 		ZYNQMP_PM_VERSION_MAJOR, ZYNQMP_PM_VERSION_MINOR);
 
-	zynqmp_pm_api_debugfs_init();
+	zynqmp_pm_api_debugfs_init(&pdev->dev);
 
 	return 0;
 }
