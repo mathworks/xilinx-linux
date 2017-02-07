@@ -386,6 +386,7 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             mwchan->error = 0;
             mwchan->transfer_count = 0;
             spin_unlock_bh(&mwchan->slock);
+            mwadma_stop(mwdev, mwchan);
             mwadma_start(mwdev, mwchan);
             dma_async_issue_pending(mwchan->chan);
             break;
@@ -434,7 +435,7 @@ static long mwadma_rx_ctl(struct mwadma_dev *mwdev, unsigned int cmd, unsigned l
             mwchan->transfer_count = 0;
             mwchan->error = 0;
             spin_unlock_bh(&mwchan->slock);
-
+            mwadma_stop(mwdev,mwchan);
             mwadma_start(mwdev,mwchan);
             dma_async_issue_pending(mwchan->chan);
             spin_lock_bh(&mwchan->slock);/*!!!LOCK!!!*/
