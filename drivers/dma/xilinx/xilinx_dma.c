@@ -738,6 +738,30 @@ static void xilinx_dma_free_desc_list(struct xilinx_dma_chan *chan,
 }
 
 /**
+ * xilinx_dma_init_segs - Initialize the segment entries
+ * @chan: Driver specific DMA channel
+ *
+ * Must be called with lock held or during channel allocation
+ */
+static void xilinx_dma_init_segs(struct xilinx_dma_chan *chan)
+{
+	int i;
+
+	for (i = 0; i < XILINX_DMA_NUM_DESCS; i++) {
+		chan->seg_v[i].hw.next_desc =
+		lower_32_bits(chan->seg_p + sizeof(*chan->seg_v) *
+			((i + 1) % XILINX_DMA_NUM_DESCS));
+		chan->seg_v[i].hw.next_desc_msb =
+		upper_32_bits(chan->seg_p + sizeof(*chan->seg_v) *
+			((i + 1) % XILINX_DMA_NUM_DESCS));
+		chan->seg_v[i].phys = chan->seg_p +
+			sizeof(*chan->seg_v) * i;
+		list_add_tail(&chan->seg_v[i].node,
+				  &chan->free_seg_list);
+	}
+}
+
+/**
  * xilinx_dma_free_descriptors - Free channel descriptors
  * @chan: Driver specific DMA channel
  */
@@ -750,6 +774,13 @@ static void xilinx_dma_free_descriptors(struct xilinx_dma_chan *chan)
 	xilinx_dma_free_desc_list(chan, &chan->pending_list);
 	xilinx_dma_free_desc_list(chan, &chan->done_list);
 	xilinx_dma_free_desc_list(chan, &chan->active_list);
+
+	/* Reset the free list to ensure the ordering is correct */
+	if (chan->xdev->dma_config->dmatype == XDMA_TYPE_AXIDMA) {
+		INIT_LIST_HEAD(&chan->free_seg_list);
+		xilinx_dma_init_segs(chan);
+	}
+
 
 	spin_unlock_irqrestore(&chan->lock, flags);
 }
@@ -863,7 +894,6 @@ static void xilinx_dma_do_tasklet(unsigned long data)
 static int xilinx_dma_alloc_chan_resources(struct dma_chan *dchan)
 {
 	struct xilinx_dma_chan *chan = to_xilinx_chan(dchan);
-	int i;
 
 	/* Has this channel already been allocated? */
 	if (chan->desc_pool)
@@ -886,18 +916,8 @@ static int xilinx_dma_alloc_chan_resources(struct dma_chan *dchan)
 			return -ENOMEM;
 		}
 
-		for (i = 0; i < XILINX_DMA_NUM_DESCS; i++) {
-			chan->seg_v[i].hw.next_desc =
-			lower_32_bits(chan->seg_p + sizeof(*chan->seg_v) *
-				((i + 1) % XILINX_DMA_NUM_DESCS));
-			chan->seg_v[i].hw.next_desc_msb =
-			upper_32_bits(chan->seg_p + sizeof(*chan->seg_v) *
-				((i + 1) % XILINX_DMA_NUM_DESCS));
-			chan->seg_v[i].phys = chan->seg_p +
-				sizeof(*chan->seg_v) * i;
-			list_add_tail(&chan->seg_v[i].node,
-				      &chan->free_seg_list);
-		}
+		xilinx_dma_init_segs(chan);
+
 	} else if (chan->xdev->dma_config->dmatype == XDMA_TYPE_CDMA) {
 		chan->desc_pool = dma_pool_create("xilinx_cdma_desc_pool",
 				   chan->dev,
