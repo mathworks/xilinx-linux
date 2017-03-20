@@ -661,10 +661,10 @@ static inline void ad9361_timestamp_dis(void)
 	timestamp_en = false;
 }
 
-static inline void ad9361_add_timestamp(unsigned reg, unsigned read)
+static inline void ad9361_add_timestamp(struct iio_dev *indio_dev, unsigned reg, unsigned read)
 {
 	if (timestamp_en && (timestamp_cnt < 5000)) {
-		timestamps[timestamp_cnt].time = iio_get_time_ns();
+		timestamps[timestamp_cnt].time = iio_get_time_ns(indio_dev);
 		timestamps[timestamp_cnt].reg = reg;
 		timestamps[timestamp_cnt].read = read;
 
@@ -1089,7 +1089,7 @@ static int ad9361_bist_tone(struct ad9361_rf_phy *phy,
 }
 
 static int ad9361_check_cal_done(struct ad9361_rf_phy *phy, u32 reg,
-				 u32 mask, bool done_state)
+				 u32 mask, u32 done_state)
 {
 	u32 timeout = 5000; /* RFDC_CAL can take long */
 	u32 state;
@@ -2814,10 +2814,18 @@ static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 				  TX_VCO_DIVIDER(~0), enable ? 7 :
 				  phy->cached_tx_rfpll_div);
 
+		if (enable)
+			phy->cached_synth_pd[0] |= TX_SYNTH_VCO_ALC_POWER_DOWN |
+						   TX_SYNTH_PTAT_POWER_DOWN |
+						   TX_SYNTH_VCO_POWER_DOWN;
+		else
+			phy->cached_synth_pd[0] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
+						   TX_SYNTH_PTAT_POWER_DOWN |
+						   TX_SYNTH_VCO_POWER_DOWN);
+
+
 		ret |= ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-				enable ? TX_SYNTH_VCO_ALC_POWER_DOWN |
-				TX_SYNTH_PTAT_POWER_DOWN |
-				TX_SYNTH_VCO_POWER_DOWN : 0);
+					phy->cached_synth_pd[0]);
 
 		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
 				  TX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
@@ -2832,10 +2840,17 @@ static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 				  RX_VCO_DIVIDER(~0), enable ? 7 :
 				  phy->cached_rx_rfpll_div);
 
+		if (enable)
+			phy->cached_synth_pd[1] |= RX_SYNTH_VCO_ALC_POWER_DOWN |
+						   RX_SYNTH_PTAT_POWER_DOWN |
+						   RX_SYNTH_VCO_POWER_DOWN;
+		else
+			phy->cached_synth_pd[1] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
+						    RX_SYNTH_PTAT_POWER_DOWN |
+						    RX_SYNTH_VCO_POWER_DOWN);
+
 		ret |= ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
-				enable ? RX_SYNTH_VCO_ALC_POWER_DOWN |
-				RX_SYNTH_PTAT_POWER_DOWN |
-				RX_SYNTH_VCO_POWER_DOWN : 0);
+					phy->cached_synth_pd[1]);
 
 		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
 				  RX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
@@ -2845,6 +2860,39 @@ static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 	}
 
 	return ret;
+}
+
+static int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
+				     enum synth_pd_ctrl rx,
+				     enum synth_pd_ctrl tx)
+{
+
+	dev_dbg(&phy->spi->dev, "%s : RX(%d) TX(%d)",__func__, rx, tx);
+
+	switch (rx) {
+	case LO_OFF:
+		phy->cached_synth_pd[1] |= RX_LO_POWER_DOWN;
+		break;
+	case LO_ON:
+		phy->cached_synth_pd[1] &= ~RX_LO_POWER_DOWN;
+		break;
+	case LO_DONTCARE:
+		break;
+	}
+
+	switch (tx) {
+	case LO_OFF:
+		phy->cached_synth_pd[0] |= TX_LO_POWER_DOWN;
+		break;
+	case LO_ON:
+		phy->cached_synth_pd[0] &= ~TX_LO_POWER_DOWN;
+		break;
+	case LO_DONTCARE:
+		break;
+	}
+
+	return ad9361_spi_writem(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+				 phy->cached_synth_pd, 2);
 }
 
 /* REFERENCE CLOCK DELAY UNIT COUNTER REGISTER */
@@ -3574,7 +3622,7 @@ static int ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	int val, ret, i, j = 0;
 	u32 rssi_delay;
 	u32 rssi_wait;
-	u32 rssi_duration;
+	s32 rssi_duration;
 	unsigned long rate;
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
@@ -3606,6 +3654,7 @@ static int ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	do {
 		for (i = 14; rssi_duration > 0 && i >= 0 ; i--) {
 			val = 1 << i;
+
 			if (rssi_duration >= val) {
 				dur_buf[j++] = i;
 				total_dur += val;
@@ -3616,10 +3665,14 @@ static int ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 
 	} while (j < 4 && rssi_duration > 0);
 
-	for (i = 0, total_weight = 0; i < 4; i++)
-		total_weight += weight[i] =
-			DIV_ROUND_CLOSEST(RSSI_MAX_WEIGHT *
-				(1 << dur_buf[i]), total_dur);
+	for (i = 0, total_weight = 0; i < 4; i++) {
+		if (i < j)
+			total_weight += weight[i] =
+				DIV_ROUND_CLOSEST(RSSI_MAX_WEIGHT *
+					(1 << dur_buf[i]), total_dur);
+		else
+			total_weight += weight[i] = 0;
+	}
 
 	/* total of all weights must be 0xFF */
 	val = total_weight - 0xFF;
@@ -3639,6 +3692,9 @@ static int ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	temp = RSSI_MODE_SELECT(ctrl->restart_mode);
 	if (ctrl->restart_mode == SPI_WRITE_TO_REGISTER)
 		temp |= START_RSSI_MEAS;
+
+	if (rssi_duration == 0 && j == 1) /* Power of two */
+		temp |= DEFAULT_RSSI_MEAS_MODE;
 
 	ret = ad9361_spi_write(spi, REG_RSSI_CONFIG, temp); // RSSI Mode Select
 
@@ -3735,15 +3791,31 @@ static int ad9361_ensm_set_state(struct ad9361_rf_phy *phy, u8 ensm_state,
 	}
 
 	if (rc) {
-		dev_err(dev, "Invalid ENSM state transition in %s mode\n",
-			phy->pdata->fdd ? "FDD" : "TDD");
-		goto out;
+		if ((phy->curr_ensm_state != ENSM_STATE_ALERT) && (val & (FORCE_RX_ON | FORCE_TX_ON))) {
+			u32 val2 = val;
+
+			val2 &= ~(FORCE_TX_ON | FORCE_RX_ON);
+			val2 |= TO_ALERT | FORCE_ALERT_STATE;
+			ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val2);
+
+			ad9361_check_cal_done(phy, REG_STATE, ENSM_STATE(~0), ENSM_STATE_ALERT);
+		} else {
+			dev_err(dev, "Invalid ENSM state transition in %s mode\n",
+				phy->pdata->fdd ? "FDD" : "TDD");
+			goto out;
+		}
 	}
 
 	 if (!phy->pdata->fdd && !pinctrl && !phy->pdata->tdd_use_dual_synth &&
-		 (ensm_state == ENSM_STATE_TX || ensm_state == ENSM_STATE_RX))
+		 (ensm_state == ENSM_STATE_TX || ensm_state == ENSM_STATE_RX)) {
 		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
 				  TXNRX_SPI_CTRL, ensm_state == ENSM_STATE_TX);
+
+		ad9361_check_cal_done(phy, (ensm_state == ENSM_STATE_TX) ?
+				      REG_TX_CP_OVERRANGE_VCO_LOCK :
+				      REG_RX_CP_OVERRANGE_VCO_LOCK,
+				      VCO_LOCK, 1);
+	}
 
 	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val);
 	if (rc)
@@ -4383,7 +4455,7 @@ static int ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 	}
 	ad9361_spi_write(phy->spi, REG_CONFIG,
 			CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
-	for(i = 0; i < 15; i++) {
+	for(i = 0; i < 16; i++) {
 		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
 		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE,
 						 phy->pdata->rssi_mixer_err_tbl[i]);
@@ -4391,6 +4463,29 @@ static int ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 			CALIB_TABLE_SELECT(0x3) | WRITE_MIXER_ERROR_TABLE | START_CALIB_TABLE_CLOCK);
 	}
 	ad9361_spi_write(phy->spi, REG_CONFIG, 0x00);
+
+	return 0;
+}
+
+static int ad9361_rssi_program_lna_gain(struct ad9361_rf_phy *phy)
+{
+	u8 i;
+
+	ad9361_spi_write(phy->spi, REG_LNA_GAIN,
+					 phy->pdata->rssi_gain_step_calib_reg_val[0]);
+
+	/* Program the LNA gain step words into the internal table. */
+	ad9361_spi_write(phy->spi, REG_CONFIG,
+					 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	for(i = 0; i < 4; i++) {
+		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
+		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE,
+				phy->pdata->rssi_gain_step_calib_reg_val[i+1]);
+		ad9361_spi_write(phy->spi, REG_CONFIG,
+				CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF |
+						 START_CALIB_TABLE_CLOCK);
+		udelay(3);	//Wait for data to fully write to internal table
+	}
 
 	return 0;
 }
@@ -4419,6 +4514,10 @@ static int ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 			else
 				lo_index = 3;
 
+	for(i = 0; i < 4; i++)
+		phy->pdata->rssi_gain_step_calib_reg_val[i] =
+			gain_step_calib_reg_val[lo_index][i];
+
 	/* Put the AD9361 into the Alert state. */
 	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
 
@@ -4433,20 +4532,8 @@ static int ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 			RSSI_MODE_SELECT(0x3) | DEFAULT_RSSI_MEAS_MODE);
 	ad9361_spi_write(phy->spi, REG_MEASURE_DURATION_01,
 			MEASUREMENT_DURATION_0(0x0E));
-	ad9361_spi_write(phy->spi, REG_LNA_GAIN,
-			gain_step_calib_reg_val[lo_index][0]);
 
-	/* Program the LNA gain step words into the internal table. */
-	ad9361_spi_write(phy->spi, REG_CONFIG,
-			CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
-	for(i = 0; i < 4; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE,
-				gain_step_calib_reg_val[lo_index][i+1]);
-		ad9361_spi_write(phy->spi, REG_CONFIG,
-			CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF | START_CALIB_TABLE_CLOCK);
-		udelay(3);	//Wait for data to fully write to internal table
-	}
+	ad9361_rssi_program_lna_gain(phy);
 
 	ad9361_spi_write(phy->spi, REG_CONFIG, START_CALIB_TABLE_CLOCK);
 	ad9361_spi_write(phy->spi, REG_CONFIG, 0x00);
@@ -4462,7 +4549,7 @@ static int ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 			ad9361_spi_read(phy->spi, REG_GAIN_ERROR_READ);
 	}
 	ad9361_spi_write(phy->spi, REG_CONFIG, CALIB_TABLE_SELECT(0x1));
-	for(i = 0; i < 15; i++) {
+	for(i = 0; i < 16; i++) {
 		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
 		phy->pdata->rssi_mixer_err_tbl[i] =
 			ad9361_spi_read(phy->spi, REG_GAIN_ERROR_READ);
@@ -4471,6 +4558,9 @@ static int ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 
 	/* Programming gain step errors into the AD9361 in the field */
 	ad9361_rssi_write_err_tbl(phy);
+
+	ad9361_spi_write(phy->spi, REG_SETTLE_TIME,
+				ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
 
 	ad9361_ensm_restore_prev_state(phy);
 
@@ -4505,6 +4595,8 @@ static void ad9361_clear_state(struct ad9361_rf_phy *phy)
 	phy->current_rx_lo_freq = 0;
 	phy->current_tx_use_tdd_table = false;
 	phy->current_rx_use_tdd_table = false;
+	phy->cached_synth_pd[0] = 0;
+	phy->cached_synth_pd[1] = 0;
 
 	memset(&phy->fastlock, 0, sizeof(phy->fastlock));
 }
@@ -4764,9 +4856,6 @@ static int ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	if (!pd->fdd)
-		ad9361_run_calibration(phy, TXMON_CAL);
-
 	ad9361_pp_port_setup(phy, true);
 
 	ret = ad9361_set_ensm_mode(phy, pd->fdd, pd->ensm_pin_ctrl);
@@ -4809,9 +4898,12 @@ static int ad9361_setup(struct ad9361_rf_phy *phy)
 	phy->auto_cal_en = true;
 	phy->cal_threshold_freq = 100000000ULL; /* 100 MHz */
 
-	if (!pd->rssi_skip_err_tbl) {
+	if (!pd->rssi_skip_calib) {
 		ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+		ad9361_rssi_program_lna_gain(phy);
 		ad9361_rssi_write_err_tbl(phy);
+		ad9361_spi_write(phy->spi, REG_SETTLE_TIME,
+				ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
 		ad9361_ensm_restore_prev_state(phy);
 	}
 
@@ -6464,6 +6556,47 @@ static ssize_t ad9361_phy_store(struct device *dev,
 			ret = ad9361_do_calib_run(phy, val, arg);
 
 		break;
+	case AD9361_RSSI_GAIN_STEP_ERROR:
+		ret = sscanf(buf, "lna_error: %d %d %d %d "
+			"mixer_error: %d %d %d %d %d %d %d %d "
+			"%d %d %d %d %d %d %d %d "
+			"gain_step_calib_reg_val: %d %d %d %d %d",
+			&phy->pdata->rssi_lna_err_tbl[0],
+			&phy->pdata->rssi_lna_err_tbl[1],
+			&phy->pdata->rssi_lna_err_tbl[2],
+			&phy->pdata->rssi_lna_err_tbl[3],
+			&phy->pdata->rssi_mixer_err_tbl[0],
+			&phy->pdata->rssi_mixer_err_tbl[1],
+			&phy->pdata->rssi_mixer_err_tbl[2],
+			&phy->pdata->rssi_mixer_err_tbl[3],
+			&phy->pdata->rssi_mixer_err_tbl[4],
+			&phy->pdata->rssi_mixer_err_tbl[5],
+			&phy->pdata->rssi_mixer_err_tbl[6],
+			&phy->pdata->rssi_mixer_err_tbl[7],
+			&phy->pdata->rssi_mixer_err_tbl[8],
+			&phy->pdata->rssi_mixer_err_tbl[9],
+			&phy->pdata->rssi_mixer_err_tbl[10],
+			&phy->pdata->rssi_mixer_err_tbl[11],
+			&phy->pdata->rssi_mixer_err_tbl[12],
+			&phy->pdata->rssi_mixer_err_tbl[13],
+			&phy->pdata->rssi_mixer_err_tbl[14],
+			&phy->pdata->rssi_mixer_err_tbl[15],
+			&phy->pdata->rssi_gain_step_calib_reg_val[0],
+			&phy->pdata->rssi_gain_step_calib_reg_val[1],
+			&phy->pdata->rssi_gain_step_calib_reg_val[2],
+			&phy->pdata->rssi_gain_step_calib_reg_val[3],
+			&phy->pdata->rssi_gain_step_calib_reg_val[4]);
+		if (ret == 25) {
+			ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+			ad9361_rssi_program_lna_gain(phy);
+			ad9361_rssi_write_err_tbl(phy);
+			ad9361_spi_write(phy->spi, REG_SETTLE_TIME,
+					ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
+			ad9361_ensm_restore_prev_state(phy);
+			ret = 0;
+		} else
+			ret = -EINVAL;
+		break;
 	case AD9361_BBDC_OFFS_ENABLE:
 		ret = strtobool(buf, &phy->bbdc_track_en);
 		if (ret < 0)
@@ -6617,7 +6750,8 @@ static ssize_t ad9361_phy_show(struct device *dev,
 		break;
 	case AD9361_RSSI_GAIN_STEP_ERROR:
 		ret = sprintf(buf, "lna_error: %d %d %d %d\n"
-			"mixer_error: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+			"mixer_error: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n"
+			"gain_step_calib_reg_val: %d %d %d %d %d\n",
 			phy->pdata->rssi_lna_err_tbl[0], phy->pdata->rssi_lna_err_tbl[1],
 			phy->pdata->rssi_lna_err_tbl[2], phy->pdata->rssi_lna_err_tbl[3],
 			phy->pdata->rssi_mixer_err_tbl[0], phy->pdata->rssi_mixer_err_tbl[1],
@@ -6627,7 +6761,12 @@ static ssize_t ad9361_phy_show(struct device *dev,
 			phy->pdata->rssi_mixer_err_tbl[8], phy->pdata->rssi_mixer_err_tbl[9],
 			phy->pdata->rssi_mixer_err_tbl[10], phy->pdata->rssi_mixer_err_tbl[11],
 			phy->pdata->rssi_mixer_err_tbl[12], phy->pdata->rssi_mixer_err_tbl[13],
-			phy->pdata->rssi_mixer_err_tbl[14]);
+			phy->pdata->rssi_mixer_err_tbl[14], phy->pdata->rssi_mixer_err_tbl[15],
+			phy->pdata->rssi_gain_step_calib_reg_val[0],
+			phy->pdata->rssi_gain_step_calib_reg_val[1],
+			phy->pdata->rssi_gain_step_calib_reg_val[2],
+			phy->pdata->rssi_gain_step_calib_reg_val[3],
+			phy->pdata->rssi_gain_step_calib_reg_val[4]);
 		break;
 	case AD9361_BBDC_OFFS_ENABLE:
 		ret = sprintf(buf, "%d\n", phy->bbdc_track_en);
@@ -6693,7 +6832,7 @@ static IIO_DEVICE_ATTR(calib_mode_available, S_IRUGO,
 
 static IIO_DEVICE_ATTR(rssi_gain_step_error, S_IRUGO,
 			ad9361_phy_show,
-			NULL,
+			ad9361_phy_store,
 			AD9361_RSSI_GAIN_STEP_ERROR);
 
 static IIO_DEVICE_ATTR(rx_path_rates, S_IRUGO,
@@ -6822,6 +6961,7 @@ enum lo_ext_info {
 	LOEXT_LOAD,
 	LOEXT_SAVE,
 	LOEXT_EXTERNAL,
+	LOEXT_PD,
 };
 
 static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
@@ -6831,6 +6971,7 @@ static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
 {
 	struct ad9361_rf_phy *phy = iio_priv(indio_dev);
 	u64 readin;
+	bool res;
 	unsigned long tmp;
 	int ret = 0;
 
@@ -6838,9 +6979,26 @@ static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
 		return -EINVAL;
 
 	if (private != LOEXT_LOAD) {
-		ret = kstrtoull(buf, 10, &readin);
-		if (ret)
-			return ret;
+
+	}
+
+	switch (private) {
+		case LOEXT_FREQ:
+		case LOEXT_STORE:
+		case LOEXT_RECALL:
+		case LOEXT_SAVE:
+			ret = kstrtoull(buf, 10, &readin);
+			if (ret)
+				return ret;
+			break;
+		case LOEXT_EXTERNAL:
+		case LOEXT_PD:
+			ret = strtobool(buf, &res);
+			if (ret < 0)
+				return ret;
+			break;
+		case LOEXT_LOAD:
+			break;
 	}
 
 	mutex_lock(&indio_dev->mlock);
@@ -6907,27 +7065,37 @@ static ssize_t ad9361_phy_lo_write(struct iio_dev *indio_dev,
 			case 0:
 				if (phy->clk_ext_lo_rx)
 					ret = clk_set_parent(phy->clks[RX_RFPLL],
-							     readin ? phy->clk_ext_lo_rx :
+							     res ? phy->clk_ext_lo_rx :
 							     phy->clks[RX_RFPLL_INT]);
-					else
-						ret = -ENODEV;
+				else
+					ret = -ENODEV;
 				break;
 
 			case 1:
 				if (phy->clk_ext_lo_tx)
 					ret = clk_set_parent(phy->clks[TX_RFPLL],
-							     readin ? phy->clk_ext_lo_tx :
+							     res ? phy->clk_ext_lo_tx :
 							     phy->clks[TX_RFPLL_INT]);
-					else
-						ret = -ENODEV;
-					break;
+				else
+					ret = -ENODEV;
+				break;
 
 			default:
 				ret = -EINVAL;
 			}
 		}
 		break;
+	case LOEXT_PD:
+		switch (chan->channel) {
+		case 0:
+			ret = ad9361_synth_lo_powerdown(phy, res ? LO_OFF : LO_ON, LO_DONTCARE);
+			break;
+		case 1:
+			ret = ad9361_synth_lo_powerdown(phy, LO_DONTCARE, res ? LO_OFF : LO_ON);
+			break;
+		}
 
+		break;
 	}
 	mutex_unlock(&indio_dev->mlock);
 
@@ -6983,6 +7151,9 @@ static ssize_t ad9361_phy_lo_read(struct iio_dev *indio_dev,
 			ret = -EINVAL;
 		}
 		break;
+	case LOEXT_PD:
+		val = !!(phy->cached_synth_pd[chan->channel ? 0 : 1] & RX_LO_POWER_DOWN);
+		break;
 	default:
 		ret = 0;
 
@@ -7010,6 +7181,7 @@ static const struct iio_chan_spec_ext_info ad9361_phy_ext_info[] = {
 	_AD9361_EXT_LO_INFO("fastlock_load", LOEXT_LOAD),
 	_AD9361_EXT_LO_INFO("fastlock_save", LOEXT_SAVE),
 	_AD9361_EXT_LO_INFO("external", LOEXT_EXTERNAL),
+	_AD9361_EXT_LO_INFO("powerdown", LOEXT_PD),
 	{ },
 };
 
@@ -8101,9 +8273,6 @@ static struct ad9361_phy_platform_data
 	ad9361_of_get_u32(iodev, np, "adi,fagc-lp-thresh-increment-steps", 1,
 			&pdata->gain_ctrl.f_agc_lp_thresh_increment_steps); /* 0x117 1..8 */
 
-		/* Fast AGC - Lock Level */
-	ad9361_of_get_u32(iodev, np, "adi,fagc-lock-level", 10,
-			&pdata->gain_ctrl.f_agc_lock_level); /* 0x101 0..-127 dBFS */
 	ad9361_of_get_bool(iodev, np, "adi,fagc-lock-level-lmt-gain-increase-enable",
 			&pdata->gain_ctrl.f_agc_lock_level_lmt_gain_increase_en); /* 0x111:6 (split table)*/
 	ad9361_of_get_u32(iodev, np, "adi,fagc-lock-level-gain-increase-upper-limit", 5,
@@ -8168,14 +8337,19 @@ static struct ad9361_phy_platform_data
 
 	/* RSSI Gain Step Error Tables */
 
-	ret = of_property_read_u32_array(np, "adi,rssi-gain-step-lna-error-table",
-			      pdata->rssi_lna_err_tbl, 4);
-	ret |= of_property_read_u32_array(np, "adi,rssi-gain-step-mixer-error-table",
-			      pdata->rssi_mixer_err_tbl, 15);
+	ret = of_property_read_u32_array(np,
+				"adi,rssi-gain-step-lna-error-table",
+				pdata->rssi_lna_err_tbl, 4);
+	ret |= of_property_read_u32_array(np,
+				"adi,rssi-gain-step-mixer-error-table",
+				pdata->rssi_mixer_err_tbl, 16);
+	ret |= of_property_read_u32_array(np,
+				"adi,rssi-gain-step-calibration-register-values",
+				pdata->rssi_gain_step_calib_reg_val, 5);
 	if (ret)
-		pdata->rssi_skip_err_tbl = true;
+		pdata->rssi_skip_calib = true;
 	else
-		pdata->rssi_skip_err_tbl = false;
+		pdata->rssi_skip_calib = false;
 
 	/* Control Outs Control */
 
@@ -8642,7 +8816,8 @@ static int ad9361_probe(struct spi_device *spi)
 	struct clk *clk = NULL;
 	int ret, rev;
 
-	dev_info(&spi->dev, "%s : enter", __func__);
+	dev_info(&spi->dev, "%s : enter (%s)", __func__,
+		 spi_get_device_id(spi)->name);
 
 	clk = devm_clk_get(&spi->dev, NULL);
 	if (IS_ERR(clk)) {

@@ -8,7 +8,7 @@
 /include/ "zynq.dtsi"
 
 / {
-	model = "ZYNQ Pluto SDR (Z7010/AD9363)";
+	model = "Analog Devices PlutoSDR (Z7010/AD9363)";
 	memory {
 		device_type = "memory";
 		reg = <0x00000000 0x20000000>;
@@ -48,7 +48,7 @@
 };
 
 &usb0 {
-	xlnx,phy-reset-gpio = <&gpio0 7 0>;
+	xlnx,phy-reset-gpio = <&gpio0 52 0>;
 	dr_mode = "otg";
 	status = "okay";
 	usb-phy = <&usb_phy0>;
@@ -81,6 +81,16 @@
 		partition@qspi-linux {
 			label = "qspi-linux";
 			reg = <0x200000 0x1E00000>; /* 30M */
+		};
+	};
+};
+
+&adc {
+	xlnx,channels {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		channel@0 {
+			reg = <0>;
 		};
 	};
 };
@@ -140,6 +150,7 @@
 			dmas = <&rx_dma 0>;
 			dma-names = "rx";
 			spibus-connected = <&adc0_ad9364>;
+			adi,axi-decimation-core-available;
 		};
 
 		cf_ad9364_dac_core_0: cf-ad9361-dds-core-lpc@79024000 {
@@ -149,6 +160,7 @@
 			clock-names = "sampl_clk";
 			dmas = <&tx_dma 0>;
 			dma-names = "tx";
+			adi,axi-interpolation-core-available;
 		};
 
 		mwipcore@43C00000 {

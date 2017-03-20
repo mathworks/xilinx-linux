@@ -2925,7 +2925,7 @@ struct gain_control {
 	u8 f_agc_lp_thresh_increment_steps; /* 0x117 1..8 */
 
 	/* Fast AGC - Lock Level */
-	u8 f_agc_lock_level; /* 0x101 0..-127 dBFS */
+	u8 f_agc_lock_level; /* NOT USED: 0x101 0..-127 dBFS same as agc_inner_thresh_high */
 	bool f_agc_lock_level_lmt_gain_increase_en; /* 0x111:6 */
 	u8 f_agc_lock_level_gain_increase_upper_limit; /* 0x118 0..63 */
 	/* Fast AGC - Peak Detectors and Final Settling */
@@ -3102,6 +3102,12 @@ enum ad9361_clkout {
 	ADC_CLK_DIV_16,
 };
 
+enum synth_pd_ctrl {
+	LO_DONTCARE,
+	LO_OFF,
+	LO_ON,
+};
+
 struct ad9361_phy_platform_data {
 	bool			rx2tx2;
 	bool			fdd;
@@ -3147,9 +3153,10 @@ struct ad9361_phy_platform_data {
 
 	struct gain_control	gain_ctrl;
 	struct rssi_control	rssi_ctrl;
-	u32	   rssi_lna_err_tbl[4];
-	u32	   rssi_mixer_err_tbl[15];
-	bool   rssi_skip_err_tbl;
+	u32		rssi_lna_err_tbl[4];
+	u32		rssi_mixer_err_tbl[16];
+	u32		rssi_gain_step_calib_reg_val[5];
+	bool	rssi_skip_calib;
 	struct port_control	port_ctrl;
 	struct ctrl_outs_control	ctrl_outs_ctrl;
 	struct elna_control	elna_ctrl;
@@ -3329,6 +3336,7 @@ struct ad9361_rf_phy {
 	u8			curr_ensm_state;
 	u8			cached_rx_rfpll_div;
 	u8			cached_tx_rfpll_div;
+	u8			cached_synth_pd[2];
 	int			tx_quad_lpf_tia_match;
 	int			current_table;
 
