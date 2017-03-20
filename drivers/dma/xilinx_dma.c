@@ -1463,7 +1463,7 @@ static int xilinx_dma_of_probe(struct platform_device *pdev)
 
 	/* Axi DMA and VDMA only do slave transfers
 	 */
-	if (of_device_is_compatible(node, "xlnx,axi-dma")) {
+	if (of_device_is_compatible(node, "xlnx,axi-adi-dma")) {
 		xdev->feature |= XILINX_DMA_IP_DMA;
 		value = (int *)of_get_property(node,
 				"xlnx,sg-include-stscntrl-strm",
@@ -1484,7 +1484,7 @@ static int xilinx_dma_of_probe(struct platform_device *pdev)
 		xdev->common.device_issue_pending = xilinx_dma_issue_pending;
 	}
 
-	if (of_device_is_compatible(node, "xlnx,axi-vdma")) {
+	if (of_device_is_compatible(node, "xlnx,axi-adi-vdma")) {
 		xdev->feature |= XILINX_DMA_IP_VDMA;
 
 		of_property_read_u32(node, "xlnx,include-sg", &include_sg);
@@ -1576,14 +1576,15 @@ static int xilinx_dma_of_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xilinx_dma_of_ids[] = {
-	{ .compatible = "xlnx,axi-dma" },
-	{ .compatible = "xlnx,axi-vdma" },
+	{ .compatible = "xlnx,axi-adi-dma" },
+	{ .compatible = "xlnx,axi-adi-vdma" },
 	{}
 };
+MODULE_DEVICE_TABLE(of, xilinx_dma_of_ids);
 
 static struct platform_driver xilinx_dma_of_driver = {
 	.driver = {
-		.name = "xilinx-dma",
+		.name = "xilinx-adi-dma",
 		.owner = THIS_MODULE,
 		.of_match_table = xilinx_dma_of_ids,
 	},
@@ -1591,17 +1592,7 @@ static struct platform_driver xilinx_dma_of_driver = {
 	.remove = xilinx_dma_of_remove,
 };
 
-static int __init xilinx_dma_init(void)
-{
-	return platform_driver_register(&xilinx_dma_of_driver);
-}
-subsys_initcall(xilinx_dma_init);
-
-static void __exit xilinx_dma_exit(void)
-{
-	platform_driver_unregister(&xilinx_dma_of_driver);
-}
-module_exit(xilinx_dma_exit);
+module_platform_driver(xilinx_dma_of_driver);
 
 MODULE_DESCRIPTION("Xilinx DMA/VDMA driver");
 MODULE_LICENSE("GPL");
