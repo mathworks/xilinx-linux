@@ -387,6 +387,7 @@ struct xilinx_dma_config {
  * @regs: I/O mapped base address
  * @dev: Device Structure
  * @common: DMA device structure
+ * @dma_parms: DMA Parameters structure
  * @chan: Driver specific DMA channel
  * @has_sg: Specifies whether Scatter-Gather is present or not
  * @mcdma: Specifies whether Multi-Channel is present or not
@@ -406,6 +407,7 @@ struct xilinx_dma_device {
 	void __iomem *regs;
 	struct device *dev;
 	struct dma_device common;
+	struct device_dma_parameters dma_parms;
 	struct xilinx_dma_chan *chan[XILINX_DMA_MAX_CHANS_PER_DEVICE];
 	bool has_sg;
 	bool mcdma;
@@ -2636,6 +2638,8 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 	/* Initialize the DMA engine */
 	xdev->common.dev = &pdev->dev;
 
+	pdev->dev.dma_parms = &xdev->dma_parms;
+
 	INIT_LIST_HEAD(&xdev->common.channels);
 	if (!(xdev->dma_config->dmatype == XDMA_TYPE_CDMA)) {
 		dma_cap_set(DMA_SLAVE, xdev->common.cap_mask);
@@ -2659,6 +2663,10 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 		/* Residue calculation is supported by only AXI DMA */
 		xdev->common.residue_granularity =
 					  DMA_RESIDUE_GRANULARITY_SEGMENT;
+		/* The DMA Driver breaks large descriptors into multiple
+		 * segments
+		 */
+		dma_set_max_seg_size(xdev->common.dev, UINT_MAX);
 	} else if (xdev->dma_config->dmatype == XDMA_TYPE_CDMA) {
 		dma_cap_set(DMA_MEMCPY, xdev->common.cap_mask);
 		xdev->common.device_prep_dma_memcpy = xilinx_cdma_prep_memcpy;
