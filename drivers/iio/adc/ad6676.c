@@ -976,7 +976,7 @@ static int ad6676_gpio_config(struct axiadc_converter *conv)
 	struct spi_device *spi = conv->spi;
 	struct gpio_board_cfg board_cfg[5];
 	enum gpiod_flags flags;
-	int i, ret;
+	int i;
 
 	board_cfg[0].gpio_name = "oen";
 	board_cfg[1].gpio_name = "sela";
@@ -1191,7 +1191,6 @@ static int ad6676_remove(struct spi_device *spi)
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 
 	clk_disable_unprepare(conv->clk);
-	spi_set_drvdata(spi, NULL);
 
 	return 0;
 }

@@ -315,12 +315,27 @@ static unsigned long axi_clkgen_recalc_rate(struct clk_hw *clk_hw,
 	unsigned int reg;
 	unsigned long long tmp;
 
-	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLKOUT0_1, &reg);
-	dout = (reg & 0x3f) + ((reg >> 6) & 0x3f);
+	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLKOUT0_2, &reg);
+	if (reg & BIT(6)) {
+		dout = 1;
+	} else {
+		axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLKOUT0_1, &reg);
+		dout = (reg & 0x3f) + ((reg >> 6) & 0x3f);
+	}
+
 	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_DIV, &reg);
-	d = (reg & 0x3f) + ((reg >> 6) & 0x3f);
-	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_FB1, &reg);
-	m = (reg & 0x3f) + ((reg >> 6) & 0x3f);
+	if (reg & BIT(12))
+		d = 1;
+	else
+		d = (reg & 0x3f) + ((reg >> 6) & 0x3f);
+
+	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_FB2, &reg);
+	if (reg & BIT(6)) {
+		m = 1;
+	} else {
+		axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_FB1, &reg);
+		m = (reg & 0x3f) + ((reg >> 6) & 0x3f);
+	}
 
 	if (d == 0 || dout == 0)
 		return 0;
@@ -328,10 +343,7 @@ static unsigned long axi_clkgen_recalc_rate(struct clk_hw *clk_hw,
 	tmp = (unsigned long long)(parent_rate / d) * m;
 	do_div(tmp, dout);
 
-	if (tmp > ULONG_MAX)
-		return ULONG_MAX;
-
-	return tmp;
+	return min_t(unsigned long long, tmp, ULONG_MAX);
 }
 
 static int axi_clkgen_enable(struct clk_hw *clk_hw)
@@ -395,8 +407,8 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	const char *parent_names[2];
 	const char *clk_name;
 	struct resource *mem;
-	struct clk *clk;
 	unsigned int i;
+	int ret;
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
@@ -436,12 +448,12 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	axi_clkgen_mmcm_enable(axi_clkgen, false);
 
 	axi_clkgen->clk_hw.init = &init;
-	clk = devm_clk_register(&pdev->dev, &axi_clkgen->clk_hw);
-	if (IS_ERR(clk))
-		return PTR_ERR(clk);
+	ret = devm_clk_hw_register(&pdev->dev, &axi_clkgen->clk_hw);
+	if (ret)
+		return ret;
 
-	return of_clk_add_provider(pdev->dev.of_node, of_clk_src_simple_get,
-				    clk);
+	return of_clk_add_hw_provider(pdev->dev.of_node, of_clk_hw_simple_get,
+				      &axi_clkgen->clk_hw);
 }
 
 static int axi_clkgen_remove(struct platform_device *pdev)

@@ -5,7 +5,6 @@
 
 &eth {
 	phy1: phy@1 {
-		compatible = "marvell,88e1510";
 		device_type = "ethernet-phy";
 		reg = <0x1>;
 		marvell,reg-init=<3 16 0xff00 0x1e 3 17 0xfff0 0x0a>;
@@ -44,9 +43,11 @@
 &fpga_axi {
 	fmc_i2c: i2c@41620000 {
 		compatible = "xlnx,axi-iic-1.01.b", "xlnx,xps-iic-2.00.a";
+		reg = <0x41620000 0x10000>;
 		interrupt-parent = <&intc>;
 		interrupts = <0 55 0x4>;
-		reg = <0x41620000 0x10000>;
+		clocks = <&clkc 15>;
+		clock-names = "pclk";
 
 		#size-cells = <0>;
 		#address-cells = <1>;
@@ -59,9 +60,11 @@
 
 	ee2_i2c: i2c@41510000 {
 		compatible = "xlnx,axi-iic-1.01.b", "xlnx,xps-iic-2.00.a";
+		reg = <0x41510000 0x10000>;
 		interrupt-parent = <&intc>;
 		interrupts = <0 56 0x4>;
-		reg = <0x41510000 0x10000>;
+		clocks = <&clkc 15>;
+		clock-names = "pclk";
 
 		#size-cells = <0>;
 		#address-cells = <1>;

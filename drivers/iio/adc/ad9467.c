@@ -371,6 +371,7 @@ static int ad9467_dco_calibrate(struct iio_dev *indio_dev, unsigned chan)
 	case CHIPID_AD9625:
 	case CHIPID_AD9434:
 	case CHIPID_AD9649:
+	case CHIPID_AD9684:
 		return 0;
 	case CHIPID_AD9265:
 	case CHIPID_AD9652:
@@ -436,9 +437,10 @@ static irqreturn_t ad9680_event_handler(
 {
 	u64 event = IIO_UNMOD_EVENT_CODE(IIO_VOLTAGE, chn,
 			IIO_EV_TYPE_THRESH, IIO_EV_DIR_RISING);
-	s64 timestamp = iio_get_time_ns();
+	s64 timestamp = iio_get_time_ns(conv->indio_dev);
 
-	iio_push_event(conv->indio_dev, event, timestamp);
+	if (conv->indio_dev)
+		iio_push_event(conv->indio_dev, event, timestamp);
 
 	return IRQ_HANDLED;
 }
@@ -662,6 +664,7 @@ static ssize_t axiadc_testmode_write(struct iio_dev *indio_dev,
 	switch (conv->id) {
 	case CHIPID_AD9680:
 	case CHIPID_AD9234:
+	case CHIPID_AD9684:
 		ret = ad9680_testmode_set(indio_dev, chan->channel, mode);
 		break;
 	default:
@@ -867,6 +870,16 @@ static const struct axiadc_chip_info axiadc_chip_info_tbl[] = {
 		       .num_channels = 1,
 		       .channel[0] = AIM_CHAN_NOCALIB(0, 0, 14, 'S', 0, NULL, 0),
 		       },
+	[ID_AD9684] = {
+		       .name = "AD9684",
+		       .max_rate = 1250000000UL,
+		       .scale_table = ad9680_scale_table,
+		       .num_scales = ARRAY_SIZE(ad9680_scale_table),
+		       .max_testmode = TESTMODE_RAMP,
+		       .num_channels = 2,
+		       .channel[0] = AIM_CHAN_NOCALIB(0, 0, 14, 'S', 0, NULL, 0),
+		       .channel[1] = AIM_CHAN_NOCALIB(1, 1, 14, 'S', 0, NULL, 0),
+		       },
 };
 
 static int ad9250_setup(struct spi_device *spi, unsigned m, unsigned l)
@@ -997,9 +1010,9 @@ static int ad9680_setup(struct spi_device *spi, unsigned m, unsigned l,
 	ret |= ad9467_spi_write(spi, 0x581, 0x01);	// BID
 
 	ret |= ad9467_spi_write(spi, 0x583, 0x00);	// lane 0
-	ret |= ad9467_spi_write(spi, 0x585, 0x01);	// lane 1
-	ret |= ad9467_spi_write(spi, 0x587, 0x02);	// lane 2
-	ret |= ad9467_spi_write(spi, 0x589, 0x03);	// lane 3
+	ret |= ad9467_spi_write(spi, 0x584, 0x01);	// lane 1
+	ret |= ad9467_spi_write(spi, 0x585, 0x02);	// lane 2
+	ret |= ad9467_spi_write(spi, 0x586, 0x03);	// lane 3
 
 
 	ret |= ad9467_spi_write(spi, 0x570, 0x88);	// m=2, l=4, f= 1
@@ -1021,6 +1034,27 @@ static int ad9680_setup(struct spi_device *spi, unsigned m, unsigned l,
 
 	dev_info(&spi->dev, "AD9680 PLL %s\n",
 		 pll_stat & 0x80 ? "LOCKED" : "UNLOCKED");
+
+	return ret;
+}
+
+static int ad9684_setup(struct spi_device *spi)
+{
+	unsigned clk_stat;
+	int ret;
+
+	ret = ad9467_spi_write(spi, 0x000, 0x81);
+	mdelay(10);
+	ret |= ad9467_spi_write(spi, 0x001, 0x02);
+	mdelay(10);
+
+	ret |= ad9467_spi_write(spi, 0x03f, 0x80);
+	ret |= ad9467_spi_write(spi, 0x040, 0xbf);
+	ret |= ad9467_spi_write(spi, 0x568, 0x01);
+
+	clk_stat = ad9467_spi_read(spi, 0x11c);
+	dev_info(&spi->dev, "AD9684 input clock %s\n",
+		 clk_stat & 0x01 ? "DETECTED" : "NOT DETECTED");
 
 	return ret;
 }
@@ -1267,6 +1301,7 @@ static int ad9467_probe(struct spi_device *spi)
 	switch (spi_get_device_id(spi)->driver_data) {
 	case CHIPID_AD9680:
 	case CHIPID_AD9234:
+	case CHIPID_AD9684:
 		conv->id = ad9467_spi_read(spi, AD9680_REG_CHIP_ID_LOW);
 		break;
 	default:
@@ -1388,6 +1423,18 @@ static int ad9467_probe(struct spi_device *spi)
 		    AD9643_DEF_OUTPUT_MODE | OUTPUT_MODE_TWOS_COMPLEMENT;
 		ret = ad9467_outputmode_set(spi, conv->adc_output_mode);
 		break;
+	case CHIPID_AD9684:
+		ret = ad9684_setup(spi);
+		if (ret) {
+			dev_err(&spi->dev, "Failed to initialize\n");
+			ret = -EIO;
+			goto out;
+		}
+		conv->chip_info = &axiadc_chip_info_tbl[ID_AD9684];
+		conv->adc_output_mode =
+		    AD9680_DEF_OUTPUT_MODE | OUTPUT_MODE_TWOS_COMPLEMENT;
+		ret = ad9680_outputmode_set(spi, conv->adc_output_mode);
+		break;
 	default:
 		dev_err(&spi->dev, "Unrecognized CHIP_ID 0x%X\n", conv->id);
 		ret = -ENODEV;
@@ -1410,6 +1457,7 @@ static int ad9467_probe(struct spi_device *spi)
 	switch (conv->id) {
 	case CHIPID_AD9680:
 	case CHIPID_AD9234:
+	case CHIPID_AD9684:
 		conv->testmode_set = ad9680_test_and_outputmode_set;
 		break;
 	default:
@@ -1445,7 +1493,6 @@ static int ad9467_remove(struct spi_device *spi)
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 
 	clk_disable_unprepare(conv->clk);
-	spi_set_drvdata(spi, NULL);
 
 	return 0;
 }
@@ -1462,6 +1509,7 @@ static const struct spi_device_id ad9467_id[] = {
 	{"ad9652", CHIPID_AD9652},
 	{"ad9234", CHIPID_AD9234},
 	{"ad9649", CHIPID_AD9649},
+	{"ad9684", CHIPID_AD9684},
 	{}
 };
 

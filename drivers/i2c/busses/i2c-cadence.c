@@ -18,7 +18,9 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
+#include <linux/pinctrl/consumer.h>
 
 /* Register offsets for the I2C device. */
 #define CDNS_I2C_CR_OFFSET		0x00 /* Control Register, RW */
@@ -135,7 +137,6 @@
  * @xfer_done:		Transfer complete status
  * @p_send_buf:		Pointer to transmit buffer
  * @p_recv_buf:		Pointer to receive buffer
- * @suspended:		Flag holding the device's PM status
  * @send_count:		Number of bytes still expected to send
  * @recv_count:		Number of bytes still expected to receive
  * @curr_recv_count:	Number of bytes to be received in current transfer
@@ -147,6 +148,10 @@
  * @clk_rate_change_nb:	Notifier block for clock rate changes
  * @quirks:		flag for broken hold bit usage in r1p10
  * @ctrl_reg:		Cached value of the control register.
+ * @rinfo:		Structure holding recovery information.
+ * @pinctrl:		Pin control state holder.
+ * @pinctrl_pins_default: Default pin control state.
+ * @pinctrl_pins_gpio:	GPIO pin control state.
  */
 struct cdns_i2c {
 	struct device		*dev;
@@ -157,7 +162,6 @@ struct cdns_i2c {
 	struct completion xfer_done;
 	unsigned char *p_send_buf;
 	unsigned char *p_recv_buf;
-	u8 suspended;
 	unsigned int send_count;
 	unsigned int recv_count;
 	unsigned int curr_recv_count;
@@ -169,6 +173,10 @@ struct cdns_i2c {
 	struct notifier_block clk_rate_change_nb;
 	u32 quirks;
 	u32 ctrl_reg;
+	struct i2c_bus_recovery_info rinfo;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pinctrl_pins_default;
+	struct pinctrl_state *pinctrl_pins_gpio;
 };
 
 struct cdns_platform_data {
@@ -563,6 +571,8 @@ static void cdns_i2c_master_reset(struct i2c_adapter *adap)
 	/* Clear the status register */
 	regval = cdns_i2c_readreg(CDNS_I2C_SR_OFFSET);
 	cdns_i2c_writereg(regval, CDNS_I2C_SR_OFFSET);
+
+	i2c_recover_bus(adap);
 }
 
 static int cdns_i2c_process_msg(struct cdns_i2c *id, struct i2c_msg *msg,
@@ -826,7 +836,7 @@ static int cdns_i2c_setclk(unsigned long clk_in, struct cdns_i2c *id)
  * depending on the scaling direction.
  *
  * Return:	NOTIFY_STOP if the rate change should be aborted, NOTIFY_OK
- *		to acknowedge the change, NOTIFY_DONE if the notification is
+ *		to acknowledge the change, NOTIFY_DONE if the notification is
  *		considered irrelevant.
  */
 static int cdns_i2c_clk_notifier_cb(struct notifier_block *nb, unsigned long
@@ -835,7 +845,7 @@ static int cdns_i2c_clk_notifier_cb(struct notifier_block *nb, unsigned long
 	struct clk_notifier_data *ndata = data;
 	struct cdns_i2c *id = to_cdns_i2c(nb);
 
-	if (id->suspended)
+	if (pm_runtime_suspended(id->dev))
 		return NOTIFY_OK;
 
 	switch (event) {
@@ -889,7 +899,6 @@ static int __maybe_unused cdns_i2c_runtime_suspend(struct device *dev)
 	struct cdns_i2c *xi2c = platform_get_drvdata(pdev);
 
 	clk_disable(xi2c->clk);
-	xi2c->suspended = 1;
 
 	return 0;
 }
@@ -935,7 +944,90 @@ static int __maybe_unused cdns_i2c_runtime_resume(struct device *dev)
 	}
 	cdns_i2c_init(xi2c);
 
-	xi2c->suspended = 0;
+	return 0;
+}
+
+/**
+ * cdns_i2c_prepare_recovery - Withold recovery state
+ * @adapter:    Pointer to i2c adapter
+ *
+ * This function is called to prepare for recovery.
+ * It changes the state of pins from SCL/SDA to GPIO.
+ */
+static void cdns_i2c_prepare_recovery(struct i2c_adapter *adapter)
+{
+	struct cdns_i2c *p_cdns_i2c;
+
+	p_cdns_i2c = container_of(adapter, struct cdns_i2c, adap);
+
+	/* Setting pin state as gpio */
+	pinctrl_select_state(p_cdns_i2c->pinctrl,
+			p_cdns_i2c->pinctrl_pins_gpio);
+}
+
+/**
+ * cdns_i2c_unprepare_recovery - Release recovery state
+ * @adapter:    Pointer to i2c adapter
+ *
+ * This function is called on exiting recovery. It reverts
+ * the state of pins from GPIO to SCL/SDA.
+ */
+static void cdns_i2c_unprepare_recovery(struct i2c_adapter *adapter)
+{
+	struct cdns_i2c *p_cdns_i2c;
+
+	p_cdns_i2c = container_of(adapter, struct cdns_i2c, adap);
+
+	/* Setting pin state to default(i2c) */
+	pinctrl_select_state(p_cdns_i2c->pinctrl,
+			p_cdns_i2c->pinctrl_pins_default);
+}
+
+/**
+ * cdns_i2c_init_recovery_info  - Initialize I2C bus recovery
+ * @pid:        Pointer to cdns i2c structure
+ * @pdev:       Handle to the platform device structure
+ *
+ * This function does required initialization for i2c bus
+ * recovery. It registers three functions for prepare,
+ * recover and unprepare
+ *
+ * Return: 0 on Success, negative error otherwise.
+ */
+static int cdns_i2c_init_recovery_info(struct cdns_i2c *pid,
+		struct platform_device *pdev)
+{
+	struct i2c_bus_recovery_info *rinfo = &pid->rinfo;
+
+	pid->pinctrl_pins_default = pinctrl_lookup_state(pid->pinctrl,
+			PINCTRL_STATE_DEFAULT);
+	pid->pinctrl_pins_gpio = pinctrl_lookup_state(pid->pinctrl, "gpio");
+
+	/* Fetches GPIO pins */
+	rinfo->sda_gpio = of_get_named_gpio(pdev->dev.of_node, "sda-gpios", 0);
+	rinfo->scl_gpio = of_get_named_gpio(pdev->dev.of_node, "scl-gpios", 0);
+
+	/* if GPIO driver isn't ready yet, deffer probe */
+	if (rinfo->sda_gpio == -EPROBE_DEFER ||
+			rinfo->scl_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
+	/* Validates fetched information */
+	if (!gpio_is_valid(rinfo->sda_gpio) ||
+			!gpio_is_valid(rinfo->scl_gpio) ||
+			IS_ERR(pid->pinctrl_pins_default) ||
+			IS_ERR(pid->pinctrl_pins_gpio)) {
+		dev_dbg(&pdev->dev, "recovery information incomplete\n");
+		return 0;
+	}
+
+	dev_dbg(&pdev->dev, "using scl-gpio %d and sda-gpio %d for recovery\n",
+			rinfo->sda_gpio, rinfo->scl_gpio);
+
+	rinfo->prepare_recovery     = cdns_i2c_prepare_recovery;
+	rinfo->unprepare_recovery   = cdns_i2c_unprepare_recovery;
+	rinfo->recover_bus          = i2c_generic_gpio_recovery;
+	pid->adap.bus_recovery_info = rinfo;
 
 	return 0;
 }
@@ -986,6 +1078,13 @@ static int cdns_i2c_probe(struct platform_device *pdev)
 		id->quirks = data->quirks;
 	}
 
+	id->pinctrl = devm_pinctrl_get(&pdev->dev);
+	if (!IS_ERR(id->pinctrl)) {
+		ret = cdns_i2c_init_recovery_info(id, pdev);
+		if (ret)
+			return ret;
+	}
+
 	r_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	id->membase = devm_ioremap_resource(&pdev->dev, r_mem);
 	if (IS_ERR(id->membase))
@@ -1013,10 +1112,10 @@ static int cdns_i2c_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err(&pdev->dev, "Unable to enable clock.\n");
 
-	pm_runtime_enable(id->dev);
 	pm_runtime_set_autosuspend_delay(id->dev, CNDS_I2C_PM_TIMEOUT);
 	pm_runtime_use_autosuspend(id->dev);
 	pm_runtime_set_active(id->dev);
+	pm_runtime_enable(id->dev);
 
 	id->clk_rate_change_nb.notifier_call = cdns_i2c_clk_notifier_cb;
 	if (clk_notifier_register(id->clk, &id->clk_rate_change_nb))
@@ -1044,22 +1143,21 @@ static int cdns_i2c_probe(struct platform_device *pdev)
 		goto err_clk_dis;
 	}
 
-	ret = i2c_add_adapter(&id->adap);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "reg adap failed: %d\n", ret);
-		goto err_clk_dis;
-	}
 	cdns_i2c_init(id);
 
 	dev_info(&pdev->dev, "%u kHz mmio %08lx irq %d\n",
 		 id->i2c_clk / 1000, (unsigned long)r_mem->start, id->irq);
 
+	ret = i2c_add_adapter(&id->adap);
+	if (ret < 0)
+		goto err_clk_dis;
+
 	return 0;
 
 err_clk_dis:
 	clk_disable_unprepare(id->clk);
-	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 	return ret;
 }
 
@@ -1074,6 +1172,10 @@ err_clk_dis:
 static int cdns_i2c_remove(struct platform_device *pdev)
 {
 	struct cdns_i2c *id = platform_get_drvdata(pdev);
+
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 
 	i2c_del_adapter(&id->adap);
 	clk_notifier_unregister(id->clk, &id->clk_rate_change_nb);

@@ -115,7 +115,7 @@ static irqreturn_t ad7291_event_handler(int irq, void *private)
 	u16 t_status, v_status;
 	u16 command;
 	int i;
-	s64 timestamp = iio_get_time_ns();
+	s64 timestamp = iio_get_time_ns(indio_dev);
 
 	if (ad7291_i2c_read(chip, AD7291_T_ALERT_STATUS, &t_status))
 		return IRQ_HANDLED;
@@ -500,11 +500,16 @@ static int ad7291_probe(struct i2c_client *client,
 	if (pdata && pdata->use_external_ref)
 		chip->command |= AD7291_EXT_REF;
 
-	indio_dev->name = id->name;
+	if (client->dev.of_node)
+		indio_dev->name = client->dev.of_node->name;
+	else
+		indio_dev->name = id->name;
+
 	indio_dev->channels = ad7291_channels;
 	indio_dev->num_channels = ARRAY_SIZE(ad7291_channels);
 
 	indio_dev->dev.parent = &client->dev;
+	indio_dev->dev.of_node = client->dev.of_node;
 	indio_dev->info = &ad7291_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 

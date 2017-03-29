@@ -1,0 +1,108 @@
+########################
+# Global Config
+########################
+
+before_script:
+    - export
+
+
+########################
+# Job Templates
+########################
+
+# Global job template
+# Used by all jobs
+.global_job_template: &global_job_template
+    only:
+        - /.*-ci$/
+        - next
+        - master
+        - triggers
+        - tags
+
+.build_job_template: &build_job_template
+    <<: *global_job_template
+    stage: build
+    script:
+        - make ARCH=${CONFIG_ARCH} CROSS_COMPILE=${CONFIG_CROSS_COMPILE} ${CONFIG_DEFCONFIG}_defconfig
+        - make ${CONFIG_MAKE_ARGS} ARCH=${CONFIG_ARCH} CROSS_COMPILE=${CONFIG_CROSS_COMPILE}
+            
+
+# Global setup/teardown template
+# Used by all sysroot jobs
+.setup_job_template: &setup_job_template
+    <<: *global_job_template  
+    script:
+        - '
+            if [ "$CONFIG_SETUP_SCRIPT" != "" ]; then
+                $CONFIG_SETUP_SCRIPT;
+            fi;
+        '
+    variables:
+        GIT_STRATEGY: none
+
+########################
+# Pipeline Definition
+########################
+
+stages:
+    - setup
+    - build
+    - teardown
+    - buildroot_trigger
+
+########################
+# Jobs
+########################
+
+# Prep and teardown jobs
+setup:
+    <<: *setup_job_template
+    stage: setup
+
+teardown:
+    <<: *setup_job_template
+    stage: teardown
+    when: always
+
+########################
+# Build local tests
+########################
+zynq_build_job:
+    <<: *build_job_template
+    variables:
+        CONFIG_ARCH: arm
+        CONFIG_DEFCONFIG: mw_zynq
+        CONFIG_CROSS_COMPILE: /opt/Xilinx/SDK/2016.2/gnu/arm/lin/bin/arm-xilinx-linux-gnueabi-
+
+zynqmp_build_job:
+    <<: *build_job_template
+    variables:
+        CONFIG_ARCH: arm64
+        CONFIG_DEFCONFIG: mw_zynqmp
+        CONFIG_CROSS_COMPILE: /opt/linaro/5.3-2016.02/aarch64-linux-gnu/bin/aarch64-linux-gnu-
+
+
+########################
+# Trigger buildroot
+########################
+buildroot_trigger_job:
+    <<: *global_job_template  
+    script:
+            - ' 
+            if [ "$CONFIG_BR_BUILD_TOKEN" != "" ]; then
+                curl -X POST
+                -F token=${CONFIG_BR_BUILD_TOKEN}
+                -F ref=${CONFIG_BR_BUILD_REF}
+                -F variables[CONFIG_ZYNQ_LINUX_URL]=${CI_PROJECT_URL}.git
+                -F variables[CONFIG_ZYNQ_LINUX_VER]=${CI_BUILD_REF_NAME}
+                -F variables[CONFIG_ZYNQMP_LINUX_URL]=${CI_PROJECT_URL}.git
+                -F variables[CONFIG_ZYNQMP_LINUX_VER]=${CI_BUILD_REF_NAME}
+                -F variables[CONFIG_SOCFPGA_SKIP]=1
+                ${CONFIG_BR_TRIGGER_URL};
+            fi;'
+
+    variables:
+        GIT_STRATEGY: none
+    stage: buildroot_trigger
+

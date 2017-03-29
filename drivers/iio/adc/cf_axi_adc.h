@@ -97,6 +97,8 @@
 #define ADI_USR_CHANMAX(x)		(((x) & 0xFF) << 0)
 #define ADI_TO_USR_CHANMAX(x)		(((x) >> 0) & 0xFF)
 
+#define ADI_REG_GP_CONTROL		0x00BC
+
 /* ADC CHANNEL */
 
 #define ADI_REG_CHAN_CNTRL(c)		(0x0400 + (c) * 0x40)
@@ -327,6 +329,12 @@ enum adc_data_sel {
 
 #define CHIPID_AD9649			0x6F
 
+/*
+ * Analog Devices AD9684
+ */
+
+#define CHIPID_AD9684			0xD2
+
 /* debugfs direct register access */
 #define DEBUGFS_DRA_PCORE_REG_MAGIC	0x80000000
 
@@ -347,6 +355,7 @@ enum {
 	ID_AD9234,
 	ID_AD9680_x2,
 	ID_AD9649,
+	ID_AD9684,
 };
 
 struct axiadc_chip_info {
@@ -371,15 +380,16 @@ struct axiadc_state {
 	unsigned			max_count;
 	unsigned			id;
 	unsigned			pcore_version;
+	unsigned			decimation_factor;
 	bool				has_fifo_interface;
-	bool			dp_disable;
-	unsigned long 		adc_clk;
+	bool				dp_disable;
+	unsigned long 			adc_clk;
 	bool				streaming_dma;
 	unsigned			have_slave_channels;
 
-	struct iio_hw_consumer	*frontend;
+	struct iio_hw_consumer		*frontend;
 
-	struct iio_chan_spec	channels[AXIADC_MAX_CHANNEL];
+	struct iio_chan_spec		channels[AXIADC_MAX_CHANNEL];
 };
 
 struct axiadc_converter {

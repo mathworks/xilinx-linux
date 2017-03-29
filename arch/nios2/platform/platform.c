@@ -9,19 +9,25 @@
  */
 
 #include <linux/init.h>
-#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_fdt.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
 #include <linux/io.h>
+#include <linux/clk-provider.h>
+
+static const __initconst struct of_device_id clk_match[] = {
+	{ .compatible = "fixed-clock", .data = of_fixed_clk_setup, },
+	{}
+};
 
 static int __init nios2_soc_device_init(void)
 {
 	struct soc_device *soc_dev;
 	struct soc_device_attribute *soc_dev_attr;
 	const char *machine;
+	int ret;
 
 	soc_dev_attr = kzalloc(sizeof(*soc_dev_attr), GFP_KERNEL);
 	if (soc_dev_attr) {
@@ -39,8 +45,9 @@ static int __init nios2_soc_device_init(void)
 		}
 	}
 
-	return of_platform_populate(NULL, of_default_bus_match_table,
-		NULL, NULL);
+	of_clk_init(clk_match);
+
+	return 0;
 }
 
 device_initcall(nios2_soc_device_init);

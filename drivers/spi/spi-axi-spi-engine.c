@@ -552,19 +552,12 @@ static int spi_engine_probe(struct platform_device *pdev)
 	struct spi_master *master;
 	unsigned int version;
 	struct resource *res;
-	u32 num_cs;
 	int irq;
 	int ret;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq <= 0)
 		return -ENXIO;
-
-	ret = of_property_read_u32(pdev->dev.of_node, "num-cs", &num_cs);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to read 'num-cs': %d\n", ret);
-		return ret;
-	}
 
 	spi_engine = devm_kzalloc(&pdev->dev, sizeof(*spi_engine), GFP_KERNEL);
 	if (!spi_engine)
@@ -622,13 +615,12 @@ static int spi_engine_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_ref_clk_disable;
 
-	master->dev.parent = &pdev->dev;
 	master->dev.of_node = pdev->dev.of_node;
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_3WIRE;
 	master->bits_per_word_mask = SPI_BPW_MASK(8);
 	master->max_speed_hz = clk_get_rate(spi_engine->ref_clk) / 2;
 	master->transfer_one_message = spi_engine_transfer_one_message;
-	master->num_chipselect = num_cs;
+	master->num_chipselect = 8;
 
 	ret = spi_register_master(master);
 	if (ret)
