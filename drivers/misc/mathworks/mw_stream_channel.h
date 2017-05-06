@@ -52,6 +52,7 @@ struct mwadma_slist {
     dma_cookie_t                    cookie;
     unsigned int                    buffer_index;
     enum mwadma_buffer_block_state state;
+    struct mwadma_chan             *qchan;
 };
 
 /* structure contains common parmaters for rx/tx.
