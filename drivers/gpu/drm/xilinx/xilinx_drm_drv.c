@@ -20,6 +20,7 @@
 #include <drm/drm_gem_cma_helper.h>
 
 #include <linux/component.h>
+#include <linux/console.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
@@ -463,11 +464,6 @@ static void xilinx_drm_lastclose(struct drm_device *drm)
 	xilinx_drm_fb_restore_mode(private->fb);
 }
 
-static int xilinx_drm_set_busid(struct drm_device *dev, struct drm_master *master)
-{
-	return 0;
-}
-
 static const struct file_operations xilinx_drm_fops = {
 	.owner		= THIS_MODULE,
 	.open		= drm_open,
@@ -490,7 +486,6 @@ static struct drm_driver xilinx_drm_driver = {
 	.open				= xilinx_drm_open,
 	.preclose			= xilinx_drm_preclose,
 	.lastclose			= xilinx_drm_lastclose,
-	.set_busid			= xilinx_drm_set_busid,
 
 	.get_vblank_counter		= drm_vblank_no_hw_counter,
 	.enable_vblank			= xilinx_drm_enable_vblank,
@@ -529,6 +524,10 @@ static int xilinx_drm_pm_suspend(struct device *dev)
 	struct drm_connector *connector;
 
 	drm_kms_helper_poll_disable(drm);
+
+	if (!console_suspend_enabled)
+		return 0;
+
 	drm_modeset_lock_all(drm);
 	list_for_each_entry(connector, &drm->mode_config.connector_list, head) {
 		int old_dpms = connector->dpms;
@@ -551,6 +550,9 @@ static int xilinx_drm_pm_resume(struct device *dev)
 	struct drm_device *drm = private->drm;
 	struct drm_connector *connector;
 
+	if (!console_suspend_enabled)
+		return 0;
+
 	drm_modeset_lock_all(drm);
 	list_for_each_entry(connector, &drm->mode_config.connector_list, head) {
 		if (connector->funcs->dpms) {
@@ -560,6 +562,11 @@ static int xilinx_drm_pm_resume(struct device *dev)
 			connector->funcs->dpms(connector, dpms);
 		}
 	}
+	drm_modeset_unlock_all(drm);
+
+	drm_helper_resume_force_mode(drm);
+
+	drm_modeset_lock_all(drm);
 	drm_kms_helper_poll_enable_locked(drm);
 	drm_modeset_unlock_all(drm);
 
@@ -587,6 +594,13 @@ static int xilinx_drm_platform_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void xilinx_drm_platform_shutdown(struct platform_device *pdev)
+{
+	struct xilinx_drm_private *private = platform_get_drvdata(pdev);
+
+	drm_put_dev(private->drm);
+}
+
 static const struct of_device_id xilinx_drm_of_match[] = {
 	{ .compatible = "xlnx,drm", },
 	{ /* end of table */ },
@@ -596,6 +610,7 @@ MODULE_DEVICE_TABLE(of, xilinx_drm_of_match);
 static struct platform_driver xilinx_drm_private_driver = {
 	.probe			= xilinx_drm_platform_probe,
 	.remove			= xilinx_drm_platform_remove,
+	.shutdown		= xilinx_drm_platform_shutdown,
 	.driver			= {
 		.name		= "xilinx-drm",
 		.pm		= &xilinx_drm_pm_ops,

@@ -11,6 +11,7 @@
 
 #include <linux/bitops.h>
 #include <linux/clk.h>
+#include <linux/gpio.h>
 #include <linux/gpio/driver.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -19,6 +20,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
+
+#include "gpiolib.h"
 
 #define DRIVER_NAME "zynq-gpio"
 
@@ -99,6 +102,17 @@
 /* For GPIO quirks */
 #define ZYNQ_GPIO_QUIRK_FOO	BIT(0)
 
+struct gpio_regs {
+	u32 datamsw[ZYNQMP_GPIO_MAX_BANK];
+	u32 datalsw[ZYNQMP_GPIO_MAX_BANK];
+	u32 dirm[ZYNQMP_GPIO_MAX_BANK];
+	u32 outen[ZYNQMP_GPIO_MAX_BANK];
+	u32 int_en[ZYNQMP_GPIO_MAX_BANK];
+	u32 int_dis[ZYNQMP_GPIO_MAX_BANK];
+	u32 int_type[ZYNQMP_GPIO_MAX_BANK];
+	u32 int_polarity[ZYNQMP_GPIO_MAX_BANK];
+	u32 int_any[ZYNQMP_GPIO_MAX_BANK];
+};
 /**
  * struct zynq_gpio - gpio device private data structure
  * @chip:	instance of the gpio_chip
@@ -106,6 +120,7 @@
  * @clk:	clock resource for this controller
  * @irq:	interrupt for the GPIO device
  * @p_data:	pointer to platform data
+ * @context:	context registers
  */
 struct zynq_gpio {
 	struct gpio_chip chip;
@@ -113,6 +128,7 @@ struct zynq_gpio {
 	struct clk *clk;
 	int irq;
 	const struct zynq_platform_data *p_data;
+	struct gpio_regs context;
 };
 
 /**
@@ -476,6 +492,38 @@ static int zynq_gpio_set_wake(struct irq_data *data, unsigned int on)
 	return 0;
 }
 
+static int zynq_gpio_irq_request_resources(struct irq_data *d)
+{
+	struct gpio_chip *chip = irq_data_get_irq_chip_data(d);
+	int ret;
+
+	if (!try_module_get(chip->gpiodev->owner))
+		return -ENODEV;
+
+	ret = pm_runtime_get_sync(chip->parent);
+	if (ret < 0) {
+		module_put(chip->gpiodev->owner);
+		return ret;
+	}
+
+	if (gpiochip_lock_as_irq(chip, d->hwirq)) {
+		chip_err(chip, "unable to lock HW IRQ %lu for IRQ\n", d->hwirq);
+		pm_runtime_put(chip->parent);
+		module_put(chip->gpiodev->owner);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void zynq_gpio_irq_release_resources(struct irq_data *d)
+{
+	struct gpio_chip *chip = irq_data_get_irq_chip_data(d);
+
+	gpiochip_unlock_as_irq(chip, d->hwirq);
+	pm_runtime_put(chip->parent);
+	module_put(chip->gpiodev->owner);
+}
+
 /* irq chip descriptor */
 static struct irq_chip zynq_gpio_level_irqchip = {
 	.name		= DRIVER_NAME,
@@ -485,6 +533,8 @@ static struct irq_chip zynq_gpio_level_irqchip = {
 	.irq_unmask	= zynq_gpio_irq_unmask,
 	.irq_set_type	= zynq_gpio_set_irq_type,
 	.irq_set_wake	= zynq_gpio_set_wake,
+	.irq_request_resources = zynq_gpio_irq_request_resources,
+	.irq_release_resources = zynq_gpio_irq_release_resources,
 	.flags		= IRQCHIP_EOI_THREADED | IRQCHIP_EOI_IF_HANDLED |
 			  IRQCHIP_MASK_ON_SUSPEND,
 };
@@ -497,6 +547,8 @@ static struct irq_chip zynq_gpio_edge_irqchip = {
 	.irq_unmask	= zynq_gpio_irq_unmask,
 	.irq_set_type	= zynq_gpio_set_irq_type,
 	.irq_set_wake	= zynq_gpio_set_wake,
+	.irq_request_resources = zynq_gpio_irq_request_resources,
+	.irq_release_resources = zynq_gpio_irq_release_resources,
 	.flags		= IRQCHIP_MASK_ON_SUSPEND,
 };
 
@@ -551,14 +603,72 @@ static void zynq_gpio_irqhandler(struct irq_desc *desc)
 	chained_irq_exit(irqchip, desc);
 }
 
+static void zynq_gpio_save_context(struct zynq_gpio *gpio)
+{
+	unsigned int bank_num;
+
+	for (bank_num = 0; bank_num < gpio->p_data->max_bank; bank_num++) {
+		gpio->context.datalsw[bank_num] =
+				readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_DATA_LSW_OFFSET(bank_num));
+		gpio->context.datamsw[bank_num] =
+				readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_DATA_MSW_OFFSET(bank_num));
+		gpio->context.dirm[bank_num] = readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_DIRM_OFFSET(bank_num));
+		gpio->context.int_en[bank_num] = readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_INTMASK_OFFSET(bank_num));
+		gpio->context.int_type[bank_num] =
+				readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_INTTYPE_OFFSET(bank_num));
+		gpio->context.int_polarity[bank_num] =
+				readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_INTPOL_OFFSET(bank_num));
+		gpio->context.int_any[bank_num] =
+				readl_relaxed(gpio->base_addr +
+				ZYNQ_GPIO_INTANY_OFFSET(bank_num));
+	}
+}
+
+static void zynq_gpio_restore_context(struct zynq_gpio *gpio)
+{
+	unsigned int bank_num;
+
+	for (bank_num = 0; bank_num < gpio->p_data->max_bank; bank_num++) {
+		writel_relaxed(gpio->context.datalsw[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_DATA_LSW_OFFSET(bank_num));
+		writel_relaxed(gpio->context.datamsw[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_DATA_MSW_OFFSET(bank_num));
+		writel_relaxed(gpio->context.dirm[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_DIRM_OFFSET(bank_num));
+		writel_relaxed(gpio->context.int_en[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_INTEN_OFFSET(bank_num));
+		writel_relaxed(gpio->context.int_type[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_INTTYPE_OFFSET(bank_num));
+		writel_relaxed(gpio->context.int_polarity[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_INTPOL_OFFSET(bank_num));
+		writel_relaxed(gpio->context.int_any[bank_num],
+			       gpio->base_addr +
+			       ZYNQ_GPIO_INTANY_OFFSET(bank_num));
+	}
+}
 static int __maybe_unused zynq_gpio_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	int irq = platform_get_irq(pdev, 0);
 	struct irq_data *data = irq_get_irq_data(irq);
+	struct zynq_gpio *gpio = platform_get_drvdata(pdev);
 
-	if (!irqd_is_wakeup_set(data))
+	if (!irqd_is_wakeup_set(data)) {
+		zynq_gpio_save_context(gpio);
 		return pm_runtime_force_suspend(dev);
+	}
 
 	return 0;
 }
@@ -568,9 +678,14 @@ static int __maybe_unused zynq_gpio_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	int irq = platform_get_irq(pdev, 0);
 	struct irq_data *data = irq_get_irq_data(irq);
+	struct zynq_gpio *gpio = platform_get_drvdata(pdev);
+	int ret;
 
-	if (!irqd_is_wakeup_set(data))
-		return pm_runtime_force_resume(dev);
+	if (!irqd_is_wakeup_set(data)) {
+		ret = pm_runtime_force_resume(dev);
+		zynq_gpio_restore_context(gpio);
+		return ret;
+	}
 
 	return 0;
 }

@@ -234,6 +234,8 @@
 #define XILINX_DP_SUB_AUD_CH_B_DATA3				0x44
 #define XILINX_DP_SUB_AUD_CH_B_DATA4				0x48
 #define XILINX_DP_SUB_AUD_CH_B_DATA5				0x4c
+#define XILINX_DP_SUB_AUD_SOFT_RESET				0xc00
+#define XILINX_DP_SUB_AUD_SOFT_RESET_AUD_SRST			BIT(0)
 
 #define XILINX_DP_SUB_AV_BUF_NUM_VID_GFX_BUFFERS		4
 #define XILINX_DP_SUB_AV_BUF_NUM_BUFFERS			6
@@ -1098,12 +1100,27 @@ xilinx_drm_dp_sub_av_buf_init_sf(struct xilinx_drm_dp_sub_av_buf *av_buf,
  * xilinx_drm_dp_sub_aud_init - Initialize the audio
  * @aud: audio
  *
- * Initialize the audio with default mixer volume.
+ * Initialize the audio with default mixer volume. The de-assertion will
+ * initialize the audio states.
  */
 static void xilinx_drm_dp_sub_aud_init(struct xilinx_drm_dp_sub_aud *aud)
 {
-	xilinx_drm_set(aud->base, XILINX_DP_SUB_AUD_MIXER_VOLUME,
-		       XILINX_DP_SUB_AUD_MIXER_VOLUME_NO_SCALE);
+	/* Clear the audio soft reset register as it's an non-reset flop */
+	xilinx_drm_writel(aud->base, XILINX_DP_SUB_AUD_SOFT_RESET, 0);
+	xilinx_drm_writel(aud->base, XILINX_DP_SUB_AUD_MIXER_VOLUME,
+			  XILINX_DP_SUB_AUD_MIXER_VOLUME_NO_SCALE);
+}
+
+/**
+ * xilinx_drm_dp_sub_aud_deinit - De-initialize the audio
+ * @aud: audio
+ *
+ * Put the audio in reset.
+ */
+static void xilinx_drm_dp_sub_aud_deinit(struct xilinx_drm_dp_sub_aud *aud)
+{
+	xilinx_drm_set(aud->base, XILINX_DP_SUB_AUD_SOFT_RESET,
+		       XILINX_DP_SUB_AUD_SOFT_RESET_AUD_SRST);
 }
 
 /* DP subsystem layer functions */
@@ -1182,18 +1199,15 @@ int xilinx_drm_dp_sub_layer_set_fmt(struct xilinx_drm_dp_sub *dp_sub,
 	const struct xilinx_drm_dp_sub_fmt *table;
 	const struct xilinx_drm_dp_sub_fmt *fmt;
 	u32 size, fmts, mask;
-	bool vid;
 
 	if (layer->id == XILINX_DRM_DP_SUB_LAYER_VID) {
 		table = av_buf_vid_fmts;
 		size = ARRAY_SIZE(av_buf_vid_fmts);
 		mask = ~XILINX_DP_SUB_AV_BUF_FMT_NL_VID_MASK;
-		vid = true;
 	} else {
 		table = av_buf_gfx_fmts;
 		size = ARRAY_SIZE(av_buf_gfx_fmts);
 		mask = ~XILINX_DP_SUB_AV_BUF_FMT_NL_GFX_MASK;
-		vid = false;
 	}
 
 	fmt = xilinx_drm_dp_sub_map_fmt(table, size, drm_fmt);
@@ -1504,6 +1518,7 @@ EXPORT_SYMBOL_GPL(xilinx_drm_dp_sub_enable);
  */
 void xilinx_drm_dp_sub_disable(struct xilinx_drm_dp_sub *dp_sub)
 {
+	xilinx_drm_dp_sub_aud_deinit(&dp_sub->aud);
 	xilinx_drm_dp_sub_av_buf_disable_aud(&dp_sub->av_buf);
 	xilinx_drm_dp_sub_av_buf_disable_buf(&dp_sub->av_buf);
 	xilinx_drm_dp_sub_av_buf_disable(&dp_sub->av_buf);

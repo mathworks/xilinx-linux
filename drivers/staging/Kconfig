@@ -92,13 +92,9 @@ source "drivers/staging/video/axivdma/Kconfig"
 
 source "drivers/staging/apf/Kconfig"
 
-source "drivers/staging/pmods/Kconfig"
-
 source "drivers/staging/clocking-wizard/Kconfig"
 
 source "drivers/staging/fbtft/Kconfig"
-
-source "drivers/staging/mali/Kconfig"
 
 source "drivers/staging/fsl-mc/Kconfig"
 
@@ -113,5 +109,7 @@ source "drivers/staging/ks7010/Kconfig"
 source "drivers/staging/greybus/Kconfig"
 
 source "drivers/staging/vc04_services/Kconfig"
+
+source "drivers/staging/fclk/Kconfig"
 
 endif # STAGING

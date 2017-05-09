@@ -12,6 +12,30 @@
  */
 
 / {
+	fclk0: fclk0 {
+		status = "disabled";
+		compatible = "xlnx,fclk";
+		clocks = <&clkc 71>;
+	};
+
+	fclk1: fclk1 {
+		status = "disabled";
+		compatible = "xlnx,fclk";
+		clocks = <&clkc 72>;
+	};
+
+	fclk2: fclk2 {
+		status = "disabled";
+		compatible = "xlnx,fclk";
+		clocks = <&clkc 73>;
+	};
+
+	fclk3: fclk3 {
+		status = "disabled";
+		compatible = "xlnx,fclk";
+		clocks = <&clkc 74>;
+	};
+
 	pss_ref_clk: pss_ref_clk {
 		u-boot,dm-pre-reloc;
 		compatible = "fixed-clock";
@@ -128,6 +152,10 @@
 	clocks = <&clkc 19>, <&clkc 31>;
 };
 
+&gpu {
+	clocks = <&clkc 24>, <&clkc 25>, <&clkc 26>;
+};
+
 &lpd_dma_chan1 {
 	clocks = <&clkc 68>, <&clkc 31>;
 };
@@ -233,11 +261,11 @@
 };
 
 &usb0 {
-	clocks = <&clkc 33>,  <&clkc 31>;
+	clocks = <&clkc 32>,  <&clkc 34>;
 };
 
 &usb1 {
-	clocks = <&clkc 33>,  <&clkc 32>;
+	clocks = <&clkc 33>,  <&clkc 34>;
 };
 
 &watchdog0 {

@@ -33,6 +33,7 @@
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/net_tstamp.h>
+#include <linux/pm_runtime.h>
 #include <linux/ptp_clock_kernel.h>
 
 #include "macb.h"
@@ -67,6 +68,7 @@
  * 1 frame time (10 Mbits/s, full-duplex, ignoring collisions)
  */
 #define MACB_HALT_TIMEOUT	1230
+#define MACB_PM_TIMEOUT  100 /* ms */
 
 /* Ring buffer accessors */
 static unsigned int macb_tx_ring_wrap(unsigned int index)
@@ -227,6 +229,28 @@ static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 {
 	struct macb *bp = bus->priv;
 	int value;
+	int err;
+	ulong timeout;
+
+	err = pm_runtime_get_sync(&bp->pdev->dev);
+	if (err < 0)
+		return err;
+
+	timeout = jiffies + msecs_to_jiffies(1000);
+	/* wait for end of transfer */
+	do {
+		if (MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
+			break;
+
+		cpu_relax();
+	} while (!time_after_eq(jiffies, timeout));
+
+	if (time_after_eq(jiffies, timeout)) {
+		netdev_err(bp->dev, "wait for end of transfer timed out\n");
+		pm_runtime_mark_last_busy(&bp->pdev->dev);
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
+		return -ETIMEDOUT;
+	}
 
 	macb_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF)
 			      | MACB_BF(RW, MACB_MAN_READ)
@@ -234,12 +258,26 @@ static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 			      | MACB_BF(REGA, regnum)
 			      | MACB_BF(CODE, MACB_MAN_CODE)));
 
+	timeout = jiffies + msecs_to_jiffies(1000);
 	/* wait for end of transfer */
-	while (!MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
+	do {
+		if (MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
+			break;
+
 		cpu_relax();
+	} while (!time_after_eq(jiffies, timeout));
+
+	if (time_after_eq(jiffies, timeout)) {
+		netdev_err(bp->dev, "wait for end of transfer timed out\n");
+		pm_runtime_mark_last_busy(&bp->pdev->dev);
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
+		return -ETIMEDOUT;
+	}
 
 	value = MACB_BFEXT(DATA, macb_readl(bp, MAN));
 
+	pm_runtime_mark_last_busy(&bp->pdev->dev);
+	pm_runtime_put_autosuspend(&bp->pdev->dev);
 	return value;
 }
 
@@ -247,6 +285,28 @@ static int macb_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 			   u16 value)
 {
 	struct macb *bp = bus->priv;
+	int err;
+	ulong timeout;
+
+	err = pm_runtime_get_sync(&bp->pdev->dev);
+	if (err < 0)
+		return err;
+
+	timeout = jiffies + msecs_to_jiffies(1000);
+	/* wait for end of transfer */
+	do {
+		if (MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
+			break;
+
+		cpu_relax();
+	} while (!time_after_eq(jiffies, timeout));
+
+	if (time_after_eq(jiffies, timeout)) {
+		netdev_err(bp->dev, "wait for end of transfer timed out\n");
+		pm_runtime_mark_last_busy(&bp->pdev->dev);
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
+		return -ETIMEDOUT;
+	}
 
 	macb_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF)
 			      | MACB_BF(RW, MACB_MAN_WRITE)
@@ -255,18 +315,32 @@ static int macb_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 			      | MACB_BF(CODE, MACB_MAN_CODE)
 			      | MACB_BF(DATA, value)));
 
+	timeout = jiffies + msecs_to_jiffies(1000);
 	/* wait for end of transfer */
-	while (!MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
-		cpu_relax();
+	do {
+		if (MACB_BFEXT(IDLE, macb_readl(bp, NSR)))
+			break;
 
+		cpu_relax();
+	} while (!time_after_eq(jiffies, timeout));
+
+	if (time_after_eq(jiffies, timeout)) {
+		netdev_err(bp->dev, "wait for end of transfer timed out\n");
+		pm_runtime_mark_last_busy(&bp->pdev->dev);
+		pm_runtime_put_autosuspend(&bp->pdev->dev);
+		return -ETIMEDOUT;
+	}
+
+	pm_runtime_mark_last_busy(&bp->pdev->dev);
+	pm_runtime_put_autosuspend(&bp->pdev->dev);
 	return 0;
 }
 
 /**
- * macb_set_tx_clk() - Set a clock to a new frequency
- * @clk		Pointer to the clock to change
- * @rate	New frequency in Hz
- * @dev		Pointer to the struct net_device
+ * macb_set_tx_clk - Set a clock to a new frequency
+ * @clk:	Pointer to the clock to change
+ * @speed:	New frequency in Hz
+ * @dev:	Pointer to the struct net_device
  */
 static void macb_set_tx_clk(struct clk *clk, int speed, struct net_device *dev)
 {
@@ -1940,11 +2014,7 @@ static int macb_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 
 	if (delta > 0x3FFFFFFF) {
 		macb_ptp_read(bp, (struct timespec64 *)&now);
-
-		if (sign)
-			now = timespec_sub(now, then);
-		else
-			now = timespec_add(now, then);
+		now = timespec_add(now, then);
 
 		macb_ptp_write(bp, (const struct timespec64 *)&now);
 	} else {
@@ -2322,6 +2392,10 @@ static int macb_open(struct net_device *dev)
 
 	netdev_dbg(bp->dev, "open\n");
 
+	err = pm_runtime_get_sync(&bp->pdev->dev);
+	if (err < 0)
+		return err;
+
 	/* carrier starts down */
 	netif_carrier_off(dev);
 
@@ -2374,6 +2448,7 @@ static int macb_close(struct net_device *dev)
 
 	macb_free_consistent(bp);
 
+	pm_runtime_put(&bp->pdev->dev);
 	return 0;
 }
 
@@ -3462,6 +3537,11 @@ static int macb_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
+	pm_runtime_set_autosuspend_delay(&pdev->dev, MACB_PM_TIMEOUT);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_get_noresume(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
 	native_io = hw_is_native_io(mem);
 
 	macb_probe_queues(mem, native_io, &queue_mask, &num_queues);
@@ -3586,6 +3666,8 @@ static int macb_probe(struct platform_device *pdev)
 
 	phydev = bp->phy_dev;
 	phy_attached_info(phydev);
+	pm_runtime_mark_last_busy(&bp->pdev->dev);
+	pm_runtime_put_autosuspend(&bp->pdev->dev);
 
 	return 0;
 
@@ -3603,6 +3685,9 @@ err_disable_clocks:
 	clk_disable_unprepare(hclk);
 	clk_disable_unprepare(pclk);
 	clk_disable_unprepare(rx_clk);
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
 
 	return err;
 }
@@ -3627,10 +3712,15 @@ static int macb_remove(struct platform_device *pdev)
 			gpiod_set_value(bp->reset_gpio, 0);
 
 		unregister_netdev(dev);
-		clk_disable_unprepare(bp->tx_clk);
-		clk_disable_unprepare(bp->hclk);
-		clk_disable_unprepare(bp->pclk);
-		clk_disable_unprepare(bp->rx_clk);
+		pm_runtime_disable(&pdev->dev);
+		pm_runtime_dont_use_autosuspend(&pdev->dev);
+		if (!pm_runtime_suspended(&pdev->dev)) {
+			clk_disable_unprepare(bp->tx_clk);
+			clk_disable_unprepare(bp->hclk);
+			clk_disable_unprepare(bp->pclk);
+			clk_disable_unprepare(bp->rx_clk);
+			pm_runtime_set_suspended(&pdev->dev);
+		}
 		of_node_put(bp->phy_node);
 		free_netdev(dev);
 	}
@@ -3642,17 +3732,9 @@ static int __maybe_unused macb_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct net_device *netdev = platform_get_drvdata(pdev);
-	struct macb *bp = netdev_priv(netdev);
 
-	netif_carrier_off(netdev);
-	netif_device_detach(netdev);
-
-	if (!IS_ERR(bp->tx_clk)) {
-		clk_disable_unprepare(bp->tx_clk);
-		clk_disable_unprepare(bp->hclk);
-		clk_disable_unprepare(bp->pclk);
-		clk_disable_unprepare(bp->rx_clk);
-	}
+	if (netif_running(netdev))
+		macb_close(netdev);
 
 	return 0;
 }
@@ -3661,21 +3743,45 @@ static int __maybe_unused macb_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct net_device *netdev = platform_get_drvdata(pdev);
-	struct macb *bp = netdev_priv(netdev);
 
-	clk_prepare_enable(bp->pclk);
-	clk_prepare_enable(bp->hclk);
-	if (!IS_ERR(bp->tx_clk)) {
-		clk_prepare_enable(bp->tx_clk);
-		clk_prepare_enable(bp->rx_clk);
-	}
-
-	netif_device_attach(netdev);
+	if (netif_running(netdev))
+		macb_open(netdev);
 
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(macb_pm_ops, macb_suspend, macb_resume);
+static int __maybe_unused macb_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct net_device *netdev = platform_get_drvdata(pdev);
+	struct macb *bp = netdev_priv(netdev);
+
+	clk_disable_unprepare(bp->tx_clk);
+	clk_disable_unprepare(bp->hclk);
+	clk_disable_unprepare(bp->pclk);
+	clk_disable_unprepare(bp->rx_clk);
+
+	return 0;
+}
+
+static int __maybe_unused macb_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct net_device *netdev = platform_get_drvdata(pdev);
+	struct macb *bp = netdev_priv(netdev);
+
+	clk_prepare_enable(bp->pclk);
+	clk_prepare_enable(bp->hclk);
+	clk_prepare_enable(bp->tx_clk);
+	clk_prepare_enable(bp->rx_clk);
+
+	return 0;
+}
+
+static const struct dev_pm_ops macb_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(macb_suspend, macb_resume)
+	SET_RUNTIME_PM_OPS(macb_runtime_suspend, macb_runtime_resume, NULL)
+};
 
 static struct platform_driver macb_driver = {
 	.probe		= macb_probe,

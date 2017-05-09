@@ -29,12 +29,68 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
+#include <linux/soc/xilinx/zynqmp/fw.h>
+#include <linux/slab.h>
+
+#include <linux/phy/phy-zynqmp.h>
+#include <linux/of_address.h>
+
+#include "core.h"
+
+/* Xilinx USB 3.0 IP Register */
+#define XLNX_USB_COHERENCY		0x005C
+#define XLNX_USB_COHERENCY_ENABLE	0x1
 
 struct dwc3_of_simple {
 	struct device		*dev;
 	struct clk		**clks;
 	int			num_clocks;
+	void __iomem		*regs;
 };
+
+void dwc3_set_phydata(struct device *dev, struct phy *phy)
+{
+	struct device_node *node = of_get_parent(dev->of_node);
+	int ret;
+
+	if ((node != NULL) &&
+		of_device_is_compatible(node, "xlnx,zynqmp-dwc3")) {
+		struct platform_device *pdev_parent;
+		struct dwc3_of_simple   *simple;
+
+		pdev_parent = of_find_device_by_node(node);
+		simple = platform_get_drvdata(pdev_parent);
+
+		/* assign USB vendor regs to phy lane */
+		ret = xpsgtr_set_protregs(phy, simple->regs);
+		if (ret) {
+			dev_err(&pdev_parent->dev,
+				"Not able to set PHY data\n");
+		}
+	}
+}
+
+int dwc3_enable_hw_coherency(struct device *dev)
+{
+	struct device_node *node = of_get_parent(dev->of_node);
+
+	if (of_device_is_compatible(node, "xlnx,zynqmp-dwc3")) {
+		struct platform_device *pdev_parent;
+		struct dwc3_of_simple *simple;
+		void __iomem *regs;
+		u32 reg;
+
+		pdev_parent = of_find_device_by_node(node);
+		simple = platform_get_drvdata(pdev_parent);
+		regs = simple->regs;
+
+		reg = readl(regs + XLNX_USB_COHERENCY);
+		reg |= XLNX_USB_COHERENCY_ENABLE;
+		writel(reg, regs + XLNX_USB_COHERENCY);
+	}
+
+	return 0;
+}
 
 static int dwc3_of_simple_clk_init(struct dwc3_of_simple *simple, int count)
 {
@@ -95,6 +151,62 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, simple);
 	simple->dev = dev;
+
+	if (of_device_is_compatible(pdev->dev.of_node,
+				    "xlnx,zynqmp-dwc3")) {
+
+		struct device_node	*child;
+		char			*soc_rev;
+		struct resource		*res;
+		void __iomem		*regs;
+
+		res = platform_get_resource(pdev,
+					    IORESOURCE_MEM, 0);
+
+		regs = devm_ioremap_resource(&pdev->dev, res);
+		if (IS_ERR(regs))
+			return PTR_ERR(regs);
+
+		/* Store the usb control regs into simple for further usage */
+		simple->regs = regs;
+
+		/* read Silicon version using nvmem driver */
+		soc_rev = zynqmp_nvmem_get_silicon_version(&pdev->dev,
+						   "soc_revision");
+
+		if (PTR_ERR(soc_rev) == -EPROBE_DEFER) {
+			/* Do a deferred probe */
+			return -EPROBE_DEFER;
+
+		} else if (!IS_ERR(soc_rev) &&
+					(*soc_rev < ZYNQMP_SILICON_V4)) {
+
+			for_each_child_of_node(np, child) {
+				/* Add snps,dis_u3_susphy_quirk
+				 * for SOC revison less than v4
+				 */
+				struct property *new_prop;
+
+				new_prop = kzalloc(sizeof(*new_prop),
+								GFP_KERNEL);
+				new_prop->name =
+					kstrdup("snps,dis_u3_susphy_quirk",
+								GFP_KERNEL);
+				new_prop->length =
+					sizeof("snps,dis_u3_susphy_quirk");
+				new_prop->value =
+					kstrdup("snps,dis_u3_susphy_quirk",
+								GFP_KERNEL);
+				of_add_property(child, new_prop);
+			}
+		}
+
+		/* Clean soc_rev if got a valid pointer from nvmem driver
+		 * else we may end up in kernel panic
+		 */
+		if (!IS_ERR(soc_rev))
+			kfree(soc_rev);
+	}
 
 	ret = dwc3_of_simple_clk_init(simple, of_clk_get_parent_count(np));
 	if (ret)
