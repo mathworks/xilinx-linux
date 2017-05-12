@@ -3446,6 +3446,7 @@ static int adv76xx_probe(struct i2c_client *client,
 		client->addr);
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
 	sd->internal_ops = &adv76xx_int_ops;
+	sd->entity.function = MEDIA_ENT_F_ATV_DECODER;
 
 	/* Configure IO Regmap region */
 	err = configure_regmap(state, ADV76XX_PAGE_IO);
