@@ -2333,6 +2333,7 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 	sd->flags |= V4L2_SUBDEV_FL_HAS_EVENTS;
 	adv7511_subdev(sd);
 	sd->internal_ops = &adv7511_int_ops;
+	sd->entity.function = MEDIA_ENT_F_IO_V4L;
 
 	hdl = &state->hdl;
 	v4l2_ctrl_handler_init(hdl, 10);
