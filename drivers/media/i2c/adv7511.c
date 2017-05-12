@@ -119,6 +119,7 @@ struct adv7511_out_params {
 	uint8_t output_format;
 	uint8_t output_color_space;
 	uint8_t up_conversion;
+	bool csc_locked;
 	uint8_t csc_enable;
 	uint8_t csc_scaling_factor;
 	struct adv7511_csc_coeff csc_coeff;
@@ -434,8 +435,12 @@ static void adv7511_set_rgb_quantization_mode(struct v4l2_subdev *sd, struct v4l
 	struct adv7511_state *state = get_adv7511_state(sd);
 
 #ifdef XYLON_LOGICVC_INTG
-	return 0;
+	return;
 #endif
+
+	/* If the CSC is locked, do nothing */
+	if (state->cfg.out_params.csc_locked)
+		return;
 
 	/* Only makes sense for RGB formats */
 	if (state->fmt_code != MEDIA_BUS_FMT_RGB888_1X24) {
@@ -2196,6 +2201,7 @@ static void adv7511_get_ofdt_config(struct i2c_client *client,
 			config->out_params.csc_enable =
 				(uint8_t)be32_to_cpup(prop);
 		if (config->out_params.csc_enable) {
+			config->out_params.csc_locked = of_property_read_bool(np, "csc-locked");
 			prop = of_get_property(np, "csc-scaling-factor", &size);
 			if (prop) {
 				config->out_params.csc_scaling_factor =
