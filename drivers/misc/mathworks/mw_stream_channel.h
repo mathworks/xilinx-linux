@@ -46,6 +46,7 @@ enum mwadma_buffer_block_state {
 // BLOCK
 struct mwadma_slist {
     struct list_head    list;
+    struct list_head    userid;
     dma_addr_t		phys;
     size_t		length;
     struct dma_async_tx_descriptor  *desc;
