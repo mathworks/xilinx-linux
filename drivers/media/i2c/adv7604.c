@@ -3436,13 +3436,6 @@ static int adv76xx_probe(struct i2c_client *client,
 
 	adv76xx_reset(state);
 
-	state->reset_gpio = devm_gpiod_get_optional(&client->dev, "reset",
-								GPIOD_OUT_HIGH);
-	if (IS_ERR(state->reset_gpio))
-		return PTR_ERR(state->reset_gpio);
-
-	adv76xx_reset(state);
-
 	state->timings = cea640x480;
 	state->format = adv76xx_format_info(state, MEDIA_BUS_FMT_YUYV8_2X8);
 
@@ -3453,6 +3446,7 @@ static int adv76xx_probe(struct i2c_client *client,
 		client->addr);
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
 	sd->internal_ops = &adv76xx_int_ops;
+	sd->entity.function = MEDIA_ENT_F_ATV_DECODER;
 
 	/* Configure IO Regmap region */
 	err = configure_regmap(state, ADV76XX_PAGE_IO);

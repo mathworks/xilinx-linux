@@ -210,10 +210,12 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 		sizeof(bridge->media_dev.model));
 	bridge->media_dev.hw_revision = 0;
 
+	media_device_init(&bridge->media_dev);
+
 	ret = media_device_register(&bridge->media_dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to register media_device\n");
-		goto err;
+		goto err_md;
 	}
 	bridge->v4l2_dev.mdev = &bridge->media_dev;
 
@@ -223,14 +225,14 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 	ret = v4l2_device_register(&pdev->dev, &bridge->v4l2_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register v4l2_device\n");
-		goto err;
+		goto err_md;
 	}
 
 	asubdevs = devm_kzalloc(&pdev->dev, sizeof(struct v4l2_async_subdev*) * 2,
 		GFP_KERNEL);
 	if (bridge == NULL) {
 		ret = -ENOMEM;
-		goto err;
+		goto err_md;
 	}
 
 	asubdevs[INPUT_SUBDEV] = &bridge->imageon_subdev[INPUT_SUBDEV].asd;
@@ -245,15 +247,17 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 		&bridge->notifier);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register device nodes\n");
-		goto err;
+		goto err_md;
 	}
 
 	ret = v4l2_device_register_subdev_nodes(&bridge->v4l2_dev);
 	if (ret < 0)
-		goto err;
+		goto err_md;
 
 	return 0;
 
+err_md:
+	media_device_cleanup(&bridge->media_dev);
 err:
 	if (bridge->irq > 0)
 		free_irq(bridge->irq, pdev);
@@ -267,6 +271,7 @@ static int imageon_bridge_remove(struct platform_device *pdev)
 	v4l2_async_notifier_unregister(&bridge->notifier);
 	v4l2_device_unregister(&bridge->v4l2_dev);
 	media_device_unregister(&bridge->media_dev);
+	media_device_cleanup(&bridge->media_dev);
 	if (bridge->irq > 0)
 		free_irq(bridge->irq, pdev);
 
