@@ -156,6 +156,8 @@
 #define XILINX_DMA_REG_BTT		0x28
 
 /* AXI DMA Specific Masks/Bit fields */
+#define XILINX_DMA_MAX_LEN_REG_WIDTH	23
+#define XILINX_DMA_MIN_LEN_REG_WIDTH	8
 #define XILINX_DMA_MAX_TRANS_LEN	GENMASK(22, 0)
 #define XILINX_DMA_CR_COALESCE_MAX	GENMASK(23, 16)
 #define XILINX_DMA_CR_CYCLIC_BD_EN_MASK	BIT(4)
@@ -410,6 +412,7 @@ struct xilinx_dma_config {
  * @has_sg: Specifies whether Scatter-Gather is present or not
  * @mcdma: Specifies whether Multi-Channel is present or not
  * @flush_on_fsync: Flush on frame sync
+ * @max_length: Maximum length of a DMA transfer
  * @halt_mode: How to halt the DMA engine
  * @ext_addr: Indicates 64 bit addressing is supported by dma device
  * @pdev: Platform device structure pointer
@@ -431,6 +434,7 @@ struct xilinx_dma_device {
 	bool has_sg;
 	bool mcdma;
 	u32 flush_on_fsync;
+	u32 max_length;
 	enum xilinx_dma_halt_mode halt_mode;
 	bool ext_addr;
 	struct platform_device  *pdev;
@@ -1884,7 +1888,7 @@ static struct dma_async_tx_descriptor *xilinx_dma_prep_slave_sg(
 			 * making sure it is less than the hw limit
 			 */
 			copy = min_t(size_t, sg_dma_len(sg) - sg_used,
-				     XILINX_DMA_MAX_TRANS_LEN);
+				     chan->xdev->max_length);
 			if ((copy + sg_used  < sg_dma_len(sg)) &&
 					chan->xdev->common.copy_align) {
 				/* If this is not the last descriptor, make sure
@@ -2674,7 +2678,7 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 	struct xilinx_dma_device *xdev;
 	struct device_node *child, *np = pdev->dev.of_node;
 	struct resource *io;
-	u32 num_frames, addr_width;
+	u32 num_frames, addr_width, len_width;
 	int i, halt_mode, err;
 
 	/* Allocate and initialize the DMA engine structure */
@@ -2733,6 +2737,16 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 		if (err < 0)
 			dev_warn(xdev->dev,
 				 "missing xlnx,flush-fsync property\n");
+	}
+
+	if (xdev->dma_config->dmatype == XDMA_TYPE_AXIDMA) {
+		err = of_property_read_u32(node, "xlnx,lenwidth", &len_width);
+		if (err < 0) {
+			len_width = XILINX_DMA_MAX_LEN_REG_WIDTH;
+		}
+		len_width = max_t(u32, len_width, XILINX_DMA_MIN_LEN_REG_WIDTH);
+		len_width = min_t(u32, len_width, XILINX_DMA_MAX_LEN_REG_WIDTH);
+		xdev->max_length = GENMASK(len_width-1, 0);
 	}
 
 	err = of_property_read_u32(node, "xlnx,addrwidth", &addr_width);
