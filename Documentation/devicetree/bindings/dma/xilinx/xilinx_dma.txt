@@ -47,6 +47,7 @@ Optional properties:
     this option
 Optional properties for AXI DMA:
 - xlnx,mcdma: Tells whether configured for multi-channel mode in the hardware.
+- xlnx,lenwidth: Indicates the width of the length register in bits
 Optional properties for VDMA:
 - xlnx,flush-fsync: Tells which channel to Flush on Frame sync.
 	It takes following values:
