@@ -1446,6 +1446,7 @@ static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 {
 	struct xilinx_dma_tx_descriptor *desc, *next;
 	struct xilinx_axidma_tx_segment *segment;
+	bool desc_done;
 
 	/* This function was invoked with lock held */
 	if (list_empty(&chan->active_list))
@@ -1456,8 +1457,21 @@ static void xilinx_dma_complete_descriptor(struct xilinx_dma_chan *chan)
 			/* Level interrupt may effectively coalsece */
 			segment = list_last_entry(&desc->segments,
 					struct xilinx_axidma_tx_segment, node);
-			if (!(segment->hw.status & XILINX_DMA_BD_CMPL))
-				return;
+			if (!(segment->hw.status & XILINX_DMA_BD_CMPL)) {
+				desc_done = false;
+				if (chan->direction == DMA_DEV_TO_MEM) {
+					/* check for partial transfer completion */
+					list_for_each_entry(segment, &desc->segments, node) {
+						if((segment->hw.status & XILINX_DMA_BD_CMPL) &&
+							(segment->hw.status &  XILINX_DMA_BD_EOP)) {
+							desc_done = true;
+							break;
+						}
+					}
+				}
+				if (!desc_done)
+					return;
+			}
 		}
 
 		list_del(&desc->node);
