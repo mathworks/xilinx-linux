@@ -52,6 +52,7 @@
 struct mathworks_ipcore_dev {
     struct mathworks_ip_info 		*mw_ip_info;
     u32								rst_reg;
+    u32								timestamp_reg;
     void							*private;
 };
 
