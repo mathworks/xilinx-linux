@@ -10,6 +10,7 @@
 #include "mathworks_ipcore.h"
 #include "mw_stream_channel.h"
 #include "mw_stream_iio_channel.h"
+#include "mw_mm_iio_channel.h"
 
 #include <linux/version.h>
 
@@ -131,6 +132,9 @@ static int mathworks_ipcore_of_probe(struct platform_device *op)
 			break;
 		case MWDEV_MODE_SUBDEV:
 			status = mw_stream_iio_channels_probe(mwdev);
+			if(status)
+				return status;
+			status = mw_mm_iio_channels_probe(mwdev);
 			if(status)
 				return status;
 			break;
