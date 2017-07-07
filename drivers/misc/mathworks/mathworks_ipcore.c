@@ -108,6 +108,12 @@ static int mathworks_ipcore_of_probe(struct platform_device *op)
     	mwdev->rst_reg = 0;
     }
 
+    status = of_property_read_u32(dev->of_node, "mathworks,timestamp-reg", &mwdev->timestamp_reg);
+    if(status) {
+    	/* Fall back to 0xFFFFFFFF if the property does not exist */
+    	mwdev->timestamp_reg = 0xFFFFFFFF;
+    }
+
     mwdev->mw_ip_info->private = mwdev;
 
 	status = devm_mathworks_ip_register(mwdev->mw_ip_info);
