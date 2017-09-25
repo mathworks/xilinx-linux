@@ -1,7 +1,7 @@
 #include <dt-bindings/iio/frequency/ad9528.h>
 
 &fmc_spi {
-	clk0_ad9528: ad9528-1@0 {
+	clk0_ad9528: ad9528@0 {
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
@@ -13,24 +13,32 @@
 		adi,spi-3wire-enable;
 		reg = <0>;
 
-		clock-output-names = "ad9528-1_out0", "ad9528-1_out1", "ad9528-1_out2", "ad9528-1_out3", "ad9528-1_out4", "ad9528-1_out5", "ad9528-1_out6", "ad9528-1_out7", "ad9528-1_out8", "ad9528-1_out9", "ad9528-1_out10", "ad9528-1_out11", "ad9528-1_out12", "ad9528-1_out13";
+		clock-output-names = "ad9528_out0", "ad9528_out1", "ad9528_out2", "ad9528_out3", "ad9528_out4", "ad9528_out5", "ad9528_out6", "ad9528_out7", "ad9528_out8", "ad9528_out9", "ad9528_out10", "ad9528_out11", "ad9528_out12", "ad9528_out13";
 		adi,vcxo-freq = <125000000>;
 
 		/* PLL1 config */
 		adi,pll1-bypass-enable;
 		adi,osc-in-diff-enable;
 
-		/* PLL2 config for VCO = 3750MHz, N = 30*/
-		adi,pll2-ndiv-a-cnt = <2>; /* a = N % 4 */
-		adi,pll2-ndiv-b-cnt = <7>; /* b = N / 4 */
-		adi,pll2-vco-diff-m1 = <3>;
-		adi,pll2-n2-div = <10>; /* N / M1 */
-		adi,pll2-r1-div = <1>;
+		/*
+		 * Valid ranges based on VCO locking range:
+		 *   1150.000 MHz - 1341.666 MHz
+		 *    862.500 MHz - 1006.250 MHz
+		 *    690.000 MHz -  805.000 MHz
+		 */
+		adi,pll2-m1-frequency = <1233333333>;
+
+		/* Manual divider configuration /
+//		adi,pll2-ndiv-a-cnt = <2>; /* a = N % 4 */
+//		adi,pll2-ndiv-b-cnt = <7>; /* b = N / 4 */
+//		adi,pll2-vco-div-m1 = <3>;
+//		adi,pll2-n2-div = <10>; /* N / M1 */
+//		adi,pll2-r1-div = <1>;
 		adi,pll2-charge-pump-current-nA = <35000>;
 
 		/* SYSREF config */
 		adi,sysref-src = <SYSREF_SRC_INTERNAL>;
-		adi,sysref-k-div = <8>;
+		adi,sysref-k-div = <128>;
 
 		adi,rpole2 = <RPOLE2_900_OHM>;
 		adi,rzero = <RZERO_1850_OHM>;

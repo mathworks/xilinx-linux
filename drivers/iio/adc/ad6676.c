@@ -1075,10 +1075,8 @@ static struct ad6676_platform_data *ad6676_parse_dt(struct device *dev)
 	struct ad6676_platform_data *pdata;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
+	if (!pdata)
 		return NULL;
-	}
 
 	pdata->spi3wire = of_property_read_bool(np, "adi,spi-3wire-enable");
 
@@ -1165,7 +1163,9 @@ static int ad6676_probe(struct spi_device *spi)
 	ad6676_gpio_config(conv);
 
 	/* RESET here */
-	conv->pwrdown_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_HIGH);
+	conv->pwrdown_gpio = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(conv->pwrdown_gpio))
+		return PTR_ERR(conv->pwrdown_gpio);
 
 	mdelay(100);
 

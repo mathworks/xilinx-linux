@@ -487,7 +487,7 @@ static const struct pixel_format pixel_formats[] = {
 	{ MIPI_CSI_DT_RAW_14, "RAW14 "}
 };
 
-static const struct xcsi2rxss_event xcsi2rxss_events[] = {
+static struct xcsi2rxss_event xcsi2rxss_events[] = {
 	{ XCSI_ISR_FR_MASK, "Frame Received", 0 },
 	{ XCSI_ISR_ILC_MASK, "Invalid Lane Count Error", 0 },
 	{ XCSI_ISR_SPFIFOF_MASK, "Short Packet FIFO OverFlow Error", 0 },
@@ -1675,6 +1675,11 @@ static int xcsi2rxss_probe(struct platform_device *pdev)
 				i, xcsi2rxss_ctrls[i].id);
 		ctrl = v4l2_ctrl_new_custom(&xcsi2rxss->ctrl_handler,
 						&xcsi2rxss_ctrls[i], NULL);
+		if (!ctrl) {
+			dev_err(xcsi2rxss->core.dev, "Failed for %s ctrl\n",
+				xcsi2rxss_ctrls[i].name);
+			goto error;
+		}
 	}
 
 	dev_dbg(xcsi2rxss->core.dev, "# v4l2 ctrls registered = %d\n", i - 1);

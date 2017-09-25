@@ -751,9 +751,13 @@ static long jesd204b_gt_rxcdr_settings(struct jesd204b_gt_state *st,
 		return -EINVAL;
 	}
 
-	if (gt_link->encoding == ENC_8B10B) {
-
+	if (gt_link->lane_rate > 6600000 && rxout_div == 1) {
+		cfg4 = 0x0B;
+	} else {
 		cfg4 = 0x03;
+	}
+
+	if (gt_link->encoding == ENC_8B10B) {
 
 		switch (rxout_div) {
 		case 0: /* 1 */
@@ -773,12 +777,6 @@ static long jesd204b_gt_rxcdr_settings(struct jesd204b_gt_state *st,
 		}
 
 	} else {
-
-		if (gt_link->lane_rate > 6600000 && rxout_div == 1) {
-			cfg4 = 0x0B;
-		} else {
-			cfg4 = 0x03;
-		}
 
 		switch (rxout_div) {
 		case 0: /* 1 */
@@ -1337,10 +1335,8 @@ static int jesd204b_gt_probe(struct platform_device *pdev)
 			of_match_device(jesd204b_gt_of_match, &pdev->dev);
 
 	st = devm_kzalloc(&pdev->dev, sizeof(*st), GFP_KERNEL);
-	if (!st) {
-		dev_err(&pdev->dev, "Not enough memory for device\n");
+	if (!st)
 		return -ENOMEM;
-	}
 
 	ret = of_get_child_count(np);
 	if (ret > MAX_NUM_LINKS)
@@ -1543,7 +1539,6 @@ static int jesd204b_gt_probe(struct platform_device *pdev)
 					 sizeof(*st->clk_data.clks) *
 					 MAX_NUM_LINKS, GFP_KERNEL);
 	if (!st->clk_data.clks) {
-		dev_err(&pdev->dev, "could not allocate memory\n");
 		ret = -ENOMEM;
 		goto remove_sys_files;
 	}
