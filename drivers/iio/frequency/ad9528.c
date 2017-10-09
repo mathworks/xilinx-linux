@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/of.h>
+#include <linux/rational.h>
 
 #include <linux/clk.h>
 #include <linux/clkdev.h>
@@ -119,7 +120,6 @@
 /* AD9528_PLL2_FEEDBACK_DIVIDER_AB */
 #define AD9528_PLL2_FB_NDIV_A_CNT(x)		(((x) & 0x3) << 6)
 #define AD9528_PLL2_FB_NDIV_B_CNT(x)		(((x) & 0x3F) << 0)
-#define AD9528_PLL2_FB_NDIV(a, b)		(4 * (b) + (a))
 
 /* AD9528_PLL2_CTRL */
 #define AD9528_PLL2_LOCK_DETECT_PWR_DOWN_EN	BIT(7)
@@ -225,6 +225,10 @@
 #define AD_IFE(_pde, _a, _b) ((pdata->_pde) ? _a : _b)
 #define AD_IF(_pde, _a) AD_IFE(_pde, _a, 0)
 
+/* In kHz */
+#define AD9528_VCO_FREQ_MIN 3450000
+#define AD9528_VCO_FREQ_MAX 4025000
+
 enum {
 	AD9528_STAT_PLL1_LD,
 	AD9528_STAT_PLL2_LD,
@@ -237,9 +241,10 @@ enum {
 	AD9528_SYNC,
 };
 
-enum {
+enum ad9528_output_source {
 	AD9528_VCO,
 	AD9528_VCXO,
+	AD9528_SYSREF,
 	AD9528_NUM_CLK_SRC,
 };
 
@@ -247,6 +252,7 @@ struct ad9528_outputs {
 	struct clk_hw hw;
 	struct iio_dev *indio_dev;
 	unsigned num;
+	enum ad9528_output_source source;
 	bool is_enabled;
 };
 
@@ -260,12 +266,9 @@ struct ad9528_state {
 	struct iio_chan_spec		ad9528_channels[AD9528_NUM_CHAN];
 	struct clk_onecell_data		clk_data;
 	struct clk			*clks[AD9528_NUM_CHAN];
-	struct gpio_desc			*pwrdown_gpio;
 	struct gpio_desc			*reset_gpio;
-	struct gpio_desc			*sync_gpio;
 
 	unsigned long		vco_out_freq[AD9528_NUM_CLK_SRC];
-	unsigned char		vco_out_map[AD9528_NUM_CHAN];
 
 	struct mutex		lock;
 
@@ -496,6 +499,15 @@ static const struct attribute_group ad9528_attribute_group = {
 	.attrs = ad9528_attributes,
 };
 
+static unsigned int ad9528_attr_to_addr(const struct iio_chan_spec *chan,
+	unsigned int attr)
+{
+	if (attr == IIO_CHAN_INFO_RAW)
+		return AD9528_CHANNEL_PD_EN;
+	else
+		return AD9528_CHANNEL_OUTPUT(chan->channel);
+}
+
 static int ad9528_read_raw(struct iio_dev *indio_dev,
 			   struct iio_chan_spec const *chan,
 			   int *val,
@@ -503,11 +515,12 @@ static int ad9528_read_raw(struct iio_dev *indio_dev,
 			   long m)
 {
 	struct ad9528_state *st = iio_priv(indio_dev);
+	struct ad9528_outputs *output = &st->output[chan->channel];
 	unsigned code;
 	int ret;
 
 	mutex_lock(&st->lock);
-	ret = ad9528_read(indio_dev, AD9528_CHANNEL_OUTPUT(chan->channel));
+	ret = ad9528_read(indio_dev, ad9528_attr_to_addr(chan, m));
 	mutex_unlock(&st->lock);
 
 	if (ret < 0)
@@ -515,12 +528,12 @@ static int ad9528_read_raw(struct iio_dev *indio_dev,
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
-		ret = ad9528_read(indio_dev, AD9528_CHANNEL_PD_EN);
 		*val = !(AD9528_CHANNEL_PD_MASK_REV(ret) & BIT(chan->channel));
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_FREQUENCY:
-		*val = st->vco_out_freq[st->vco_out_map[chan->channel]] /
-			AD9528_CLK_DIST_DIV_REV(ret);
+		*val = st->vco_out_freq[output->source];
+		if (output->source != AD9528_SYSREF)
+			*val /= AD9528_CLK_DIST_DIV_REV(ret);
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_PHASE:
 		code = (AD9528_CLK_DIST_DIV_PHASE_REV(ret) * 3141592) /
@@ -540,56 +553,60 @@ static int ad9528_write_raw(struct iio_dev *indio_dev,
 			    long mask)
 {
 	struct ad9528_state *st = iio_priv(indio_dev);
-	unsigned reg;
+	struct ad9528_outputs *output = &st->output[chan->channel];
+	unsigned int addr = ad9528_attr_to_addr(chan, mask);
 	int ret, tmp, code;
+	int reg_val;
 
 	mutex_lock(&st->lock);
-	ret = ad9528_read(indio_dev, AD9528_CHANNEL_OUTPUT(chan->channel));
-	if (ret < 0)
-		goto out;
 
-	reg = ret;
+	reg_val = ad9528_read(indio_dev, addr);
+	if (reg_val < 0) {
+		ret = reg_val;
+		goto out;
+	}
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = ad9528_read(indio_dev, AD9528_CHANNEL_PD_EN);
 		if (val)
-			ret &= ~BIT(chan->channel);
+			reg_val &= ~BIT(chan->channel);
 		else
-			ret |= BIT(chan->channel);
-		ad9528_write(indio_dev, AD9528_CHANNEL_PD_EN, ret);
+			reg_val |= BIT(chan->channel);
 
-		st->output[chan->channel].is_enabled = !!val;
+		output->is_enabled = !!val;
 
 		break;
 	case IIO_CHAN_INFO_FREQUENCY:
+		if (output->source == AD9528_SYSREF) {
+			ret = -EINVAL;
+			goto out;
+		}
+
 		if (val <= 0) {
 			ret = -EINVAL;
 			goto out;
 		}
 
-		tmp = DIV_ROUND_CLOSEST(st->vco_out_freq[st->vco_out_map[
-				chan->channel]], val);
+		tmp = DIV_ROUND_CLOSEST(st->vco_out_freq[output->source], val);
 		tmp = clamp(tmp, 1, 256);
 
-		reg &= ~(AD9528_CLK_DIST_CTRL(~0) | AD9528_CLK_DIST_DIV(~0));
-		reg |= AD9528_CLK_DIST_DIV(tmp);
-		reg |= AD9528_CLK_DIST_CTRL(st->vco_out_map[chan->channel]);
+		reg_val &= ~(AD9528_CLK_DIST_CTRL(~0) | AD9528_CLK_DIST_DIV(~0));
+		reg_val |= AD9528_CLK_DIST_DIV(tmp);
+		reg_val |= AD9528_CLK_DIST_CTRL(output->source);
 		break;
 	case IIO_CHAN_INFO_PHASE:
 		code = val * 1000000 + val2 % 1000000;
-		tmp = (code * AD9528_CLK_DIST_DIV_REV(ret)) / 3141592;
+		tmp = (code * AD9528_CLK_DIST_DIV_REV(reg_val)) / 3141592;
 		tmp = clamp(tmp, 0, 63);
-		reg &= ~AD9528_CLK_DIST_DIV_PHASE(~0);
-		reg |= AD9528_CLK_DIST_DIV_PHASE(tmp);
+		reg_val &= ~AD9528_CLK_DIST_DIV_PHASE(~0);
+		reg_val |= AD9528_CLK_DIST_DIV_PHASE(tmp);
 		break;
 	default:
 		ret = -EINVAL;
 		goto out;
 	}
 
-	ret = ad9528_write(indio_dev, AD9528_CHANNEL_OUTPUT(chan->channel),
-			   reg);
+	ret = ad9528_write(indio_dev, addr, reg_val);
 	if (ret < 0)
 		goto out;
 
@@ -631,6 +648,73 @@ static const struct iio_info ad9528_info = {
 	.attrs = &ad9528_attribute_group,
 	.driver_module = THIS_MODULE,
 };
+
+static bool ad9528_pll2_valid_calib_div(unsigned int div)
+{
+	if (div < 16 || div > 255)
+		return false;
+
+	switch (div) {
+	case 18:
+	case 19:
+	case 23:
+	case 27:
+		return false;
+	}
+
+	return true;
+}
+
+static int ad9528_calc_dividers(unsigned int vcxo_freq, unsigned int m1_freq,
+	struct ad9528_platform_data *pdata)
+{
+	unsigned long n2[2], r1[2];
+	unsigned int fpfd;
+	unsigned int m1;
+
+	m1_freq /= 1000;
+	vcxo_freq /= 1000;
+
+	for (m1 = 3; m1 <= 5; m1++) {
+		if (AD9528_VCO_FREQ_MIN <= m1_freq * m1 &&
+		    AD9528_VCO_FREQ_MAX >= m1_freq * m1)
+			break;
+	}
+
+	if (m1 == 6)
+		return -EINVAL;
+
+	rational_best_approximation(m1_freq, vcxo_freq,
+		255 / m1, 31, &n2[0], &r1[0]);
+
+	pdata->pll2_freq_doubler_en = false;
+
+	if (m1_freq != vcxo_freq * n2[0] / r1[0]) {
+		rational_best_approximation(m1_freq, vcxo_freq*2,
+			255 / m1, 31, &n2[1], &r1[1]);
+
+		if (abs((int)m1_freq - (int)(vcxo_freq * n2[0] / r1[0])) >
+			abs((int)m1_freq - (int)(vcxo_freq * 2 * n2[1] / r1[1]))) {
+			n2[0] = n2[1];
+			r1[0] = r1[1];
+			pdata->pll2_freq_doubler_en = true;
+		}
+	}
+
+	fpfd = vcxo_freq * (pdata->pll2_freq_doubler_en ? 2 : 1) / r1[0];
+
+	while (fpfd > 275000 || !ad9528_pll2_valid_calib_div(n2[0] * m1)) {
+		fpfd /= 2;
+		n2[0] *= 2;
+		r1[0] *= 2;
+	}
+
+	pdata->pll2_r1_div = r1[0];
+	pdata->pll2_n2_div = n2[0];
+	pdata->pll2_vco_div_m1 = m1;
+
+	return 0;
+}
 
 static long ad9528_get_clk_attr(struct clk_hw *hw, long mask)
 {
@@ -682,19 +766,24 @@ static void ad9528_clk_unprepare(struct clk_hw *hw)
 static long ad9528_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				  unsigned long *prate)
 {
-	struct iio_dev *indio_dev = to_ad9528_clk_output(hw)->indio_dev;
+	struct ad9528_outputs *output = to_ad9528_clk_output(hw);
+	struct iio_dev *indio_dev = output->indio_dev;
 	struct ad9528_state *st = iio_priv(indio_dev);
-	unsigned long clk, tmp;
+	unsigned long freq, div;
 
 	if (!rate)
 		return 0;
 
-	clk = st->vco_out_freq[AD9528_VCO];
+	freq = st->vco_out_freq[output->source];
 
-	tmp = DIV_ROUND_CLOSEST(clk, rate);
-	tmp = clamp(tmp, 1UL, 256UL);
+	if (output->source == AD9528_SYSREF) {
+		div = 1;
+	} else {
+		div = DIV_ROUND_CLOSEST(freq, rate);
+		div = clamp(div, 1UL, 256UL);
+	}
 
-	return clk / tmp;
+	return DIV_ROUND_CLOSEST(freq, div);
 }
 
 static int ad9528_clk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -747,9 +836,8 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 	struct ad9528_channel_spec *chan;
 	unsigned long active_mask = 0, ignoresync_mask = 0;
 	unsigned vco_freq, vco_ctrl, sysref_ctrl, stat_en_mask = 0;
+	unsigned int pll2_ndiv, pll2_ndiv_a_cnt, pll2_ndiv_b_cnt;
 	int ret, i;
-
-	dev_info(&indio_dev->dev, "ad9528 setup\n");
 
 	ret = ad9528_write(indio_dev, AD9528_SERIAL_PORT_CONFIG,
 			AD9528_SER_CONF_SOFT_RESET |
@@ -829,6 +917,17 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 	 * PLL2 Setup
 	 */
 
+	pll2_ndiv = pdata->pll2_vco_div_m1 * pdata->pll2_n2_div;
+	if (!ad9528_pll2_valid_calib_div(pll2_ndiv)) {
+		dev_err(&st->spi->dev,
+			"Feedback calibration divider value (%d) out of range\n",
+			pll2_ndiv);
+		return -EINVAL;
+	}
+
+	pll2_ndiv_a_cnt = pll2_ndiv % 4;
+	pll2_ndiv_b_cnt = pll2_ndiv / 4;
+
 	ret = ad9528_write(indio_dev, AD9528_PLL2_CHARGE_PUMP,
 		AD9528_PLL2_CHARGE_PUMP_CURRENT_nA(pdata->
 			pll2_charge_pump_current_nA));
@@ -836,8 +935,8 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 		return ret;
 
 	ret = ad9528_write(indio_dev, AD9528_PLL2_FEEDBACK_DIVIDER_AB,
-		AD9528_PLL2_FB_NDIV_A_CNT(pdata->pll2_ndiv_a_cnt) |
-		AD9528_PLL2_FB_NDIV_B_CNT(pdata->pll2_ndiv_b_cnt));
+		AD9528_PLL2_FB_NDIV_A_CNT(pll2_ndiv_a_cnt) |
+		AD9528_PLL2_FB_NDIV_B_CNT(pll2_ndiv_b_cnt));
 	if (ret < 0)
 		return ret;
 
@@ -847,9 +946,10 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	vco_freq = (pdata->vcxo_freq * (pdata->pll2_freq_doubler_en ? 2 : 1)
-			/ pdata->pll2_r1_div) * AD9528_PLL2_FB_NDIV(pdata->
-			pll2_ndiv_a_cnt, pdata->pll2_ndiv_b_cnt);
+	
+	vco_freq = div_u64((unsigned long long)pdata->vcxo_freq *
+			   (pdata->pll2_freq_doubler_en ? 2 : 1) * pll2_ndiv,
+			    pdata->pll2_r1_div);
 
 	vco_ctrl = AD_IF(pll2_freq_doubler_en || pdata->pll2_r1_div != 1,
 				AD9528_PLL2_DOUBLER_R1_EN);
@@ -858,19 +958,22 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 		return ret;
 
 	ret = ad9528_write(indio_dev, AD9528_PLL2_VCO_DIVIDER,
-		AD9528_PLL2_VCO_DIV_M1(pdata->pll2_vco_diff_m1) |
-		AD_IFE(pll2_vco_diff_m1, 0,
+		AD9528_PLL2_VCO_DIV_M1(pdata->pll2_vco_div_m1) |
+		AD_IFE(pll2_vco_div_m1, 0,
 		       AD9528_PLL2_VCO_DIV_M1_PWR_DOWN_EN));
 	if (ret < 0)
 		return ret;
 
-	if (pdata->pll2_vco_diff_m1)
+	if (pdata->pll2_vco_div_m1)
 		st->vco_out_freq[AD9528_VCO] =
-			vco_freq / pdata->pll2_vco_diff_m1;
+			vco_freq / pdata->pll2_vco_div_m1;
 	else
 		st->vco_out_freq[AD9528_VCO] = vco_freq;
 
 	st->vco_out_freq[AD9528_VCXO] = pdata->vcxo_freq;
+
+	st->vco_out_freq[AD9528_SYSREF] = vco_freq / (pll2_ndiv *
+					   pdata->sysref_k_div * 2);
 
 	ret = ad9528_write(indio_dev, AD9528_PLL2_R1_DIVIDER,
 		AD9528_PLL2_R1_DIV(pdata->pll2_r1_div));
@@ -896,44 +999,49 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 
 	for (i = 0; i < pdata->num_channels; i++) {
 		chan = &pdata->channels[i];
-		if (chan->channel_num < AD9528_NUM_CHAN) {
-			struct clk *clk;
+		if (chan->channel_num >= AD9528_NUM_CHAN)
+			continue;
+		if (chan->output_dis)
+			continue;
 
-			if (chan->output_dis)
-				continue;
+		__set_bit(chan->channel_num, &active_mask);
+		if (chan->sync_ignore_en)
+			__set_bit(chan->channel_num, &ignoresync_mask);
+		ret = ad9528_write(indio_dev,
+			AD9528_CHANNEL_OUTPUT(chan->channel_num),
+			AD9528_CLK_DIST_DRIVER_MODE(chan->driver_mode) |
+			AD9528_CLK_DIST_DIV(chan->channel_divider) |
+			AD9528_CLK_DIST_DIV_PHASE(chan->divider_phase) |
+			AD9528_CLK_DIST_CTRL(chan->signal_source));
+		if (ret < 0)
+			return ret;
 
-			__set_bit(chan->channel_num, &active_mask);
-			if (chan->sync_ignore_en)
-				__set_bit(chan->channel_num, &ignoresync_mask);
-			ret = ad9528_write(indio_dev,
-				AD9528_CHANNEL_OUTPUT(chan->channel_num),
-				AD9528_CLK_DIST_DRIVER_MODE(chan->driver_mode) |
-				AD9528_CLK_DIST_DIV(chan->channel_divider) |
-				AD9528_CLK_DIST_DIV_PHASE(chan->divider_phase) |
-				AD9528_CLK_DIST_CTRL(chan->signal_source));
-			if (ret < 0)
-				return ret;
+		st->ad9528_channels[i].type = IIO_ALTVOLTAGE;
+		st->ad9528_channels[i].output = 1;
+		st->ad9528_channels[i].indexed = 1;
+		st->ad9528_channels[i].channel = chan->channel_num;
+		st->ad9528_channels[i].extend_name =
+			chan->extended_name;
+		st->ad9528_channels[i].info_mask_separate =
+			BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_PHASE) |
+			BIT(IIO_CHAN_INFO_FREQUENCY);
 
-			st->ad9528_channels[i].type = IIO_ALTVOLTAGE;
-			st->ad9528_channels[i].output = 1;
-			st->ad9528_channels[i].indexed = 1;
-			st->ad9528_channels[i].channel = chan->channel_num;
-			st->ad9528_channels[i].extend_name =
-				chan->extended_name;
-			st->ad9528_channels[i].info_mask_separate =
-				BIT(IIO_CHAN_INFO_RAW) |
-				BIT(IIO_CHAN_INFO_PHASE) |
-				BIT(IIO_CHAN_INFO_FREQUENCY);
-
-			clk = ad9528_clk_register(indio_dev, chan->channel_num,
-						  !chan->output_dis);
-			if (IS_ERR(clk))
-				return PTR_ERR(clk);
+		switch (chan->signal_source) {
+		case SOURCE_VCXO:
+		case SOURCE_VCXO_INV:
+			st->output[chan->channel_num].source = AD9528_VCXO;
+			break;
+		case SOURCE_SYSREF_VCO:
+		case SOURCE_SYSREF_VCXO:
+		case SOURCE_SYSREF_VCXO_INV:
+			st->output[chan->channel_num].source = AD9528_SYSREF;
+			break;
+		default:
+			st->output[chan->channel_num].source = AD9528_VCO;
+			break;
 		}
 	}
-
-	of_clk_add_provider(st->spi->dev.of_node,
-			    of_clk_src_onecell_get, &st->clk_data);
 
 	ret = ad9528_write(indio_dev, AD9528_CHANNEL_PD_EN,
 			AD9528_CHANNEL_PD_MASK(~active_mask));
@@ -1015,7 +1123,27 @@ static int ad9528_setup(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	return ad9528_sync(indio_dev);
+	ret = ad9528_sync(indio_dev);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < pdata->num_channels; i++) {
+		struct clk *clk;
+
+		chan = &pdata->channels[i];
+		if (chan->channel_num >= AD9528_NUM_CHAN || chan->output_dis)
+			continue;
+
+		clk = ad9528_clk_register(indio_dev, chan->channel_num,
+						  !chan->output_dis);
+		if (IS_ERR(clk))
+			return PTR_ERR(clk);
+	}
+
+	of_clk_add_provider(st->spi->dev.of_node,
+			    of_clk_src_onecell_get, &st->clk_data);
+
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -1029,10 +1157,8 @@ static struct ad9528_platform_data *ad9528_parse_dt(struct device *dev)
 	int ret;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
+	if (!pdata)
 		return NULL;
-	}
 
 	pdata->spi3wire = of_property_read_bool(np, "adi,spi-3wire-enable");
 
@@ -1101,23 +1227,26 @@ static struct ad9528_platform_data *ad9528_parse_dt(struct device *dev)
 	of_property_read_u32(np, "adi,pll2-charge-pump-current-nA",
 			     &pdata->pll2_charge_pump_current_nA);
 
-	of_property_read_u32(np, "adi,pll2-ndiv-a-cnt", &tmp);
-	pdata->pll2_ndiv_a_cnt = tmp;
-	of_property_read_u32(np, "adi,pll2-ndiv-b-cnt", &tmp);
-	pdata->pll2_ndiv_b_cnt = tmp;
+	ret = of_property_read_u32(np, "adi,pll2-m1-frequency", &tmp);
+	if (ret == 0) {
+		ret = ad9528_calc_dividers(pdata->vcxo_freq, tmp, pdata);
+		if (ret)
+			return NULL;
+	} else {
+		pdata->pll2_freq_doubler_en =
+			of_property_read_bool(np, "adi,pll2-freq-doubler-enable");
 
-	pdata->pll2_freq_doubler_en =
-		of_property_read_bool(np, "adi,pll2-freq-doubler-enable");
-
-	tmp = 0;
-	of_property_read_u32(np, "adi,pll2-r1-div", &tmp);
-	pdata->pll2_r1_div = tmp;
-	tmp = 0;
-	of_property_read_u32(np, "adi,pll2-n2-div", &tmp);
-	pdata->pll2_n2_div = tmp;
-	tmp = 0;
-	of_property_read_u32(np, "adi,pll2-vco-diff-m1", &tmp);
-	pdata->pll2_vco_diff_m1 = tmp;
+		tmp = 0;
+		of_property_read_u32(np, "adi,pll2-r1-div", &tmp);
+		pdata->pll2_r1_div = tmp;
+		tmp = 0;
+		of_property_read_u32(np, "adi,pll2-n2-div", &tmp);
+		pdata->pll2_n2_div = tmp;
+		tmp = 0;
+		of_property_read_u32(np, "adi,pll2-vco-diff-m1", &tmp);
+		of_property_read_u32(np, "adi,pll2-vco-div-m1", &tmp);
+		pdata->pll2_vco_div_m1 = tmp;
+	}
 
 	/* Loop Filter PLL2 */
 
@@ -1149,10 +1278,8 @@ static struct ad9528_platform_data *ad9528_parse_dt(struct device *dev)
 
 	pdata->num_channels = cnt;
 	pdata->channels = devm_kzalloc(dev, sizeof(*chan) * cnt, GFP_KERNEL);
-	if (!pdata->channels) {
-		dev_err(dev, "could not allocate memory\n");
+	if (!pdata->channels)
 		return NULL;
-	}
 
 	cnt = 0;
 	for_each_child_of_node(np, chan_np) {
@@ -1222,10 +1349,6 @@ static int ad9528_probe(struct spi_device *spi)
 			return ret;
 	}
 
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "status0", GPIOD_OUT_LOW);
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown",
-		GPIOD_OUT_HIGH);
-
 	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
 	if (!IS_ERR(st->reset_gpio)) {
 		udelay(1);
@@ -1233,8 +1356,6 @@ static int ad9528_probe(struct spi_device *spi)
 	}
 
 	mdelay(10);
-
-	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync", GPIOD_OUT_HIGH);
 
 	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
@@ -1255,8 +1376,6 @@ static int ad9528_probe(struct spi_device *spi)
 	ret = iio_device_register(indio_dev);
 	if (ret)
 		goto error_disable_reg;
-
-	dev_info(&spi->dev, "probed %s\n", indio_dev->name);
 
 	return 0;
 
