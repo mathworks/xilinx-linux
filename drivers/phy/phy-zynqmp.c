@@ -34,7 +34,7 @@
 #include <linux/delay.h>
 #include <dt-bindings/phy/phy.h>
 #include <linux/soc/xilinx/zynqmp/fw.h>
-#include <linux/soc/xilinx/zynqmp/pm.h>
+#include <linux/soc/xilinx/zynqmp/firmware.h>
 #include <linux/reset.h>
 #include <linux/list.h>
 #include <linux/slab.h>
@@ -153,8 +153,6 @@
 #define PROT_BUS_WIDTH_10		0x0
 #define PROT_BUS_WIDTH_20		0x1
 #define PROT_BUS_WIDTH_40		0x2
-
-#define TX_TERM_FIX_VAL			0x11
 
 #define LANE_CLK_SHARE_MASK		0x8F
 
@@ -298,6 +296,18 @@ static struct xpsgtr_ssc ssc_lookup[] = {
  * @lpd: base address for low power domain devices reset control
  * @regs: address that phy needs to configure during configuring lane protocol
  * @tx_term_fix: fix for GT issue
+ * @sata_rst: a reset control for SATA
+ * @dp_rst: a reset control for DP
+ * @usb0_crst: a reset control for usb0 core
+ * @usb1_crst: a reset control for usb1 core
+ * @usb0_hibrst: a reset control for usb0 hibernation module
+ * @usb1_hibrst: a reset control for usb1 hibernation module
+ * @usb0_apbrst: a reset control for usb0 apb bus
+ * @usb1_apbrst: a reset control for usb1 apb bus
+ * @gem0_rst: a reset control for gem0
+ * @gem1_rst: a reset control for gem1
+ * @gem2_rst: a reset control for gem2
+ * @gem3_rst: a reset control for gem3
  */
 struct xpsgtr_dev {
 	struct device *dev;
@@ -327,10 +337,12 @@ struct xpsgtr_dev {
  *			 regs into gtr_dev, so that these address can be used
  *			 by phy while configuring lane.(Currently USB does this)
  *
- * @gtr_phy: pointer to lane
+ * @phy: pointer to lane
  * @regs:    pointer to protocol control register address
+ *
+ * Return: 0 on success
  */
-int xpsgtr_set_protregs(struct phy *phy, void *regs)
+int xpsgtr_set_protregs(struct phy *phy, void __iomem *regs)
 {
 	struct xpsgtr_phy *gtr_phy = phy_get_drvdata(phy);
 	struct xpsgtr_dev *gtr_dev = gtr_phy->data;
@@ -338,6 +350,7 @@ int xpsgtr_set_protregs(struct phy *phy, void *regs)
 	gtr_dev->regs = regs;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(xpsgtr_set_protregs);
 
 int xpsgtr_override_deemph(struct phy *phy, u8 plvl, u8 vlvl)
 {
@@ -563,7 +576,7 @@ static int xpsgtr_configure_lane(struct xpsgtr_phy *gtr_phy)
 
 /**
  * xpsgtr_config_usbpipe - configures the PIPE3 signals for USB
- * @xpsgtr_dev: pointer to gtr device
+ * @gtr_dev: pointer to gtr device
  */
 static void xpsgtr_config_usbpipe(struct xpsgtr_dev *gtr_dev)
 {
@@ -577,7 +590,7 @@ static void xpsgtr_config_usbpipe(struct xpsgtr_dev *gtr_dev)
 
 /**
  * xpsgtr_reset_assert - asserts reset using reset framework
- * @gtr_phy: pointer to reset_control
+ * @rstc: pointer to reset_control
  *
  * Return: 0 on success or error on failure
  */
@@ -603,7 +616,7 @@ static int xpsgtr_reset_assert(struct reset_control *rstc)
 
 /**
  * xpsgtr_reset_release - de-asserts reset using reset framework
- * @gtr_phy: pointer to reset_control
+ * @rstc: pointer to reset_control
  *
  * Return: 0 on success or error on failure
  */
@@ -900,7 +913,7 @@ static void xpsgtr_ulpi_reset(struct xpsgtr_phy *gtr_phy)
 static int xpsgtr_set_sgmii_pcs(struct xpsgtr_phy *gtr_phy)
 {
 	u32 shift, mask, value;
-	u32 ret = 0;
+	int ret = 0;
 	struct xpsgtr_dev *gtr_dev = gtr_phy->data;
 
 	/* Set the PCS signal detect to 1 */
@@ -993,7 +1006,7 @@ static int xpsgtr_phy_init(struct phy *phy)
 		 * we need to configure any lane ICM_CFG to valid protocol. This
 		 * will deassert the CMN_Resetn signal.
 		 */
-		writel(TX_TERM_FIX_VAL, gtr_dev->serdes + ICM_CFG1);
+		xpsgtr_lane_setprotocol(gtr_phy);
 
 		/* Clear Test Mode reset */
 		reg = readl(gtr_dev->serdes + TM_CMN_RST);

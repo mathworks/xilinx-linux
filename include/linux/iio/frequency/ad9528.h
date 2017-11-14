@@ -61,12 +61,10 @@ struct ad9528_channel_spec {
  * @sysref_req_trigger_mode: SYSREF request trigger mode
  * @sysref_req_en: SYSREF request pin mode enable (default SPI mode)
  * @pll2_charge_pump_current_nA: Magnitude of PLL2 charge pump current (nA).
- * @pll2_ndiv_a_cnt: PLL2 Feedback N-divider, A Counter, range 0..4.
- * @pll2_ndiv_b_cnt: PLL2 Feedback N-divider, B Counter, range 0..63.
  * @pll2_freq_doubler_en: PLL2 frequency doubler enable.
  * @pll2_r1_div: PLL2 R1 divider, range 1..31.
  * @pll2_n2_div: PLL2 N2 divider, range 1..256.
- * @pll2_vco_diff_m1: VCO1 divider, range 3..5.
+ * @pll2_vco_div_m1: VCO1 divider, range 3..5.
  * @rpole2: PLL2 loop filter Rpole resistor value.
  * @rzero: PLL2 loop filter Rzero resistor value.
  * @cpole1: PLL2 loop filter Cpole capacitor value.
@@ -118,12 +116,10 @@ struct ad9528_platform_data {
 
 	/* PLL2 Setting */
 	unsigned int			pll2_charge_pump_current_nA;
-	unsigned char			pll2_ndiv_a_cnt;
-	unsigned char			pll2_ndiv_b_cnt;
 	bool				pll2_freq_doubler_en;
 	unsigned char			pll2_r1_div;
 	unsigned char			pll2_n2_div;
-	unsigned char			pll2_vco_diff_m1; /* 3..5 */
+	unsigned char			pll2_vco_div_m1; /* 3..5 */
 
 	/* Loop Filter PLL2 */
 	unsigned char			rpole2;

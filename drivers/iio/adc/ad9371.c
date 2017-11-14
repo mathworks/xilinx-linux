@@ -593,9 +593,11 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 
 	MYKONOS_getProductId(phy->mykDevice, &phy->device_id);
 	if (phy->device_id != AD937x_PRODID(phy)) {
-		dev_err(&phy->spi->dev, "Failed product ID, expected 0x%X got 0x%X",
-			AD937x_PRODID(phy), phy->device_id );
-		return -ENODEV;
+		if (!(IS_AD9375(phy) && (phy->device_id == (ID_AD9375_ALT & 0xFF)))) {
+			dev_err(&phy->spi->dev, "Failed product ID, expected 0x%X got 0x%X",
+				AD937x_PRODID(phy), phy->device_id );
+			return -ENODEV;
+		}
 	}
 
 	/*******************************/
@@ -3650,15 +3652,11 @@ static int ad9371_probe(struct spi_device *spi)
 	mykonosBuild_t buildType;
 	u32 api_vers[4];
 
-	struct device_node *np = spi->dev.of_node;
-
 	dev_info(&spi->dev, "%s : enter", __func__);
 
-
-	clk = of_clk_get_by_name(np, "jesd_rx_clk");
-	if (IS_ERR(clk)) {
-		return -EPROBE_DEFER;
-	}
+	clk = devm_clk_get(&spi->dev, "jesd_rx_clk");
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*phy));
 	if (indio_dev == NULL)
@@ -3692,25 +3690,21 @@ static int ad9371_probe(struct spi_device *spi)
 	phy->mykDevice->spiSettings->autoIncAddrUp       = 1;
 	phy->mykDevice->spiSettings->fourWireMode        = 1;
 
-	phy->jesd_tx_clk = of_clk_get_by_name(np, "jesd_tx_clk");
-	if (IS_ERR(phy->jesd_tx_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->jesd_tx_clk = devm_clk_get(&spi->dev, "jesd_tx_clk");
+	if (IS_ERR(phy->jesd_tx_clk))
+		return PTR_ERR(phy->jesd_tx_clk);
 
-	phy->jesd_rx_os_clk = of_clk_get_by_name(np, "jesd_rx_os_clk");
-	if (IS_ERR(phy->jesd_rx_os_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->jesd_rx_os_clk = devm_clk_get(&spi->dev, "jesd_rx_os_clk");
+	if (IS_ERR(phy->jesd_rx_os_clk))
+		return PTR_ERR(phy->jesd_rx_os_clk);
 
-	phy->dev_clk = of_clk_get_by_name(np, "dev_clk");
-	if (IS_ERR(phy->dev_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->dev_clk = devm_clk_get(&spi->dev, "dev_clk");
+	if (IS_ERR(phy->dev_clk))
+		return PTR_ERR(phy->dev_clk);
 
-	phy->fmc_clk = of_clk_get_by_name(np, "fmc_clk");
-	if (IS_ERR(phy->fmc_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->fmc_clk = devm_clk_get(&spi->dev, "fmc_clk");
+	if (IS_ERR(phy->fmc_clk))
+		return PTR_ERR(phy->fmc_clk);
 
 	ret = clk_prepare_enable(phy->fmc_clk);
 	if (ret)
@@ -3736,13 +3730,13 @@ static int ad9371_probe(struct spi_device *spi)
 	}
 
 	ad9371_clk_register(phy, "-rx_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, RX_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED , RX_SAMPL_CLK);
 
 	ad9371_clk_register(phy, "-obs_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, OBS_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED, OBS_SAMPL_CLK);
 
 	ad9371_clk_register(phy, "-tx_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, TX_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED, TX_SAMPL_CLK);
 
 	phy->clk_data.clks = phy->clks;
 	phy->clk_data.clk_num = NUM_AD9371_CLKS;

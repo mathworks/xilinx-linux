@@ -20,14 +20,8 @@ config SND_SOC_ADI_AXI_SPDIF
 	help
 	  ASoC driver for the Analog Devices AXI-SPDIF softcore peripheral.
 
-config SND_SOC_ADV7511_HDMI
-	tristate "ADV7511 HDMI transmitter sound support"
+config SND_SOC_ADRV936X_BOX
+	tristate "ADRV9361/ADRV9364 Box Audio Support"
 	depends on SND_SOC_ADI
-	select SND_SOC_ADI_AXI_SPDIF
-		 
-config SND_SOC_ZED_ADAU1761
-	tristate "ZED board sound support"
-	depends on SND_SOC_ADI
-	depends on I2C
-	select SND_SOC_ADI_AXI_I2S
+	select SND_SOC_TS3A227E
 	select SND_SOC_ADAU1761_I2C
