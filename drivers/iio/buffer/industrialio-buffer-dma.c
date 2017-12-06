@@ -15,7 +15,6 @@
 #include <linux/poll.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/buffer-dma.h>
-#include <linux/iio/sysfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/sizes.h>
 
@@ -856,28 +855,6 @@ int iio_dma_buffer_set_length(struct iio_buffer *buffer, int length)
 }
 EXPORT_SYMBOL_GPL(iio_dma_buffer_set_length);
 
-
-static ssize_t iio_dma_get_data_available(struct device *dev,
-					       struct device_attribute *attr,
-					       char *buf)
-{
-	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
-	size_t bytes;
-
-	bytes = iio_dma_buffer_data_available(indio_dev->buffer);
-
-	return sprintf(buf, "%llu\n", (unsigned long long)bytes);
-}
-
-static IIO_DEVICE_ATTR(data_available, S_IRUGO,
-		       iio_dma_get_data_available, NULL, 0);
-
-static const struct attribute *iio_dma_buffer_attributes[] = {
-	&iio_dev_attr_data_available.dev_attr.attr,
-	NULL,
-};
-
-
 static u64 dmamask = DMA_BIT_MASK(64);
 
 /**
@@ -897,7 +874,6 @@ int iio_dma_buffer_init(struct iio_dma_buffer_queue *queue,
 	iio_buffer_init(&queue->buffer);
 	queue->buffer.length = PAGE_SIZE;
 	queue->buffer.watermark = queue->buffer.length / 2;
-	queue->buffer.attrs = iio_dma_buffer_attributes;
 	queue->dev = dev;
 	queue->ops = ops;
 	queue->driver_data = driver_data;
