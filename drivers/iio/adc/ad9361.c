@@ -1027,6 +1027,15 @@ int ad9361_bist_loopback(struct ad9361_rf_phy *phy, unsigned mode)
 }
 EXPORT_SYMBOL(ad9361_bist_loopback);
 
+int ad9361_write_bist_reg(struct ad9361_rf_phy *phy, u32 val)
+{
+	if (!phy)
+		return -EINVAL;
+	phy->bist_config = val;
+	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, val);
+}
+EXPORT_SYMBOL(ad9361_write_bist_reg);
+
 int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 {
 	u32 reg = 0;
@@ -1045,9 +1054,7 @@ int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 		break;
 	};
 
-	phy->bist_config = reg;
-
-	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	return ad9361_write_bist_reg(phy, reg);
 }
 EXPORT_SYMBOL(ad9361_bist_prbs);
 
@@ -1090,9 +1097,7 @@ static int ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	reg1 = ((mask << 2) & reg_mask);
 	ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, reg1);
 
-	phy->bist_config = reg;
-
-	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	return ad9361_write_bist_reg(phy, reg);
 }
 
 static int ad9361_check_cal_done(struct ad9361_rf_phy *phy, u32 reg,
@@ -1865,7 +1870,7 @@ static int ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * ClkRF in MHz, delay in us
 	 */
 
-	reg = (200 * delay_lna) / 2 + (14000000UL / (clkrf / 500U));
+	reg = (200 + delay_lna) / 2 + (14000000UL / (clkrf / 500U));
 	reg = DIV_ROUND_UP(reg, 1000UL) +
 		phy->pdata->gain_ctrl.agc_attack_delay_extra_margin_us;
 	reg = clamp_t(u8, reg, 0U, 31U);
@@ -2416,7 +2421,7 @@ static int ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 	ad9361_spi_write(phy->spi, REG_RX_VCO_LDO + offs, 0x0B);
 	ad9361_spi_write(phy->spi, REG_RX_VCO_PD_OVERRIDES + offs, 0x02);
 	ad9361_spi_write(phy->spi, REG_RX_CP_CURRENT + offs, 0x80);
-	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs, 0x00);
+	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs, CP_OFFSET_OFF);
 
 	/* see Table 70 Example Calibration Times for RF VCO Cal */
 	if (phy->pdata->fdd) {
@@ -2445,7 +2450,8 @@ static int ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 			TO_ALERT);
 	ad9361_spi_write(phy->spi, REG_ENSM_MODE, FDD_MODE);
 
-	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs, CP_CAL_ENABLE);
+	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs,
+			 CP_OFFSET_OFF | CP_CAL_ENABLE);
 
 	return ad9361_check_cal_done(phy, REG_RX_CAL_STATUS + offs,
 				    CP_CAL_VALID, 1);
@@ -3251,8 +3257,9 @@ static int ad9361_gc_setup(struct ad9361_rf_phy *phy, struct gain_control *ctrl)
 		SMALL_ADC_OVERLOAD_EXED_COUNTER(ctrl->adc_small_overload_exceed_counter);
 	ad9361_spi_write(spi, REG_ADC_OVERLOAD_COUNTERS, reg);
 
-	ad9361_spi_writef(spi, REG_GAIN_STP_CONFIG_2, LARGE_LPF_GAIN_STEP(~0),
-			 LARGE_LPF_GAIN_STEP(ctrl->adc_large_overload_inc_steps));
+	reg = DECREMENT_STP_SIZE_FOR_SMALL_LPF_GAIN_CHANGE(ctrl->f_agc_large_overload_inc_steps) |
+		LARGE_LPF_GAIN_STEP(ctrl->adc_large_overload_inc_steps);
+	ad9361_spi_write(spi, REG_GAIN_STP_CONFIG_2, reg);
 
 	reg = LARGE_LMT_OVERLOAD_EXED_COUNTER(ctrl->lmt_overload_large_exceed_counter) |
 		SMALL_LMT_OVERLOAD_EXED_COUNTER(ctrl->lmt_overload_small_exceed_counter);
@@ -3452,10 +3459,10 @@ static int ad9361_auxdac_set(struct ad9361_rf_phy *phy, unsigned dac,
 		val_mV = 306;
 
 	if (val_mV < 1888) {
-		val = ((val_mV - 306) * 1000) / 1404; /* Vref = 1V, Step = 2 */
+		val = ((val_mV - 306) * 1000) / 1469; /* Vref = 1V, Step = 2 */
 		tmp = AUXDAC_1_VREF(0);
 	} else {
-		val = ((val_mV - 1761) * 1000) / 1836; /* Vref = 2.5V, Step = 2 */
+		val = ((val_mV - 1761) * 1000) / 1512; /* Vref = 2.5V, Step = 2 */
 		tmp = AUXDAC_1_VREF(3);
 	}
 
@@ -8432,7 +8439,7 @@ static struct ad9361_phy_platform_data
 	ad9361_of_get_u32(iodev, np, "adi,agc-adc-large-overload-exceed-counter", 10,
 			  &pdata->gain_ctrl.adc_large_overload_exceed_counter);
 	ad9361_of_get_u32(iodev, np, "adi,agc-adc-large-overload-inc-steps", 2,
-			  &pdata->gain_ctrl.adc_large_overload_inc_steps);
+			  &pdata->gain_ctrl.adc_large_overload_inc_steps); /* Name is misleading should be dec-steps */
 	ad9361_of_get_bool(iodev, np, "adi,agc-adc-lmt-small-overload-prevent-gain-inc-enable",
 			   &pdata->gain_ctrl.adc_lmt_small_overload_prevent_gain_inc);
 	ad9361_of_get_u32(iodev, np, "adi,agc-lmt-overload-large-exceed-counter", 10,
@@ -8519,6 +8526,9 @@ static struct ad9361_phy_platform_data
 			&pdata->gain_ctrl.f_agc_rst_gla_if_en_agc_pulled_high_mode); /* 0x0FB, 0x111 */
 	ad9361_of_get_u32(iodev, np, "adi,fagc-power-measurement-duration-in-state5", 64,
 			&pdata->gain_ctrl.f_agc_power_measurement_duration_in_state5); /* 0x109, 0x10a RX samples 0..524288 */
+
+	ad9361_of_get_u32(iodev, np, "adi,fagc-adc-large-overload-inc-steps", 2, /* 0x106 [D6:D4] 0..7 */
+			&pdata->gain_ctrl.f_agc_large_overload_inc_steps); /* Name is misleading should be dec-steps */
 
 	/* RSSI Control */
 

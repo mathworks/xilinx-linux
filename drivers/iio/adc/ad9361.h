@@ -2227,6 +2227,7 @@
  *	REG_RX_CP_CONFIG
  */
 #define HALF_VCO_CAL_CLK		     (1 << 7) /* Half Vco Cal Clk */
+#define CP_OFFSET_OFF			     (1 << 4) /* CP Offset Off */
 #define F_CPCAL				     (1 << 3) /* F Cpcal */
 #define CP_CAL_ENABLE			     (1 << 2) /* Cp Cal Enable */
 
@@ -2954,6 +2955,7 @@ struct gain_control {
 
 	enum f_agc_target_gain_index_type f_agc_rst_gla_if_en_agc_pulled_high_mode; /* 0x0FB, 0x111 */
 	u8 f_agc_power_measurement_duration_in_state5; /* 0x109, 0x10a RX samples 0..524288*/
+	u8 f_agc_large_overload_inc_steps; /* 0x106 [D6:D4] 0..7 */
 
 };
 
@@ -3416,6 +3418,7 @@ int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 			   enum dig_tune_flags flags);
 int ad9361_tx_mute(struct ad9361_rf_phy *phy, u32 state);
+int ad9361_write_bist_reg(struct ad9361_rf_phy *phy, u32 val);
 
 #endif
 
