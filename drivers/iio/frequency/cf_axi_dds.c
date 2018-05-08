@@ -39,7 +39,7 @@
 
 static const unsigned int interpolation_factors_available[] = {1, 8};
 
-static unsigned cf_axi_dds_to_signed_mag_fmt(int val, int val2)
+static int cf_axi_dds_to_signed_mag_fmt(int val, int val2, unsigned int *res)
 {
 	unsigned i;
 	u64 val64;
@@ -61,12 +61,15 @@ static unsigned cf_axi_dds_to_signed_mag_fmt(int val, int val2)
 		break;
 	default:
 		pr_err("%s: Invalid Value\n", __func__);
+		return -EINVAL;
 	}
 
 	val64 = (unsigned long long)val2 * 0x4000UL + (1000000UL / 2);
 		do_div(val64, 1000000UL);
 
-	return i | val64;
+	*res = i | val64;
+
+	return 0;
 }
 
 static int cf_axi_dds_signed_mag_fmt_to_iio(unsigned val, int *r_val,
@@ -672,7 +675,9 @@ static int cf_axi_dds_write_raw(struct iio_dev *indio_dev,
 			break;
 		}
 
-		i = cf_axi_dds_to_signed_mag_fmt(val, val2);
+		ret = cf_axi_dds_to_signed_mag_fmt(val, val2, &i);
+		if (ret < 0)
+			break;
 
 		reg = dds_read(st, ADI_REG_CHAN_CNTRL_8(chan->channel));
 
@@ -710,6 +715,11 @@ static int cf_axi_dds_reg_access(struct iio_dev *indio_dev,
 	int ret;
 
 	if ((reg & ~DEBUGFS_DRA_PCORE_REG_MAGIC) > 0xFFFF)
+		return -EINVAL;
+
+	/* Check that the register is in range and aligned */
+	if (((reg & DEBUGFS_DRA_PCORE_REG_MAGIC) || st->standalone) &&
+	    ((reg & 0xffff) >= st->regs_size || (reg & 0x3)))
 		return -EINVAL;
 
 	if (st->dev_spi)
@@ -1295,6 +1305,7 @@ static int cf_axi_dds_probe(struct platform_device *pdev)
 	st = iio_priv(indio_dev);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	st->regs_size = resource_size(res);
 	st->regs = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (!st->regs) {
 		ret = -ENOMEM;
@@ -1547,7 +1558,11 @@ static int cf_axi_dds_remove(struct platform_device *pdev)
 	struct cf_axi_dds_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
-	cf_axi_dds_unconfigure_buffer(indio_dev);
+
+	if (!st->dp_disable && !dds_read(st, ADI_REG_ID) &&
+		of_find_property(pdev->dev.of_node, "dmas", NULL))
+		cf_axi_dds_unconfigure_buffer(indio_dev);
+
 	if (st->dev_spi)
 		dds_converter_put(st->dev_spi);
 	if (st->clk) {

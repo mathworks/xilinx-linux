@@ -75,6 +75,18 @@
 #define ADP5061_CHG_STATUS_2_RCH_LIM_INFO(x)	(((x) >> 3) & 0x1)
 #define ADP5061_CHG_STATUS_2_BAT_STATUS(x)	(((x) >> 0) & 0x7)
 
+/* ADP5061_FUNC_SET_1 */
+#define ADP5061_FUNC_SET_1_EN_CHG_MSK		BIT(0)
+#define ADP5061_FUNC_SET_1_EN_CHG_MODE(x)	(((x) & 0x01) << 0)
+
+/* ADP5061_FUNC_SET_2 */
+#define ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK	BIT(5)
+#define ADP5061_FUNC_SET_2_EN_CHG_VLIM_MODE(x)	(((x) & 0x01) << 5)
+
+/* ADP5061_IEND */
+#define ADP5061_IEND_IEND_MSK			GENMASK(7, 5)
+#define ADP5061_IEND_IEND_MODE(x)		(((x) & 0x07) << 5)
+
 #define ADP5061_NO_BATTERY	0x01
 #define ADP5061_ICHG_MAX	1300 // mA
 
@@ -127,6 +139,10 @@ static const int adp5061_vmax[36] = {
 static const int adp5061_in_current_lim[16] = {
 	100, 150, 200, 250, 300, 400, 500, 600, 700,
 	800, 900, 1000, 1200, 1500, 1800, 2100,
+};
+
+static const int adp5061_iend[8] = {
+	12500, 32500, 52500, 72500, 92500, 117500, 142500, 170000,
 };
 
 struct adp5061_state {
@@ -429,6 +445,99 @@ static int adp5061_get_chg_type(struct adp5061_state *st,
 	return ret;
 }
 
+static int adp5061_get_charger_status(struct adp5061_state *st,
+				      union power_supply_propval *val)
+{
+	u8 status1, status2;
+	int ret;
+
+	ret = adp5061_get_status(st, &status1, &status2);
+	if (ret < 0)
+		return ret;
+
+	switch (ADP5061_CHG_STATUS_1_CHG_STATUS(status1)) {
+	case ADP5061_CHG_OFF:
+		val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		break;
+	case ADP5061_CHG_TRICKLE:
+	case ADP5061_CHG_FAST_CC:
+	case ADP5061_CHG_FAST_CV:
+		val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		break;
+	case ADP5061_CHG_COMPLETE:
+		val->intval = POWER_SUPPLY_STATUS_FULL;
+		break;
+	case ADP5061_CHG_TIMER_EXP:
+		/* The battery must be discharging if there is a charge fault */
+		val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		break;
+	default:
+		val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+	}
+
+	return ret;
+}
+
+static int adp5061_get_battery_status(struct adp5061_state *st,
+				      union power_supply_propval *val)
+{
+	u8 status1, status2;
+	int ret;
+
+	ret = adp5061_get_status(st, &status1, &status2);
+	if (ret < 0)
+		return ret;
+
+	switch (ADP5061_CHG_STATUS_2_BAT_STATUS(status2)) {
+	case 0x0: /* Battery monitor off */
+	case 0x1: /* No battery */
+		val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
+		break;
+	case 0x2: /* VBAT < VTRK */
+		val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
+		break;
+	case 0x3: /* VTRK < VBAT_SNS < VWEAK */
+		val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
+		break;
+	case 0x4: /* VBAT_SNS > VWEAK */
+		val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
+		break;
+	}
+
+	return ret;
+}
+
+static int adp5061_get_termination_current(struct adp5061_state *st,
+					   union power_supply_propval *val)
+{
+	unsigned int regval;
+	int ret;
+
+	ret = regmap_read(st->regmap, ADP5061_IEND, &regval);
+	if (ret < 0)
+		return ret;
+
+	regval = (regval & ADP5061_IEND_IEND_MSK) >> 5;
+	val->intval = adp5061_iend[regval];
+
+	return ret;
+}
+
+static int adp5061_set_termination_current(struct adp5061_state *st, int val)
+{
+	int index;
+
+	index = adp5061_get_array_index(adp5061_iend,
+					ARRAY_SIZE(adp5061_iend),
+					val);
+	if (index < 0)
+		return index;
+
+	return regmap_update_bits(st->regmap, ADP5061_IEND,
+				  ADP5061_IEND_IEND_MSK,
+				  ADP5061_IEND_IEND_MODE(index));
+}
+
 static int adp5061_get_property(struct power_supply *psy,
 				enum power_supply_property psp,
 				union power_supply_propval *val)
@@ -491,6 +600,21 @@ static int adp5061_get_property(struct power_supply *psy,
 		 * above this value, fast chargerge mode is entered
 		 */
 		return adp5061_get_vweak_th(st, val);
+	case POWER_SUPPLY_PROP_STATUS:
+		/*
+		 * Indicate the charger status in relation to power
+		 * supply status property
+		 */
+		return adp5061_get_charger_status(st, val);
+	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
+		/*
+		 * Indicate the battery status in relation to power
+		 * supply capacity level property
+		 */
+		return adp5061_get_battery_status(st, val);
+	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+		/* Indicate the values of the termination current */
+		return adp5061_get_termination_current(st, val);
 	default:
 		return -EINVAL;
 	}
@@ -519,6 +643,8 @@ static int adp5061_set_property(struct power_supply *psy,
 		return adp5061_set_prechg_current(st, val->intval);
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
 		return adp5061_set_vweak_th(st, val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+		return adp5061_set_termination_current(st, val->intval);
 	default:
 		return -EINVAL;
 	}
@@ -537,6 +663,7 @@ static int adp5061_prop_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
+	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
 		return 1;
 	default:
 		return 0;
@@ -553,6 +680,9 @@ static enum power_supply_property adp5061_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_PRECHARGE_CURRENT,
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
 };
 
 static const struct regmap_config adp5061_regmap_config = {
@@ -570,11 +700,107 @@ static const struct power_supply_desc adp5061_desc = {
 	.num_properties		= ARRAY_SIZE(adp5061_props),
 };
 
+static int adp5061_get_charging_enabled(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct adp5061_state *st = power_supply_get_drvdata(psy);
+	unsigned int regval;
+	int ret;
+
+	ret = regmap_read(st->regmap, ADP5061_FUNC_SET_1, &regval);
+	if (ret < 0)
+		return ret;
+
+	regval &= ADP5061_FUNC_SET_1_EN_CHG_MSK;
+	return sprintf(buf, "%d\n", regval);
+}
+
+static int adp5061_set_charging_enabled(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct adp5061_state *st = power_supply_get_drvdata(psy);
+	u8 chg_en;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &chg_en);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_update_bits(st->regmap, ADP5061_FUNC_SET_1,
+				 ADP5061_FUNC_SET_1_EN_CHG_MSK,
+				 ADP5061_FUNC_SET_1_EN_CHG_MODE(!!chg_en));
+
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static int adp5061_get_chg_vlim_enabled(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct adp5061_state *st = power_supply_get_drvdata(psy);
+	unsigned int regval;
+	int ret;
+
+	ret = regmap_read(st->regmap, ADP5061_FUNC_SET_2, &regval);
+	if (ret < 0)
+		return ret;
+
+	regval = (regval & ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK) >> 5;
+	return sprintf(buf, "%d\n", regval);
+}
+
+static int adp5061_set_chg_vlim_enabled(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct adp5061_state *st = power_supply_get_drvdata(psy);
+	u8 chg_vlim_en;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &chg_vlim_en);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_update_bits(st->regmap, ADP5061_FUNC_SET_2,
+			ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK,
+			ADP5061_FUNC_SET_2_EN_CHG_VLIM_MODE(!!chg_vlim_en));
+
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static DEVICE_ATTR(charging_enabled, 0644, adp5061_get_charging_enabled,
+		   adp5061_set_charging_enabled);
+static DEVICE_ATTR(charging_vlim_enabled, 0644, adp5061_get_chg_vlim_enabled,
+		   adp5061_set_chg_vlim_enabled);
+
+static struct attribute *adp5061_attributes[] = {
+	&dev_attr_charging_enabled.attr,
+	&dev_attr_charging_vlim_enabled.attr,
+	NULL
+};
+
+static const struct attribute_group adp5061_attr_group = {
+	.attrs = adp5061_attributes,
+};
+
 static int adp5061_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct power_supply_config psy_cfg = {};
 	struct adp5061_state *st;
+	int ret;
 
 	st = devm_kzalloc(&client->dev, sizeof(*st), GFP_KERNEL);
 	if (!st)
@@ -598,6 +824,12 @@ static int adp5061_probe(struct i2c_client *client,
 	if (IS_ERR(st->psy)) {
 		dev_err(&client->dev, "Failed to register power supply\n");
 		return PTR_ERR(st->psy);
+	}
+
+	ret = sysfs_create_group(&st->psy->dev.kobj, &adp5061_attr_group);
+	if (ret < 0) {
+		dev_err(&client->dev, "failed to create sysfs group\n");
+		return ret;
 	}
 
 	return 0;
