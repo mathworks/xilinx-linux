@@ -40,12 +40,14 @@ Required properties for VDMA:
 Optional properties:
 - xlnx,include-sg: Tells configured for Scatter-mode in
 	the hardware.
+- xlnx,halt-mode: Enables driver to reset DMA engine on halt
+    "reset-retry": Will reset the DMA engine, then retry the halt on failure
+    "reset-always": Will always reset the DMA engine before halting
+    NOTE: The reset is device-wide, so this should be considered when enabling
+    this option
 Optional properties for AXI DMA:
 - xlnx,mcdma: Tells whether configured for multi-channel mode in the hardware.
-- xlnx,sg-length-width: Should be set to the width of buffer length register as
-	configured in hardware. If this property is missing or has invalid width
-	i.e not in range of 8-26, maximum buffer length width (common to all IP
-	versions) 23 bits is used.
+- xlnx,lenwidth: Indicates the width of the length register in bits
 Optional properties for VDMA:
 - xlnx,flush-fsync: Tells which channel to Flush on Frame sync.
 	It takes following values:
@@ -65,13 +67,14 @@ Required child node properties:
 	{32,64...1024}.
 
 Optional child node properties:
+- reg: Channel index; overrides probe order to ensure deterministic
+    channel numbering.
 - xlnx,include-dre: Tells hardware is configured for Data
 	Realignment Engine.
+- xlnx,no-coalesce: Do not coalesce interrupts.
 Optional child node properties for VDMA:
 - xlnx,genlock-mode: Tells Genlock synchronization is
 	enabled/disabled in hardware.
-- xlnx,enable-vert-flip: Tells vertical flip is
-	enabled/disabled in hardware(S2MM path).
 Optional child node properties for AXI DMA:
 -dma-channels: Number of dma channels in child node.
 
