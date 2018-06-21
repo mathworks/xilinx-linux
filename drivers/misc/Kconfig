@@ -202,6 +202,14 @@ config ATMEL_SSC
 
 	  If unsure, say N.
 
+config XLNX_LCD
+	tristate "Device driver for Xilinx Character LCD"
+	depends on PPC_OF || MICROBLAZE
+	---help---
+	  This option enables device driver support for an Char LCD via GPIO
+
+	  If unsure, say N.
+
 config ENCLOSURE_SERVICES
 	tristate "Enclosure Services"
 	default n
@@ -538,6 +546,7 @@ source "drivers/misc/ti-st/Kconfig"
 source "drivers/misc/lis3lv02d/Kconfig"
 source "drivers/misc/altera-stapl/Kconfig"
 source "drivers/misc/mei/Kconfig"
+source "drivers/misc/mathworks/Kconfig"
 source "drivers/misc/vmw_vmci/Kconfig"
 source "drivers/misc/mic/Kconfig"
 source "drivers/misc/genwqe/Kconfig"

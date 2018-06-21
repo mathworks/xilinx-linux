@@ -54,6 +54,8 @@ obj-y                                   += blackfin/
 obj-y					+= davinci/
 
 obj-$(CONFIG_VIDEO_SH_VOU)		+= sh_vou.o
+obj-$(CONFIG_VIDEO_AXI_HDMI_RX)		+= axi-hdmi-rx.o
+obj-$(CONFIG_VIDEO_IMAGEON_BRIDGE)	+= imageon-bridge.o
 
 obj-$(CONFIG_SOC_CAMERA)		+= soc_camera/
 

@@ -32,6 +32,7 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dv-timings.h>
+#include <media/v4l2-event.h>
 #include <media/i2c/adv7511.h>
 #include <media/cec.h>
 
@@ -59,7 +60,6 @@ MODULE_LICENSE("GPL v2");
 #define ADV7511_MAX_HEIGHT 1200
 #define ADV7511_MIN_PIXELCLOCK 20000000
 #define ADV7511_MAX_PIXELCLOCK 225000000
-#define XYLON_LOGICVC_INTG
 
 #define ADV7511_MAX_ADDRS (3)
 
@@ -130,6 +130,7 @@ struct adv7511_config {
 };
 
 struct adv7511_state {
+	struct gpio_desc *pd_gpio;
 	struct adv7511_config cfg;
 	struct adv7511_platform_data pdata;
 	struct v4l2_subdev sd;
@@ -1065,6 +1066,8 @@ static const struct v4l2_subdev_core_ops adv7511_core_ops = {
 #endif
 	.s_power = adv7511_s_power,
 	.interrupt_service_routine = adv7511_isr,
+	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
+	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 };
 
 /* ------------------------------ VIDEO OPS ------------------------------ */
@@ -1104,6 +1107,23 @@ static int adv7511_s_dv_timings(struct v4l2_subdev *sd,
 
 	/* save timings */
 	state->dv_timings = *timings;
+
+	if (state->cfg.embedded_sync) {
+		const struct v4l2_bt_timings *bt = &timings->bt;
+		unsigned int vfrontporch;
+
+		/* The hardware vsync generator has a off-by-one bug */
+		vfrontporch = bt->vfrontporch + 1;
+
+		adv7511_wr(sd, 0x30, (bt->hfrontporch >> 2) & 0xff);
+		adv7511_wr(sd, 0x31, ((bt->hfrontporch & 3) << 6) |
+			((bt->hsync >> 4) & 0x3f));
+		adv7511_wr(sd, 0x32, ((bt->hsync & 0xf) << 4) |
+			((vfrontporch >> 6) & 0xf));
+		adv7511_wr(sd, 0x33, ((vfrontporch & 0x3f) << 2) |
+			((bt->vsync >> 8) & 0x3));
+		adv7511_wr(sd, 0x34, bt->vsync & 0xff);
+	}
 
 	/* set h/vsync polarities */
 	adv7511_wr_and_or(sd, 0x17, 0x9f,
@@ -2283,6 +2303,11 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 	if (!state)
 		return -ENOMEM;
 
+	state->pd_gpio = devm_gpiod_get_optional(&client->dev, "powerdown", GPIOD_OUT_LOW);
+	if (IS_ERR(state->pd_gpio)) {
+		return PTR_ERR(state->pd_gpio);
+	}
+
 	if (client->dev.of_node) {
 		adv7511_get_ofdt_config(client, state);
 	} else {
@@ -2294,7 +2319,6 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 		memcpy(&state->pdata, pdata, sizeof(state->pdata));
 	}
 
-	memcpy(&state->pdata, pdata, sizeof(state->pdata));
 	state->fmt_code = MEDIA_BUS_FMT_RGB888_1X24;
 	state->colorspace = V4L2_COLORSPACE_SRGB;
 
@@ -2304,6 +2328,8 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 			 client->addr << 1);
 
 	v4l2_i2c_subdev_init(sd, client, &adv7511_ops);
+	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_EVENTS;
 	adv7511_subdev(sd);
 	sd->internal_ops = &adv7511_int_ops;
 
@@ -2418,6 +2444,11 @@ static int adv7511_probe(struct i2c_client *client, const struct i2c_device_id *
 #endif
 	v4l2_info(sd, "%s found @ 0x%x (%s)\n", client->name,
 			  client->addr << 1, client->adapter->name);
+
+	err = v4l2_async_register_subdev(sd);
+	if (err)
+		goto err_unreg_pktmem;
+
 	return 0;
 
 err_unreg_pktmem:
@@ -2454,6 +2485,7 @@ static int adv7511_remove(struct i2c_client *client)
 		i2c_unregister_device(state->i2c_cec);
 	i2c_unregister_device(state->i2c_pktmem);
 	destroy_workqueue(state->work_queue);
+	v4l2_async_unregister_subdev(sd);
 	v4l2_device_unregister_subdev(sd);
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
@@ -2463,14 +2495,14 @@ static int adv7511_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id adv7511_id[] = {
-	{ "adv7511", 0 },
+	{ "adv7511-media", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adv7511_id);
 
 static struct i2c_driver adv7511_driver = {
 	.driver = {
-		.name = "adv7511",
+		.name = "adv7511-media",
 	},
 	.probe = adv7511_probe,
 	.remove = adv7511_remove,
