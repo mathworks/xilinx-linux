@@ -82,8 +82,15 @@
 	adi,sys-clk-select = <0>;
 	adi,out-clk-select = <2>;
 	adi,use-cpll-enable;
+};
 
-	sysref-gpios = <&axi_gpio 34 0>;
+&axi_gpio {
+	sysref_enable {
+		gpio-hog;
+		gpios = <34 0>;
+		output-high;
+		line-name = "sysref-enable";
+	};
 };
 
 &axi_ad9625_jesd {
@@ -134,19 +141,19 @@
 &axi_linear_flash {
 	#address-cells = <1>;
 	#size-cells = <1>;
-	partition@0x00000000 {
+	partition@0 {
 		label = "fpga";
 		reg = <0x00000000 0x1380000>;
 	};
-	partition@0x01380000 {
+	partition@1380000 {
 		label = "boot";
 		reg = <0x01380000 0x80000>;
 	};
-	partition@0x01400000 {
+	partition@1400000 {
 		label = "bootenv";
 		reg = <0x01400000 0x40000>;
 	};
-	partition@0x01440000 {
+	partition@1440000 {
 		label = "image";
 		reg = <0x01440000 0xBC0000>;
 	};

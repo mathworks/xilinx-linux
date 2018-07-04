@@ -149,6 +149,23 @@ ssize_t iio_enum_write(struct iio_dev *indio_dev,
 }
 
 /**
+ * IIO_ENUM_AVAILABLE_SHARED() - Initialize enum available extended channel attribute
+ * @_name:	Attribute name ("_available" will be appended to the name)
+ * @_shared:	Whether the attribute is shared between all channels
+ * @_e:		Pointer to an iio_enum struct
+ *
+ * Creates a read only attribute which lists all the available enum items in a
+ * space separated list. This should usually be used together with IIO_ENUM()
+ */
+#define IIO_ENUM_AVAILABLE_SHARED(_name, _shared, _e) \
+{ \
+	.name = (_name "_available"), \
+	.shared = _shared, \
+	.read = iio_enum_available_read, \
+	.private = (uintptr_t)(_e), \
+}
+
+/**
  * struct iio_mount_matrix - iio mounting matrix
  * @rotation: 3 dimensional space rotation matrix defining sensor alignment with
  *            main hardware
@@ -226,12 +243,22 @@ struct iio_event_spec {
  *			endianness:	little or big endian
  * @info_mask_separate: What information is to be exported that is specific to
  *			this channel.
+ * @info_mask_separate_available: What availability information is to be
+ *			exported that is specific to this channel.
  * @info_mask_shared_by_type: What information is to be exported that is shared
  *			by all channels of the same type.
+ * @info_mask_shared_by_type_available: What availability information is to be
+ *			exported that is shared by all channels of the same
+ *			type.
  * @info_mask_shared_by_dir: What information is to be exported that is shared
  *			by all channels of the same direction.
+ * @info_mask_shared_by_dir_available: What availability information is to be
+ *			exported that is shared by all channels of the same
+ *			direction.
  * @info_mask_shared_by_all: What information is to be exported that is shared
  *			by all channels.
+ * @info_mask_shared_by_all_available: What availability information is to be
+ *			exported that is shared by all channels.
  * @event_spec:		Array of events which should be registered for this
  *			channel.
  * @num_event_specs:	Size of the event_spec array.
@@ -270,9 +297,13 @@ struct iio_chan_spec {
 		enum iio_endian endianness;
 	} scan_type;
 	long			info_mask_separate;
+	long			info_mask_separate_available;
 	long			info_mask_shared_by_type;
+	long			info_mask_shared_by_type_available;
 	long			info_mask_shared_by_dir;
+	long			info_mask_shared_by_dir_available;
 	long			info_mask_shared_by_all;
+	long			info_mask_shared_by_all_available;
 	const struct iio_event_spec *event_spec;
 	unsigned int		num_event_specs;
 	const struct iio_chan_spec_ext_info *ext_info;
@@ -355,6 +386,14 @@ struct iio_dev;
  *			max_len specifies maximum number of elements
  *			vals pointer can contain. val_len is used to return
  *			length of valid elements in vals.
+ * @read_avail:		function to return the available values from the device.
+ *			mask specifies which value. Note 0 means the available
+ *			values for the channel in question.  Return value
+ *			specifies if a IIO_AVAIL_LIST or a IIO_AVAIL_RANGE is
+ *			returned in vals. The type of the vals are returned in
+ *			type and the number of vals is returned in length. For
+ *			ranges, there are always three vals returned; min, step
+ *			and max. For lists, all possible values are enumerated.
  * @write_raw:		function to write a value to the device.
  *			Parameters are the same as for read_raw.
  * @write_raw_get_fmt:	callback function to query the expected
@@ -402,6 +441,13 @@ struct iio_info {
 			int *vals,
 			int *val_len,
 			long mask);
+
+	int (*read_avail)(struct iio_dev *indio_dev,
+			  struct iio_chan_spec const *chan,
+			  const int **vals,
+			  int *type,
+			  int *length,
+			  long mask);
 
 	int (*write_raw)(struct iio_dev *indio_dev,
 			 struct iio_chan_spec const *chan,

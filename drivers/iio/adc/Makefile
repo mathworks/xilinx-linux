@@ -16,6 +16,7 @@ obj-$(CONFIG_AD7791) += ad7791.o
 obj-$(CONFIG_AD7793) += ad7793.o
 obj-$(CONFIG_AD7887) += ad7887.o
 obj-$(CONFIG_AD799X) += ad799x.o
+obj-$(CONFIG_AD9963) += ad9963.o
 obj-$(CONFIG_ADM1177) += adm1177.o
 
 cf_axi_adc-y := cf_axi_adc_core.o cf_axi_adc_ring_stream.o
@@ -30,11 +31,11 @@ ad9371_drv-y := ad9371.o ad9371_conv.o mykonos/common.o  mykonos/mykonos.o  myko
 obj-$(CONFIG_AD9371) += ad9371_drv.o
 
 obj-$(CONFIG_AD9467) += ad9467.o
+obj-$(CONFIG_AD9680) += ad9680.o
 obj-$(CONFIG_ADMC) += admc_adc.o admc_speed.o admc_ctrl.o ad_adc.o
 
 obj-$(CONFIG_CF_AXI_TDD) += cf_axi_tdd.o
 
-obj-$(CONFIG_AXI_JESD204B) += cf_axi_jesd204b_v51.o cf_axi_jesd204b_gt.o cf_axi_adxcvr.o
 obj-$(CONFIG_AXI_FMCADC5_SYNC) += axi_fmcadc5_sync.o
 
 obj-$(CONFIG_AT91_ADC) += at91_adc.o

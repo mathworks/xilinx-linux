@@ -199,6 +199,11 @@ static int axiadc_reg_access(struct iio_dev *indio_dev,
 	struct axiadc_state *st = iio_priv(indio_dev);
 	int ret;
 
+	/* Check that the register is in range and aligned */
+	if ((reg & DEBUGFS_DRA_PCORE_REG_MAGIC) &&
+	    ((reg & 0xffff) >= st->regs_size || (reg & 0x3)))
+		return -EINVAL;
+
 	mutex_lock(&indio_dev->mlock);
 
 	if (!(reg & DEBUGFS_DRA_PCORE_REG_MAGIC)) {
@@ -772,6 +777,7 @@ static int axiadc_probe(struct platform_device *pdev)
 	st = iio_priv(indio_dev);
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	st->regs_size = resource_size(mem);
 	st->regs = devm_ioremap_resource(&pdev->dev, mem);
 	if (IS_ERR(st->regs))
 		return PTR_ERR(st->regs);
@@ -843,8 +849,8 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_put_converter;
 
-	if (!st->dp_disable && !axiadc_read(st, ADI_REG_ID)) {
-
+	if (!st->dp_disable && !axiadc_read(st, ADI_REG_ID) &&
+		of_find_property(pdev->dev.of_node, "dmas", NULL)) {
 		ret = axiadc_configure_ring_stream(indio_dev, NULL);
 		if (ret < 0)
 			goto err_put_converter;
@@ -859,10 +865,6 @@ static int axiadc_probe(struct platform_device *pdev)
 	ret = iio_device_register(indio_dev);
 	if (ret)
 		goto err_unconfigure_ring;
-
-	if (indio_dev->buffer && indio_dev->buffer->scan_mask)
-		*indio_dev->buffer->scan_mask =
-			(1UL << conv->chip_info->num_channels) - 1;
 
 	dev_info(&pdev->dev, "ADI AIM (%d.%.2d.%c) at 0x%08llX mapped to 0x%p,"
 		 " probed ADC %s as %s\n",
@@ -904,8 +906,10 @@ static int axiadc_remove(struct platform_device *pdev)
 	struct axiadc_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
-	if (!st->dp_disable)
+	if (!st->dp_disable && !axiadc_read(st, ADI_REG_ID) &&
+		of_find_property(pdev->dev.of_node, "dmas", NULL))
 		axiadc_unconfigure_ring_stream(indio_dev);
+
 	put_device(st->dev_spi);
 	module_put(st->dev_spi->driver->owner);
 
