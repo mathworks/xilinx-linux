@@ -15,7 +15,6 @@
 
 #include <linux/mathworks/mathworks_ip.h>
 
-//Daren: added driver includes here:
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -218,20 +217,6 @@ static void mathworks_ip_mmap_close(struct vm_area_struct *vma)
 }
 
 
-/*
-static int mathworks_ip_mmap_fault(struct vm_area_struct *vma, 
-						struct vm_fault *vmf)
-{
-    struct mathworks_ip_info * thisIpcore = vma->vm_private_data;
-    struct page *thisPage;
-    unsigned long offset;
-    offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
-    thisPage = virt_to_page(thisIpcore->mem->start + offset);
-    get_page(thisPage);
-    vmf->page = thisPage;
-    return 0;
-}
-*/
 
 static int mathworks_ip_mmap_fault(struct vm_fault  *vmf)
 {
