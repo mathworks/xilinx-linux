@@ -1391,6 +1391,120 @@ int ad9361_tx_mute(struct ad9361_rf_phy *phy, u32 state)
 }
 EXPORT_SYMBOL(ad9361_tx_mute);
 
+static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
+				     bool tx, bool enable)
+{
+	struct ad9361_rf_phy_state *st = phy->state;
+	u32 val = enable ? ~0 : 0;
+	int ret;
+
+	/* REVIST:
+	 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
+	 */
+
+	bool mcs_rf_enable = ad9361_spi_readf(phy->spi,
+					      REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
+					      MCS_RF_ENABLE);
+
+	dev_dbg(&phy->spi->dev, "%s : %s state %d", __func__,
+		tx ? "TX" : "RX", enable);
+
+	if (tx) {
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					POWER_DOWN_TX_SYNTH, mcs_rf_enable ? 0 : enable);
+
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					TX_SYNTH_READY_MASK, enable);
+
+		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+					 TX_VCO_DIVIDER(~0), enable ? 7 :
+					 st->cached_tx_rfpll_div);
+
+		if (enable)
+			st->cached_synth_pd[0] |= TX_SYNTH_VCO_ALC_POWER_DOWN |
+						TX_SYNTH_PTAT_POWER_DOWN |
+						TX_SYNTH_VCO_POWER_DOWN;
+		else
+			st->cached_synth_pd[0] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
+						TX_SYNTH_PTAT_POWER_DOWN |
+						TX_SYNTH_VCO_POWER_DOWN);
+
+
+		ret |= ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+					st->cached_synth_pd[0]);
+
+		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+					 TX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
+
+		ret |= ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
+					TX_LO_GEN_POWER_MODE(val));
+	} else {
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					POWER_DOWN_RX_SYNTH, mcs_rf_enable ? 0 : enable);
+
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					RX_SYNTH_READY_MASK, enable);
+
+		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+					 RX_VCO_DIVIDER(~0), enable ? 7 :
+					 st->cached_rx_rfpll_div);
+
+		if (enable)
+			st->cached_synth_pd[1] |= RX_SYNTH_VCO_ALC_POWER_DOWN |
+						RX_SYNTH_PTAT_POWER_DOWN |
+						RX_SYNTH_VCO_POWER_DOWN;
+		else
+			st->cached_synth_pd[1] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
+						RX_SYNTH_PTAT_POWER_DOWN |
+						RX_SYNTH_VCO_POWER_DOWN);
+
+		ret |= ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
+					st->cached_synth_pd[1]);
+
+		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+					 RX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
+
+		ret |= ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
+					RX_LO_GEN_POWER_MODE(val));
+	}
+
+	return ret;
+}
+
+static int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
+				     enum synth_pd_ctrl rx,
+				     enum synth_pd_ctrl tx)
+{
+	struct ad9361_rf_phy_state *st = phy->state;
+
+	dev_dbg(&phy->spi->dev, "%s : RX(%d) TX(%d)", __func__, rx, tx);
+
+	switch (rx) {
+	case LO_OFF:
+		st->cached_synth_pd[1] |= RX_LO_POWER_DOWN;
+		break;
+	case LO_ON:
+		st->cached_synth_pd[1] &= ~RX_LO_POWER_DOWN;
+		break;
+	case LO_DONTCARE:
+		break;
+	}
+
+	switch (tx) {
+	case LO_OFF:
+		st->cached_synth_pd[0] |= TX_LO_POWER_DOWN;
+		break;
+	case LO_ON:
+		st->cached_synth_pd[0] &= ~TX_LO_POWER_DOWN;
+		break;
+	case LO_DONTCARE:
+		break;
+	}
+
+	return ad9361_spi_writem(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+				 st->cached_synth_pd, 2);
+}
+
 static u32 ad9361_rfvco_tableindex(unsigned long freq)
 {
 	if (freq < 50000000UL)
@@ -2841,113 +2955,6 @@ static int ad9361_trx_vco_cal_control(struct ad9361_rf_phy *phy,
 				 BYPASS_LD_SYNTH, !enable);
 }
 
-static int ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
-				      bool tx, bool enable)
-{
-	struct ad9361_rf_phy_state *st = phy->state;
-	unsigned val = enable ? ~0 : 0;
-	int ret;
-
-	/* REVIST:
-	 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
-	 */
-
-	bool mcs_rf_enable = ad9361_spi_readf(phy->spi,
-		REG_MULTICHIP_SYNC_AND_TX_MON_CTRL, MCS_RF_ENABLE);
-
-	dev_dbg(&phy->spi->dev, "%s : %s state %d",__func__,
-		tx ? "TX" : "RX", enable);
-
-	if (tx) {
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_TX_SYNTH, mcs_rf_enable ? 0 : enable);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
-				  TX_VCO_DIVIDER(~0), enable ? 7 :
-				  st->cached_tx_rfpll_div);
-
-		if (enable)
-			st->cached_synth_pd[0] |= TX_SYNTH_VCO_ALC_POWER_DOWN |
-						   TX_SYNTH_PTAT_POWER_DOWN |
-						   TX_SYNTH_VCO_POWER_DOWN;
-		else
-			st->cached_synth_pd[0] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
-						   TX_SYNTH_PTAT_POWER_DOWN |
-						   TX_SYNTH_VCO_POWER_DOWN);
-
-
-		ret |= ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-					st->cached_synth_pd[0]);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
-				  TX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
-
-		ret |= ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
-					TX_LO_GEN_POWER_MODE(val));
-	} else {
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_RX_SYNTH, mcs_rf_enable ? 0 : enable);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
-				  RX_VCO_DIVIDER(~0), enable ? 7 :
-				  st->cached_rx_rfpll_div);
-
-		if (enable)
-			st->cached_synth_pd[1] |= RX_SYNTH_VCO_ALC_POWER_DOWN |
-						   RX_SYNTH_PTAT_POWER_DOWN |
-						   RX_SYNTH_VCO_POWER_DOWN;
-		else
-			st->cached_synth_pd[1] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
-						    RX_SYNTH_PTAT_POWER_DOWN |
-						    RX_SYNTH_VCO_POWER_DOWN);
-
-		ret |= ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
-					st->cached_synth_pd[1]);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
-				  RX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
-
-		ret |= ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
-					RX_LO_GEN_POWER_MODE(val));
-	}
-
-	return ret;
-}
-
-static int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
-				     enum synth_pd_ctrl rx,
-				     enum synth_pd_ctrl tx)
-{
-	struct ad9361_rf_phy_state *st = phy->state;
-
-	dev_dbg(&phy->spi->dev, "%s : RX(%d) TX(%d)",__func__, rx, tx);
-
-	switch (rx) {
-	case LO_OFF:
-		st->cached_synth_pd[1] |= RX_LO_POWER_DOWN;
-		break;
-	case LO_ON:
-		st->cached_synth_pd[1] &= ~RX_LO_POWER_DOWN;
-		break;
-	case LO_DONTCARE:
-		break;
-	}
-
-	switch (tx) {
-	case LO_OFF:
-		st->cached_synth_pd[0] |= TX_LO_POWER_DOWN;
-		break;
-	case LO_ON:
-		st->cached_synth_pd[0] &= ~TX_LO_POWER_DOWN;
-		break;
-	case LO_DONTCARE:
-		break;
-	}
-
-	return ad9361_spi_writem(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-				 st->cached_synth_pd, 2);
-}
-
 /* REFERENCE CLOCK DELAY UNIT COUNTER REGISTER */
 static int ad9361_set_ref_clk_cycles(struct ad9361_rf_phy *phy,
 				    unsigned long ref_clk_hz)
@@ -4323,7 +4330,8 @@ static int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctr
 	ad9361_spi_write(phy->spi, REG_ENSM_MODE, fdd ? FDD_MODE : 0);
 
 	val = ad9361_spi_read(phy->spi, REG_ENSM_CONFIG_2);
-	val &= POWER_DOWN_RX_SYNTH | POWER_DOWN_TX_SYNTH;
+	val &= POWER_DOWN_RX_SYNTH | POWER_DOWN_TX_SYNTH |
+		RX_SYNTH_READY_MASK | TX_SYNTH_READY_MASK;
 
 	if (fdd)
 		ret = ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_2,
