@@ -69,8 +69,6 @@
 #define AXI_DMAC_REG_DBG0		0x43c
 #define AXI_DMAC_REG_DBG1		0x440
 #define AXI_DMAC_REG_DBG2		0x444
-#define AXI_DMAC_REG_PARTIAL_XFER_LEN	0x44c
-#define AXI_DMAC_REG_PARTIAL_XFER_ID	0x450
 
 #define AXI_DMAC_CTRL_ENABLE		BIT(0)
 #define AXI_DMAC_CTRL_PAUSE		BIT(1)
@@ -80,9 +78,6 @@
 
 #define AXI_DMAC_FLAG_CYCLIC		BIT(0)
 #define AXI_DMAC_FLAG_LAST		BIT(1)
-#define AXI_DMAC_FLAG_PARTIAL_REPORT	BIT(2)
-
-#define AXI_DMAC_FLAG_PARTIAL_XFER_DONE BIT(31)
 
 #undef SPEED_TEST
 
@@ -97,7 +92,6 @@ struct axi_dmac_sg {
 	unsigned int dest_stride;
 	unsigned int src_stride;
 	unsigned int id;
-	unsigned int partial_len;
 	bool last;
 	bool schedule_when_free;
 };
@@ -128,7 +122,6 @@ struct axi_dmac_chan {
 	unsigned int address_align_mask;
 	unsigned int length_align_mask;
 
-	bool hw_partial_xfer;
 	bool hw_cyclic;
 	bool hw_2d;
 };
@@ -266,9 +259,6 @@ static void axi_dmac_start_transfer(struct axi_dmac_chan *chan)
 		desc->num_sgs == 1)
 		flags |= AXI_DMAC_FLAG_CYCLIC;
 
-	if (chan->hw_partial_xfer)
-		flags |= AXI_DMAC_FLAG_PARTIAL_REPORT;
-
 	axi_dmac_write(dmac, AXI_DMAC_REG_X_LENGTH, sg->x_len - 1);
 	axi_dmac_write(dmac, AXI_DMAC_REG_Y_LENGTH, sg->y_len - 1);
 	axi_dmac_write(dmac, AXI_DMAC_REG_FLAGS, flags);
@@ -281,82 +271,6 @@ static struct axi_dmac_desc *axi_dmac_active_desc(struct axi_dmac_chan *chan)
 		struct axi_dmac_desc, vdesc.node);
 }
 
-static inline unsigned int axi_dmac_total_sg_bytes(struct axi_dmac_chan *chan,
-	struct axi_dmac_sg *sg)
-{
-	if (chan->hw_2d)
-		return sg->x_len * sg->y_len;
-	else
-		return sg->x_len;
-}
-
-static void axi_dmac_dequeue_partial_xfers(struct axi_dmac_chan *chan)
-{
-	struct axi_dmac *dmac = chan_to_axi_dmac(chan);
-	struct axi_dmac_desc *desc;
-	struct axi_dmac_sg *sg;
-	u32 xfer_done, len, id, i;
-	bool found_sg;
-
-	do {
-		len = axi_dmac_read(dmac, AXI_DMAC_REG_PARTIAL_XFER_LEN);
-		id  = axi_dmac_read(dmac, AXI_DMAC_REG_PARTIAL_XFER_ID);
-
-		found_sg = false;
-		list_for_each_entry(desc, &chan->active_descs, vdesc.node) {
-			for (i = 0; i < desc->num_sgs; i++) {
-				sg = &desc->sg[i];
-				if (sg->id == AXI_DMAC_SG_UNUSED)
-					continue;
-				if (sg->id == id) {
-					sg->partial_len = len;
-					found_sg = true;
-					break;
-				}
-			}
-			if (found_sg)
-				break;
-		}
-
-		if (found_sg) {
-			dev_dbg(dmac->dma_dev.dev,
-				"Found partial segment id=%u, len=%u\n",
-				id, len);
-		} else {
-			dev_warn(dmac->dma_dev.dev,
-				 "Not found partial segment id=%u, len=%u\n",
-				 id, len);
-		}
-
-		/* Check if we have any more partial transfers */
-		xfer_done = axi_dmac_read(dmac, AXI_DMAC_REG_TRANSFER_DONE);
-		xfer_done = !(xfer_done & AXI_DMAC_FLAG_PARTIAL_XFER_DONE);
-
-	} while (!xfer_done);
-}
-
-static void axi_dmac_compute_residue(struct axi_dmac_chan *chan,
-	struct axi_dmac_desc *active)
-{
-	struct dmaengine_result *rslt = &active->vdesc.tx_result;
-	unsigned int start = active->num_completed - 1;
-	struct axi_dmac_sg *sg;
-	unsigned int i, total;
-
-	rslt->result = DMA_TRANS_NOERROR;
-	rslt->residue = 0;
-
-	/*
-	 * We get here if the last completed segment is partial, which
-	 * means we can compute the residue from that segment onwards
-	 */
-	for (i = start; i < active->num_sgs; i++) {
-		sg = &active->sg[i];
-		total = axi_dmac_total_sg_bytes(chan, sg);
-		rslt->residue += (total - sg->partial_len);
-	}
-}
-
 static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 	unsigned int completed_transfers)
 {
@@ -367,10 +281,6 @@ static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 	active = axi_dmac_active_desc(chan);
 	if (!active)
 		return false;
-
-	if (chan->hw_partial_xfer &&
-	    (completed_transfers & AXI_DMAC_FLAG_PARTIAL_XFER_DONE))
-		axi_dmac_dequeue_partial_xfers(chan);
 
 	do {
 		sg = &active->sg[active->num_completed];
@@ -385,16 +295,13 @@ static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 			start_next = true;
 		}
 
-		if (active->num_completed == active->num_sgs ||
-		    sg->partial_len) {
+		if (active->num_completed == active->num_sgs) {
 			if (active->cyclic) {
 				active->num_completed = 0; /* wrap around */
 				if (sg->last)
 					vchan_cyclic_callback(&active->vdesc);
 			} else {
 				list_del(&active->vdesc.node);
-				if (sg->partial_len)
-					axi_dmac_compute_residue(chan, active);
 				vchan_cookie_complete(&active->vdesc);
 				active = axi_dmac_active_desc(chan);
 			}
@@ -584,7 +491,10 @@ static struct dma_async_tx_descriptor *axi_dmac_prep_slave_sg(
 	if (direction != chan->direction)
 		return NULL;
 
-	num_sgs = sg_nents_for_dma(sgl, sg_len, chan->max_length);
+	num_sgs = 0;
+	for_each_sg(sgl, sg, sg_len, i)
+		num_sgs += DIV_ROUND_UP(sg_dma_len(sg), chan->max_length);
+
 	desc = axi_dmac_alloc_desc(num_sgs);
 	if (!desc)
 		return NULL;
@@ -873,10 +783,9 @@ static int axi_dmac_parse_chan_dt_compat(struct device_node *of_node,
 static int axi_dmac_detect_caps(struct axi_dmac *dmac)
 {
 	struct axi_dmac_chan *chan = &dmac->chan;
-	unsigned int version, version_minor;
+	unsigned int version;
 
 	version = axi_dmac_read(dmac, AXI_DMAC_REG_VERSION);
-	version_minor = version & 0xff00;
 
 	axi_dmac_write(dmac, AXI_DMAC_REG_FLAGS, AXI_DMAC_FLAG_CYCLIC);
 	if (axi_dmac_read(dmac, AXI_DMAC_REG_FLAGS) == AXI_DMAC_FLAG_CYCLIC)
@@ -907,10 +816,7 @@ static int axi_dmac_detect_caps(struct axi_dmac *dmac)
 		return -ENODEV;
 	}
 
-	if (version_minor >= 0x0200)
-		chan->hw_partial_xfer = true;
-
-	if (version_minor >= 0x0100) {
+	if ((version & 0xff00) >= 0x0100) {
 		axi_dmac_write(dmac, AXI_DMAC_REG_X_LENGTH, 0x00);
 		chan->length_align_mask = axi_dmac_read(dmac, AXI_DMAC_REG_X_LENGTH);
 	} else {
