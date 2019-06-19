@@ -249,9 +249,22 @@ static int mathworks_ip_mmap(struct file *fp, struct vm_area_struct *vma)
 			}
 			vma->vm_ops = &mathworks_ip_mmap_ops;
 			break;
+			/* This case is for HDL verifeir, where page offset passed is bram base address*/
+		case 262144:
+			/* mmap the DMA region */
+			status = mathworks_ip_dma_alloc(thisIpcore, size);
+			if (status != 0)
+				return status;
+			if (thisIpcore->dma_info.size == 0 || size != thisIpcore->dma_info.size)
+				return -EINVAL;
+			/* We want to mmap the whole buffer */
+			vma->vm_pgoff = 0;
+			status =  dma_mmap_coherent(thisIpcore->dev,vma,
+						thisIpcore->dma_info.virt, thisIpcore->mem->start, size);
+			vma->vm_ops = &mathworks_ip_mmap_dma_ops;
+			break;
 		default:
 			/* mmap the DMA region */
-			
 			status = mathworks_ip_dma_alloc(thisIpcore, size);
 			if (status != 0)
 				return status;
