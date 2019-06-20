@@ -202,6 +202,7 @@ struct axiadc_state {
 	struct device 			*dev_spi;
 	struct iio_info			iio_info;
 	struct clk 			*clk;
+	size_t				regs_size;
 	void __iomem			*regs;
 	void __iomem			*slave_regs;
 	unsigned				max_usr_channel;
@@ -223,6 +224,8 @@ struct axiadc_converter {
 	struct spi_device 	*spi;
 	struct clk 		*clk;
 	struct clock_scale		adc_clkscale;
+	struct clk		*lane_clk;
+	struct clk		*sysref_clk;
 	void 			*phy;
 	struct gpio_desc		*pwrdown_gpio;
 	struct gpio_desc		*reset_gpio;
