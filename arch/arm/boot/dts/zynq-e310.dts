@@ -199,28 +199,28 @@
 	txrx1_tx_led {
 		gpio-hog;
 		gpios = <109 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx1_tx_led";
 	};
 
 	txrx2_tx_led {
 		gpio-hog;
 		gpios = <107 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx2_tx_led";
 	};
 
 	rx1_rx_led {
 		gpio-hog;
 		gpios = <105 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx1_rx_led";
 	};
 
 	rx2_rx_led {
 		gpio-hog;
 		gpios = <104 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx2_rx_led";
 	};
 };
