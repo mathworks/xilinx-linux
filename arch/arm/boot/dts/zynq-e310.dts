@@ -199,28 +199,28 @@
 	txrx1_tx_led {
 		gpio-hog;
 		gpios = <109 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx1_tx_led";
 	};
 
 	txrx2_tx_led {
 		gpio-hog;
 		gpios = <107 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx2_tx_led";
 	};
 
 	rx1_rx_led {
 		gpio-hog;
 		gpios = <105 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx1_rx_led";
 	};
 
 	rx2_rx_led {
 		gpio-hog;
 		gpios = <104 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx2_rx_led";
 	};
 };
@@ -297,6 +297,7 @@
 		adi,tx-rf-port-input-select = <0>; /* TX1A, TX2A */
 		//adi,update-tx-gain-in-alert-enable;
 		adi,tx-attenuation-mdB = <10000>;
+		adi,tx-lo-powerdown-managed-enable;
 
 		adi,rf-rx-bandwidth-hz = <18000000>;
 		adi,rf-tx-bandwidth-hz = <18000000>;
@@ -542,7 +543,7 @@
 			adi,lo-freq-min = /bits/ 64 <0>;
 			adi,lo-freq-max = /bits/ 64 <450000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 1 0 1 _ _ 0 1 1 0 0 _ _ 1 0 _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 1 0 1 _ _ 0 1 1 0 0 _ _ 1 0 _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_c 0>;
 		};
 
@@ -550,7 +551,7 @@
 			adi,lo-freq-min = /bits/ 64 <450000000>;
 			adi,lo-freq-max = /bits/ 64 <700000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 0 1 1 _ _ 1 1 0 1 0 _ _ 1 1 _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 0 1 1 _ _ 1 1 0 1 0 _ _ 1 1 _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_c 0>;
 		};
 
@@ -558,7 +559,7 @@
 			adi,lo-freq-min = /bits/ 64 <700000000>;
 			adi,lo-freq-max = /bits/ 64 <1200000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 0 0 1 _ _ 1 0 0 0 0 _ _ 0 1 _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 0 0 1 _ _ 1 0 0 0 0 _ _ 0 1 _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_c 0>;
 		};
 
@@ -566,7 +567,7 @@
 			adi,lo-freq-min = /bits/ 64 <1200000000>;
 			adi,lo-freq-max = /bits/ 64 <1800000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 0 0 0 0 1 _ _ 0 0 1 1 0 _ _ _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 0 0 0 0 1 _ _ 0 0 1 1 0 _ _ _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_b 0>;
 		};
 
@@ -575,7 +576,7 @@
 			adi,lo-freq-min = /bits/ 64 <1800000000>;
 			adi,lo-freq-max = /bits/ 64 <2350000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 0 1 0 1 1 _ _ 0 1 1 1 1 _ _ _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 0 1 0 1 1 _ _ 0 1 1 1 1 _ _ _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_b 0>;
 		};
 
@@ -583,7 +584,7 @@
 			adi,lo-freq-min = /bits/ 64 <2350000000>;
 			adi,lo-freq-max = /bits/ 64 <2600000000>;
 
-			adi,gpio-settings = <_ _ _ _ 0 1 1 0 _ _ _ 1 0 0 1 0 _ _ 1 0 1 0 1 _ _ _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 0 1 0 1 _ _ _ 1 0 0 1 0 _ _ 1 0 1 0 1 _ _ _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_b 0>;
 
 		};
@@ -592,7 +593,7 @@
 			adi,lo-freq-min = /bits/ 64 <2600000000>;
 			adi,lo-freq-max = /bits/ 64 <6000000001>;
 
-			adi,gpio-settings = <_ _ _ _ 1 0 0 1 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _>;
+			adi,gpio-settings = <_ _ _ _ 1 0 1 0 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _>;
 			adi,band-ctl-post = <&ad9361_rx_ant_port_a 0>;
 		};
 
