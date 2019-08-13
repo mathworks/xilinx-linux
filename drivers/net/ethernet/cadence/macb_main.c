@@ -635,7 +635,7 @@ static int macb_mii_init(struct macb *bp)
 		of_node_put(mdio_np);
 		err = of_mdiobus_register(bp->mii_bus, mdio_np);
 		if (err)
-			goto err_out_unregister_bus;
+			goto err_out_free_mdiobus;
 	} else if (np) {
 		/* try dt phy registration */
 		err = of_mdiobus_register(bp->mii_bus, np);
@@ -1758,7 +1758,7 @@ static int macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	unsigned long flags;
 	unsigned int desc_cnt, nr_frags, frag_size, f;
 	unsigned int hdrlen;
-	bool is_lso, is_udp = 0;
+	bool is_lso, is_udp = false;
 
 	is_lso = (skb_shinfo(skb)->gso_size != 0);
 
@@ -3766,10 +3766,9 @@ static int macb_probe(struct platform_device *pdev)
 		err = of_phy_register_fixed_link(np);
 		if (err < 0) {
 			dev_err(&pdev->dev, "broken fixed-link specification");
-			goto failed_phy;
+			goto err_out_free_netdev;
 		}
 		phy_node = of_node_get(np);
-		bp->phy_node = phy_node;
 	} else {
 		int gpio = of_get_named_gpio(phy_node, "reset-gpios", 0);
 		if (gpio_is_valid(gpio)) {
@@ -3777,6 +3776,7 @@ static int macb_probe(struct platform_device *pdev)
 			gpiod_direction_output(bp->reset_gpio, 1);
 		}
 	}
+	bp->phy_node = phy_node;
 
 	err = of_get_phy_mode(np);
 	if (err < 0) {
@@ -3794,7 +3794,7 @@ static int macb_probe(struct platform_device *pdev)
 	/* IP specific init */
 	err = init(pdev);
 	if (err)
-		goto err_out_free_netdev;
+		goto err_out_phy_put;
 
 	err = register_netdev(dev);
 	if (err) {
@@ -3828,11 +3828,11 @@ static int macb_probe(struct platform_device *pdev)
 err_out_unregister_netdev:
 	unregister_netdev(dev);
 
+err_out_phy_put:
+	of_node_put(bp->phy_node);
+
 err_out_free_netdev:
 	free_netdev(dev);
-
-failed_phy:
-	of_node_put(phy_node);
 
 err_disable_clocks:
 	clk_disable_unprepare(tx_clk);
