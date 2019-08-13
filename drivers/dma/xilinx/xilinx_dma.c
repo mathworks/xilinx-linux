@@ -410,6 +410,20 @@ enum xdma_ip_type {
 	XDMA_TYPE_VDMA,
 };
 
+/**
+ * enum xdma_ip_type - DMA IP type.
+ *
+ * @XDMA_TYPE_AXIDMA: Axi dma ip.
+ * @XDMA_TYPE_CDMA: Axi cdma ip.
+ * @XDMA_TYPE_VDMA: Axi vdma ip.
+ *
+ */
+enum xdma_ip_type {
+	XDMA_TYPE_AXIDMA = 0,
+	XDMA_TYPE_CDMA,
+	XDMA_TYPE_VDMA,
+};
+
 struct xilinx_dma_config {
 	enum xdma_ip_type dmatype;
 	int (*clk_init)(struct platform_device *pdev, struct clk **axi_clk,
@@ -2459,9 +2473,9 @@ static int xilinx_dma_chan_probe(struct xilinx_dma_device *xdev,
 	chan->has_sg = xdev->has_sg;
 	chan->desc_pendingcount = 0x0;
 	chan->ext_addr = xdev->ext_addr;
-	/* This variable enusres that descripotrs are not
-	 * Submited when dma engine is in progress. This variable is
-	 * Added to avoid pollling for a bit in the status register to
+	/* This variable ensures that descriptors are not
+	 * Submitted when dma engine is in progress. This variable is
+	 * Added to avoid polling for a bit in the status register to
 	 * Know dma state in the driver hot path.
 	 */
 	chan->idle = true;
