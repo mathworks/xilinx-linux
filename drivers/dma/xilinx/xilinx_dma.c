@@ -397,20 +397,6 @@ struct xilinx_dma_chan {
 };
 
 /**
- * enum xdma_ip_type: DMA IP type.
- *
- * XDMA_TYPE_AXIDMA: Axi dma ip.
- * XDMA_TYPE_CDMA: Axi cdma ip.
- * XDMA_TYPE_VDMA: Axi vdma ip.
- *
- */
-enum xdma_ip_type {
-	XDMA_TYPE_AXIDMA = 0,
-	XDMA_TYPE_CDMA,
-	XDMA_TYPE_VDMA,
-};
-
-/**
  * enum xdma_ip_type - DMA IP type.
  *
  * @XDMA_TYPE_AXIDMA: Axi dma ip.
