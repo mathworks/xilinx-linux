@@ -2907,6 +2907,11 @@ static int xilinx_dma_probe(struct platform_device *pdev)
 			} else {
 				if (len_width > XILINX_DMA_MAX_TRANS_LEN_MAX)
 					dev_warn(xdev->dev, "Please ensure that IP supports buffer length > 23 bits\n");
+            
+                           xdev->max_buffer_len = GENMASK(len_width - 1, 0);
+                   }
+             }
+        }
 
 	xdev->halt_mode = XILINX_DMA_HALT_MODE_NORMAL;
 	halt_mode = of_property_match_string(node,
