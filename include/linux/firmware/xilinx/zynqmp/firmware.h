@@ -127,6 +127,10 @@ enum pm_api_id {
 	PM_CLOCK_SETPARENT,
 	PM_CLOCK_GETPARENT,
 	PM_FPGA_READ = 46,
+	PM_SECURE_AES,
+	/* PM_REGISTER_ACCESS API */
+	PM_REGISTER_ACCESS = 52,
+	PM_EFUSE_ACCESS,
 };
 
 /* PMU-FW return status codes */
@@ -526,6 +530,11 @@ enum pm_query_id {
 	PM_QID_PINCTRL_GET_PIN_GROUPS,
 };
 
+enum pm_register_access_id {
+	CONFIG_REG_WRITE,
+	CONFIG_REG_READ,
+};
+
 struct zynqmp_pm_query_data {
 	u32 qid;
 	u32 arg1;
@@ -594,6 +603,10 @@ struct zynqmp_eemi_ops {
 	int (*clock_getrate)(u32 clock_id, u64 *rate);
 	int (*clock_setparent)(u32 clock_id, u32 parent_id);
 	int (*clock_getparent)(u32 clock_id, u32 *parent_id);
+	int (*register_access)(u32 register_access_id, u32 address,
+			       u32 mask, u32 value, u32 *out);
+	int (*aes)(const u64 address, u32 *out);
+	int (*efuse_access)(const u64 address, u32 *out);
 };
 
 /*

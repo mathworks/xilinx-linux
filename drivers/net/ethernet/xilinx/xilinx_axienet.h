@@ -3,7 +3,7 @@
  * Definitions for Xilinx Axi Ethernet device driver.
  *
  * Copyright (c) 2009 Secret Lab Technologies, Ltd.
- * Copyright (c) 2010 - 2012 Xilinx, Inc. All rights reserved.
+ * Copyright (c) 2010 - 2018 Xilinx, Inc. All rights reserved.
  */
 
 #ifndef XILINX_AXIENET_H
@@ -31,9 +31,12 @@
 #define TX_BD_NUM		64
 #define RX_BD_NUM		128
 
-#define XAE_NUM_QUEUES(lp)	((lp)->num_queues)
-#define for_each_dma_queue(lp, var) \
-	for ((var) = 0; (var) < XAE_NUM_QUEUES(lp); (var)++)
+/* In AXI DMA Tx and Rx queue count is same */
+#define for_each_tx_dma_queue(lp, var) \
+	for ((var) = 0; (var) < (lp)->num_tx_queues; (var)++)
+
+#define for_each_rx_dma_queue(lp, var) \
+	for ((var) = 0; (var) < (lp)->num_rx_queues; (var)++)
 
 /* Configuration options */
 
@@ -593,10 +596,20 @@ struct aximcdma_bd {
 #define DESC_DMA_MAP_SINGLE 0
 #define DESC_DMA_MAP_PAGE 1
 
-#if defined(CONFIG_AXIENET_HAS_MCDMA)
-#define XAE_MAX_QUEUES   16
+#if defined(CONFIG_XILINX_TSN)
+#define XAE_MAX_QUEUES		5
+#elif defined(CONFIG_AXIENET_HAS_MCDMA)
+#define XAE_MAX_QUEUES		16
 #else
-#define XAE_MAX_QUEUES   3
+#define XAE_MAX_QUEUES		1
+#endif
+
+#ifdef CONFIG_XILINX_TSN
+/* TSN queues range is 2 to 5. For eg: for num_tc = 2 minimum queues = 2;
+ * for num_tc = 3 with sideband signalling maximum queues = 5
+ */
+#define XAE_MAX_TSN_TC		3
+#define XAE_TSN_MIN_QUEUES	2
 #endif
 
 enum axienet_tsn_ioctl {
@@ -619,16 +632,19 @@ enum axienet_tsn_ioctl {
  * @regs:	Base address for the axienet_local device address space
  * @mcdma_regs:	Base address for the aximcdma device address space
  * @napi:	Napi Structure array for all dma queues
- * @num_queues: Total number of DMA queues
+ * @num_tx_queues: Total number of Tx DMA queues
+ * @num_rx_queues: Total number of Rx DMA queues
  * @dq:		DMA queues data
  * @phy_mode:	Phy type to identify between MII/GMII/RGMII/SGMII/1000 Base-X
  * @is_tsn:	Denotes a tsn port
  * @temac_no:	Denotes the port number in TSN IP
+ * @num_tc:	Total number of TSN Traffic classes
  * @timer_priv: PTP timer private data pointer
  * @ptp_tx_irq: PTP tx irq
  * @ptp_rx_irq: PTP rx irq
  * @rtc_irq:	PTP RTC irq
  * @qbv_irq:	QBV shed irq
+ * @ptp_ts_type: ptp time stamp type - 1 or 2 step mode
  * @ptp_rx_hw_pointer: ptp rx hw pointer
  * @ptp_rx_sw_pointer: ptp rx sw pointer
  * @ptp_txq:	PTP tx queue header
@@ -686,19 +702,22 @@ struct axienet_local {
 	#define XAE_TEMAC1 0
 	#define XAE_TEMAC2 1
 	u8     temac_no;
-	u16    num_queues;	/* Number of DMA queues */
+	u16    num_tx_queues;	/* Number of TX DMA queues */
+	u16    num_rx_queues;	/* Number of RX DMA queues */
 	struct axienet_dma_q *dq[XAE_MAX_QUEUES];	/* DAM queue data*/
 
 	phy_interface_t phy_mode;
 
 	bool is_tsn;
 #ifdef CONFIG_XILINX_TSN
+	u16    num_tc;		/* Number of TSN Traffic classes */
 #ifdef CONFIG_XILINX_TSN_PTP
 	void *timer_priv;
 	int ptp_tx_irq;
 	int ptp_rx_irq;
 	int rtc_irq;
 	int qbv_irq;
+	int ptp_ts_type;
 	u8  ptp_rx_hw_pointer;
 	u8  ptp_rx_sw_pointer;
 	struct sk_buff_head ptp_txq;
@@ -726,7 +745,7 @@ struct axienet_local {
 	bool eth_hasptp;
 	const struct axienet_config *axienet_config;
 
-#ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
+#if defined (CONFIG_XILINX_AXI_EMAC_HWTSTAMP) || defined (CONFIG_XILINX_TSN_PTP)
 	void __iomem *tx_ts_regs;
 	void __iomem *rx_ts_regs;
 	struct hwtstamp_config tstamp_config;
@@ -816,7 +835,8 @@ struct axienet_dma_q {
 	unsigned long rx_bytes;
 };
 
-#define AXIENET_SSTATS_LEN(lp) ((lp)->num_queues * 4)
+#define AXIENET_TX_SSTATS_LEN(lp) ((lp)->num_tx_queues * 2)
+#define AXIENET_RX_SSTATS_LEN(lp) ((lp)->num_rx_queues * 2)
 
 /**
  * enum axienet_ip_type - AXIENET IP/MAC type.
@@ -1016,6 +1036,8 @@ int axienet_qbu_sts(struct net_device *ndev, void __user *useraddr);
 #endif
 #endif
 
+void __maybe_unused axienet_bd_free(struct net_device *ndev,
+				    struct axienet_dma_q *q);
 int __maybe_unused axienet_dma_q_init(struct net_device *ndev,
 				      struct axienet_dma_q *q);
 void axienet_dma_err_handler(unsigned long data);

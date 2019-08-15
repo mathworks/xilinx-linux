@@ -26,69 +26,72 @@ struct axienet_stat {
 	const char *name;
 };
 
-static struct axienet_stat axienet_get_strings_stats[] = {
+static struct axienet_stat axienet_get_tx_strings_stats[] = {
 	{ "txq0_packets" },
 	{ "txq0_bytes"   },
-	{ "rxq0_packets" },
-	{ "rxq0_bytes"   },
 	{ "txq1_packets" },
 	{ "txq1_bytes"   },
-	{ "rxq1_packets" },
-	{ "rxq1_bytes"   },
 	{ "txq2_packets" },
 	{ "txq2_bytes"   },
-	{ "rxq2_packets" },
-	{ "rxq2_bytes"   },
 	{ "txq3_packets" },
 	{ "txq3_bytes"   },
-	{ "rxq3_packets" },
-	{ "rxq3_bytes"   },
 	{ "txq4_packets" },
 	{ "txq4_bytes"   },
-	{ "rxq4_packets" },
-	{ "rxq4_bytes"   },
 	{ "txq5_packets" },
 	{ "txq5_bytes"   },
-	{ "rxq5_packets" },
-	{ "rxq5_bytes"   },
 	{ "txq6_packets" },
 	{ "txq6_bytes"   },
-	{ "rxq6_packets" },
-	{ "rxq6_bytes"   },
 	{ "txq7_packets" },
 	{ "txq7_bytes"   },
-	{ "rxq7_packets" },
-	{ "rxq7_bytes"   },
 	{ "txq8_packets" },
 	{ "txq8_bytes"   },
-	{ "rxq8_packets" },
-	{ "rxq8_bytes"   },
 	{ "txq9_packets" },
 	{ "txq9_bytes"   },
-	{ "rxq9_packets" },
-	{ "rxq9_bytes"   },
 	{ "txq10_packets" },
 	{ "txq10_bytes"   },
-	{ "rxq10_packets" },
-	{ "rxq10_bytes"   },
 	{ "txq11_packets" },
 	{ "txq11_bytes"   },
-	{ "rxq11_packets" },
-	{ "rxq11_bytes"   },
 	{ "txq12_packets" },
 	{ "txq12_bytes"   },
-	{ "rxq12_packets" },
-	{ "rxq12_bytes"   },
 	{ "txq13_packets" },
 	{ "txq13_bytes"   },
-	{ "rxq13_packets" },
-	{ "rxq13_bytes"   },
 	{ "txq14_packets" },
 	{ "txq14_bytes"   },
-	{ "rxq14_packets" },
-	{ "rxq14_bytes"   },
 	{ "txq15_packets" },
 	{ "txq15_bytes"   },
+};
+
+static struct axienet_stat axienet_get_rx_strings_stats[] = {
+	{ "rxq0_packets" },
+	{ "rxq0_bytes"   },
+	{ "rxq1_packets" },
+	{ "rxq1_bytes"   },
+	{ "rxq2_packets" },
+	{ "rxq2_bytes"   },
+	{ "rxq3_packets" },
+	{ "rxq3_bytes"   },
+	{ "rxq4_packets" },
+	{ "rxq4_bytes"   },
+	{ "rxq5_packets" },
+	{ "rxq5_bytes"   },
+	{ "rxq6_packets" },
+	{ "rxq6_bytes"   },
+	{ "rxq7_packets" },
+	{ "rxq7_bytes"   },
+	{ "rxq8_packets" },
+	{ "rxq8_bytes"   },
+	{ "rxq9_packets" },
+	{ "rxq9_bytes"   },
+	{ "rxq10_packets" },
+	{ "rxq10_bytes"   },
+	{ "rxq11_packets" },
+	{ "rxq11_bytes"   },
+	{ "rxq12_packets" },
+	{ "rxq12_bytes"   },
+	{ "rxq13_packets" },
+	{ "rxq13_bytes"   },
+	{ "rxq14_packets" },
+	{ "rxq14_bytes"   },
 	{ "rxq15_packets" },
 	{ "rxq15_bytes"   },
 };
@@ -109,6 +112,12 @@ void __maybe_unused axienet_mcdma_tx_bd_free(struct net_device *ndev,
 				  sizeof(*q->txq_bd_v) * TX_BD_NUM,
 				  q->txq_bd_v,
 				  q->tx_bd_p);
+	}
+	if (q->tx_bufs) {
+		dma_free_coherent(ndev->dev.parent,
+				  XAE_MAX_PKT_LEN * TX_BD_NUM,
+				  q->tx_bufs,
+				  q->tx_bufs_dma);
 	}
 }
 
@@ -216,7 +225,7 @@ int __maybe_unused axienet_mcdma_tx_q_init(struct net_device *ndev,
 
 	return 0;
 out:
-	for_each_dma_queue(lp, i) {
+	for_each_tx_dma_queue(lp, i) {
 		axienet_mcdma_tx_bd_free(ndev, lp->dq[i]);
 	}
 	return -ENOMEM;
@@ -308,7 +317,7 @@ int __maybe_unused axienet_mcdma_rx_q_init(struct net_device *ndev,
 	return 0;
 
 out:
-	for_each_dma_queue(lp, i) {
+	for_each_rx_dma_queue(lp, i) {
 		axienet_mcdma_rx_bd_free(ndev, lp->dq[i]);
 	}
 	return -ENOMEM;
@@ -318,7 +327,7 @@ static inline int get_mcdma_tx_q(struct axienet_local *lp, u32 chan_id)
 {
 	int i;
 
-	for_each_dma_queue(lp, i) {
+	for_each_tx_dma_queue(lp, i) {
 		if (chan_id == lp->chan_num[i])
 			return lp->qnum[i];
 	}
@@ -330,7 +339,7 @@ static inline int get_mcdma_rx_q(struct axienet_local *lp, u32 chan_id)
 {
 	int i;
 
-	for_each_dma_queue(lp, i) {
+	for_each_rx_dma_queue(lp, i) {
 		if (chan_id == lp->chan_num[i])
 			return lp->qnum[i];
 	}
@@ -485,19 +494,36 @@ void axienet_strings(struct net_device *ndev, u32 sset, u8 *data)
 	struct axienet_dma_q *q;
 	int i, j, k = 0;
 
-	for (i = 0, j = 0; i < AXIENET_SSTATS_LEN(lp);) {
-		if (j >= lp->num_queues)
+	for (i = 0, j = 0; i < AXIENET_TX_SSTATS_LEN(lp);) {
+		if (j >= lp->num_tx_queues)
 			break;
 		q = lp->dq[j];
-		if (i % 4 == 0)
-			k = (q->chan_id - 1) * 4;
+		if (i % 2 == 0)
+			k = (q->chan_id - 1) * 2;
 		if (sset == ETH_SS_STATS)
 			memcpy(data + i * ETH_GSTRING_LEN,
-			       axienet_get_strings_stats[k].name,
+			       axienet_get_tx_strings_stats[k].name,
 			       ETH_GSTRING_LEN);
 		++i;
 		k++;
-		if (i % 4 == 0)
+		if (i % 2 == 0)
+			++j;
+	}
+	k = 0;
+	for (j = 0; i < AXIENET_TX_SSTATS_LEN(lp) +
+			AXIENET_RX_SSTATS_LEN(lp);) {
+		if (j >= lp->num_rx_queues)
+			break;
+		q = lp->dq[j];
+		if (i % 2 == 0)
+			k = (q->chan_id - 1) * 2;
+		if (sset == ETH_SS_STATS)
+			memcpy(data + i * ETH_GSTRING_LEN,
+			       axienet_get_rx_strings_stats[k].name,
+			       ETH_GSTRING_LEN);
+		++i;
+		k++;
+		if (i % 2 == 0)
 			++j;
 	}
 }
@@ -508,7 +534,7 @@ int axienet_sset_count(struct net_device *ndev, int sset)
 
 	switch (sset) {
 	case ETH_SS_STATS:
-		return AXIENET_SSTATS_LEN(lp);
+		return (AXIENET_TX_SSTATS_LEN(lp) + AXIENET_RX_SSTATS_LEN(lp));
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -522,13 +548,21 @@ void axienet_get_stats(struct net_device *ndev,
 	struct axienet_dma_q *q;
 	unsigned int i = 0, j;
 
-	for (i = 0, j = 0; i < AXIENET_SSTATS_LEN(lp);) {
-		if (j >= lp->num_queues)
+	for (i = 0, j = 0; i < AXIENET_TX_SSTATS_LEN(lp);) {
+		if (j >= lp->num_tx_queues)
 			break;
 
 		q = lp->dq[j];
 		data[i++] = q->tx_packets;
 		data[i++] = q->tx_bytes;
+		++j;
+	}
+	for (j = 0; i < AXIENET_TX_SSTATS_LEN(lp) +
+			AXIENET_RX_SSTATS_LEN(lp);) {
+		if (j >= lp->num_rx_queues)
+			break;
+
+		q = lp->dq[j];
 		data[i++] = q->rx_packets;
 		data[i++] = q->rx_bytes;
 		++j;
@@ -702,7 +736,7 @@ int __maybe_unused axienet_mcdma_tx_probe(struct platform_device *pdev,
 	int i;
 	char dma_name[24];
 
-	for_each_dma_queue(lp, i) {
+	for_each_tx_dma_queue(lp, i) {
 		struct axienet_dma_q *q;
 
 		q = lp->dq[i];
@@ -713,14 +747,9 @@ int __maybe_unused axienet_mcdma_tx_probe(struct platform_device *pdev,
 		q->tx_irq = platform_get_irq_byname(pdev, dma_name);
 		q->eth_hasdre = of_property_read_bool(np,
 						      "xlnx,include-dre");
-	}
-	of_node_put(np);
-
-	for_each_dma_queue(lp, i) {
-		struct axienet_dma_q *q = lp->dq[i];
-
 		spin_lock_init(&q->tx_lock);
 	}
+	of_node_put(np);
 
 	return 0;
 }
@@ -732,7 +761,7 @@ int __maybe_unused axienet_mcdma_rx_probe(struct platform_device *pdev,
 	int i;
 	char dma_name[24];
 
-	for_each_dma_queue(lp, i) {
+	for_each_rx_dma_queue(lp, i) {
 		struct axienet_dma_q *q;
 
 		q = lp->dq[i];
@@ -741,15 +770,9 @@ int __maybe_unused axienet_mcdma_rx_probe(struct platform_device *pdev,
 		snprintf(dma_name, sizeof(dma_name), "s2mm_ch%d_introut",
 			 i + 1);
 		q->rx_irq = platform_get_irq_byname(pdev, dma_name);
-	}
-
-	for_each_dma_queue(lp, i) {
-		struct axienet_dma_q *q = lp->dq[i];
 
 		spin_lock_init(&q->rx_lock);
-	}
 
-	for_each_dma_queue(lp, i) {
 		netif_napi_add(ndev, &lp->napi[i], xaxienet_rx_poll,
 			       XAXIENET_NAPI_WEIGHT);
 	}
