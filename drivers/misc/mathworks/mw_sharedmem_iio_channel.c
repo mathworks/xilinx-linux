@@ -593,7 +593,7 @@ static int mw_sharedmem_region_init(struct mw_sharedmem_region *region, struct r
 {
 	region->phys = (phys_addr_t)r->start;
 	region->size =  (size_t)resource_size(r);
-	region->virt = memremap(region->phys, region->size, MEMREMAP_WB);
+	region->virt = memremap(region->phys, region->size, MEMREMAP_WT);
 	if (region->virt == NULL) {
 		return -ENOMEM;
 	}
