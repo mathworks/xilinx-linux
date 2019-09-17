@@ -25,7 +25,7 @@
 static DEFINE_IDA(mw_sharedmem_iio_channel_ida);
 static DEFINE_IDA(mw_sharedmem_region_ida);
 
-#define MWDEV_TO_MWIP(mwdev)			(mwdev->mw_ip_info)
+#define MWDEV_TO_MWIP(mwdev)    (mwdev->mw_ip_info)
 #define IP2DEVP(mwdev)  (MWDEV_TO_MWIP(mwdev)->dev)
 
 #define MW_SHAREDMEM_IIO_ENUM IIO_ENUM
@@ -42,30 +42,38 @@ struct mw_sharedmem_iio_channel_info {
 };
 
 struct mw_sharedmem_region {
-	void 			*virt;
-	phys_addr_t  	phys;
-	size_t 			size;
-	int 			read_count;			// count of active readers
-	struct mutex 	read_count_lock; 	// protects read_count, only used by readers
-	struct mutex 	lock;				// ensures mutual exclusion of writers
+	void			*virt;
+	phys_addr_t		phys;
+	size_t			size;
+	int				read_count;			// count of active readers
+	struct mutex	read_count_lock; 	// protects read_count, only used by readers
+	struct mutex	lock;				// ensures mutual exclusion of writers
 };
 
 struct mw_sharedmem_region_dev {
-	struct mathworks_ipcore_dev 	*mwdev;
+	struct mathworks_ipcore_dev		*mwdev;
 	struct device					dev;
 	const char						*name;
-	int 							rd_base_reg; // IP core AXI Master Read Base Address 
-	int 							wr_base_reg; // IP core AXI Master Write Base Address 
+	int								rd_base_reg; // IP core AXI Master Read Base Address 
+	int								wr_base_reg; // IP core AXI Master Write Base Address 
 	struct mw_sharedmem_region		region;
 };
 
+/* Setting to determine whether to automatically set the 
+   IP core AXI Master Read/Write Base Address register */
+enum mw_sharedmem_iio_base_addr_mode {
+	MW_SHAREDMEM_BASE_ADDR_MODE_AUTO = 0,
+	MW_SHAREDMEM_BASE_ADDR_MODE_MANUAL,
+};
+
 struct mw_sharedmem_iio_chandev {
-	struct mathworks_ipcore_dev 	*mwdev;
-	struct mw_sharedmem_region_dev  *mwregion;
-	struct device					dev;
-	struct mw_sharedmem_region		*region;
-	size_t 							offset;
-	struct mutex 					lock;
+	struct mathworks_ipcore_dev				*mwdev;
+	struct mw_sharedmem_region_dev			*mwregion;
+	struct device							dev;
+	struct mw_sharedmem_region				*region;
+	size_t									offset;
+	struct mutex							lock;
+	enum mw_sharedmem_iio_base_addr_mode	base_addr_mode;
 };
 
 struct mw_sharedmem_buffer {
@@ -284,14 +292,54 @@ static int mw_sharedmem_iio_buffer_preenable(struct iio_dev *indio_dev)
 {
 	struct mw_sharedmem_iio_chandev *mwchan = iio_priv(indio_dev);
 
-	mw_sharedmem_config_ipcore_reg(mwchan);
-
+	if (mwchan->base_addr_mode == MW_SHAREDMEM_BASE_ADDR_MODE_AUTO) {
+		mw_sharedmem_config_ipcore_reg(mwchan);
+	}
+	
 	return 0;
 }
 
 static const struct iio_buffer_setup_ops mw_sharedmem_iio_buffer_setup_ops = {
 
 	.preenable = &mw_sharedmem_iio_buffer_preenable,
+};
+
+/*************
+ * IP Base Address Register Modes
+ *************/
+static const char * const mw_sharedmem_iio_channel_base_addr_modes[] = { "auto", "manual" };
+
+static int mw_sharedmem_iio_channel_get_base_addr_mode(struct iio_dev *indio_dev,
+		const struct iio_chan_spec *chan)
+{
+	struct mw_sharedmem_iio_chandev *mwchan = iio_priv(indio_dev);
+
+	return mwchan->base_addr_mode;
+}
+
+static int mw_sharedmem_iio_channel_set_base_addr_mode(struct iio_dev *indio_dev,
+		const struct iio_chan_spec *chan, unsigned int mode)
+{
+	struct mw_sharedmem_iio_chandev *mwchan = iio_priv(indio_dev);
+
+	mutex_lock(&indio_dev->mlock);
+	mwchan->base_addr_mode = mode;
+	mutex_unlock(&indio_dev->mlock);
+
+	return 0;
+}
+
+static const struct iio_enum mw_sharedmem_iio_channel_base_addr_mode_enum = {
+	.items = mw_sharedmem_iio_channel_base_addr_modes,
+	.num_items = ARRAY_SIZE(mw_sharedmem_iio_channel_base_addr_modes),
+	.get = mw_sharedmem_iio_channel_get_base_addr_mode,
+	.set = mw_sharedmem_iio_channel_set_base_addr_mode,
+};
+
+static const struct iio_chan_spec_ext_info mw_sharedmem_iio_ch_ip_info[] = {
+	MW_SHAREDMEM_IIO_ENUM("base_addr_mode", IIO_SHARED_BY_ALL, &mw_sharedmem_iio_channel_base_addr_mode_enum),
+	MW_SHAREDMEM_IIO_ENUM_AVAILABLE("base_addr_mode", IIO_SHARED_BY_ALL, &mw_sharedmem_iio_channel_base_addr_mode_enum),
+	{ },
 };
 
 static const struct iio_info mw_sharedmem_iio_chandev_info = {
@@ -320,6 +368,20 @@ static int devm_mw_sharedmem_configure_buffer(struct iio_dev *indio_dev)
 
 	indio_dev->modes = INDIO_BUFFER_HARDWARE;
 	indio_dev->setup_ops = &mw_sharedmem_iio_buffer_setup_ops;
+
+	return 0;
+}
+
+static int mw_sharedmem_setup_ip_channel(struct iio_dev *indio_dev, struct iio_chan_spec *channel){
+	struct mw_sharedmem_iio_chandev *mwchan = iio_priv(indio_dev);
+
+	channel->type = IIO_GENERIC_DATA;
+	channel->indexed = 1;
+	channel->extend_name = devm_kstrdup(&mwchan->dev, "ip_info", GFP_KERNEL);
+	if (!channel->extend_name)
+		return -ENOMEM;
+	channel->ext_info = mw_sharedmem_iio_ch_ip_info;
+	channel->scan_index = -ENODEV;
 
 	return 0;
 }
@@ -424,7 +486,7 @@ static int devm_mw_sharedmem_iio_register(struct iio_dev *indio_dev, enum iio_de
 	indio_dev->name = dev_name(&mwchan->dev);
 	indio_dev->info = &mw_sharedmem_iio_chandev_info;
 	indio_dev->direction = direction;
-	indio_dev->num_channels = 2;
+	indio_dev->num_channels = 3; // data, offset, ip
 
 	indio_dev->channels = devm_kzalloc(&mwchan->dev, (indio_dev->num_channels) * sizeof(struct iio_chan_spec), GFP_KERNEL);
 	if(!indio_dev->channels)
@@ -435,6 +497,10 @@ static int devm_mw_sharedmem_iio_register(struct iio_dev *indio_dev, enum iio_de
 		return status;
 
 	status = mw_sharedmem_setup_offset_channel(indio_dev, (struct iio_chan_spec *)&indio_dev->channels[1]);
+	if(status)
+		return status;
+	
+	status = mw_sharedmem_setup_ip_channel(indio_dev, (struct iio_chan_spec *)&indio_dev->channels[2]);
 	if(status)
 		return status;
 
