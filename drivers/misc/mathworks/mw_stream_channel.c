@@ -767,13 +767,13 @@ static void mwadma_mmap_close(struct vm_area_struct *vma)
 /*
  * @brief mwadma_mmap_fault
  */
-
- static int mwadma_mmap_fault(struct vm_fault *vmf)
+static vm_fault_t mwadma_mmap_fault(struct vm_fault *vmf)
 {
-    struct mwadma_dev * mwdev = vmf->vma->vm_private_data;
+    struct vm_area_struct *vma = vmf->vma;
+    struct mwadma_dev * mwdev = vma->vm_private_data;
     struct page *thisPage;
     unsigned long offset;
-    offset = (vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT;
+    offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
     thisPage = virt_to_page(MWDEV_TO_MWIP(mwdev)->mem->start + offset);
     get_page(thisPage);
     vmf->page = thisPage;
