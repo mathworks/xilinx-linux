@@ -72,6 +72,15 @@ config COMMON_CLK_SCPI
 	  This driver uses SCPI Message Protocol to interact with the
 	  firmware providing all the clock controls.
 
+config COMMON_CLK_LMX2594
+	tristate "Clock driver for TI LMX2594"
+	depends on I2C
+	select REGMAP_I2C
+	select RATIONAL
+	---help---
+	  This driver supports TI lmx2594 programmable clock
+	  generators.
+
 config COMMON_CLK_SI5351
 	tristate "Clock driver for SiLabs 5351A/B/C"
 	depends on I2C
