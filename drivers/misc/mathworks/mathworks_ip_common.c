@@ -13,7 +13,7 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 
-#include <linux/mathworks/mathworks_ip.h>
+#include "mathworks_ip.h"
 
 #define DRIVER_NAME "mathworks_ip"
 

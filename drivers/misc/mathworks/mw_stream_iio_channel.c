@@ -8,7 +8,7 @@
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
-#include <linux/iio/buffer_impl.h>
+#include <linux/iio/buffer.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 #include <linux/idr.h>
@@ -16,7 +16,7 @@
 #include <linux/errno.h>
 
 #include <linux/string.h>
-#include <linux/mathworks/mathworks_ip.h>
+#include "mathworks_ip.h"
 #include "mw_stream_iio_channel.h"
 #include "mathworks_ipcore.h"
 
@@ -83,7 +83,6 @@ static int mw_stream_iio_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	} else {
 		direction = DMA_TO_DEVICE;
 	}
-
 	return iio_dmaengine_buffer_submit_block(queue, block, direction);
 }
 
