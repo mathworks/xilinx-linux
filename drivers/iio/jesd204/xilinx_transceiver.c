@@ -295,8 +295,8 @@ static void xilinx_xcvr_setup_qpll_vco_range(struct xilinx_xcvr *xcvr,
 {
 	switch (xcvr->type) {
 	case XILINX_XCVR_TYPE_S7_GTX2:
-		if ((xcvr->dev_package == AXI_FPGA_DEV_FB) |
-		    (xcvr->dev_package == AXI_FPGA_DEV_SB))
+		if ((xcvr->dev_package == ADI_AXI_FPGA_DEV_FB) |
+		    (xcvr->dev_package == ADI_AXI_FPGA_DEV_SB))
 			*vco0_max = 6600000;
 		if ((xcvr->speed_grade / 10) == 2)
 			*vco1_max = 10312500;
@@ -347,7 +347,7 @@ int xilinx_xcvr_calc_cpll_config(struct xilinx_xcvr *xcvr,
 		return -EINVAL;
 	}
 
-	if (AXI_PCORE_VER_MAJOR(xcvr->version) > 0x10)
+	if (ADI_AXI_PCORE_VER_MAJOR(xcvr->version) > 0x10)
 		xilinx_xcvr_setup_cpll_vco_range(xcvr, &vco_max);
 
 	for (m = 1; m <= 2; m++) {
@@ -415,8 +415,19 @@ int xilinx_xcvr_calc_qpll_config(struct xilinx_xcvr *xcvr,
 	case XILINX_XCVR_TYPE_US_GTH4:
 	case XILINX_XCVR_TYPE_US_GTY4:
 		N = N_gth34;
-		vco0_min = 9800000;
-		vco0_max = 16375000;
+
+		if (conf != NULL) {
+			if (conf->qpll) {
+				vco0_min = 8000000;
+				vco0_max = 13000000;
+			} else {
+				vco0_min = 9800000;
+				vco0_max = 16375000;
+			}
+		} else {
+			vco0_min = 8000000;
+			vco0_max = 16375000;
+		}
 		vco1_min = vco0_min;
 		vco1_max = vco0_max;
 		break;
@@ -424,7 +435,7 @@ int xilinx_xcvr_calc_qpll_config(struct xilinx_xcvr *xcvr,
 		return -EINVAL;
 	}
 
-	if (AXI_PCORE_VER_MAJOR(xcvr->version) > 0x10)
+	if (ADI_AXI_PCORE_VER_MAJOR(xcvr->version) > 0x10)
 		xilinx_xcvr_setup_qpll_vco_range(xcvr,
 						 &vco0_min, &vco0_max,
 						 &vco1_min, &vco1_max);
@@ -714,7 +725,6 @@ EXPORT_SYMBOL_GPL(xilinx_xcvr_cpll_calc_lane_rate);
 static int xilinx_xcvr_gth34_qpll_read_config(struct xilinx_xcvr *xcvr,
 	unsigned int drp_port, struct xilinx_xcvr_qpll_config *conf)
 {
-	unsigned int qpll = 0;
 	int val;
 
 	#define QPLL0_FBDIV_DIV 0x14
@@ -725,7 +735,7 @@ static int xilinx_xcvr_gth34_qpll_read_config(struct xilinx_xcvr *xcvr,
 	#define QPLL_FBDIV(x) (0x14 + (x) * 0x80)
 	#define QPLL_REFCLK_DIV(x) (0x18 + (x) * 0x80)
 
-	val = xilinx_xcvr_drp_read(xcvr, drp_port, QPLL_REFCLK_DIV(qpll));
+	val = xilinx_xcvr_drp_read(xcvr, drp_port, QPLL_REFCLK_DIV(conf->qpll));
 	if (val < 0)
 		return val;
 
@@ -747,7 +757,7 @@ static int xilinx_xcvr_gth34_qpll_read_config(struct xilinx_xcvr *xcvr,
 		break;
 	}
 
-	val = xilinx_xcvr_drp_read(xcvr, drp_port, QPLL_FBDIV(qpll));
+	val = xilinx_xcvr_drp_read(xcvr, drp_port, QPLL_FBDIV(conf->qpll));
 	if (val < 0)
 		return val;
 
@@ -872,12 +882,12 @@ static int xilinx_xcvr_gth34_qpll_write_config(struct xilinx_xcvr *xcvr,
 		return -EINVAL;
 	}
 
-	ret = xilinx_xcvr_drp_update(xcvr, drp_port, QPLL_FBDIV(0),
+	ret = xilinx_xcvr_drp_update(xcvr, drp_port, QPLL_FBDIV(conf->qpll),
 		0xff, fbdiv);
 	if (ret < 0)
 		return ret;
 
-	return xilinx_xcvr_drp_update(xcvr, drp_port, QPLL_REFCLK_DIV(0),
+	return xilinx_xcvr_drp_update(xcvr, drp_port, QPLL_REFCLK_DIV(conf->qpll),
 		0xf80, refclk << 7);
 }
 

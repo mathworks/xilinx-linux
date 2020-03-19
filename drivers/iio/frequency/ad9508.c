@@ -466,7 +466,7 @@ static int ad9508_setup(struct iio_dev *indio_dev)
 
 	ret = ad9508_write(indio_dev, AD9508_SERIAL_PORT_CONFIG,
 			AD9508_SER_CONF_SOFT_RESET |
-			((st->spi->mode & SPI_3WIRE || pdata->spi3wire)? 0 :
+			((st->spi->mode & SPI_3WIRE || pdata->spi3wire) ? 0 :
 			 AD9508_SER_CONF_SDO_ACTIVE));
 	if (ret < 0)
 		return ret;
