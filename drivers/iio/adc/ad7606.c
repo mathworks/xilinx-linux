@@ -58,6 +58,10 @@ static const unsigned int ad7606_oversampling_avail[7] = {
 	1, 2, 4, 8, 16, 32, 64,
 };
 
+static const unsigned int ad7616_oversampling_avail[8] = {
+	1, 2, 4, 8, 16, 32, 64, 128,
+};
+
 static const unsigned int ad7606B_oversampling_avail[9] = {
 	1, 2, 4, 8, 16, 32, 64, 128, 256
 };
@@ -323,6 +327,10 @@ static int ad7606_write_raw(struct iio_dev *indio_dev,
 
 			gpiod_set_array_value(ARRAY_SIZE(values),
 					      st->gpio_os->desc, values);
+
+			/* AD7616 requires a reset to update value */
+			if (st->chip_info->os_req_reset)
+				ad7606_reset(st);
 		}
 		st->oversampling = st->oversampling_avail[i];
 		mutex_unlock(&st->lock);
@@ -437,6 +445,36 @@ static const struct iio_chan_spec ad7606B_channels[] = {
 	AD7606B_CHANNEL(7),
 };
 
+/*
+ * The current assumption that this driver makes for AD7616, is that it's
+ * working in Hardware Mode with Serial, Burst and Sequencer modes activated.
+ * To activate them, following pins must be pulled high:
+ *	-SER/PAR
+ *	-SEQEN
+ * And following pins must be pulled low:
+ *	-WR/BURST
+ *	-DB4/SER1W
+ */
+static const struct iio_chan_spec ad7616_channels[] = {
+	IIO_CHAN_SOFT_TIMESTAMP(16),
+	AD7606_CHANNEL(0),
+	AD7606_CHANNEL(1),
+	AD7606_CHANNEL(2),
+	AD7606_CHANNEL(3),
+	AD7606_CHANNEL(4),
+	AD7606_CHANNEL(5),
+	AD7606_CHANNEL(6),
+	AD7606_CHANNEL(7),
+	AD7606_CHANNEL(8),
+	AD7606_CHANNEL(9),
+	AD7606_CHANNEL(10),
+	AD7606_CHANNEL(11),
+	AD7606_CHANNEL(12),
+	AD7606_CHANNEL(13),
+	AD7606_CHANNEL(14),
+	AD7606_CHANNEL(15),
+};
+
 static const struct ad7606_chip_info ad7606_chip_info_tbl[] = {
 	/* More devices added in future */
 	[ID_AD7605_4] = {
@@ -446,23 +484,34 @@ static const struct ad7606_chip_info ad7606_chip_info_tbl[] = {
 	[ID_AD7606_8] = {
 		.channels = ad7606_channels,
 		.num_channels = 9,
-		.has_oversampling = true,
+		.oversampling_avail = ad7606_oversampling_avail,
+		.oversampling_num = ARRAY_SIZE(ad7606_oversampling_avail),
 	},
 	[ID_AD7606_6] = {
 		.channels = ad7606_channels,
 		.num_channels = 7,
-		.has_oversampling = true,
+		.oversampling_avail = ad7606_oversampling_avail,
+		.oversampling_num = ARRAY_SIZE(ad7606_oversampling_avail),
 	},
 	[ID_AD7606_4] = {
 		.channels = ad7606_channels,
 		.num_channels = 5,
-		.has_oversampling = true,
+		.oversampling_avail = ad7606_oversampling_avail,
+		.oversampling_num = ARRAY_SIZE(ad7606_oversampling_avail),
 	},
 	[ID_AD7606B] = {
 		.channels = ad7606_channels,
 		.num_channels = 9,
-		.has_oversampling = true,
 		.sw_mode_config = ad7606B_sw_mode_config,
+		.oversampling_avail = ad7606_oversampling_avail,
+		.oversampling_num = ARRAY_SIZE(ad7606_oversampling_avail),
+	},
+	[ID_AD7616] = {
+		.channels = ad7616_channels,
+		.num_channels = 17,
+		.oversampling_avail = ad7616_oversampling_avail,
+		.oversampling_num = ARRAY_SIZE(ad7616_oversampling_avail),
+		.os_req_reset = true,
 	},
 };
 
@@ -494,7 +543,7 @@ static int ad7606_request_gpios(struct ad7606_state *st)
 	if (IS_ERR(st->gpio_frstdata))
 		return PTR_ERR(st->gpio_frstdata);
 
-	if (!st->chip_info->has_oversampling)
+	if (!st->chip_info->oversampling_num)
 		return 0;
 
 	st->gpio_os = devm_gpiod_get_array_optional(dev,
@@ -660,8 +709,6 @@ int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 	st->oversampling = 1;
 	st->scale_avail = ad7606_scale_avail;
 	st->num_scales = ARRAY_SIZE(ad7606_scale_avail);
-	st->oversampling_avail = ad7606_oversampling_avail;
-	st->num_os_ratios = ARRAY_SIZE(ad7606_oversampling_avail);
 
 	st->reg = devm_regulator_get(dev, "avcc");
 	if (IS_ERR(st->reg))
@@ -678,6 +725,11 @@ int ad7606_probe(struct device *dev, int irq, void __iomem *base_address,
 		return ret;
 
 	st->chip_info = &ad7606_chip_info_tbl[id];
+
+	if (st->chip_info->oversampling_num) {
+		st->oversampling_avail = st->chip_info->oversampling_avail;
+		st->num_os_ratios = st->chip_info->oversampling_num;
+	}
 
 	ret = ad7606_request_gpios(st);
 	if (ret)
