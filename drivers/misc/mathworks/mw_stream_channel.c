@@ -87,7 +87,7 @@ static int mwadma_allocate_desc(struct mwadma_slist **new, struct mwadma_chan *m
     tmp->state = MWDMA_READY;
     tmp->qchan = mwchan;
     INIT_LIST_HEAD(&(tmp->userid));
-    dev_dbg(&mwchan->dev,"buf_phys_addr 0x%08lx, size %u\n", (unsigned long) tmp->phys, tmp->length);
+    dev_dbg(&mwchan->dev,"buf_phys_addr 0x%08lx, size %zu\n", (unsigned long) tmp->phys, tmp->length);
     *new = tmp;
     return 0;
 }
@@ -293,7 +293,7 @@ int mwadma_start(struct mwadma_chan *mwchan)
     }
     thisDesc = dmaengine_prep_slave_single(mwchan->chan, mwchan->curr->phys, mwchan->curr->length, mwchan->direction, mwchan->flags);
     if (NULL == thisDesc) {
-        dev_err(&mwchan->dev,"prep_slave_single failed: buf_phys_addr 0x%08lx, size %u\n", (unsigned long) mwchan->curr->phys, mwchan->curr->length);
+        dev_err(&mwchan->dev,"prep_slave_single failed: buf_phys_addr 0x%08lx, size %zu\n", (unsigned long) mwchan->curr->phys, mwchan->curr->length);
         ret = -ENOMEM;
         goto start_failed;
     }
@@ -779,20 +779,6 @@ static void mwadma_mmap_close(struct vm_area_struct *vma)
     vmf->page = thisPage;
     return 0;
 }
-
-/*
- static int mwadma_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
-{
-    struct mwadma_dev * mwdev = vma->vm_private_data;
-    struct page *thisPage;
-    unsigned long offset;
-    offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
-    thisPage = virt_to_page(MWDEV_TO_MWIP(mwdev)->mem->start + offset);
-    get_page(thisPage);
-    vmf->page = thisPage;
-    return 0;
-}
-*/
 
 struct vm_operations_struct  mwadma_mmap_ops = {
     .open           = mwadma_mmap_open,

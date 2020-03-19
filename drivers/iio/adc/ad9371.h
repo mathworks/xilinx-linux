@@ -1,7 +1,7 @@
 /*
  * AD9371
  *
- * Copyright 2016 Analog Devices Inc.
+ * Copyright 2016-2018 Analog Devices Inc.
  *
  * Licensed under the GPL-2.
  */
@@ -38,6 +38,7 @@ enum debugfs_cmd {
 	DBGFS_BIST_PRBS_RX,
 	DBGFS_BIST_PRBS_OBS,
 	DBGFS_BIST_TONE,
+	DBGFS_MONITOR_OUT,
 };
 
 
@@ -181,6 +182,8 @@ struct ad9371_rf_phy {
 	mykonosDevice_t 	*mykDevice;
 	struct clk 		*dev_clk;
 	struct clk 		*fmc_clk;
+	struct clk		*sysref_dev_clk;
+	struct clk		*sysref_fmc_clk;
 	struct clk 		*jesd_rx_clk;
 	struct clk 		*jesd_tx_clk;
 	struct clk 		*jesd_rx_os_clk;
@@ -190,7 +193,7 @@ struct ad9371_rf_phy {
 	struct ad9371_clock	clk_priv[NUM_AD9371_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9371_phy_platform_data *pdata;
-	struct ad9371_debugfs_entry debugfs_entry[338];
+	struct ad9371_debugfs_entry debugfs_entry[339];
 	struct bin_attribute 	bin;
 	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
@@ -220,6 +223,7 @@ struct ad9371_rf_phy {
 	u32			init_cal_mask;
 	u32			cal_mask;
 	u32			rf_bandwith[3];
+	bool			is_initialized;
 };
 
 int ad9371_hdl_loopback(struct ad9371_rf_phy *phy, bool enable);

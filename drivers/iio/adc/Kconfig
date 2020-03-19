@@ -10,12 +10,35 @@ config AD_SIGMA_DELTA
 	select IIO_BUFFER
 	select IIO_TRIGGERED_BUFFER
 
+config AD400X
+	tristate "Analog Device AD400X ADC Driver"
+	depends on SPI_MASTER
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  Say yes here to build support for Analog Devices AD400X high speed
+	  SPI analog to digital converters (ADC).
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ad400x.
+
 config AD7091R5
 	tristate "Analog Devices AD7091R5 ADC Driver"
 	depends on I2C
 	select REGMAP_I2C
 	help
 	  Say yes here to build support for Analog Devices AD7091R-5 ADC.
+
+config AD7124
+	tristate "Analog Devices AD7124 and similar sigma-delta ADCs driver"
+	depends on SPI_MASTER
+	select AD_SIGMA_DELTA
+	help
+	  Say yes here to build support for Analog Devices AD7124-4 and AD7124-8
+	  SPI analog to digital converters (ADC).
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ad7124.
 
 config AD7173
 	tristate "Analog Devices AD7173 driver"
@@ -85,6 +108,33 @@ config AD7476
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad7476.
 
+config AD7606
+	tristate
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+
+config AD7606_IFACE_PARALLEL
+	tristate "Analog Devices AD7606 ADC driver with parallel interface support"
+	depends on HAS_IOMEM
+	select AD7606
+	help
+	  Say yes here to build parallel interface support for Analog Devices:
+	  ad7605-4, ad7606, ad7606-6, ad7606-4 analog to digital converters (ADC).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ad7606_parallel.
+
+config AD7606_IFACE_SPI
+	tristate "Analog Devices AD7606 ADC driver with spi interface support"
+	depends on SPI
+	select AD7606
+	help
+	  Say yes here to build spi interface support for Analog Devices:
+	  ad7605-4, ad7606, ad7606-6, ad7606-4 analog to digital converters (ADC).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ad7606_spi.
+
 config AD7766
 	tristate "Analog Devices AD7766/AD7767 ADC driver"
 	depends on SPI_MASTER
@@ -96,6 +146,29 @@ config AD7766
 
 	  To compile this driver as a module, choose M here: the module will be
 	  called ad7766.
+
+config AD7768
+	tristate "Analog Devices AD7768 ADC driver"
+	depends on SPI
+	help
+	  Say yes here to build support for Analog Devices AD7768 SPI analog to
+	  digital converter (ADC).
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ad7768.
+
+config AD7768_1
+	tristate "Analog Devices AD7768-1 ADC driver"
+	depends on SPI
+	select IIO_BUFFER
+	select IIO_TRIGGER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  Say yes here to build support for Analog Devices AD7768-1 SPI
+	  simultaneously sampling sigma-delta analog to digital converter (ADC).
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ad7768-1.
 
 config AD7791
 	tristate "Analog Devices AD7791 ADC driver"

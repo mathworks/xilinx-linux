@@ -3,7 +3,7 @@
  * \brief Contains top level Talise related function prototypes for
  *        talise.c
  *
- * Talise API version: 3.4.0.0
+ * Talise API version: 3.6.0.5
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -147,6 +147,41 @@ uint32_t TALISE_initialize(taliseDevice_t *device, taliseInit_t *init);
 uint32_t TALISE_shutdown(taliseDevice_t *device);
 
 /**
+ * \brief Reads back the multi-chip sync status
+ *
+ * This function returns the status of the Talise MCS state machine via the mcsStatus pointer.
+ * The 4 LSBs of the uint8_t value at mcsStatus represent the sync status
+ * of JESD, Digital Clocks, CLK PLL and Device Clock divider.
+
+ *  mcsStatus | bit Description
+ * -----------|--------------------------------------------------------
+ *       [0]  | MCS JESD SYSREF Status
+ *       [1]  | MCS Digital Clocks Sync Status
+ *       [2]  | MCS CLKPLL SDM Sync Status
+ *       [3]  | MCS Device Clock divider Sync Status
+ *
+ * A bit value of 1 indicates that the sync occured
+ * A bit value of 0 indicates that the sync has not occured.
+ *
+ *
+ * \pre This function can be called any time after the device has been initialized and PLL lock status has 
+ * been verified.
+ *
+ * \dep_begin
+ * \dep{device->devHalInfo}
+ * \dep_end
+ *
+ * \param device is a pointer to the device settings structure
+ * \param mcsStatus Returns the mcsStatus word described in the table above.
+ *
+ * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
+ * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
+ * \retval TALACT_ERR_RESET_SPI Recovery action for SPI reset required
+ * \retval TALACT_NO_ACTION Function completed successfully, no action required
+ */
+uint32_t TALISE_getMultiChipSyncStatus(taliseDevice_t *device, uint8_t *mcsStatus);
+
+/**
  * \brief Sets up the chip for multichip sync, and cleans up after MCS.
  *
  *  When working with multiple transceivers or even only one transceiver that
@@ -196,6 +231,63 @@ uint32_t TALISE_shutdown(taliseDevice_t *device);
  * \retval TALACT_NO_ACTION Function completed successfully, no action required
  */
 uint32_t TALISE_enableMultichipSync(taliseDevice_t *device, uint8_t enableMcs, uint8_t *mcsStatus);
+
+/**
+ * \brief Resets the JESD204 serializer
+ *
+ * \dep_begin
+ * \dep{device->devHalInfo}
+ * \dep_end
+ *
+ * \param device is a pointer to the device settings structure
+ *
+ * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
+ * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
+ * \retval TALACT_ERR_RESET_SPI Recovery action for SPI reset required
+ * \retval TALACT_NO_ACTION Function completed successfully, no action required
+ */
+uint32_t TALISE_serializerReset(taliseDevice_t *device);
+
+/**
+ * \brief Sets up the chip for multichip LOs Phase synchronization
+ *
+ *  LOs on multiple chips can be phase synchronized to support active  
+ *  antenna system and beam forming applications.This function should
+ *  be run after all transceivers have finished the TALISE_setRfPllFrequency(),
+ *  and before TALISE_runInitCals().
+ *
+ *  When the enableDigTestClk parameter = 1, this function will reset the MCS state
+ *  machine in the Talise device and switch the ARM to run on device clock scaled instead of HSDIGCLK
+ *
+ *  When the enableDigTestClk parameter = 0, this function will enable Mcs Digital Clocks Sync and JESD204 sysref,
+ *  switch the ARM back the HSDIGCLK.
+ *
+ *  Typical sequence:
+ *  1) Initialize all Talise devices in system using TALISE_initialize(),load the ARM and stream processor
+ *  2) Set the RF PLL frequency with TALISE_setRfPllFrequency
+ *  3) Run TALISE_enableMultichipRfLOPhaseSync with enableDigTestClk = 1 before TALISE_runInitCals()
+ *  4) Send at least 4 SYSREF pulses
+ *  5) Run TALISE_enableMultichipRfLOPhaseSync with enableDigTestClk = 0
+ *  6) Send at least 4 SYSREF pulses
+ *  7) Continue with init sequence ...Run initCals, bring up JESD204, etc
+ *
+ * \pre This function is called after the device has been initialized, ARM is loaded and PLL lock status has
+ * been verified
+ *
+ * \dep_begin
+ * \dep{device->devHalInfo}
+ * \dep_end
+ *
+ * \param device is a pointer to the device settings structure
+ * \param enableDigTestClk =1 will enable/reset the MCS state machine and switch between device clock scaled and
+ * HSDIGCLK
+ *
+ * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
+ * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
+ * \retval TALACT_ERR_RESET_SPI Recovery action for SPI reset required
+ * \retval TALACT_NO_ACTION Function completed successfully, no action required
+ */
+uint32_t TALISE_enableMultichipRfLOPhaseSync(taliseDevice_t *device, uint8_t enableDigTestClk);
 
 /****************************************************************************
  * Runtime functions
@@ -332,6 +424,7 @@ uint32_t TALISE_setSpiSettings(taliseDevice_t *device, taliseSpiSettings_t *spi)
  *
  * \dep_begin
  * \dep{device->devHalInfo}
+ * \dep_end
  *
  * \param device Structure pointer to Talise device data structure
  *
@@ -437,13 +530,20 @@ uint32_t TALISE_getApiVersion (taliseDevice_t *device, uint32_t *siVer, uint32_t
 
 /**
  * \brief Reads back the silicon revision for the Talise Device
+ * 
+ * revision's bit  |  Description
+ * ----------------|-----------------
+ *       3:0       |  minor revision
+ *       7:4       |  major revision
  *
  * \dep_begin
  * \dep{device->devHalInfo}
  * \dep_end
  *
  * \param device Structure pointer to the Talise data structure containing settings
- * \param revision Return value of the Talise silicon revision
+ * \param revision Return value of the Talise silicon revision in hex where 
+        upper nibble (4 bits) indicates the major revision and the lower nibble 
+        indicates the minor revision.
  *
  * \retval TALACT_WARN_RESET_LOG recovery action for log reset
  * \retval TALACT_ERR_CHECK_PARAM recovery action for bad parameter check

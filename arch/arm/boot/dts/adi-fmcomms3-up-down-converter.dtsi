@@ -4,16 +4,25 @@
 / {
 	clocks {
 		adf4351_clkin: clock@1 {
+<<<<<<< HEAD
 			#clock-cells = <0>;
 			compatible = "fixed-clock";
 			clock-frequency = <25000000>;
 			clock-output-names = "refclk";
+=======
+			compatible = "fixed-clock";
+
+			clock-frequency = <25000000>;
+			clock-output-names = "refclk";
+			#clock-cells = <0>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		};
 	};
 };
 
 &pmod_spi {
 		lo_pll0_tx_adf4351: adf4351-udc-tx-pmod@0 {
+<<<<<<< HEAD
 			#address-cells = <1>;
 			#size-cells = <0>;
 			compatible = "adi,adf4351";
@@ -21,6 +30,16 @@
 			spi-max-frequency = <10000000>;
 			clocks = <&adf4351_clkin>;
 			clock-names = "clkin";
+=======
+			compatible = "adi,adf4351";
+			reg = <0>;
+
+			spi-max-frequency = <10000000>;
+
+			clocks = <&adf4351_clkin>;
+			clock-names = "clkin";
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			adi,channel-spacing = <1000000>;
 			adi,power-up-frequency = <370000000>;
 			adi,phase-detector-polarity-positive-enable;
@@ -31,6 +50,7 @@
 		};
 
 		lo_pll0_rx_adf4351: adf4351-udc-rx-pmod@1 {
+<<<<<<< HEAD
 			#address-cells = <1>;
 			#size-cells = <0>;
 			compatible = "adi,adf4351";
@@ -38,6 +58,16 @@
 			spi-max-frequency = <10000000>;
 			clocks = <&adf4351_clkin>;
 			clock-names = "clkin";
+=======
+			compatible = "adi,adf4351";
+			reg = <1>;
+
+			spi-max-frequency = <10000000>;
+
+			clocks = <&adf4351_clkin>;
+			clock-names = "clkin";
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			adi,channel-spacing = <1000000>;
 			adi,power-up-frequency = <340000000>;
 			adi,phase-detector-polarity-positive-enable;

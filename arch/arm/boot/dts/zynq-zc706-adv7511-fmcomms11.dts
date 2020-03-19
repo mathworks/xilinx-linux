@@ -44,7 +44,10 @@
 				adi,source-bus-type = <2>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <0>;
+<<<<<<< HEAD
 				adi,length-width = <24>;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};
@@ -66,8 +69,11 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <128>;
 				adi,destination-bus-type = <2>;
+<<<<<<< HEAD
 				adi,length-width = <24>;
 				adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};
@@ -126,7 +132,11 @@
 		clock-output-names = "jesd_adc_lane_clk";
 	};
 
+<<<<<<< HEAD
 	rx_adxcvr: rx-adxcvr@44a50000 {
+=======
+	rx_adxcvr: axi-adxcvr-rx@44a50000 {
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		compatible = "adi,axi-adxcvr-1.0";
 		reg = <0x44a50000 0x1000>;
 
@@ -142,7 +152,11 @@
 		adi,use-lpm-enable;
 	};
 
+<<<<<<< HEAD
 	tx_adxcvr: tx-adxcvr@44a60000 {
+=======
+	tx_adxcvr: axi-adxcvr-tx@44a60000 {
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		compatible = "adi,axi-adxcvr-1.0";
 		reg = <0x44a60000 0x1000>;
 		clocks = <&adc_divclk>;

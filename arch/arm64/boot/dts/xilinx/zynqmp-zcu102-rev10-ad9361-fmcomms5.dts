@@ -9,7 +9,11 @@
 #include "zynqmp-zcu102-rev1.0.dts"
 
 &i2c1 {
+<<<<<<< HEAD
 	i2cswitch@75 {
+=======
+	i2c-mux@75 {
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		fmc_i2c: i2c@0 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -30,6 +34,7 @@
 	fpga_axi: fpga-axi@0 {
 		interrupt-parent = <&gic>;
 		compatible = "simple-bus";
+<<<<<<< HEAD
 		#address-cells = <0x2>;
 		#size-cells = <0x1>;
 		ranges = <0 0 0 0 0xffffffff>;
@@ -37,6 +42,15 @@
 		rx_dma: dma@9c400000 {
 			compatible = "adi,axi-dmac-1.00.a";
 			reg = <0x0 0x9c400000 0x10000>;
+=======
+		#address-cells = <0x1>;
+		#size-cells = <0x1>;
+		ranges = <0 0 0 0xffffffff>;
+
+		rx_dma: dma@9c400000 {
+			compatible = "adi,axi-dmac-1.00.a";
+			reg = <0x9c400000 0x10000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			#dma-cells = <1>;
 			#clock-cells = <0>;
 			interrupts = <0 109 0>;
@@ -52,14 +66,21 @@
 					adi,source-bus-type = <2>;
 					adi,destination-bus-width = <64>;
 					adi,destination-bus-type = <0>;
+<<<<<<< HEAD
 					adi,length-width = <24>;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 				};
 			};
 		};
 
 		tx_dma: dma@9c420000  {
 			compatible = "adi,axi-dmac-1.00.a";
+<<<<<<< HEAD
 			reg = <0x0 0x9c420000 0x10000>;
+=======
+			reg = <0x9c420000 0x10000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			#dma-cells = <1>;
 			#clock-cells = <0>;
 			interrupts = <0 108 0>;
@@ -75,16 +96,25 @@
 					adi,source-bus-type = <0>;
 					adi,destination-bus-width = <128>;
 					adi,destination-bus-type = <2>;
+<<<<<<< HEAD
 					adi,length-width = <24>;
 					adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 				};
 			};
 		};
 
 		/* Master HDL cores with DMA */
+<<<<<<< HEAD
 		cf_ad9361_adc_core_0: cf-ad9361-lpc@99020000 {
 			compatible = "adi,axi-ad9361-6.00.a";
 			reg = <0x0 0x99020000 0x6000>;
+=======
+		cf_ad9361_adc_core_0: cf-ad9361-A@99020000 {
+			compatible = "adi,axi-ad9361-6.00.a";
+			reg = <0x99020000 0x6000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			dmas = <&rx_dma 0>;
 			dma-names = "rx";
 			spibus-connected = <&adc0_ad9361>;
@@ -93,7 +123,11 @@
 
 		cf_ad9361_dac_core_0: cf-ad9361-dds-core-lpc@99024000 {
 			compatible = "adi,axi-ad9361-dds-6.00.a";
+<<<<<<< HEAD
 			reg = <0x0 0x99024000 0x1000>;
+=======
+			reg = <0x99024000 0x1000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			clocks = <&adc0_ad9361 13>;
 			clock-names = "sampl_clk";
 			dmas = <&tx_dma 0>;
@@ -104,13 +138,21 @@
 		/* Slave HDL cores without DMA */
 		cf_ad9361_adc_core_1: cf-ad9361-B@99040000 {
 			compatible = "adi,axi-ad9361-6.00.a";
+<<<<<<< HEAD
 			reg = <0x0 0x99040000 0x6000>;
+=======
+			reg = <0x99040000 0x6000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			spibus-connected = <&adc1_ad9361>;
 		};
 
 		cf_ad9361_dac_core_1: cf-ad9361-dds-core-B@99044000 {
 			compatible = "adi,axi-ad9361x2-dds-6.00.a";
+<<<<<<< HEAD
 			reg = <0x0 0x99044000 0x1000>;
+=======
+			reg = <0x99044000 0x1000>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			clocks = <&adc1_ad9361 13>;
 			clock-names = "sampl_clk";
 			mastercore-reg = <0x99024000 0x1000>;
@@ -122,6 +164,14 @@
 	status = "okay";
 };
 
+<<<<<<< HEAD
+=======
+&dwc3_0 {
+	status = "okay";
+	dr_mode = "otg";
+};
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 #define fmc_spi spi0
 
 #include "adi-fmcomms5.dtsi"

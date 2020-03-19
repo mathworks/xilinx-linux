@@ -405,9 +405,8 @@ static int iio_channel_mask_set(struct iio_dev *indio_dev,
 	unsigned long *trialmask;
 	unsigned int ch;
 
-	trialmask = kmalloc_array(BITS_TO_LONGS(indio_dev->masklength),
-				  sizeof(*trialmask),
-				  GFP_KERNEL);
+	trialmask = kcalloc(BITS_TO_LONGS(indio_dev->masklength),
+			    sizeof(*trialmask), GFP_KERNEL);
 	if (trialmask == NULL)
 		return -ENOMEM;
 	if (!indio_dev->masklength) {
@@ -1532,6 +1531,11 @@ int iio_push_to_buffers(struct iio_dev *indio_dev, const void *data)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(iio_push_to_buffers);
+
+int iio_buffer_remove_sample(struct iio_buffer *buffer, u8 *data)
+{
+	return buffer->access->remove_from(buffer, data);
+}
 
 /**
  * iio_buffer_release() - Free a buffer's resources

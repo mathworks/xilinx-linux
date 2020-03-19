@@ -34,9 +34,23 @@
 		interrupts = <0 57 0>;
 		clocks = <&clkc 16>;
 
+<<<<<<< HEAD
 		dma-channel {
 			adi,buswidth = <64>;
 			adi,type = <0>;
+=======
+		adi,channels {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <64>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <0>;
+			};
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		};
 	};
 
@@ -47,10 +61,24 @@
 		interrupts = <0 56 0>;
 		clocks = <&clkc 16>;
 
+<<<<<<< HEAD
 		dma-channel {
 			adi,buswidth = <64>;
 			adi,type = <1>;
 			adi,cyclic;
+=======
+		adi,channels {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <128>;
+				adi,source-bus-type = <0>;
+				adi,destination-bus-width = <128>;
+				adi,destination-bus-type = <1>;
+			};
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		};
 	};
 
@@ -109,7 +137,11 @@
 		clock-output-names = "jesd_adc_lane_clk";
 	};
 
+<<<<<<< HEAD
 	axi_ad9680_adxcvr: axi-ad9680-adxcvr@44a50000 {
+=======
+	axi_ad9680_adxcvr: axi-adxcvr-rx@44a50000 {
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,axi-adxcvr-1.0";
@@ -127,7 +159,11 @@
 		adi,use-cpll-enable;
 	};
 
+<<<<<<< HEAD
 	axi_ad9152_adxcvr: axi-ad9152-adxcvr@44a60000 {
+=======
+	axi_ad9152_adxcvr: axi-adxcvr-tx@44a60000 {
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,axi-adxcvr-1.0";

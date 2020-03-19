@@ -45,7 +45,10 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <128>;
 				adi,destination-bus-type = <1>;
+<<<<<<< HEAD
 				adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};

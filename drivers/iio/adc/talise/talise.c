@@ -3,7 +3,7 @@
  * \brief Contains top level functions to support initialization and ctrol of
  *         the Talise transceiver device.
  *
- * Talise API version: 3.4.0.0
+ * Talise API version: 3.6.0.5
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -388,6 +388,7 @@ uint32_t TALISE_initialize(taliseDevice_t *device, taliseInit_t *init)
     uint16_t syncbPadCfgAddr = 0;
     uint8_t framerSyncPadCfg = 0;
     uint8_t sysrefCfg = 0;
+    uint8_t regData = 0;
 
     static const uint8_t ULB_THRESHOLD = 0x27;
     static const uint8_t ULB2_THRESHOLD = 0x37;
@@ -395,6 +396,8 @@ uint32_t TALISE_initialize(taliseDevice_t *device, taliseInit_t *init)
     static const uint8_t LLB2_THRESHOLD = 0x27;
     static const uint8_t GPINT_MASK_AUXPLL = 1;
     static const uint8_t MIN_SUPPORTED_SIREV = 0xB1;
+    static const uint8_t TPC_MODE_TX1_SPI = 0x01;
+    static const uint8_t TPC_MODE_TX2_SPI = 0x04;
 
     /* Verify pointers to *device and *init are not NULL */
     if (device == NULL)
@@ -767,12 +770,12 @@ uint32_t TALISE_initialize(taliseDevice_t *device, taliseInit_t *init)
     retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
     IF_ERR_RETURN_U32(retVal);
 
-    /* Enable SPI Tx Atten mode */
-    halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_TX_TPC_CONFIG, 0x01, 0x03, 0);
-    retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
-    IF_ERR_RETURN_U32(retVal);
-
-    halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_TX_TPC_CONFIG, 0x01, 0x0C, 2);
+    /* Enable SPI Tx Atten mode and set Atten step size. Only write bottom 6 bits */
+    regData = 0;
+    regData |= TPC_MODE_TX1_SPI;
+    regData |= TPC_MODE_TX2_SPI;
+    regData |= (init->tx.txAttenStepSize << 4);
+    halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_TX_TPC_CONFIG, regData, 0x3F, 0);
     retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
     IF_ERR_RETURN_U32(retVal);
 
@@ -1346,6 +1349,32 @@ uint32_t TALISE_shutdown(taliseDevice_t *device)
     return (uint32_t)retVal;
 }
 
+uint32_t TALISE_getMultiChipSyncStatus(taliseDevice_t *device, uint8_t *mcsStatus)
+{
+	talRecoveryActions_t retVal   = TALACT_NO_ACTION;
+	adiHalErr_t          halError = ADIHAL_OK;
+
+#if TALISE_VERBOSE
+	halError = talWriteToLog(device->devHalInfo, ADIHAL_LOG_MSG, TAL_ERR_OK, "TALISE_getMultiChipSyncStatus()\n");
+
+	retVal   = talApiErrHandler(device, TAL_ERRHDL_HAL_LOG, halError, retVal, TALACT_WARN_RESET_LOG);
+#endif
+
+	/* null pointer check */
+	if (mcsStatus == NULL)
+	{
+		return (uint32_t)talApiErrHandler(device, TAL_ERRHDL_INVALID_PARAM, TAL_ERR_CHECKGETMCS_STATUS_NULL_PARM, retVal, TALACT_ERR_CHECK_PARAM);
+	}
+	else
+	{
+		halError = talSpiReadByte(device->devHalInfo, TALISE_ADDR_MCS_STATUS, mcsStatus);
+		retVal   = talApiErrHandler(device, TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+		IF_ERR_RETURN_U32(retVal);
+	}
+
+	return (uint32_t)retVal;
+}
+
 uint32_t TALISE_enableMultichipSync(taliseDevice_t *device, uint8_t enableMcs, uint8_t *mcsStatus)
 {
     talRecoveryActions_t retVal = TALACT_NO_ACTION;
@@ -1385,15 +1414,7 @@ uint32_t TALISE_enableMultichipSync(taliseDevice_t *device, uint8_t enableMcs, u
     }
     else
     {
-    	/* If enableMcs = 0 (MCS complete), reset JESD204 serializer */
-        /* Toggle Serializer SRESET */
-        halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_JESD_FRAMER_SRST_CFG, 0xFF);
-        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
-        IF_ERR_RETURN_U32(retVal);
-
-        /* Allow framer data to output to serializer (clear reset)*/
-        halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_JESD_FRAMER_SRST_CFG, 0x0F);
-        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        retVal = (talRecoveryActions_t)TALISE_serializerReset(device);
         IF_ERR_RETURN_U32(retVal);
     }
 
@@ -1404,6 +1425,77 @@ uint32_t TALISE_enableMultichipSync(taliseDevice_t *device, uint8_t enableMcs, u
         retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
         IF_ERR_RETURN_U32(retVal);
     }
+
+    return (uint32_t)retVal;
+}
+
+uint32_t TALISE_enableMultichipRfLOPhaseSync(taliseDevice_t *device, uint8_t enableDigTestClk)
+{
+    talRecoveryActions_t retVal = TALACT_NO_ACTION;
+    adiHalErr_t halError = ADIHAL_OK;
+    uint8_t mcsEnable = 0x98; /* [7] Keeps RF LO divider enabled, Enable MCS[4] and reset Device Clock divider[3] */
+
+#if TALISE_VERBOSE
+    halError = talWriteToLog(device->devHalInfo, ADIHAL_LOG_MSG, TAL_ERR_OK, "TALISE_enableMultichipRfLOPhaseSync()\n");
+    retVal = talApiErrHandler(device, TAL_ERRHDL_HAL_LOG, halError, retVal, TALACT_WARN_RESET_LOG);
+#endif
+
+    if (enableDigTestClk > 0)
+    {
+        halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_MCS_CONTROL, mcsEnable);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+
+        /* Prime the K1 input sync (clear bit 4, then set bit 4) */
+        halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_MCS_CONTROL_2, 0, 0x10, 4);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+
+        halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_MCS_CONTROL_2, 1, 0x10, 4);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+
+        /* Enable Digital Test Clock  */
+        halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_DIGITAL_TEST_BYTE, 1, 0x01, 0);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+    }
+    else
+    {
+        /* Disable Digital Test Clock */
+        halError = talSpiWriteField(device->devHalInfo, TALISE_ADDR_DIGITAL_TEST_BYTE, 0, 0x01, 0);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+
+        mcsEnable = 0x93; /* [7] Keeps RF LO divider enabled, Enable MCS[4] ,reset Digital clocks[1] and JESD204 SYSREF[0] */
+        halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_MCS_CONTROL, mcsEnable);
+        retVal = talApiErrHandler(device,TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+        IF_ERR_RETURN_U32(retVal);
+    }
+
+    return (uint32_t)retVal;
+}
+
+uint32_t TALISE_serializerReset(taliseDevice_t *device)
+{
+    talRecoveryActions_t retVal = TALACT_NO_ACTION;
+    adiHalErr_t halError = ADIHAL_OK;
+
+#if TALISE_VERBOSE
+    halError = talWriteToLog(device->devHalInfo, ADIHAL_LOG_MSG, TAL_ERR_OK, "TALISE_SerializerReset()\n");
+    retVal = talApiErrHandler(device, TAL_ERRHDL_HAL_LOG, halError, retVal, TALACT_WARN_RESET_LOG);
+#endif
+
+    /* reset JESD204 serializer */
+    /* Toggle Serializer SRESET */
+    halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_JESD_FRAMER_SRST_CFG, 0xFF);
+    retVal = talApiErrHandler(device, TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+    IF_ERR_RETURN_U32(retVal);
+
+    /* Allow framer data to output to serializer (clear reset)*/
+    halError = talSpiWriteByte(device->devHalInfo, TALISE_ADDR_JESD_FRAMER_SRST_CFG, 0x0F);
+    retVal = talApiErrHandler(device, TAL_ERRHDL_HAL_SPI, halError, retVal, TALACT_ERR_RESET_SPI);
+    IF_ERR_RETURN_U32(retVal);
 
     return (uint32_t)retVal;
 }
@@ -1867,6 +1959,8 @@ static talRecoveryActions_t talVerifyOrxProfile(taliseDevice_t *device, taliseOR
     talRecoveryActions_t retVal = TALACT_NO_ACTION;
     uint8_t ddcMultiply = 1;
     uint8_t ddcDivide = 1;
+    int32_t sumMergeFilter = 0;
+    uint8_t indexMF = 0;
 
     *orxHsDigClk_kHz = 0;
 
@@ -1874,7 +1968,7 @@ static talRecoveryActions_t talVerifyOrxProfile(taliseDevice_t *device, taliseOR
     /* Check for a valid ORx profile */
     /********************************/
     if ((orxProfile->orxOutputRate_kHz < 15000) ||
-        (orxProfile->orxOutputRate_kHz > 492000))
+        (orxProfile->orxOutputRate_kHz > 500000))
     {
         return talApiErrHandler(device, TAL_ERRHDL_INVALID_PARAM,
               TAL_ERR_VERORXPFILE_INV_IQRATE, retVal, TALACT_ERR_CHECK_PARAM);
@@ -1887,7 +1981,20 @@ static talRecoveryActions_t talVerifyOrxProfile(taliseDevice_t *device, taliseOR
               TAL_ERR_VERORXPFILE_INV_RFBW, retVal, TALACT_ERR_CHECK_PARAM);
     }
 
-    device->devStateInfo.orxAdcStitchingEnabled = (orxProfile->rfBandwidth_Hz > 200000000) ? 1 : 0;
+    if(orxProfile->rfBandwidth_Hz > 200000000)
+    {
+        // Disable stitching for bandwidth above 200 MHz,if all MergeFilter values are zero
+        for(indexMF = 0; indexMF < 12; ++indexMF)
+        {
+            sumMergeFilter += orxProfile->orxMergeFilter[indexMF];
+        }
+
+        device->devStateInfo.orxAdcStitchingEnabled = (sumMergeFilter == 0) ? 0 : 1;
+    }
+    else
+    {
+        device->devStateInfo.orxAdcStitchingEnabled = 0;
+    }
 
     if ((orxProfile->rhb1Decimation != 1) &&
         (orxProfile->rhb1Decimation != 2))
@@ -1970,7 +2077,7 @@ static talRecoveryActions_t talVerifyTxProfile(taliseDevice_t *device, taliseTxP
     /********************************/
 
     if ((txProfile->txInputRate_kHz < 15000) ||
-        (txProfile->txInputRate_kHz > 492000))
+        (txProfile->txInputRate_kHz > 500000))
     {
         return talApiErrHandler(device, TAL_ERRHDL_INVALID_PARAM,
               TAL_ERR_VERTXPFILE_INV_IQRATE, retVal, TALACT_ERR_CHECK_PARAM);
@@ -2839,8 +2946,15 @@ uint32_t TALISE_setTxPfirSyncClk(taliseDevice_t *device, taliseTxProfile_t *txPr
                     TALISE_ERR_TXFIR_TAPSEXCEEDED, retVal, TALACT_ERR_CHECK_PARAM);
         }
 
-        /* SYNC CLOCK is the PFIR output rate / 2 */
-        syncClk_kHz = txProfile->txInputRate_kHz * txProfile->txFirInterpolation / 2;
+        if(txProfile->txFirInterpolation < numRows)
+        {
+            /* SYNC CLOCK is the PFIR output rate / 2 */
+            syncClk_kHz = txProfile->txInputRate_kHz * txProfile->txFirInterpolation / 2;
+        }
+        else
+        {
+            syncClk_kHz = txProfile->txInputRate_kHz;
+        }
 
         hsDigClkDiv4or5_kHz = device->devStateInfo.clocks.hsDigClkDiv4or5_Hz / 1000;
 

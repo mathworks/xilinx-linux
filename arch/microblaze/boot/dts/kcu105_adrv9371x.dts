@@ -59,10 +59,13 @@
 		reg = <0x7c440000  0x10000>;
 		#dma-cells = <1>;
 		clocks = <&clk_bus_0>;
+<<<<<<< HEAD
 		dma-channel {
 			adi,buswidth = <64>;
 			adi,type = <0>;
 		};
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 
 		adi,channels {
 			#size-cells = <0>;
@@ -95,7 +98,10 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <128>;
 				adi,destination-bus-type = <1>;
+<<<<<<< HEAD
 				adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};

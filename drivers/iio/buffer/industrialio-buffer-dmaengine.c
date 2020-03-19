@@ -14,6 +14,7 @@
 #include <linux/module.h>
 
 #include <linux/iio/iio.h>
+#include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/buffer_impl.h>
 #include <linux/iio/buffer-dma.h>
@@ -45,7 +46,8 @@ static struct dmaengine_buffer *iio_buffer_to_dmaengine_buffer(
 	return container_of(buffer, struct dmaengine_buffer, queue.buffer);
 }
 
-static void iio_dmaengine_buffer_block_done(void *data)
+static void iio_dmaengine_buffer_block_done(void *data,
+		const struct dmaengine_result *result)
 {
 	struct iio_dma_buffer_block *block = data;
 	unsigned long flags;
@@ -53,6 +55,7 @@ static void iio_dmaengine_buffer_block_done(void *data)
 	spin_lock_irqsave(&block->queue->list_lock, flags);
 	list_del(&block->head);
 	spin_unlock_irqrestore(&block->queue->list_lock, flags);
+	block->block.bytes_used -= result->residue;
 	iio_dma_buffer_block_done(block);
 }
 
@@ -67,7 +70,7 @@ int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 	if (direction == DMA_DEV_TO_MEM)
 		block->block.bytes_used = block->block.size;
-	block->block.bytes_used = min(block->block.bytes_used,
+	block->block.bytes_used = min_t(size_t, block->block.bytes_used,
 			dmaengine_buffer->max_size);
 	block->block.bytes_used = rounddown(block->block.bytes_used,
 			dmaengine_buffer->align);
@@ -89,7 +92,7 @@ int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 		if (!desc)
 			return -ENOMEM;
 
-		desc->callback = iio_dmaengine_buffer_block_done;
+		desc->callback_result = iio_dmaengine_buffer_block_done;
 		desc->callback_param = block;
 	}
 
@@ -155,6 +158,24 @@ static const struct iio_dma_buffer_ops iio_dmaengine_default_ops = {
 };
 #endif
 
+static ssize_t iio_dmaengine_buffer_get_length_align(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
+	struct dmaengine_buffer *dmaengine_buffer =
+		iio_buffer_to_dmaengine_buffer(indio_dev->buffer);
+
+	return sprintf(buf, "%zu\n", dmaengine_buffer->align);
+}
+
+static IIO_DEVICE_ATTR(length_align_bytes, 0444,
+		       iio_dmaengine_buffer_get_length_align, NULL, 0);
+
+static const struct attribute *iio_dmaengine_buffer_attrs[] = {
+	&iio_dev_attr_length_align_bytes.dev_attr.attr,
+	NULL,
+};
+
 /**
  * iio_dmaengine_buffer_alloc() - Allocate new buffer which uses DMAengine
  * @dev: Parent device for the buffer
@@ -215,6 +236,8 @@ struct iio_buffer *iio_dmaengine_buffer_alloc(struct device *dev,
 
 	iio_dma_buffer_init(&dmaengine_buffer->queue, chan->device->dev, ops,
 		driver_data);
+	iio_buffer_set_attrs(&dmaengine_buffer->queue.buffer,
+		iio_dmaengine_buffer_attrs);
 
 	dmaengine_buffer->queue.buffer.access = &iio_dmaengine_buffer_ops;
 

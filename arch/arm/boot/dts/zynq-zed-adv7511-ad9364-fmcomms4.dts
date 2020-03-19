@@ -33,7 +33,10 @@
 				adi,source-bus-type = <2>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <0>;
+<<<<<<< HEAD
 				adi,length-width = <24>;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};
@@ -55,8 +58,11 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <2>;
+<<<<<<< HEAD
 				adi,length-width = <24>;
 				adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 			};
 		};
 	};
@@ -75,8 +81,11 @@
 		reg = <0x79024000 0x1000>;
 		clocks = <&adc0_ad9364 13>;
 		clock-names = "sampl_clk";
+<<<<<<< HEAD
 		adi,axi-dds-rate = <1>; /* use 1 for 1RX1TX mode */
 		adi,axi-dds-1-rf-channel;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		dmas = <&tx_dma 0>;
 		dma-names = "tx";
 	};

@@ -110,15 +110,20 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 	unsigned int sysref_status;
 	unsigned int link_disabled;
 	unsigned int link_status;
+	unsigned int link_config0;
 	unsigned int clock_ratio;
 	unsigned int clock_rate;
 	unsigned int link_rate;
+	unsigned int sysref_config;
+	unsigned int lmfc_rate;
 	int ret;
 
 	link_disabled = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_STATE);
 	link_status = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_STATUS);
 	sysref_status = readl_relaxed(jesd->base + JESD204_TX_REG_SYSREF_STATUS);
 	clock_ratio = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_CLK_RATIO);
+	sysref_config = readl_relaxed(jesd->base + JESD204_TX_REG_SYSREF_CONF);
+	link_config0 = readl_relaxed(jesd->base + JESD204_TX_REG_CONF0);
 
 	ret = scnprintf(buf, PAGE_SIZE, "Link is %s\n",
 		(link_disabled & 0x1) ? "disabled" : "enabled");
@@ -143,11 +148,14 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 	if (!link_disabled) {
 		clock_rate = clk_get_rate(jesd->lane_clk);
 		link_rate = DIV_ROUND_CLOSEST(clock_rate, 40);
+		lmfc_rate = clock_rate / (10 * ((link_config0 & 0xFF) + 1));
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Lane rate: %d.%.3d MHz\n"
-			"Lane rate / 40: %d.%.3d MHz\n",
+			"Lane rate / 40: %d.%.3d MHz\n"
+			"LMFC rate: %d.%.3d MHz\n",
 			clock_rate / 1000, clock_rate % 1000,
-			link_rate / 1000, link_rate % 1000);
+			link_rate / 1000, link_rate % 1000,
+			lmfc_rate / 1000, lmfc_rate % 1000);
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"SYNC~: %s\n"
@@ -156,8 +164,10 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 			"SYSREF alignment error: %s\n",
 			(link_status & 0x10) ? "deasserted" : "asserted",
 			axi_jesd204_tx_link_status_label[link_status & 0x3],
-			(sysref_status & 1) ? "Yes" : "No",
-			(sysref_status & 2) ? "Yes" : "No");
+			(sysref_config & JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE) ?
+				"disabled" : (sysref_status & 1) ? "Yes" : "No",
+			(sysref_config & JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE) ?
+				"disabled" : (sysref_status & 2) ? "Yes" : "No");
 	} else {
 		ret += scnprintf(buf + ret, PAGE_SIZE, "External reset is %s\n",
 			(link_disabled & 0x2) ? "asserted" : "deasserted");
@@ -397,6 +407,7 @@ static int axi_jesd204_tx_lane_clk_enable(struct clk_hw *clk)
 	struct axi_jesd204_tx *jesd =
 		container_of(clk, struct axi_jesd204_tx, dummy_clk);
 
+	writel_relaxed(0x3, jesd->base + JESD204_TX_REG_SYSREF_STATUS);
 	writel_relaxed(0x0, jesd->base + JESD204_TX_REG_LINK_DISABLE);
 
 	return 0;

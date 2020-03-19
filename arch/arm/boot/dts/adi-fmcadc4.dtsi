@@ -2,16 +2,28 @@
 
 &fmc_spi {
 	clk0_ad9528: ad9528@0 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
 		compatible = "adi,ad9528";
+=======
+		compatible = "adi,ad9528";
+		reg = <0>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 
 		spi-cpol;
 		spi-cpha;
 		spi-max-frequency = <1000000>;
 		adi,spi-3wire-enable;
+<<<<<<< HEAD
 		reg = <0>;
+=======
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		#clock-cells = <1>;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 
 		clock-output-names = "ad9528_out0", "ad9528_out1", "ad9528_out2", "ad9528_out3", "ad9528_out4", "ad9528_out5", "ad9528_out6", "ad9528_out7", "ad9528_out8", "ad9528_out9", "ad9528_out10", "ad9528_out11", "ad9528_out12", "ad9528_out13";
 
@@ -97,6 +109,7 @@
 	};
 
 	adc0_ad9680: ad9680@1 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ad9680";
@@ -104,12 +117,22 @@
 		spi-max-frequency = <1000000>;
 		spi-cpol;
 		spi-cpha;
+=======
+		compatible = "adi,ad9680";
+		reg = <1>;
+
+		spi-max-frequency = <1000000>;
+		spi-cpol;
+		spi-cpha;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		adi,master-slave-2x-quirk;
 		clocks = <&axi_ad9680_jesd>, <&clk0_ad9528 8>, <&clk0_ad9528 9>;
 		clock-names = "jesd_adc_clk", "adc_clk", "adc_sysref";
 	};
 
 	adc1_ad9680: ad9680@2 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ad9680";
@@ -117,39 +140,72 @@
 		spi-max-frequency = <1000000>;
 		spi-cpol;
 		spi-cpha;
+=======
+		compatible = "adi,ad9680";
+		reg = <2>;
+
+		spi-max-frequency = <1000000>;
+		spi-cpol;
+		spi-cpha;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		clocks = <&axi_ad9680_jesd>, <&clk0_ad9528 3>, <&clk0_ad9528 2>;
 		clock-names = "jesd_adc_clk", "adc_clk", "adc_sysref";
 	};
 
 	vga0_ada4961: ada4961-A@3 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ada4961";
 		reg = <3>;
+=======
+		compatible = "adi,ada4961";
+		reg = <3>;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		spi-max-frequency = <10000000>;
 	};
 
 	vga1_ada4961: ada4961-B@4 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ada4961";
 		reg = <4>;
+=======
+		compatible = "adi,ada4961";
+		reg = <4>;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		spi-max-frequency = <10000000>;
 	};
 
 	vga2_ada4961: ada4961-C@5 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ada4961";
 		reg = <5>;
+=======
+		compatible = "adi,ada4961";
+		reg = <5>;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		spi-max-frequency = <10000000>;
 	};
 
 	vga3_ada4961: ada4961-D@6 {
+<<<<<<< HEAD
 		#address-cells = <1>;
 		#size-cells = <0>;
 		compatible = "adi,ada4961";
 		reg = <6>;
+=======
+		compatible = "adi,ada4961";
+		reg = <6>;
+
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 		spi-max-frequency = <10000000>;
 	};
 };

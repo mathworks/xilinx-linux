@@ -132,7 +132,10 @@
 					adi,source-bus-type = <2>;
 					adi,destination-bus-width = <64>;
 					adi,destination-bus-type = <0>;
+<<<<<<< HEAD
 					adi,length-width = <24>;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 				};
 			};
 		};
@@ -154,8 +157,11 @@
 					adi,source-bus-type = <0>;
 					adi,destination-bus-width = <64>;
 					adi,destination-bus-type = <2>;
+<<<<<<< HEAD
 					adi,length-width = <24>;
 					adi,cyclic;
+=======
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 				};
 			};
 		};
@@ -267,6 +273,10 @@
 
 		//adi,update-tx-gain-in-alert-enable;
 		adi,tx-attenuation-mdB = <10000>;
+<<<<<<< HEAD
+=======
+		adi,tx-lo-powerdown-managed-enable;
+>>>>>>> 94a99341783941d120a2ab5617b204bab4cb8729
 
 		adi,rf-rx-bandwidth-hz = <18000000>;
 		adi,rf-tx-bandwidth-hz = <18000000>;
