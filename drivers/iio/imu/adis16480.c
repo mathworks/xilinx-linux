@@ -616,6 +616,7 @@ static int adis16480_set_filter_freq(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, unsigned int freq)
 {
 	struct adis16480 *st = iio_priv(indio_dev);
+	struct mutex *slock = &st->adis.state_lock;
 	unsigned int enable_mask, offset, reg;
 	unsigned int diff, best_diff;
 	unsigned int i, best_freq;
@@ -626,9 +627,11 @@ static int adis16480_set_filter_freq(struct iio_dev *indio_dev,
 	offset = ad16480_filter_data[chan->scan_index][1];
 	enable_mask = BIT(offset + 2);
 
-	ret = adis_read_reg_16(&st->adis, reg, &val);
+	mutex_lock(slock);
+
+	ret = __adis_read_reg_16(&st->adis, reg, &val);
 	if (ret < 0)
-		return ret;
+		goto out_unlock;
 
 	if (freq == 0) {
 		val &= ~enable_mask;
@@ -650,7 +653,11 @@ static int adis16480_set_filter_freq(struct iio_dev *indio_dev,
 		val |= enable_mask;
 	}
 
-	return adis_write_reg_16(&st->adis, reg, val);
+	ret = __adis_write_reg_16(&st->adis, reg, val);
+out_unlock:
+	mutex_unlock(slock);
+
+	return ret;
 }
 
 static int adis16480_read_raw(struct iio_dev *indio_dev,
@@ -1068,7 +1075,7 @@ static irqreturn_t adis16480_trigger_handler(int irq, void *p)
 	if (!adis->buffer)
 		return -ENOMEM;
 
-	mutex_lock(&adis->txrx_lock);
+	mutex_lock(&adis->state_lock);
 	if (adis->current_page != 0) {
 		adis->tx[0] = ADIS_WRITE_REG(ADIS_REG_PAGE_ID);
 		adis->tx[1] = 0;
@@ -1080,7 +1087,7 @@ static irqreturn_t adis16480_trigger_handler(int irq, void *p)
 		dev_err(&adis->spi->dev, "Failed to read data: %d\n", ret);
 
 	adis->current_page = 0;
-	mutex_unlock(&adis->txrx_lock);
+	mutex_unlock(&adis->state_lock);
 
 	if (!(adis->burst && adis->burst->en)) {
 		buffer = adis->buffer;
@@ -1178,14 +1185,14 @@ static int adis16480_enable_irq(struct adis *adis, bool enable)
 	uint16_t val;
 	int ret;
 
-	ret = adis_read_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, &val);
+	ret = __adis_read_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, &val);
 	if (ret < 0)
 		return ret;
 
 	val &= ~ADIS16480_DRDY_EN_MSK;
 	val |= ADIS16480_DRDY_EN(enable);
 
-	return adis_write_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, val);
+	return __adis_write_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, val);
 }
 
 static int adis16480_initial_setup(struct iio_dev *indio_dev)

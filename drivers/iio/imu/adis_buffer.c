@@ -126,7 +126,7 @@ static irqreturn_t adis_trigger_handler(int irq, void *p)
 		return -ENOMEM;
 
 	if (adis->data->has_paging) {
-		mutex_lock(&adis->txrx_lock);
+		mutex_lock(&adis->state_lock);
 		if (adis->current_page != 0) {
 			adis->tx[0] = ADIS_WRITE_REG(ADIS_REG_PAGE_ID);
 			adis->tx[1] = 0;
@@ -141,7 +141,7 @@ static irqreturn_t adis_trigger_handler(int irq, void *p)
 
 	if (adis->data->has_paging) {
 		adis->current_page = 0;
-		mutex_unlock(&adis->txrx_lock);
+		mutex_unlock(&adis->state_lock);
 	}
 
 	iio_push_to_buffers_with_timestamp(indio_dev, adis->buffer,
@@ -193,7 +193,40 @@ error_buffer_cleanup:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(adis_setup_buffer_and_trigger);
+/**
+ * devm_adis_setup_buffer_and_trigger() - Sets up buffer and trigger for the managed adis device
+ * @adis: The adis device
+ * @indio_dev: The IIO device
+ * @trigger_handler: Optional trigger handler, may be NULL.
+ *
+ * Returns 0 on success, a negative error code otherwise.
+ *
+ * This function perfoms exactly the same as adis_setup_buffer_and_trigger()
+ */
+int
+devm_adis_setup_buffer_and_trigger(struct adis *adis, struct iio_dev *indio_dev,
+				   irqreturn_t (*trigger_handler)(int, void *))
+{
+	int ret;
 
+	if (!trigger_handler)
+		trigger_handler = adis_trigger_handler;
+
+	ret = devm_iio_triggered_buffer_setup(&adis->spi->dev, indio_dev,
+					      &iio_pollfunc_store_time,
+					      trigger_handler, NULL);
+	if (ret)
+		return ret;
+
+	if (adis->spi->irq) {
+		ret = devm_adis_probe_trigger(adis, indio_dev);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_adis_setup_buffer_and_trigger);
 /**
  * adis_cleanup_buffer_and_trigger() - Free buffer and trigger resources
  * @adis: The adis device.
