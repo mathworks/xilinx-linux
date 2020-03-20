@@ -34,6 +34,7 @@ enum chip_id {
 	CHIPID_AD9136 = AD9144_CHIPID(0x91, 0x44, 0x6),
 	CHIPID_AD9144 = AD9144_CHIPID(0x91, 0x44, 0x0),
 	CHIPID_AD9152 = AD9144_CHIPID(0x91, 0x52, 0x0),
+	CHIPID_AD9154 = AD9144_CHIPID(0x91, 0x54, 0x9),
 };
 
 enum ad9144_sysref_mode {
@@ -76,6 +77,8 @@ struct ad9144_platform_data {
 	u8 interpolation;
 	unsigned int fcenter_shift;
 	bool spi4wire;
+	u8 jesd_link_mode;
+	u8 jesd_subclass;
 };
 
 struct ad9144_state {
@@ -91,6 +94,25 @@ struct ad9144_state {
 
 	unsigned int pll_frequency;
 	bool pll_enable;
+};
+
+static const struct {
+	u8 m, l, s, f, hd, n, np;
+} ad9144_jesd_modes[] = {
+	/* 00 */ {4, 8, 1, 1, 1, 16, 16},
+	/* 01 */ {4, 8, 2, 2, 0, 16, 16},
+	/* 02 */ {4, 4, 1, 2, 0, 16, 16},
+	/* 03 */ {4, 2, 1, 4, 0, 16, 16},
+	/* 04 */ {2, 4, 1, 1, 1, 16, 16},
+	/* 05 */ {2, 4, 2, 2, 0, 16, 16},
+	/* 06 */ {2, 2, 1, 2, 0, 16, 16},
+	/* 07 */ {2, 1, 1, 4, 0, 16, 16},
+	/* 08 */ {1, 4, 2, 1, 1, 16, 16},
+	/* 09 */ {1, 2, 1, 1, 1, 16, 16},
+	/* 10 */ {1, 1, 1, 2, 0, 16, 16},
+	/* 11 */ {2, 8, 2, 1, 1, 16, 16},
+	/* 12 */ {2, 4, 1, 1, 1, 16, 16},
+	/* 13 */ {2, 2, 1, 2, 0, 16, 16}
 };
 
 static const char * const clk_names[] = {
@@ -459,6 +481,7 @@ static int ad9144_dac_calibrate(struct ad9144_state *st)
 
 	switch (st->id) {
 	case CHIPID_AD9144:
+	case CHIPID_AD9154:
 		dac_mask = GENMASK(st->num_converters - 1, 0);
 		break;
 	default: /* AD9135/AD9136 */
@@ -487,6 +510,7 @@ static int ad9144_dac_calibrate(struct ad9144_state *st)
 	for (i = 0; i < st->num_converters; i++) {
 		switch (st->id) {
 		case CHIPID_AD9144:
+		case CHIPID_AD9154:
 			dac_mask = BIT(i);
 			break;
 		default:
@@ -577,7 +601,8 @@ static void ad9144_setup_samplerate(struct ad9144_state *st)
 	regmap_write(map, 0x280, 0x00);	// disable serdes pll
 
 	regmap_write(map, 0x2a7, 0x01);	// input termination calibration
-	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144)
+	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144 ||
+	    AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9154)
 		regmap_write(map, 0x2ae, 0x01);	// input termination calibration
 
 	regmap_write(map, 0x230, serdes_cdr);
@@ -654,7 +679,10 @@ static int ad9144_setup(struct ad9144_state *st,
 		pd_clk = 0x04;
 		break;
 	case CHIPID_AD9144:
+	case CHIPID_AD9154:
 		pd_clk = GENMASK(7 - DIV_ROUND_UP(st->num_converters, 2), 6);
+		if (st->id == CHIPID_AD9154)
+			pd_clk |= 2;
 		pd_dac = GENMASK(6 - st->num_converters, 3);
 		break;
 	default: /* AD9135/AD9136 */
@@ -677,19 +705,26 @@ static int ad9144_setup(struct ad9144_state *st,
 
 	regmap_write(map, 0x314, 0x01);	// pclk == qbd master clock
 
-	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144) {
+	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144 ||
+	    AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9154) {
 		regmap_multi_reg_write(map, ad9144_required_device_config,
 			ARRAY_SIZE(ad9144_required_device_config));
 
-		/*
-		 * SERDES optimization according to table 39 AD9144 Rev. B
-		 * datasheet.
-		 */
-		regmap_write(map, 0x296, 0x03);
-		regmap_write(map, 0x28a, 0x7b);
+		if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144) {
+			/*
+			 * SERDES optimization according to table 39 AD9144 Rev. B
+			 * datasheet.
+			 */
+			regmap_write(map, 0x296, 0x03);
+			regmap_write(map, 0x28a, 0x7b);
 
-		regmap_write(map, 0x2b1, 0xb7);	// jesd termination
-		regmap_write(map, 0x2b2, 0x87);	// jesd termination
+			regmap_write(map, 0x2b1, 0xb7);	// jesd termination
+			regmap_write(map, 0x2b2, 0x87);	// jesd termination
+		} else {
+			regmap_write(map, 0x28a, 0x7b);
+			regmap_write(map, 0x291, 0x4c);
+			regmap_write(map, 0x296, 0x1b);
+		}
 	}
 
 	regmap_multi_reg_write(map, ad9144_optimal_serdes_settings,
@@ -705,13 +740,15 @@ static int ad9144_setup(struct ad9144_state *st,
 		val = 0x01;
 		break;
 	case 4:
-		if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144)
+		if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144 ||
+		    AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9154)
 			val = 0x03;
 		else
 			val = 0x02;
 		break;
 	case 8:
-		if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144)
+		if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144 ||
+		    AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9154)
 			val = 0x04;
 		else
 			val = 0x03;
@@ -741,7 +778,8 @@ static int ad9144_setup(struct ad9144_state *st,
 	/* LMFC settings for link 0 */
 	regmap_write(map, 0x304, 0x00);	// lmfc delay
 	regmap_write(map, 0x306, 0x0a);	// receive buffer delay
-	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144) {
+	if (AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9144 ||
+	    AD9144_ID_GET_PRODUCT_ID(st->id) == 0x9154) {
 		/* LMFC settings for link 1 */
 		regmap_write(map, 0x305, 0x00);	// lmfc delay
 		regmap_write(map, 0x307, 0x0a);	// receive buffer delay
@@ -819,6 +857,7 @@ static int ad9144_set_sample_rate(struct cf_axi_converter *conv,
 		}
 		break;
 	case CHIPID_AD9144:
+	case CHIPID_AD9154:
 		max_lane_rate_khz = 12400000;
 		switch (st->interpolation) {
 		case 1:
@@ -1016,6 +1055,13 @@ static struct ad9144_platform_data *ad9144_parse_dt(struct device *dev)
 	of_property_read_u32(np, "adi,frequency-center-shift", &tmp);
 	pdata->fcenter_shift = tmp;
 
+	tmp = 4;
+	of_property_read_u32(np, "adi,jesd-link-mode", &tmp);
+	pdata->jesd_link_mode = (tmp > 13 ? 4 : tmp);
+
+	tmp = 1;
+	of_property_read_u32(np, "adi,jesd-subclass", &tmp);
+	pdata->jesd_subclass = (tmp > 1 ? 1 : tmp);
 	/*
 	 * DO NOT copy this. It is as wrong as it gets, we have to do it to
 	 * preserve backwards compatibility with earlier versions of the driver
@@ -1177,6 +1223,9 @@ static int ad9144_probe(struct spi_device *spi)
 	case CHIPID_AD9144:
 		conv->id = ID_AD9144;
 		break;
+	case CHIPID_AD9154:
+		conv->id = ID_AD9154;
+		break;
 	default:
 		conv->id = ID_AD9152;
 		break;
@@ -1189,9 +1238,9 @@ static int ad9144_probe(struct spi_device *spi)
 		goto out;
 	}
 
-	st->num_lanes = 4;
-	st->num_converters = 2;
-	st->octets_per_frame = 1;
+	st->num_lanes = ad9144_jesd_modes[pdata->jesd_link_mode].l;
+	st->num_converters = ad9144_jesd_modes[pdata->jesd_link_mode].m;
+	st->octets_per_frame = ad9144_jesd_modes[pdata->jesd_link_mode].f;
 
 	memset(&link_config, 0x00, sizeof(link_config));
 
@@ -1201,11 +1250,11 @@ static int ad9144_probe(struct spi_device *spi)
 	link_config.num_converters = st->num_converters;
 	link_config.octets_per_frame = st->octets_per_frame;
 	link_config.frames_per_multiframe = 32;
-	link_config.samples_per_frame = 1;
+	link_config.samples_per_frame = ad9144_jesd_modes[pdata->jesd_link_mode].s;
 
-	link_config.high_density = true;
+	link_config.high_density = ad9144_jesd_modes[pdata->jesd_link_mode].hd;
 	link_config.scrambling = true;
-	link_config.subclass = 1;
+	link_config.subclass = pdata->jesd_subclass;
 	link_config.sysref.mode = AD9144_SYSREF_ONESHOT;
 
 	for (i = 0; i < 8; i++)
@@ -1248,6 +1297,7 @@ static const struct spi_device_id ad9144_id[] = {
 	{ "ad9136", CHIPID_AD9136 },
 	{ "ad9144", CHIPID_AD9144 },
 	{ "ad9152", CHIPID_AD9152 },
+	{ "ad9154", CHIPID_AD9154 },
 	{}
 };
 

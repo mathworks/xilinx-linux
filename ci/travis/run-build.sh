@@ -1,17 +1,67 @@
 #!/bin/bash
 set -e
 
+# cd to docker build dir if it exists
+if [ -d /docker_build_dir ] ; then
+	cd /docker_build_dir
+fi
+
 . ./ci/travis/lib.sh
 
-KCFLAGS="-Werror -Wno-error=frame-larger-than="
+if [ -f "${FULL_BUILD_DIR}/env" ] ; then
+	echo_blue "Loading environment variables"
+	cat "${FULL_BUILD_DIR}/env"
+	. "${FULL_BUILD_DIR}/env"
+fi
+
+KCFLAGS="-Werror"
+# FIXME: remove the line below once Talise & Mykonos APIs
+#	 dont't use 1024 bytes on stack
+KCFLAGS="$KCFLAGS -Wno-error=frame-larger-than="
 export KCFLAGS
 
+# FIXME: remove this function once kernel gets upgrade and
+#	 GCC doesn't report these warnings anymore
+adjust_kcflags_against_gcc() {
+	GCC="${CROSS_COMPILE}gcc"
+	if [ "$($GCC -dumpversion | cut -d. -f1)" -ge "8" ]; then
+		KCFLAGS="$KCFLAGS -Wno-error=stringop-truncation"
+		KCFLAGS="$KCFLAGS -Wno-error=packed-not-aligned"
+		KCFLAGS="$KCFLAGS -Wno-error=stringop-overflow= -Wno-error=sizeof-pointer-memaccess"
+		KCFLAGS="$KCFLAGS -Wno-error=missing-attributes"
+	fi
+
+	if [ "$($GCC -dumpversion | cut -d. -f1)" -ge "9" ]; then
+		KCFLAGS="$KCFLAGS -Wno-error=address-of-packed-member -Wno-error=attribute-alias="
+		KCFLAGS="$KCFLAGS -Wno-error=stringop-truncation"
+	fi
+	export KCFLAGS
+}
+
+APT_LIST="build-essential bc u-boot-tools flex bison libssl-dev"
+
+if [ "$ARCH" == "arm64" ] ; then
+	APT_LIST="$APT_LIST gcc-aarch64-linux-gnu"
+else
+	APT_LIST="$APT_LIST gcc-arm-linux-gnueabihf"
+fi
+
+apt_update_install() {
+	sudo -s <<-EOF
+		apt-get -qq update
+		apt-get -y install $@
+	EOF
+	adjust_kcflags_against_gcc
+}
+
 build_default() {
+	apt_update_install $APT_LIST
 	make ${DEFCONFIG}
 	make -j`getconf _NPROCESSORS_ONLN` $IMAGE UIMAGE_LOADADDR=0x8000
 }
 
 build_compile_test() {
+	apt_update_install $APT_LIST
 	export COMPILE_TEST=y
 	make ${DEFCONFIG}
 	make -j`getconf _NPROCESSORS_ONLN`
@@ -30,6 +80,7 @@ build_checkpatch() {
 }
 
 build_dtb_build_test() {
+	apt_update_install $APT_LIST
 	make ${DEFCONFIG:-defconfig}
 	for file in $DTS_FILES; do
 		dtb_file=$(echo $file | sed 's/dts\//=/g' | cut -d'=' -f2 | sed 's\dts\dtb\g')

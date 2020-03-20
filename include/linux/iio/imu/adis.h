@@ -24,6 +24,17 @@ struct adis;
 struct adis_burst;
 
 /**
+ * struct adis_timeouts - ADIS chip variant timeouts
+ * @reset_ms - Wait time after rst pin goes inactive
+ * @sw_reset_ms - Wait time after sw reset command
+ * @self_test_ms - Wait time after self test command
+ */
+struct adis_timeout {
+	u16 reset_ms;
+	u16 sw_reset_ms;
+	u16 self_test_ms;
+};
+/**
  * struct adis_data - ADIS chip variant specific data
  * @read_delay: SPI delay for read operations in us
  * @write_delay: SPI delay for write operations in us
@@ -31,8 +42,11 @@ struct adis_burst;
  * @glob_cmd_reg: Register address of the GLOB_CMD register
  * @msc_ctrl_reg: Register address of the MSC_CTRL register
  * @diag_stat_reg: Register address of the DIAG_STAT register
+ * @prod_id_reg: Register address of the PROD_ID register
+ * @self_test_reg: Register address to request self test command
  * @status_error_msgs: Array of error messgaes
  * @status_error_mask:
+ * @timeouts: Chip specific delays
  */
 struct adis_data {
 	unsigned int read_delay;
@@ -42,10 +56,12 @@ struct adis_data {
 	unsigned int glob_cmd_reg;
 	unsigned int msc_ctrl_reg;
 	unsigned int diag_stat_reg;
+	unsigned int prod_id_reg;
 
 	unsigned int self_test_mask;
+	unsigned int self_test_reg;
 	bool self_test_no_autoclear;
-	unsigned int startup_delay;
+	const struct adis_timeout *timeouts;
 
 	const char * const *status_error_msgs;
 	unsigned int status_error_mask;
@@ -283,6 +299,7 @@ static inline int adis_read_reg_32(struct adis *adis, unsigned int reg,
 
 int adis_enable_irq(struct adis *adis, bool enable);
 int __adis_check_status(struct adis *adis);
+int __adis_initial_startup(struct adis *adis);
 
 static inline int adis_check_status(struct adis *adis)
 {
@@ -295,7 +312,78 @@ static inline int adis_check_status(struct adis *adis)
 	return ret;
 }
 
-int adis_initial_startup(struct adis *adis);
+/* locked version of __adis_initial_startup() */
+static inline int adis_initial_startup(struct adis *adis)
+{
+	int ret;
+
+	mutex_lock(&adis->state_lock);
+	ret = __adis_initial_startup(adis);
+	mutex_unlock(&adis->state_lock);
+
+	return ret;
+}
+
+int __adis_update_bits_base(struct adis *adis, unsigned int reg, const u32 mask,
+			    u32 val, u8 size);
+/**
+ * adis_update_bits_base() - ADIS Update bits function - Locked version
+ * @adis: The adis device
+ * @reg: The address of the lower of the two registers
+ * @mask: Bitmask to change
+ * @val: Value to be written
+ * @size: Size of the register to update
+ *
+ * Updates the desired bits of @reg in accordance with @mask and @val.
+ */
+static inline int adis_update_bits_base(struct adis *adis, unsigned int reg,
+					const u32 mask,  u32 val, u8 size)
+{
+	int ret;
+
+	mutex_lock(&adis->state_lock);
+	ret = __adis_update_bits_base(adis, reg, mask, val, size);
+	mutex_unlock(&adis->state_lock);
+
+	return ret;
+}
+/**
+ * adis_update_bits() - Wrapper macro for adis_update_bits_base - Locked version
+ * @adis: The adis device
+ * @reg: The address of the lower of the two registers
+ * @mask: Bitmask to change
+ * @val: Value to be written
+ *
+ * This macro evaluates the sizeof of @val at compile time and calls
+ * adis_update_bits_base() accordingly. Be aware that using MACROS/DEFINES for
+ * @val can lead to undesired behavior if the register to update is 16bit. Also
+ * note that a 64bit value will be treated as an integer. In the same way,
+ * a char is seen as a short.
+ */
+#define adis_update_bits(adis, reg, mask, val) ({			\
+	__builtin_choose_expr(sizeof(val) == 8 || sizeof(val) == 4,	\
+		adis_update_bits_base(adis, reg, mask, val, 4),		\
+		adis_update_bits_base(adis, reg, mask, val, 2));	\
+})
+
+/**
+ * adis_update_bits() - Wrapper macro for adis_update_bits_base
+ * @adis: The adis device
+ * @reg: The address of the lower of the two registers
+ * @mask: Bitmask to change
+ * @val: Value to be written
+ *
+ * This macro evaluates the sizeof of @val at compile time and calls
+ * adis_update_bits_base() accordingly. Be aware that using MACROS/DEFINES for
+ * @val can lead to undesired behavior if the register to update is 16bit. Also
+ * note that a 64bit value will be treated as an integer. In the same way,
+ * a char is seen as a short.
+ */
+#define __adis_update_bits(adis, reg, mask, val) ({			\
+	__builtin_choose_expr(sizeof(val) == 8 || sizeof(val) == 4,	\
+		__adis_update_bits_base(adis, reg, mask, val, 4),	\
+		__adis_update_bits_base(adis, reg, mask, val, 2));	\
+})
 
 int adis_single_conversion(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, unsigned int error_mask,

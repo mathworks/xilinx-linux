@@ -151,6 +151,7 @@ struct adis16480_chip_info {
 	const unsigned int *filter_freqs;
 	bool has_pps_clk_mode;
 	struct adis_burst *burst;
+	const struct adis_timeout *timeouts;
 };
 
 enum adis16480_int_pin {
@@ -693,9 +694,13 @@ static int adis16480_read_raw(struct iio_dev *indio_dev,
 			*val2 = (st->chip_info->temp_scale % 1000) * 1000;
 			return IIO_VAL_INT_PLUS_MICRO;
 		case IIO_PRESSURE:
-			*val = 0;
-			*val2 = 4000; /* 40ubar = 0.004 kPa */
-			return IIO_VAL_INT_PLUS_MICRO;
+			/*
+			 * max scale is 1310 mbar
+			 * max raw value is 32767 shifted for 32bits
+			 */
+			*val = 131; /* 1310mbar = 131 kPa */
+			*val2 = 32767 << 16;
+			return IIO_VAL_FRACTIONAL;
 		default:
 			return -EINVAL;
 		}
@@ -892,79 +897,110 @@ enum adis16480_variant {
 	ADIS16497_3,
 };
 
+static const struct adis_timeout adis16485_timeouts = {
+	.reset_ms = 560,
+	.sw_reset_ms = 120,
+	.self_test_ms = 12,
+};
+
+static const struct adis_timeout adis16480_timeouts = {
+	.reset_ms = 560,
+	.sw_reset_ms = 560,
+	.self_test_ms = 12,
+};
+
+static const struct adis_timeout adis16495_timeouts = {
+	.reset_ms = 170,
+	.sw_reset_ms = 130,
+	.self_test_ms = 40,
+};
+
+static const struct adis_timeout adis16495_1_timeouts = {
+	.reset_ms = 250,
+	.sw_reset_ms = 210,
+	.self_test_ms = 20,
+};
+
 static const struct adis16480_chip_info adis16480_chip_info[] = {
 	[ADIS16375] = {
 		.channels = adis16485_channels,
 		.num_channels = ARRAY_SIZE(adis16485_channels),
 		/*
-		 * storing the value in rad/degree and the scale in degree
-		 * gives us the result in rad and better precession than
-		 * storing the scale directly in rad.
+		 * Typically we do IIO_RAD_TO_DEGREE in the denominator, which
+		 * is exactly the same as IIO_DEGREE_TO_RAD in numerator, since
+		 * it gives better approximation. However, in this case we
+		 * cannot do it since it would not fit in a 32bit variable.
 		 */
-		.gyro_max_val = IIO_RAD_TO_DEGREE(22887),
-		.gyro_max_scale = 300,
-		.accel_max_val = IIO_M_S_2_TO_G(21973),
+		.gyro_max_val = 22887 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(300),
+		.accel_max_val = IIO_M_S_2_TO_G(21973 << 16),
 		.accel_max_scale = 18,
 		.temp_scale = 5650, /* 5.65 milli degree Celsius */
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16480] = {
 		.channels = adis16480_channels,
 		.num_channels = ARRAY_SIZE(adis16480_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(22500),
-		.gyro_max_scale = 450,
-		.accel_max_val = IIO_M_S_2_TO_G(12500),
+		.gyro_max_val = 22500 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(450),
+		.accel_max_val = IIO_M_S_2_TO_G(12500 << 16),
 		.accel_max_scale = 10,
 		.temp_scale = 5650, /* 5.65 milli degree Celsius */
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
+		.timeouts = &adis16480_timeouts,
+
 	},
 	[ADIS16485] = {
 		.channels = adis16485_channels,
 		.num_channels = ARRAY_SIZE(adis16485_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(22500),
-		.gyro_max_scale = 450,
-		.accel_max_val = IIO_M_S_2_TO_G(20000),
+		.gyro_max_val = 22500 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(450),
+		.accel_max_val = IIO_M_S_2_TO_G(20000 << 16),
 		.accel_max_scale = 5,
 		.temp_scale = 5650, /* 5.65 milli degree Celsius */
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16488] = {
 		.channels = adis16480_channels,
 		.num_channels = ARRAY_SIZE(adis16480_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(22500),
-		.gyro_max_scale = 450,
-		.accel_max_val = IIO_M_S_2_TO_G(22500),
+		.gyro_max_val = 22500 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(450),
+		.accel_max_val = IIO_M_S_2_TO_G(22500 << 16),
 		.accel_max_scale = 18,
 		.temp_scale = 5650, /* 5.65 milli degree Celsius */
 		.int_clk = 2460000,
 		.max_dec_rate = 2048,
 		.filter_freqs = adis16480_def_filter_freqs,
+		.timeouts = &adis16485_timeouts,
 	},
 	[ADIS16490] = {
 		.channels = adis16485_channels,
 		.num_channels = ARRAY_SIZE(adis16485_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(20000),
-		.gyro_max_scale = 100,
-		.accel_max_val = IIO_M_S_2_TO_G(16000),
+		.gyro_max_val = 20000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(100),
+		.accel_max_val = IIO_M_S_2_TO_G(16000 << 16),
 		.accel_max_scale = 8,
 		.temp_scale = 14285, /* 14.285 milli degree Celsius */
 		.int_clk = 4250000,
 		.max_dec_rate = 4250,
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
+		.timeouts = &adis16495_timeouts,
 	},
 	[ADIS16495_1] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(20000),
-		.gyro_max_scale = 125,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 20000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(125),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 8,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -972,13 +1008,14 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16495_2] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(18000),
-		.gyro_max_scale = 450,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 18000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(450),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 8,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -986,13 +1023,14 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16495_3] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(20000),
-		.gyro_max_scale = 2000,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 20000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(2000),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 8,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -1000,13 +1038,14 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_1] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(20000),
-		.gyro_max_scale = 125,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 20000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(125),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 40,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -1014,13 +1053,14 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_2] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(18000),
-		.gyro_max_scale = 450,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 18000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(450),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 40,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -1028,13 +1068,14 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 	[ADIS16497_3] = {
 		.channels = adis16495_channels,
 		.num_channels = ARRAY_SIZE(adis16495_channels),
-		.gyro_max_val = IIO_RAD_TO_DEGREE(20000),
-		.gyro_max_scale = 2000,
-		.accel_max_val = IIO_M_S_2_TO_G(32000),
+		.gyro_max_val = 20000 << 16,
+		.gyro_max_scale = IIO_DEGREE_TO_RAD(2000),
+		.accel_max_val = IIO_M_S_2_TO_G(32000 << 16),
 		.accel_max_scale = 40,
 		.temp_scale = 12500, /* 12.5 milli degree Celsius */
 		.int_clk = 4250000,
@@ -1042,6 +1083,7 @@ static const struct adis16480_chip_info adis16480_chip_info[] = {
 		.filter_freqs = adis16495_def_filter_freqs,
 		.has_pps_clk_mode = true,
 		.burst = &adis16495_burst,
+		.timeouts = &adis16495_1_timeouts,
 	},
 };
 
@@ -1157,6 +1199,7 @@ static const struct iio_info adis16480_info = {
 	.write_raw = &adis16480_write_raw,
 	.update_scan_mode = adis_update_scan_mode,
 	.driver_module = THIS_MODULE,
+	.debugfs_reg_access = adis_debugfs_reg_access,
 };
 
 static const struct iio_info adis16495_info = {
@@ -1165,6 +1208,7 @@ static const struct iio_info adis16495_info = {
 	.write_raw = &adis16480_write_raw,
 	.update_scan_mode = adis_update_scan_mode,
 	.driver_module = THIS_MODULE,
+	.debugfs_reg_access = adis_debugfs_reg_access,
 };
 
 static int adis16480_stop_device(struct iio_dev *indio_dev)
@@ -1195,40 +1239,6 @@ static int adis16480_enable_irq(struct adis *adis, bool enable)
 	return __adis_write_reg_16(adis, ADIS16480_REG_FNCTIO_CTRL, val);
 }
 
-static int adis16480_initial_setup(struct iio_dev *indio_dev)
-{
-	struct adis16480 *st = iio_priv(indio_dev);
-	uint16_t prod_id;
-	unsigned int device_id;
-	int ret;
-
-	adis_reset(&st->adis);
-	msleep(70);
-
-	ret = adis_write_reg_16(&st->adis, ADIS16480_REG_GLOB_CMD, BIT(1));
-	if (ret)
-		return ret;
-	msleep(30);
-
-	ret = adis_check_status(&st->adis);
-	if (ret)
-		return ret;
-
-	ret = adis_read_reg_16(&st->adis, ADIS16480_REG_PROD_ID, &prod_id);
-	if (ret)
-		return ret;
-
-	ret = sscanf(indio_dev->name, "adis%u\n", &device_id);
-	if (ret != 1)
-		return -EINVAL;
-
-	if (prod_id != device_id)
-		dev_warn(&indio_dev->dev, "Device ID(%u) and product ID(%u) do not match.",
-				device_id, prod_id);
-
-	return 0;
-}
-
 #define ADIS16480_DIAG_STAT_XGYRO_FAIL 0
 #define ADIS16480_DIAG_STAT_YGYRO_FAIL 1
 #define ADIS16480_DIAG_STAT_ZGYRO_FAIL 2
@@ -1251,29 +1261,6 @@ static const char * const adis16480_status_error_msgs[] = {
 	[ADIS16480_DIAG_STAT_YMAGN_FAIL] = "Y-axis magnetometer self-test failure",
 	[ADIS16480_DIAG_STAT_ZMAGN_FAIL] = "Z-axis magnetometer self-test failure",
 	[ADIS16480_DIAG_STAT_BARO_FAIL] = "Barometer self-test failure",
-};
-
-static const struct adis_data adis16480_data = {
-	.diag_stat_reg = ADIS16480_REG_DIAG_STS,
-	.glob_cmd_reg = ADIS16480_REG_GLOB_CMD,
-	.has_paging = true,
-
-	.read_delay = 5,
-	.write_delay = 5,
-
-	.status_error_msgs = adis16480_status_error_msgs,
-	.status_error_mask = BIT(ADIS16480_DIAG_STAT_XGYRO_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_YGYRO_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_ZGYRO_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_XACCL_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_YACCL_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_ZACCL_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_XMAGN_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_YMAGN_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_ZMAGN_FAIL) |
-		BIT(ADIS16480_DIAG_STAT_BARO_FAIL),
-
-	.enable_irq = adis16480_enable_irq,
 };
 
 static int adis16480_config_irq_pin(struct device_node *of_node,
@@ -1426,9 +1413,44 @@ static int adis16480_get_ext_clocks(struct adis16480 *st)
 	return 0;
 }
 
+static struct adis_data *adis16480_adis_data_alloc(struct adis16480 *st,
+						   struct device *dev)
+{
+	struct adis_data *data;
+
+	data = devm_kzalloc(dev, sizeof(struct adis_data), GFP_KERNEL);
+	if (!data)
+		return ERR_PTR(-ENOMEM);
+
+	data->glob_cmd_reg = ADIS16480_REG_GLOB_CMD;
+	data->diag_stat_reg = ADIS16480_REG_DIAG_STS;
+	data->prod_id_reg = ADIS16480_REG_PROD_ID;
+	data->has_paging = true;
+	data->self_test_mask = BIT(1);
+	data->self_test_reg = ADIS16480_REG_GLOB_CMD;
+	data->read_delay = 5;
+	data->write_delay = 5;
+	data->status_error_msgs = adis16480_status_error_msgs;
+	data->status_error_mask = BIT(ADIS16480_DIAG_STAT_XGYRO_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_YGYRO_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_ZGYRO_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_XACCL_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_YACCL_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_ZACCL_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_XMAGN_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_YMAGN_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_ZMAGN_FAIL) |
+				BIT(ADIS16480_DIAG_STAT_BARO_FAIL);
+	data->enable_irq = adis16480_enable_irq;
+	data->timeouts = st->chip_info->timeouts;
+
+	return data;
+}
+
 static int adis16480_probe(struct spi_device *spi)
 {
 	const struct spi_device_id *id = spi_get_device_id(spi);
+	const struct adis_data *adis16480_data;
 	struct iio_dev *indio_dev;
 	struct adis16480 *st;
 	int ret;
@@ -1449,22 +1471,30 @@ static int adis16480_probe(struct spi_device *spi)
 	indio_dev->info = &adis16480_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	ret = adis_init(&st->adis, indio_dev, spi, &adis16480_data);
+	adis16480_data = adis16480_adis_data_alloc(st, &spi->dev);
+	if (IS_ERR(adis16480_data))
+		return PTR_ERR(adis16480_data);
+
+	ret = adis_init(&st->adis, indio_dev, spi, adis16480_data);
+	if (ret)
+		return ret;
+
+	ret = __adis_initial_startup(&st->adis);
 	if (ret)
 		return ret;
 
 	ret = adis16480_config_irq_pin(spi->dev.of_node, st);
 	if (ret)
-		return ret;
+		goto error_stop_device;
 
 	ret = adis16480_get_ext_clocks(st);
 	if (ret)
-		return ret;
+		goto error_stop_device;
 
 	if (!IS_ERR_OR_NULL(st->ext_clk)) {
 		ret = adis16480_ext_clk_config(st, spi->dev.of_node, true);
 		if (ret)
-			return ret;
+			goto error_stop_device;
 
 		st->clk_freq = clk_get_rate(st->ext_clk);
 		st->clk_freq *= 1000; /* micro */
@@ -1484,24 +1514,20 @@ static int adis16480_probe(struct spi_device *spi)
 	if (ret)
 		goto error_clk_disable_unprepare;
 
-	ret = adis16480_initial_setup(indio_dev);
-	if (ret)
-		goto error_cleanup_buffer;
-
 	ret = iio_device_register(indio_dev);
 	if (ret)
-		goto error_stop_device;
+		goto error_cleanup_buffer;
 
 	adis16480_debugfs_init(indio_dev);
 
 	return 0;
 
-error_stop_device:
-	adis16480_stop_device(indio_dev);
 error_cleanup_buffer:
 	adis_cleanup_buffer_and_trigger(&st->adis, indio_dev);
 error_clk_disable_unprepare:
 	clk_disable_unprepare(st->ext_clk);
+error_stop_device:
+	adis16480_stop_device(indio_dev);
 	return ret;
 }
 
