@@ -12,8 +12,13 @@
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/interrupt.h>
+#include <linux/slab.h>
+#include <linux/time.h>
 
-#include "mathworks_ip.h"
+#include <linux/mathworks/mathworks_ip.h>
 
 #define DRIVER_NAME "mathworks_ip"
 
@@ -21,36 +26,60 @@
 static struct class *mathworks_ip_class = NULL;
 static struct mathworks_ip_dev_info dev_table[MATHWORKS_IP_MAX_DEVTYPE] = {{{0}}};
 
-static irqreturn_t mathworks_ip_intr_handler(int irq, void * theIpcore)
-{
-    struct mathworks_ip_info *thisIpcore = (struct mathworks_ip_info*) theIpcore;
+/*
+   setup for creating sysfs directory
+   */
 
-    dev_dbg(thisIpcore->dev, "IRQ %d Handled\n", irq);
-    return IRQ_HANDLED;
+static ssize_t show_fpga_irq(struct device *dev, struct device_attribute *attr, char *buf)
+{	
+	return sprintf(buf, "status=0\n");
+}
+
+static ssize_t store_fpga_irq(struct device *dev, struct device_attribute *attr, const char *buf, size_t len)
+{
+	return len;
+}
+
+
+static DEVICE_ATTR(fpga_irq_0, S_IRWXU, show_fpga_irq, store_fpga_irq);
+
+static irqreturn_t mathworks_ip_intr_handler(int irq, void * theIpcore)
+{	
+	struct mathworks_ip_info *thisIpcore = (struct mathworks_ip_info*) theIpcore;
+
+	dev_dbg(thisIpcore->dev, "IRQ %d Handled\n", irq);
+
+	/* irq is current Linux INT number - not equal to INT pin on the processor */
+	/* thisIpcore->irq is starting Linux INT number for that DUT */
+	/* Difference irq - thisIpcore->irq is relattive INT number as described above */
+	/*relativeIntIndex = irq - thisIpcore->irq; currently supporting one Interrupt per DUT */
+	sysfs_notify_dirent(thisIpcore->irq_kn[0]);
+
+	return IRQ_HANDLED;
 
 }
 
 static int mathworks_ip_fasync_impl(int fd, struct file* fp, int mode)
 {
-    struct mathworks_ip_info *thisIpcore = fp->private_data;
-    
-    return fasync_helper(fd, fp, mode, &thisIpcore->asyncq);
-  
+	struct mathworks_ip_info *thisIpcore = fp->private_data;
+
+	return fasync_helper(fd, fp, mode, &thisIpcore->asyncq);
+
 }
 
 static int mathworks_ip_open(struct inode *inode, struct file *fp)
 {
-    struct mathworks_ip_info *thisIpcore;
-    thisIpcore = container_of(inode->i_cdev, struct mathworks_ip_info, cdev);
-    fp->private_data = thisIpcore;
-    
-    return 0;
+	struct mathworks_ip_info *thisIpcore;
+	thisIpcore = container_of(inode->i_cdev, struct mathworks_ip_info, cdev);
+	fp->private_data = thisIpcore;
+
+	return 0;
 }
 
 static int mathworks_ip_close(struct inode *inode, struct file *fp)
 {
-    mathworks_ip_fasync_impl(-1, fp, 0);
-    return 0;
+	mathworks_ip_fasync_impl(-1, fp, 0);
+	return 0;
 }
 
 static int mathworks_ip_dma_alloc(struct mathworks_ip_info *thisIpcore, size_t size) {
@@ -159,6 +188,7 @@ static int mathworks_ip_get_devinfo(struct mathworks_ip_info *thisIpcore)
 		thisIpcore->dev_info = thisDev;
 		return 0;
 	}
+	device_initialize(thisIpcore->dev);
 
 	/* Not found and table full */
 	thisIpcore->dev_info = NULL;
@@ -250,6 +280,20 @@ static int mathworks_ip_mmap(struct file *fp, struct vm_area_struct *vma)
 			}
 			vma->vm_ops = &mathworks_ip_mmap_ops;
 			break;
+			/* This case is for HDL verifeir, where page offset passed is bram base address*/
+		case 262144:
+			/* mmap the DMA region */
+			status = mathworks_ip_dma_alloc(thisIpcore, size);
+			if (status != 0)
+				return status;
+			if (thisIpcore->dma_info.size == 0 || size != thisIpcore->dma_info.size)
+				return -EINVAL;
+			/* We want to mmap the whole buffer */
+			vma->vm_pgoff = 0;
+			status =  dma_mmap_coherent(thisIpcore->dev,vma,
+					thisIpcore->dma_info.virt, thisIpcore->mem->start, size);
+			vma->vm_ops = &mathworks_ip_mmap_dma_ops;
+			break;
 		default:
 			/* mmap the DMA region */
 			
@@ -273,45 +317,45 @@ static int mathworks_ip_mmap(struct file *fp, struct vm_area_struct *vma)
 
 static long mathworks_ip_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
-    /* struct ipcore_info *thisIpcore = fp->private_data; */
-    int status;
+	/* struct ipcore_info *thisIpcore = fp->private_data; */
+	int status;
 	struct mathworks_ip_info *thisIpcore = fp->private_data;
-    
-    if (NULL==thisIpcore) {
-        return -ENODEV;
-    }
 
-    switch(cmd) {
-	case MATHWORKS_IP_GET_PARAM:
-		if (thisIpcore->ops->get_param) {
-			status = thisIpcore->ops->get_param(thisIpcore, (void *)arg);
-		} else {
-			status = -ENODEV;
-		}
+	if (NULL==thisIpcore) {
+		return -ENODEV;
+	}
 
-		break;
-		
-	case MATHWORKS_IP_DMA_INFO:
-		
-		status = mathworks_ip_dma_info(thisIpcore, (void *)arg);
-		break;
-	
-	case MATHWORKS_IP_REG_INFO:
+	switch(cmd) {
+		case MATHWORKS_IP_GET_PARAM:
+			if (thisIpcore->ops->get_param) {
+				status = thisIpcore->ops->get_param(thisIpcore, (void *)arg);
+			} else {
+				status = -ENODEV;
+			}
 
-		status = mathworks_ip_reg_info(thisIpcore, (void *)arg);
-		break;
+			break;
 
-	default:
-		status = -EINVAL;
-    }
-    return status;
+		case MATHWORKS_IP_DMA_INFO:
+
+			status = mathworks_ip_dma_info(thisIpcore, (void *)arg);
+			break;
+
+		case MATHWORKS_IP_REG_INFO:
+
+			status = mathworks_ip_reg_info(thisIpcore, (void *)arg);
+			break;
+
+		default:
+			status = -EINVAL;
+	}
+	return status;
 }
 
 
 
 static void mathworks_ip_remove_cdev(void *opaque){
 	struct mathworks_ip_info *thisIpcore = opaque;
-
+	sysfs_remove_file(&thisIpcore->dev->kobj, &dev_attr_fpga_irq_0.attr);	
 	if(&thisIpcore->cdev)
 	{
 		dev_info(thisIpcore->dev, "Destroy character dev\n");
@@ -327,31 +371,31 @@ static void mathworks_ip_remove_cdev(void *opaque){
 			dev_info(thisIpcore->dev, "release device region\n");
 			unregister_chrdev_region(thisIpcore->dev_info->devid, MATHWORKS_IP_MAX_DEVTYPE);
 		}
-	}
+	}	
 }
 
 struct file_operations mathworks_ip_common_fops = {
-    .owner 		= THIS_MODULE,
-    .open 		= mathworks_ip_open,
-    .fasync 		= mathworks_ip_fasync_impl,
-    .release 		= mathworks_ip_close,
-    .mmap		= mathworks_ip_mmap,
-    .unlocked_ioctl	= mathworks_ip_ioctl,
+	.owner 		= THIS_MODULE,
+	.open 		= mathworks_ip_open,
+	.fasync 		= mathworks_ip_fasync_impl,
+	.release 		= mathworks_ip_close,
+	.mmap		= mathworks_ip_mmap,
+	.unlocked_ioctl	= mathworks_ip_ioctl,
 };
 
 EXPORT_SYMBOL_GPL(mathworks_ip_common_fops);
 
 static int mathworks_ip_setup_cdev(struct mathworks_ip_info *thisIpcore)
 {
-    int status = 0;
+	int status = 0;
 	struct mathworks_ip_dev_info *dev_entry;
-   
+
 	if(mathworks_ip_class == NULL){
 		return -EPROBE_DEFER;
 	}
 	cdev_init(&thisIpcore->cdev, thisIpcore->ops->fops);
 	thisIpcore->cdev.owner = thisIpcore->module;
-   
+
 	/* Find the device name */
 	status = mathworks_ip_get_devinfo(thisIpcore);
 	if (status)
@@ -363,7 +407,7 @@ static int mathworks_ip_setup_cdev(struct mathworks_ip_info *thisIpcore)
 	thisIpcore->dev_id = MKDEV(MAJOR(dev_entry->devid), dev_entry->devcnt);
 	status = cdev_add(&thisIpcore->cdev, thisIpcore->dev_id, 1);
 	if (status) {
-	   goto add_err;
+		goto add_err;
 	}
 
 	thisIpcore->char_device = device_create(mathworks_ip_class, thisIpcore->dev, thisIpcore->dev_id, NULL, "%s%d", dev_entry->devname, dev_entry->devcnt++);
@@ -470,8 +514,12 @@ struct mathworks_ip_info *devm_mathworks_ip_of_init(
 
 EXPORT_SYMBOL_GPL(devm_mathworks_ip_of_init);
 
-int devm_mathworks_ip_register(struct mathworks_ip_info *thisIpcore){
+int devm_mathworks_ip_register(struct mathworks_ip_info *thisIpcore)
+{
 	int status;
+	char currentFileName[SYSFS_FILENAME_MAX_LENGTH];
+	int i;
+	int irq_idx;
 
 	status = mathworks_ip_setup_cdev(thisIpcore);
 	if(status)
@@ -482,8 +530,7 @@ int devm_mathworks_ip_register(struct mathworks_ip_info *thisIpcore){
 
 	/* It is possible that we have not required any interrupt */
 	if (thisIpcore->irq)
-	{
-		int irq_idx;
+	{		
 		for (irq_idx = 0; irq_idx < thisIpcore->nirq; irq_idx++) {
 			status = devm_request_irq(thisIpcore->dev,
 					thisIpcore->irq+irq_idx,
@@ -507,6 +554,22 @@ int devm_mathworks_ip_register(struct mathworks_ip_info *thisIpcore){
 	if(status){
 		mathworks_ip_unregister(thisIpcore);
 		return status;
+	}
+
+	status = sysfs_create_file(&thisIpcore->dev->kobj, &dev_attr_fpga_irq_0.attr);
+	if (status) {
+
+		printk(KERN_INFO "Error creating the sysfs device 0\n");
+		return status;
+	}
+
+	for(i=0; i <  MAX_INTERRUPT_NODES_PER_DUT ; i++)
+	{
+		snprintf(currentFileName,SYSFS_FILENAME_MAX_LENGTH ,"fpga_irq_%d",i);
+		thisIpcore->irq_kn[i] = sysfs_get_dirent(thisIpcore->dev->kobj.sd, currentFileName);
+		if(!thisIpcore->irq_kn[i]){
+			printk(KERN_INFO "Error in file index %d\n", i);			
+		}
 	}
 
 	return 0;
