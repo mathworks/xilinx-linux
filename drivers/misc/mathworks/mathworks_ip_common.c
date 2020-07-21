@@ -22,7 +22,6 @@
 
 #define DRIVER_NAME "mathworks_ip"
 
-static DEVICE_ATTR(fpga_irq_0, S_IRWXU, show_fpga_irq, store_fpga_irq);
 /*Device structure for IPCore information*/
 static struct class *mathworks_ip_class = NULL;
 static struct mathworks_ip_dev_info dev_table[MATHWORKS_IP_MAX_DEVTYPE] = {{{0}}};
@@ -41,6 +40,8 @@ static ssize_t store_fpga_irq(struct device *dev, struct device_attribute *attr,
 	return len;
 }
 
+
+static DEVICE_ATTR(fpga_irq_0, S_IRWXU, show_fpga_irq, store_fpga_irq);
 
 static irqreturn_t mathworks_ip_intr_handler(int irq, void * theIpcore)
 {	
