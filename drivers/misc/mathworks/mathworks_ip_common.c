@@ -15,6 +15,23 @@
 
 #include <linux/mathworks/mathworks_ip.h>
 
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/sched/mm.h>
+#include <linux/slab.h>
+#include <linux/interrupt.h>
+
+#include <linux/dma-mapping.h>
+#include <linux/vmalloc.h>
+#include <linux/pagemap.h>
+#include <linux/scatterlist.h>
+#include <asm/page.h>
+#include <asm/pgtable.h>
+
+
+
+
 #define DRIVER_NAME "mathworks_ip"
 
 /*Device structure for IPCore information*/
@@ -200,13 +217,13 @@ static void mathworks_ip_mmap_close(struct vm_area_struct *vma)
 }
 
 
-static vm_fault_t mathworks_ip_mmap_fault(struct vm_fault *vmf)
+
+static int mathworks_ip_mmap_fault(struct vm_fault  *vmf)
 {
-    struct vm_area_struct *vma = vmf->vma;
-    struct mathworks_ip_info * thisIpcore = vma->vm_private_data;
+    struct mathworks_ip_info * thisIpcore = vmf->vma->vm_private_data;
     struct page *thisPage;
     unsigned long offset;
-    offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
+    offset = (vmf->pgoff - vmf->vma->vm_pgoff) << PAGE_SHIFT;
     thisPage = virt_to_page(thisIpcore->mem->start + offset);
     get_page(thisPage);
     vmf->page = thisPage;
