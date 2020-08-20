@@ -14,7 +14,6 @@
 #include <linux/dma-mapping.h>
 
 #include <linux/mathworks/mathworks_ip.h>
-
 #define DRIVER_NAME "mathworks_ip"
 
 /*Device structure for IPCore information*/
@@ -448,7 +447,7 @@ struct mathworks_ip_info *devm_mathworks_ip_of_init(
 	ipDev->mem = platform_get_resource(pdev, IORESOURCE_MEM,0);
 	if(ipDev->mem)
 	{
-		dev_info(&pdev->dev, "Dev memory resource found at %p %08lX. \n",
+		dev_info(&pdev->dev, "Dev memory resource found at %px %08lX. \n",
 			 (void *)((uintptr_t)ipDev->mem->start),
 			 (unsigned long)resource_size(ipDev->mem));
 		ipDev->mem  = devm_request_mem_region(&pdev->dev, ipDev->mem->start, resource_size(ipDev->mem), pdev->name);
@@ -481,7 +480,6 @@ int devm_mathworks_ip_register(struct mathworks_ip_info *thisIpcore){
 		dev_err(thisIpcore->dev, "mwipcore device addition failed: %d\n", status);
 		return status;
 	}
-
 	/* It is possible that we have not required any interrupt */
 	if (thisIpcore->irq)
 	{
