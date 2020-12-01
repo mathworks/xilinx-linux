@@ -770,6 +770,9 @@ static struct iio_dev *devm_mw_sharedmem_iio_alloc(
 	}
 	mwchan->irq_count = 0;
 	
+	mwchan->base_addr_mode = MW_SHAREDMEM_BASE_ADDR_MODE_MANUAL;
+	mwchan->ip_sync_mode = MW_SHAREDMEM_IP_SYNC_MODE_NONE;
+	
 	device_initialize(&mwchan->dev);
 
 	mwchan->dev.parent = IP2DEVP(mwdev);
