@@ -115,7 +115,6 @@ struct cdns_spi {
 	void __iomem *regs;
 	struct clk *ref_clk;
 	struct clk *pclk;
-	unsigned int clk_rate;
 	u32 speed_hz;
 	const u8 *txbuf;
 	u8 *rxbuf;
@@ -251,7 +250,7 @@ static void cdns_spi_config_clock_freq(struct spi_device *spi,
 	u32 ctrl_reg, baud_rate_val;
 	unsigned long frequency;
 
-	frequency = xspi->clk_rate;
+	frequency = clk_get_rate(xspi->ref_clk);
 
 	ctrl_reg = cdns_spi_read(xspi, CDNS_SPI_CR);
 
@@ -342,7 +341,8 @@ static irqreturn_t cdns_spi_irq(int irq, void *dev_id)
 {
 	struct spi_master *master = dev_id;
 	struct cdns_spi *xspi = spi_master_get_devdata(master);
-	u32 intr_status, status;
+	u32 intr_status;
+	irqreturn_t status;
 
 	status = IRQ_NONE;
 	intr_status = cdns_spi_read(xspi, CDNS_SPI_ISR);
@@ -475,8 +475,7 @@ static int cdns_spi_probe(struct platform_device *pdev)
 	int ret = 0, irq;
 	struct spi_master *master;
 	struct cdns_spi *xspi;
-	unsigned long aper_clk_rate;
-	u32 num_cs;
+	u32 num_cs = 0;
 
 	master = spi_alloc_master(&pdev->dev, sizeof(*xspi));
 	if (!master)
@@ -561,12 +560,7 @@ static int cdns_spi_probe(struct platform_device *pdev)
 	master->mode_bits = SPI_CPOL | SPI_CPHA;
 
 	/* Set to default valid value */
-	aper_clk_rate = clk_get_rate(xspi->pclk) / 2 * 3;
-	if (aper_clk_rate > clk_get_rate(xspi->ref_clk))
-		clk_set_rate(xspi->ref_clk, aper_clk_rate);
-
-	xspi->clk_rate = clk_get_rate(xspi->ref_clk);
-	master->max_speed_hz = xspi->clk_rate / 4;
+	master->max_speed_hz = clk_get_rate(xspi->ref_clk) / 4;
 	xspi->speed_hz = master->max_speed_hz;
 
 	master->bits_per_word_mask = SPI_BPW_MASK(8);
