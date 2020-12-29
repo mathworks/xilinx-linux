@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the Analog Devices AXI-DMAC core
  *
@@ -18,7 +18,6 @@
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
-#include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/fpga/adi-axi-common.h>
 
@@ -64,11 +63,6 @@
 #define AXI_DMAC_REG_STATUS		0x430
 #define AXI_DMAC_REG_CURRENT_SRC_ADDR	0x434
 #define AXI_DMAC_REG_CURRENT_DEST_ADDR	0x438
-#define AXI_DMAC_REG_DBG0		0x43c
-#define AXI_DMAC_REG_DBG1		0x440
-#define AXI_DMAC_REG_DBG2		0x444
-#define AXI_DMAC_REG_PARTIAL_XFER_LEN	0x44c
-#define AXI_DMAC_REG_PARTIAL_XFER_ID	0x450
 
 #define AXI_DMAC_CTRL_ENABLE		BIT(0)
 #define AXI_DMAC_CTRL_PAUSE		BIT(1)
@@ -78,9 +72,6 @@
 
 #define AXI_DMAC_FLAG_CYCLIC		BIT(0)
 #define AXI_DMAC_FLAG_LAST		BIT(1)
-#define AXI_DMAC_FLAG_PARTIAL_REPORT	BIT(2)
-
-#define AXI_DMAC_FLAG_PARTIAL_XFER_DONE BIT(31)
 
 /* The maximum ID allocated by the hardware is 31 */
 #define AXI_DMAC_SG_UNUSED 32U
@@ -93,14 +84,12 @@ struct axi_dmac_sg {
 	unsigned int dest_stride;
 	unsigned int src_stride;
 	unsigned int id;
-	unsigned int partial_len;
 	bool schedule_when_free;
 };
 
 struct axi_dmac_desc {
 	struct virt_dma_desc vdesc;
 	bool cyclic;
-	bool have_partial_xfer;
 
 	unsigned int num_submitted;
 	unsigned int num_completed;
@@ -124,7 +113,6 @@ struct axi_dmac_chan {
 	unsigned int address_align_mask;
 	unsigned int length_align_mask;
 
-	bool hw_partial_xfer;
 	bool hw_cyclic;
 	bool hw_2d;
 };
@@ -225,8 +213,7 @@ static void axi_dmac_start_transfer(struct axi_dmac_chan *chan)
 	}
 
 	desc->num_submitted++;
-	if (desc->num_submitted == desc->num_sgs ||
-	    desc->have_partial_xfer) {
+	if (desc->num_submitted == desc->num_sgs) {
 		if (desc->cyclic)
 			desc->num_submitted = 0; /* Start again */
 		else
@@ -257,9 +244,6 @@ static void axi_dmac_start_transfer(struct axi_dmac_chan *chan)
 		desc->num_sgs == 1)
 		flags |= AXI_DMAC_FLAG_CYCLIC;
 
-	if (chan->hw_partial_xfer)
-		flags |= AXI_DMAC_FLAG_PARTIAL_REPORT;
-
 	axi_dmac_write(dmac, AXI_DMAC_REG_X_LENGTH, sg->x_len - 1);
 	axi_dmac_write(dmac, AXI_DMAC_REG_Y_LENGTH, sg->y_len - 1);
 	axi_dmac_write(dmac, AXI_DMAC_REG_FLAGS, flags);
@@ -272,83 +256,6 @@ static struct axi_dmac_desc *axi_dmac_active_desc(struct axi_dmac_chan *chan)
 		struct axi_dmac_desc, vdesc.node);
 }
 
-static inline unsigned int axi_dmac_total_sg_bytes(struct axi_dmac_chan *chan,
-	struct axi_dmac_sg *sg)
-{
-	if (chan->hw_2d)
-		return sg->x_len * sg->y_len;
-	else
-		return sg->x_len;
-}
-
-static void axi_dmac_dequeue_partial_xfers(struct axi_dmac_chan *chan)
-{
-	struct axi_dmac *dmac = chan_to_axi_dmac(chan);
-	struct axi_dmac_desc *desc;
-	struct axi_dmac_sg *sg;
-	u32 xfer_done, len, id, i;
-	bool found_sg;
-
-	do {
-		len = axi_dmac_read(dmac, AXI_DMAC_REG_PARTIAL_XFER_LEN);
-		id  = axi_dmac_read(dmac, AXI_DMAC_REG_PARTIAL_XFER_ID);
-
-		found_sg = false;
-		list_for_each_entry(desc, &chan->active_descs, vdesc.node) {
-			for (i = 0; i < desc->num_sgs; i++) {
-				sg = &desc->sg[i];
-				if (sg->id == AXI_DMAC_SG_UNUSED)
-					continue;
-				if (sg->id == id) {
-					desc->have_partial_xfer = true;
-					sg->partial_len = len;
-					found_sg = true;
-					break;
-				}
-			}
-			if (found_sg)
-				break;
-		}
-
-		if (found_sg) {
-			dev_dbg(dmac->dma_dev.dev,
-				"Found partial segment id=%u, len=%u\n",
-				id, len);
-		} else {
-			dev_warn(dmac->dma_dev.dev,
-				 "Not found partial segment id=%u, len=%u\n",
-				 id, len);
-		}
-
-		/* Check if we have any more partial transfers */
-		xfer_done = axi_dmac_read(dmac, AXI_DMAC_REG_TRANSFER_DONE);
-		xfer_done = !(xfer_done & AXI_DMAC_FLAG_PARTIAL_XFER_DONE);
-
-	} while (!xfer_done);
-}
-
-static void axi_dmac_compute_residue(struct axi_dmac_chan *chan,
-	struct axi_dmac_desc *active)
-{
-	struct dmaengine_result *rslt = &active->vdesc.tx_result;
-	unsigned int start = active->num_completed - 1;
-	struct axi_dmac_sg *sg;
-	unsigned int i, total;
-
-	rslt->result = DMA_TRANS_NOERROR;
-	rslt->residue = 0;
-
-	/*
-	 * We get here if the last completed segment is partial, which
-	 * means we can compute the residue from that segment onwards
-	 */
-	for (i = start; i < active->num_sgs; i++) {
-		sg = &active->sg[i];
-		total = axi_dmac_total_sg_bytes(chan, sg);
-		rslt->residue += (total - sg->partial_len);
-	}
-}
-
 static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 	unsigned int completed_transfers)
 {
@@ -359,10 +266,6 @@ static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 	active = axi_dmac_active_desc(chan);
 	if (!active)
 		return false;
-
-	if (chan->hw_partial_xfer &&
-	    (completed_transfers & AXI_DMAC_FLAG_PARTIAL_XFER_DONE))
-		axi_dmac_dequeue_partial_xfers(chan);
 
 	do {
 		sg = &active->sg[active->num_completed];
@@ -377,14 +280,10 @@ static bool axi_dmac_transfer_done(struct axi_dmac_chan *chan,
 			start_next = true;
 		}
 
-		if (sg->partial_len)
-			axi_dmac_compute_residue(chan, active);
-
 		if (active->cyclic)
 			vchan_cyclic_callback(&active->vdesc);
 
-		if (active->num_completed == active->num_sgs ||
-		    sg->partial_len) {
+		if (active->num_completed == active->num_sgs) {
 			if (active->cyclic) {
 				active->num_completed = 0; /* wrap around */
 			} else {
@@ -567,21 +466,6 @@ static struct dma_async_tx_descriptor *axi_dmac_prep_slave_sg(
 	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
 }
 
-static int axi_dmac_device_config(struct dma_chan *c,
-			struct dma_slave_config *slave_config)
-{
-	struct axi_dmac_chan *chan = to_axi_dmac_chan(c);
-	struct axi_dmac *dmac = chan_to_axi_dmac(chan);
-
-	/* no configuration required, a sanity check is done instead */
-	if (slave_config->direction != chan->direction) {
-		dev_err(dmac->dma_dev.dev, "Direction not supported by this DMA Channel");
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
 static struct dma_async_tx_descriptor *axi_dmac_prep_dma_cyclic(
 	struct dma_chan *c, dma_addr_t buf_addr, size_t buf_len,
 	size_t period_len, enum dma_transfer_direction direction,
@@ -697,47 +581,6 @@ static void axi_dmac_desc_free(struct virt_dma_desc *vdesc)
 	kfree(container_of(vdesc, struct axi_dmac_desc, vdesc));
 }
 
-static bool axi_dmac_regmap_rdwr(struct device *dev, unsigned int reg)
-{
-	switch (reg) {
-	case AXI_DMAC_REG_IRQ_MASK:
-	case AXI_DMAC_REG_IRQ_SOURCE:
-	case AXI_DMAC_REG_IRQ_PENDING:
-	case AXI_DMAC_REG_CTRL:
-	case AXI_DMAC_REG_TRANSFER_ID:
-	case AXI_DMAC_REG_START_TRANSFER:
-	case AXI_DMAC_REG_FLAGS:
-	case AXI_DMAC_REG_DEST_ADDRESS:
-	case AXI_DMAC_REG_SRC_ADDRESS:
-	case AXI_DMAC_REG_X_LENGTH:
-	case AXI_DMAC_REG_Y_LENGTH:
-	case AXI_DMAC_REG_DEST_STRIDE:
-	case AXI_DMAC_REG_SRC_STRIDE:
-	case AXI_DMAC_REG_TRANSFER_DONE:
-	case AXI_DMAC_REG_ACTIVE_TRANSFER_ID:
-	case AXI_DMAC_REG_STATUS:
-	case AXI_DMAC_REG_CURRENT_SRC_ADDR:
-	case AXI_DMAC_REG_CURRENT_DEST_ADDR:
-	case AXI_DMAC_REG_DBG0:
-	case AXI_DMAC_REG_DBG1:
-	case AXI_DMAC_REG_DBG2:
-	case AXI_DMAC_REG_PARTIAL_XFER_LEN:
-	case AXI_DMAC_REG_PARTIAL_XFER_ID:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static const struct regmap_config axi_dmac_regmap_config = {
-	.reg_bits = 32,
-	.val_bits = 32,
-	.reg_stride = 4,
-	.max_register = AXI_DMAC_REG_PARTIAL_XFER_ID,
-	.readable_reg = axi_dmac_regmap_rdwr,
-	.writeable_reg = axi_dmac_regmap_rdwr,
-};
-
 /*
  * The configuration stored in the devicetree matches the configuration
  * parameters of the peripheral instance and allows the driver to know which
@@ -831,9 +674,6 @@ static int axi_dmac_detect_caps(struct axi_dmac *dmac)
 		return -ENODEV;
 	}
 
-	if (version >= ADI_AXI_PCORE_VER(4, 2, 'a'))
-		chan->hw_partial_xfer = true;
-
 	if (version >= ADI_AXI_PCORE_VER(4, 1, 'a')) {
 		axi_dmac_write(dmac, AXI_DMAC_REG_X_LENGTH, 0x00);
 		chan->length_align_mask =
@@ -899,7 +739,6 @@ static int axi_dmac_probe(struct platform_device *pdev)
 	dma_dev->device_tx_status = dma_cookie_status;
 	dma_dev->device_issue_pending = axi_dmac_issue_pending;
 	dma_dev->device_prep_slave_sg = axi_dmac_prep_slave_sg;
-	dma_dev->device_config = axi_dmac_device_config;
 	dma_dev->device_prep_dma_cyclic = axi_dmac_prep_dma_cyclic;
 	dma_dev->device_prep_interleaved_dma = axi_dmac_prep_interleaved;
 	dma_dev->device_terminate_all = axi_dmac_terminate_all;
@@ -942,8 +781,6 @@ static int axi_dmac_probe(struct platform_device *pdev)
 		goto err_unregister_of;
 
 	platform_set_drvdata(pdev, dmac);
-
-	devm_regmap_init_mmio(&pdev->dev, dmac->base, &axi_dmac_regmap_config);
 
 	return 0;
 
