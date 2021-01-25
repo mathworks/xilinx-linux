@@ -107,8 +107,9 @@ static int mw_stream_iio_buffer_preenable(struct iio_dev *indio_dev)
 	}
 	if (mwchan->tlast_cntr_addr >= 0 && mwchan->tlast_mode == MW_STREAM_TLAST_MODE_AUTO) {
 		if(mwchan->reset_tlast_mode == MW_STREAM_TLAST_MODE_PREBUFFER) {
-			/* reset the IP core (TODO: only reset the TLAST register)*/
-			mw_ip_reset(mwchan->mwdev);
+	            /* reset only the TLAST register*/
+                    dev_dbg(&mwchan->dev, "Resetting TLAST register from tlast mode\n");
+                    mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->tlast_cntr_addr, 0x0);
 		}
 		/* Set the TLAST count */
 		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->tlast_cntr_addr, indio_dev->buffer->length);
