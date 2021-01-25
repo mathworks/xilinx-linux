@@ -383,6 +383,7 @@ static irqreturn_t cdns_i2c_master_isr(void *ptr)
 	struct cdns_i2c *id = ptr;
 	/* Signal completion only after everything is updated */
 	int done_flag = 0;
+	unsigned int timeout;
 	irqreturn_t status = IRQ_NONE;
 
 	isr_status = cdns_i2c_readreg(CDNS_I2C_ISR_OFFSET);
@@ -409,6 +410,7 @@ static irqreturn_t cdns_i2c_master_isr(void *ptr)
 	    ((isr_status & CDNS_I2C_IXR_COMP) ||
 	     (isr_status & CDNS_I2C_IXR_DATA))) {
 		/* Read data if receive data valid is set */
+		timeout = 1000;
 		while (cdns_i2c_readreg(CDNS_I2C_SR_OFFSET) &
 		       CDNS_I2C_SR_RXDV) {
 			/*
@@ -427,6 +429,16 @@ static irqreturn_t cdns_i2c_master_isr(void *ptr)
 
 			if (cdns_is_holdquirk(id, hold_quirk))
 				break;
+			timeout--;
+			if (timeout)
+				mdelay(1);
+			else
+				break;
+		}
+		if (!timeout) {
+			id->err_status = -ETIMEDOUT;
+			complete(&id->xfer_done);
+			return IRQ_HANDLED;
 		}
 
 		/*
@@ -436,12 +448,22 @@ static irqreturn_t cdns_i2c_master_isr(void *ptr)
 		 * maintain transfer size non-zero while performing a large
 		 * receive operation.
 		 */
+		timeout = 1000;
 		if (cdns_is_holdquirk(id, hold_quirk)) {
 			/* wait while fifo is full */
-			while (cdns_i2c_readreg(CDNS_I2C_XFER_SIZE_OFFSET) !=
-			       (id->curr_recv_count - CDNS_I2C_FIFO_DEPTH))
-				;
-
+			while ((cdns_i2c_readreg(CDNS_I2C_XFER_SIZE_OFFSET) !=
+			       (id->curr_recv_count - CDNS_I2C_FIFO_DEPTH))) {
+				timeout--;
+				if (timeout)
+					mdelay(1);
+				else
+					break;
+			}
+			if (!timeout) {
+				id->err_status = -ETIMEDOUT;
+				complete(&id->xfer_done);
+				return IRQ_HANDLED;
+			}
 			/*
 			 * Check number of bytes to be received against maximum
 			 * transfer size and update register accordingly.
