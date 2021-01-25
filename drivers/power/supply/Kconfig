@@ -710,4 +710,12 @@ config CHARGER_WILCO
 	  information can be found in
 	  Documentation/ABI/testing/sysfs-class-power-wilco
 
+config CHARGER_IRPS5401
+	tristate "Infineon IRPS5401 driver"
+	depends on I2C
+	select REGMAP_I2C
+	select RATIONAL
+	help
+	  Say Y to enable support for Infineon IRPS5401.
+
 endif # POWER_SUPPLY
