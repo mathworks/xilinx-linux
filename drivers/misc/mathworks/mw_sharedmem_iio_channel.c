@@ -290,15 +290,15 @@ static void mw_sharedmem_buffer_release(struct iio_buffer *buffer)
 }
 
 static const struct iio_buffer_access_funcs mw_sharedmem_access_func = {
-	.read 					= mw_sharedmem_buffer_read,
-	.write 					= mw_sharedmem_buffer_write,
+	.read 			= mw_sharedmem_buffer_read,
+	.write 			= mw_sharedmem_buffer_write,
 	.set_bytes_per_datum 	= mw_sharedmem_buffer_set_bytes_per_datum,
-	.set_length 			= mw_sharedmem_buffer_set_length,
-	.enable 				= mw_sharedmem_buffer_enable,
-	.disable 				= mw_sharedmem_buffer_disable,
-	.data_available 		= mw_sharedmem_buffer_data_available,
-	.space_available 		= mw_sharedmem_buffer_space_available,
-	.release 				= mw_sharedmem_buffer_release,
+	.set_length 		= mw_sharedmem_buffer_set_length,
+	.enable 		= mw_sharedmem_buffer_enable,
+	.disable 		= mw_sharedmem_buffer_disable,
+	.data_available 	= mw_sharedmem_buffer_data_available,
+	.space_available 	= mw_sharedmem_buffer_space_available,
+	.release 		= mw_sharedmem_buffer_release,
 
 	.modes = INDIO_BUFFER_HARDWARE,
 };
@@ -339,22 +339,23 @@ static void mw_sharedmem_buffer_free(struct iio_buffer *buffer)
  
 static void mw_sharedmem_irq_ack(struct mw_sharedmem_iio_chandev *mwchan)
 {
-	uint32_t readval, writeval;
+	uint32_t val;
 	
 	if (mwchan->irq_ack_reg < 0)
 		return;
 	
-	readval = mw_ip_read32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg);
+	val = mw_ip_read32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg);
 
+	/* First write: SET or CLEAR */
 	if (mwchan->irq_ack_op & (MW_IRQ_ACK_SET | MW_IRQ_ACK_SET_CLEAR)) {
-		writeval = readval | mwchan->irq_ack_mask;
-	} else if (mwchan->irq_ack_op & MW_IRQ_ACK_CLEAR) {
-		writeval = readval & ~mwchan->irq_ack_mask;
+		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg, val | mwchan->irq_ack_mask);
+	} else {
+		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg, val & ~mwchan->irq_ack_mask);
 	}
-	mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg, writeval);
 
+	/* Second write: CLEAR after SET */
 	if (mwchan->irq_ack_op & MW_IRQ_ACK_SET_CLEAR) {
-		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg, readval);
+		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->irq_ack_reg, val & ~mwchan->irq_ack_mask);
 	}
 	
 }
@@ -468,13 +469,17 @@ static const struct iio_chan_spec_ext_info mw_sharedmem_iio_ch_ip_info[] = {
  
  static void mw_sharedmem_config_ipcore_reg(struct mw_sharedmem_iio_chandev *mwchan)
 {
+	uint32_t base_addr32;
+
+	base_addr32 = (uint32_t)((size_t)mwchan->region->phys & 0xFFFFFFFF);
+	
 	if (mwchan->mwregion->rd_base_reg >= 0) {
 		/* Set the IP core's AXI Master Read Base Address */
-		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->mwregion->rd_base_reg, (uint32_t)mwchan->region->phys);
+		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->mwregion->rd_base_reg, base_addr32);
 	}
 	if (mwchan->mwregion->wr_base_reg >= 0) {
 		/* Set the IP core's AXI Master Write Base Address */
-		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->mwregion->wr_base_reg, (uint32_t)mwchan->region->phys);
+		mw_ip_write32(mwchan->mwdev->mw_ip_info, mwchan->mwregion->wr_base_reg, base_addr32);
 	}
 }
  
@@ -1022,7 +1027,7 @@ static int mw_sharedmem_iio_probe(
 			size_fmt[0] = 'k';
 		}	
 		dev_info(IP2DEVP(mwdev), "Allocated reserved memory, virt: 0x%0zX, phys: 0x%0zX, size: %zd %s\n", 
-			(size_t)mwregion->region.virt, mwregion->region.phys, size_disp, size_fmt);
+			(size_t)mwregion->region.virt, (size_t)mwregion->region.phys, size_disp, size_fmt);
 	}
 
 	/* Probe the read/write channels */
