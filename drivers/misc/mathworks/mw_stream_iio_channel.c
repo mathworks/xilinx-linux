@@ -8,7 +8,7 @@
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
-#include <linux/iio/buffer_impl.h>
+#include <linux/iio/buffer.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 #include <linux/idr.h>
@@ -298,6 +298,7 @@ static int mw_stream_iio_channel_reg_access(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info mw_stream_iio_channel_info = {
+	.driver_module = THIS_MODULE,
 	.debugfs_reg_access = &mw_stream_iio_channel_reg_access,
 };
 

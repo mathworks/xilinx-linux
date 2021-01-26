@@ -27,7 +27,8 @@
 
 #define MATHWORKS_IP_MAX_DEVTYPE 32
 #define	MATHWORKS_IP_DEVNAME_LEN 32
-
+#define MAX_INTERRUPT_NODES_PER_DUT  1 
+#define SYSFS_FILENAME_MAX_LENGTH 12 
 /*********************************************************
 * Devm Helpers
 *********************************************************/
@@ -44,56 +45,53 @@ static inline int devm_add_action_helper(struct device *dev, void (*action)(void
 }
 
 struct mw_dma_info {
-	void				*virt;
-	dma_addr_t			phys;
-	size_t				size;
+	void			*virt;
+	dma_addr_t		phys;
+	size_t			size;
 };
 
 struct mathworks_ip_dev_info {
 	char			devname[MATHWORKS_IP_DEVNAME_LEN];
 	dev_t			devid;
-	int				devcnt;
+	int			devcnt;
 };
 
 struct mathworks_ip_info;
 
 struct mathworks_ip_ops {
 	void (*get_devname) (struct mathworks_ip_info *thisIpCore, char *devname);
-	int	(*get_param) (struct mathworks_ip_info *thisIpCore, void *arg);
+	int (*get_param) (struct mathworks_ip_info *thisIpCore, void *arg);
 	struct file_operations *fops;
 };
 
 /* Struct types */
 struct mathworks_ip_info {
-    const char 			        	*name;
-    struct resource 		    	*mem;
-    void __iomem 		    		*regs;
-    struct device               	*dev;
-    struct device					*char_device;
-	struct cdev 		        	cdev;
-    dev_t 			            	dev_id;
-    int 			            	irq;
-    int								nirq;
-    struct fasync_struct 	    	*asyncq;
-    struct module 					*module;
+	const char 			*name;
+	struct resource 		*mem;
+	void __iomem 			*regs;
+	struct device			*dev;
+	struct device			*char_device;
+	struct cdev 			cdev;
+	dev_t 				dev_id;
+	int 				irq;
+	int				nirq;
+	struct fasync_struct 		*asyncq;
+	struct module 			*module;
 	/*
 	 * Bus Specific Ops
 	 */
-	struct mathworks_ip_ops			*ops;
-
+	struct mathworks_ip_ops		*ops;
 	struct mathworks_ip_dev_info	*dev_info;
-
-	void 							*private;
-
+	void 				*private;
 	/*
 	 * DMA Virtual and physical address
 	 */
-    struct mw_dma_info	        	dma_info;
-
-/*
- * I2C Controller and EEPROM
- */
-    struct i2c_client           	*i2c;
+	struct mw_dma_info		dma_info;
+	/*
+	 * I2C Controller and EEPROM
+	 */
+	struct i2c_client		*i2c;
+	struct kernfs_node		*irq_kn[MAX_INTERRUPT_NODES_PER_DUT];
 };
 
 

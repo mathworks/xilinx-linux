@@ -62,6 +62,20 @@ config MWIPCORE_IIO_STREAMING
 		To compile this driver as a module, choose M here:
 		the module will be called mwipcore_iio_streaming
 
+config MWIPCORE_IIO_MM
+	tristate "MathWorks IIO Memory Mapped Driver"
+	depends on DMADEVICES
+	depends on IIO
+	select IIO_BUFFER
+	select IIO_BUFFER_DMAENGINE
+	default m
+	help
+		Enable support for MathWorks IIO-based implementation of
+		memory mapped IO and DMA
+
+		To compile this driver as a module, choose M here:
+		the module will be called mwipcore_iio_mm
+
 endif #if MWIPCORE
 
 config MATHWORKS_GENERIC_OF
