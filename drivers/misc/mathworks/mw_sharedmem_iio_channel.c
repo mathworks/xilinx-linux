@@ -213,7 +213,7 @@ int mw_sharedmem_buffer_set_bytes_per_datum(struct iio_buffer *buffer, size_t bp
 	return 0;
 }
 
-static int mw_sharedmem_buffer_set_length(struct iio_buffer *buffer, int length)
+static int mw_sharedmem_buffer_set_length(struct iio_buffer *buffer, unsigned int length)
 {
 	struct mw_sharedmem_buffer *sharedmem_buff = buffer_to_mw_sharedmem_buffer(buffer);
 	struct mw_sharedmem_region *region = sharedmem_buff->mwchan->region;
@@ -508,9 +508,7 @@ static const struct iio_buffer_setup_ops mw_sharedmem_iio_buffer_setup_ops = {
 	.preenable = &mw_sharedmem_iio_buffer_preenable,
 };
 
-static const struct iio_info mw_sharedmem_iio_chandev_info = {
-	.driver_module = THIS_MODULE,
-};
+static const struct iio_info mw_sharedmem_iio_chandev_info = {};
 
 static int devm_mw_sharedmem_configure_buffer(struct iio_dev *indio_dev)
 {
