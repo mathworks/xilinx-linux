@@ -87,7 +87,7 @@ static int mwadma_allocate_desc(struct mwadma_slist **new, struct mwadma_chan *m
     tmp->state = MWDMA_READY;
     tmp->qchan = mwchan;
     INIT_LIST_HEAD(&(tmp->userid));
-    dev_dbg(&mwchan->dev,"buf_phys_addr 0x%08lx, size %u\n", (unsigned long) tmp->phys, tmp->length);
+    dev_dbg(&mwchan->dev,"buf_phys_addr 0x%08lx, size %z\n", (unsigned long) tmp->phys, tmp->length);
     *new = tmp;
     return 0;
 }
@@ -293,7 +293,7 @@ int mwadma_start(struct mwadma_chan *mwchan)
     }
     thisDesc = dmaengine_prep_slave_single(mwchan->chan, mwchan->curr->phys, mwchan->curr->length, mwchan->direction, mwchan->flags);
     if (NULL == thisDesc) {
-        dev_err(&mwchan->dev,"prep_slave_single failed: buf_phys_addr 0x%08lx, size %u\n", (unsigned long) mwchan->curr->phys, mwchan->curr->length);
+        dev_err(&mwchan->dev,"prep_slave_single failed: buf_phys_addr 0x%08lx, size %z\n", (unsigned long) mwchan->curr->phys, mwchan->curr->length);
         ret = -ENOMEM;
         goto start_failed;
     }
@@ -767,16 +767,17 @@ static void mwadma_mmap_close(struct vm_area_struct *vma)
 /*
  * @brief mwadma_mmap_fault
  */
-static int mwadma_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+static vm_fault_t mwadma_mmap_fault(struct vm_fault *vmf)
 {
-    struct mwadma_dev * mwdev = vma->vm_private_data;
-    struct page *thisPage;
-    unsigned long offset;
-    offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
-    thisPage = virt_to_page(MWDEV_TO_MWIP(mwdev)->mem->start + offset);
-    get_page(thisPage);
-    vmf->page = thisPage;
-    return 0;
+	struct vm_area_struct *vma = vmf->vma;
+	struct mwadma_dev * mwdev = vma->vm_private_data;
+	struct page *thisPage;
+	unsigned long offset;
+	offset = (vmf->pgoff - vma->vm_pgoff) << PAGE_SHIFT;
+	thisPage = virt_to_page(MWDEV_TO_MWIP(mwdev)->mem->start + offset);
+	get_page(thisPage);
+	vmf->page = thisPage;
+	return 0;
 }
 
 struct vm_operations_struct  mwadma_mmap_ops = {
@@ -1046,7 +1047,7 @@ static ssize_t mw_stream_chan_store(struct device *dev, struct device_attribute 
 static ssize_t mw_stream_chan_show(struct device *dev, struct device_attribute *attr,
         char *buf)
 {
-    return sprintf(buf, "%llu\n", atomic64_read(&rxcount)); 
+    return sprintf(buf, "%llu\n", (long long unsigned int)atomic64_read(&rxcount)); 
 }
 
 static DEVICE_ATTR(dma_irq, S_IRUGO, mw_stream_chan_show, mw_stream_chan_store);
