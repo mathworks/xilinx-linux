@@ -131,8 +131,10 @@ static int mw_sharedmem_buffer_write(struct iio_buffer *buffer, size_t n,
 	mutex_unlock(&mwchan->lock);
 	
 	n = ALIGN(n, buffer->bytes_per_datum);
+	
+	/* Only handle exact buffer size at end of region */
 	if (n > region->size - offset)
-		n = region->size - offset;
+		return -EFAULT;
 
 	mutex_lock(&region->lock);
 	if (copy_from_user(region->virt + offset, user_buffer, n)) {
@@ -173,8 +175,10 @@ static int mw_sharedmem_buffer_read(struct iio_buffer *buffer, size_t n,
 	mutex_unlock(&mwchan->lock);
 
 	n = rounddown(n, buffer->bytes_per_datum);
+	
+	/* Only handle exact buffer size at end of region */
 	if (n > region->size - offset)
-		n = region->size - offset;
+		return -EFAULT;
 	
 	/* Read-prioritized locking */
 	mutex_lock(&region->read_count_lock);
