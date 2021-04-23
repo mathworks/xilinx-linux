@@ -16,9 +16,9 @@
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/mutex.h>
-
 #include <linux/string.h>
 #include <linux/mathworks/mathworks_ip.h>
+
 #include "mw_sharedmem_iio_channel.h"
 #include "mathworks_ipcore.h"
 
@@ -884,7 +884,7 @@ static int mw_sharedmem_region_init(struct mw_sharedmem_region *region, struct r
 {
 	region->phys = (phys_addr_t)r->start;
 	region->size =  (size_t)resource_size(r);
-	region->virt = memremap(region->phys, region->size, MEMREMAP_WT);
+	region->virt = memremap(region->phys, region->size, MEMREMAP_WC);
 	if (region->virt == NULL) {
 		return -ENOMEM;
 	}
