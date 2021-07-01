@@ -297,26 +297,40 @@ static void __exit iio_exit(void)
 }
 
 #if defined(CONFIG_DEBUG_FS)
-static ssize_t iio_debugfs_read_reg(struct file *file, char __user *userbuf,
-			      size_t count, loff_t *ppos)
+static int iio_debugfs_get_reg_string(struct iio_dev *indio_dev)
 {
-	struct iio_dev *indio_dev = file->private_data;
-	char buf[20];
+	const struct iio_info *info = indio_dev->info;
 	unsigned val = 0;
-	ssize_t len;
 	int ret;
 
-	ret = indio_dev->info->debugfs_reg_access(indio_dev,
-						  indio_dev->cached_reg_addr,
-						  0, &val);
+	ret = info->debugfs_reg_access(indio_dev, indio_dev->cached_reg_addr,
+				       0, &val);
 	if (ret) {
 		dev_err(indio_dev->dev.parent, "%s: read failed\n", __func__);
 		return ret;
 	}
+	indio_dev->read_buf_len = snprintf(indio_dev->read_buf,
+					   sizeof(indio_dev->read_buf),
+					   "0x%X\n", val);
+	return 0;
+}
 
-	len = snprintf(buf, sizeof(buf), "0x%X\n", val);
+static ssize_t iio_debugfs_read_reg(struct file *file, char __user *userbuf,
+				    size_t count, loff_t *ppos)
+{
+	struct iio_dev *indio_dev = file->private_data;
+	loff_t pos = *ppos;
+	int ret;
 
-	return simple_read_from_buffer(userbuf, count, ppos, buf, len);
+	if (pos == 0) {
+		ret = iio_debugfs_get_reg_string(indio_dev);
+		if (ret)
+			return ret;
+	}
+
+	return simple_read_from_buffer(userbuf, count, ppos,
+				       indio_dev->read_buf,
+				       indio_dev->read_buf_len);
 }
 
 static ssize_t iio_debugfs_write_reg(struct file *file,
