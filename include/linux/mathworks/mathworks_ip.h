@@ -28,6 +28,9 @@
 #define MATHWORKS_IP_MAX_DEVTYPE 32
 #define	MATHWORKS_IP_DEVNAME_LEN 32
 
+#define MAX_INTERRUPT_NODES_PER_DUT  1 
+#define SYSFS_FILENAME_MAX_LENGTH 12 
+
 /*********************************************************
 * Devm Helpers
 *********************************************************/
@@ -94,6 +97,8 @@ struct mathworks_ip_info {
  * I2C Controller and EEPROM
  */
     struct i2c_client           	*i2c;
+    struct kernfs_node         *irq_kn[MAX_INTERRUPT_NODES_PER_DUT];
+
 };
 
 
