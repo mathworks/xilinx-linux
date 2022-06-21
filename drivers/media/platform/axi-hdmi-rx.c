@@ -20,15 +20,15 @@
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-event.h>
-#include <media/v4l2-of.h>
+#include <media/v4l2-fwnode.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/i2c/adv7604.h>
 
-#define AXI_HDMI_RX_REG_VERSION		0x000
-#define AXI_HDMI_RX_REG_ID		0x004
+#include <linux/fpga/adi-axi-common.h>
+
 #define AXI_HDMI_RX_REG_ENABLE		0x040
 #define AXI_HDMI_RX_REG_CONFIG		0x044
 #define AXI_HDMI_RX_REG_CLK_COUNT	0x054
@@ -73,6 +73,7 @@ struct axi_hdmi_rx {
 	struct v4l2_async_subdev *asds[1];
 
 	u8 bus_width;
+	u8 config_flags;
 
 	u8 edid_data[256];
 	u8 edid_blocks;
@@ -87,12 +88,6 @@ static void axi_hdmi_rx_write(struct axi_hdmi_rx *axi_hdmi_rx,
 	unsigned int reg, unsigned int val)
 {
 	writel(val, axi_hdmi_rx->base + reg);
-}
-
-static unsigned int axi_hdmi_rx_read(struct axi_hdmi_rx *axi_hdmi_rx,
-	unsigned int reg)
-{
-	return readl(axi_hdmi_rx->base + reg);
 }
 
 static struct axi_hdmi_rx *to_axi_hdmi_rx(struct v4l2_device *v4l2_dev)
@@ -293,14 +288,20 @@ static const struct vb2_ops axi_hdmi_rx_qops = {
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 
+static unsigned int axi_hdmi_rx_read(struct axi_hdmi_rx *axi_hdmi_rx,
+	unsigned int reg)
+{
+	return readl(axi_hdmi_rx->base + reg);
+}
+
 static int axi_hdmi_rx_g_register(struct file *file, void *priv_fh,
 	struct v4l2_dbg_register *reg)
 {
 	struct axi_hdmi_rx *hdmi_rx = video_drvdata(file);
 
 	switch (reg->reg) {
-	case AXI_HDMI_RX_REG_VERSION:
-	case AXI_HDMI_RX_REG_ID:
+	case ADI_AXI_REG_VERSION:
+	case ADI_AXI_REG_ID:
 	case AXI_HDMI_RX_REG_ENABLE:
 	case AXI_HDMI_RX_REG_CONFIG:
 	case AXI_HDMI_RX_REG_CLK_COUNT:
@@ -556,6 +557,7 @@ static int axi_hdmi_rx_try_fmt_vid_cap(struct file *file, void *priv_fh,
 		break;
 	default:
 		pix->pixelformat = V4L2_PIX_FMT_RGB24;
+		/* fall-through */
 	case V4L2_PIX_FMT_RGB24:
 	case V4L2_PIX_FMT_BGR24:
 		pix->colorspace = V4L2_COLORSPACE_SRGB;
@@ -640,10 +642,10 @@ static int axi_hdmi_rx_s_fmt_vid_cap(struct file *file, void *priv_fh,
 
 	s->pixelformat = pix->pixelformat;
 
-	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_TIMING, 
+	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_TIMING,
 		(s->height << 16) | s->width);
 
-	config |= AXI_HDMI_RX_CONFIG_EDGE_SEL;
+	config |= hdmi_rx->config_flags;
 
 	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_CONFIG, config);
 
@@ -746,6 +748,7 @@ static int axi_hdmi_rx_nodes_register(struct axi_hdmi_rx *hdmi_rx)
 		 "%s", hdmi_rx->v4l2_dev.name);
 	vdev->v4l2_dev = &hdmi_rx->v4l2_dev;
 	vdev->fops = &axi_hdmi_rx_fops;
+	vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 	vdev->release = video_device_release_empty;
 	vdev->ctrl_handler = s->subdev->ctrl_handler;
 	vdev->lock = &s->lock;
@@ -775,7 +778,7 @@ static int axi_hdmi_rx_nodes_register(struct axi_hdmi_rx *hdmi_rx)
 	if (ret)
 		return ret;
 
-	return video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	return video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 }
 
 static struct axi_hdmi_rx *notifier_to_axi_hdmi_rx(struct v4l2_async_notifier *n)
@@ -826,6 +829,11 @@ static int axi_hdmi_rx_async_complete(struct v4l2_async_notifier *notifier)
 	return axi_hdmi_rx_nodes_register(hdmi_rx);
 }
 
+static const struct v4l2_async_notifier_operations axi_hdmi_rx_async_ops = {
+	.bound = axi_hdmi_rx_async_bound,
+	.complete = axi_hdmi_rx_async_complete,
+};
+
 static int axi_hdmi_rx_load_edid(struct platform_device *pdev,
 	struct axi_hdmi_rx *hdmi_rx)
 {
@@ -861,7 +869,7 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 	struct device_node *ep_node;
 	struct axi_hdmi_rx *hdmi_rx;
 	struct resource *res;
-	struct v4l2_of_endpoint bus_cfg;
+	struct v4l2_fwnode_endpoint bus_cfg = { .bus_type = V4L2_MBUS_UNKNOWN };
 	int ret;
 
 	hdmi_rx = devm_kzalloc(&pdev->dev, sizeof(*hdmi_rx), GFP_KERNEL);
@@ -908,20 +916,22 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		goto err_device_unregister;
 	}
 	bus_cfg.bus.parallel.bus_width = 0;
-	v4l2_of_parse_endpoint(ep_node, &bus_cfg);
+	v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep_node), &bus_cfg);
 	if (bus_cfg.bus.parallel.bus_width)
 		hdmi_rx->bus_width = bus_cfg.bus.parallel.bus_width;
 	else
 		hdmi_rx->bus_width = 16;
 
-	hdmi_rx->asd.match_type = V4L2_ASYNC_MATCH_OF;
-	hdmi_rx->asd.match.of.node = of_graph_get_remote_port_parent(ep_node);
+	hdmi_rx->asd.match_type = V4L2_ASYNC_MATCH_FWNODE;
+	hdmi_rx->asd.match.fwnode = of_fwnode_handle(of_graph_get_remote_port_parent(ep_node));
 
-	hdmi_rx->asds[0] = &hdmi_rx->asd;
-	hdmi_rx->notifier.subdevs = hdmi_rx->asds;
-	hdmi_rx->notifier.num_subdevs = ARRAY_SIZE(hdmi_rx->asds);
-	hdmi_rx->notifier.bound = axi_hdmi_rx_async_bound;
-	hdmi_rx->notifier.complete = axi_hdmi_rx_async_complete;
+	v4l2_async_notifier_init(&hdmi_rx->notifier);
+	ret = v4l2_async_notifier_add_subdev(&hdmi_rx->notifier,
+					     &hdmi_rx->asd);
+	if (ret < 0)
+		goto err_device_unregister;
+
+	hdmi_rx->notifier.ops = &axi_hdmi_rx_async_ops;
 
 	ret = v4l2_async_notifier_register(&hdmi_rx->v4l2_dev,
 		&hdmi_rx->notifier);
@@ -930,8 +940,11 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		goto err_device_unregister;
 	}
 
+	if (!(bus_cfg.bus.parallel.flags & V4L2_MBUS_PCLK_SAMPLE_RISING))
+		hdmi_rx->config_flags = AXI_HDMI_RX_CONFIG_EDGE_SEL;
+
 	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_CONFIG,
-			AXI_HDMI_RX_CONFIG_EDGE_SEL);
+			hdmi_rx->config_flags);
 
 	return 0;
 
@@ -970,3 +983,6 @@ static struct platform_driver axi_hdmi_rx_driver = {
 	.remove = axi_hdmi_rx_remove,
 };
 module_platform_driver(axi_hdmi_rx_driver);
+
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("ADI AXI HDMI RX driver");

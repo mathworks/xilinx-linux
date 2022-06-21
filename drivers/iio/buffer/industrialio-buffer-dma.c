@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2013-2015 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/slab.h>
@@ -13,7 +12,8 @@
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/poll.h>
-#include <linux/iio/buffer.h>
+#include <linux/iio/buffer_impl.h>
+#include <linux/iio/iio.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/dma-mapping.h>
 #include <linux/sizes.h>
@@ -224,7 +224,7 @@ void iio_dma_buffer_block_done(struct iio_dma_buffer_block *block)
 	spin_unlock_irqrestore(&queue->list_lock, flags);
 
 	iio_buffer_block_put_atomic(block);
-	wake_up_interruptible_poll(&queue->buffer.pollq, queue->poll_wakup_flags);
+	wake_up_interruptible_poll(&queue->buffer.pollq, (uintptr_t)queue->poll_wakup_flags);
 }
 EXPORT_SYMBOL_GPL(iio_dma_buffer_block_done);
 
@@ -253,7 +253,7 @@ void iio_dma_buffer_block_list_abort(struct iio_dma_buffer_queue *queue,
 	}
 	spin_unlock_irqrestore(&queue->list_lock, flags);
 
-	wake_up_interruptible_poll(&queue->buffer.pollq, POLLIN | POLLRDNORM);
+	wake_up_interruptible_poll(&queue->buffer.pollq, EPOLLIN | EPOLLRDNORM);
 }
 EXPORT_SYMBOL_GPL(iio_dma_buffer_block_list_abort);
 
@@ -422,7 +422,7 @@ static struct iio_dma_buffer_block *iio_dma_buffer_dequeue(
  * @n: Number of bytes to read
  * @user_buffer: Userspace buffer to copy the data to
  *
- * Should be used as the read_first_n callback for iio_buffer_access_ops
+ * Should be used as the read callback for iio_buffer_access_ops
  * struct for DMA buffers.
  */
 int iio_dma_buffer_read(struct iio_buffer *buffer, size_t n,
@@ -651,9 +651,6 @@ int iio_dma_buffer_free_blocks(struct iio_buffer *buffer)
 
 	mutex_lock(&queue->lock);
 
-	if (!queue->num_blocks)
-		goto out_unlock;
-
 	spin_lock_irq(&queue->list_lock);
 	INIT_LIST_HEAD(&queue->incoming);
 	INIT_LIST_HEAD(&queue->outgoing);
@@ -669,8 +666,6 @@ int iio_dma_buffer_free_blocks(struct iio_buffer *buffer)
 	queue->blocks = NULL;
 	queue->num_blocks = 0;
 	queue->max_offset = 0;
-
-out_unlock:
 
 	mutex_unlock(&queue->lock);
 
@@ -844,7 +839,7 @@ EXPORT_SYMBOL_GPL(iio_dma_buffer_set_bytes_per_datum);
  * Should be used as the set_length callback for iio_buffer_access_ops
  * struct for DMA buffers.
  */
-int iio_dma_buffer_set_length(struct iio_buffer *buffer, int length)
+int iio_dma_buffer_set_length(struct iio_buffer *buffer, unsigned int length)
 {
 	/* Avoid an invalid state */
 	if (length < 2)

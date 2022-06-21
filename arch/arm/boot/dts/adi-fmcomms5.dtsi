@@ -15,7 +15,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
-		compatible = "ad9361-2x";
+		compatible = "adi,ad9361-2x";
 
 		/* SPI Setup */
 		reg = <0>;
@@ -84,6 +84,7 @@
 		adi,tx-rf-port-input-select = <0>; /* TX1A, TX2A */
 		//adi,update-tx-gain-in-alert-enable;
 		adi,tx-attenuation-mdB = <10000>;
+		adi,tx-lo-powerdown-managed-enable;
 
 		adi,rf-rx-bandwidth-hz = <18000000>;
 		adi,rf-tx-bandwidth-hz = <18000000>;
@@ -238,7 +239,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
-		compatible = "ad9361";
+		compatible = "adi,ad9361";
 
 		/* SPI Setup */
 		reg = <1>;
@@ -306,6 +307,7 @@
 		adi,tx-rf-port-input-select = <0>; /* TX1A, TX2A */
 		//adi,update-tx-gain-in-alert-enable;
 		adi,tx-attenuation-mdB = <10000>;
+		adi,tx-lo-powerdown-managed-enable;
 
 		adi,rf-rx-bandwidth-hz = <18000000>;
 		adi,rf-tx-bandwidth-hz = <18000000>;

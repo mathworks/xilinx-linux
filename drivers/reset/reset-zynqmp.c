@@ -1,61 +1,94 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2016 Xilinx, Inc.
+ * Copyright (C) 2018 Xilinx, Inc.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
-#include <linux/io.h>
-#include <linux/module.h>
+#include <linux/err.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
-#include <linux/soc/xilinx/zynqmp/pm.h>
+#include <linux/firmware/xlnx-zynqmp.h>
+#include <linux/of_device.h>
 
-#define ZYNQMP_NR_RESETS (ZYNQMP_PM_RESET_END - ZYNQMP_PM_RESET_START - 2)
-#define ZYNQMP_RESET_ID (ZYNQMP_PM_RESET_START + 1)
+#define ZYNQMP_NR_RESETS (ZYNQMP_PM_RESET_END - ZYNQMP_PM_RESET_START)
+#define ZYNQMP_RESET_ID ZYNQMP_PM_RESET_START
+#define VERSAL_NR_RESETS	95
 
-struct zynqmp_reset {
-	struct reset_controller_dev rcdev;
+struct zynqmp_reset_soc_data {
+	u32 reset_id;
+	u32 num_resets;
 };
 
-static int zynqmp_reset_assert(struct reset_controller_dev *rcdev,
-				unsigned long id)
+struct zynqmp_reset_data {
+	struct reset_controller_dev rcdev;
+	const struct zynqmp_reset_soc_data *data;
+};
+
+static inline struct zynqmp_reset_data *
+to_zynqmp_reset_data(struct reset_controller_dev *rcdev)
 {
-	return zynqmp_pm_reset_assert(ZYNQMP_RESET_ID + id,
-						PM_RESET_ACTION_ASSERT);
+	return container_of(rcdev, struct zynqmp_reset_data, rcdev);
+}
+
+static int zynqmp_reset_assert(struct reset_controller_dev *rcdev,
+			       unsigned long id)
+{
+	struct zynqmp_reset_data *priv = to_zynqmp_reset_data(rcdev);
+
+	return zynqmp_pm_reset_assert(priv->data->reset_id + id,
+				      PM_RESET_ACTION_ASSERT);
 }
 
 static int zynqmp_reset_deassert(struct reset_controller_dev *rcdev,
-				unsigned long id)
+				 unsigned long id)
 {
-	return zynqmp_pm_reset_assert(ZYNQMP_RESET_ID + id,
-						PM_RESET_ACTION_RELEASE);
+	struct zynqmp_reset_data *priv = to_zynqmp_reset_data(rcdev);
+
+	return zynqmp_pm_reset_assert(priv->data->reset_id + id,
+				      PM_RESET_ACTION_RELEASE);
 }
 
 static int zynqmp_reset_status(struct reset_controller_dev *rcdev,
-				unsigned long id)
+			       unsigned long id)
 {
-	int val;
+	struct zynqmp_reset_data *priv = to_zynqmp_reset_data(rcdev);
+	int err;
+	u32 val;
 
-	zynqmp_pm_reset_get_status(ZYNQMP_RESET_ID + id, &val);
+	err = zynqmp_pm_reset_get_status(priv->data->reset_id + id, &val);
+	if (err)
+		return err;
+
 	return val;
 }
 
 static int zynqmp_reset_reset(struct reset_controller_dev *rcdev,
-				unsigned long id)
+			      unsigned long id)
 {
-	return zynqmp_pm_reset_assert(ZYNQMP_RESET_ID + id,
-						PM_RESET_ACTION_PULSE);
+	struct zynqmp_reset_data *priv = to_zynqmp_reset_data(rcdev);
+
+	return zynqmp_pm_reset_assert(priv->data->reset_id + id,
+				      PM_RESET_ACTION_PULSE);
 }
 
-static struct reset_control_ops zynqmp_reset_ops = {
+static int zynqmp_reset_of_xlate(struct reset_controller_dev *rcdev,
+				 const struct of_phandle_args *reset_spec)
+{
+	return reset_spec->args[0];
+}
+
+static const struct zynqmp_reset_soc_data zynqmp_reset_data = {
+	.reset_id = ZYNQMP_RESET_ID,
+	.num_resets = ZYNQMP_NR_RESETS,
+};
+
+static const struct zynqmp_reset_soc_data versal_reset_data = {
+	.reset_id = 0,
+	.num_resets = VERSAL_NR_RESETS,
+};
+
+static const struct reset_control_ops zynqmp_reset_ops = {
 	.reset = zynqmp_reset_reset,
 	.assert = zynqmp_reset_assert,
 	.deassert = zynqmp_reset_deassert,
@@ -64,32 +97,32 @@ static struct reset_control_ops zynqmp_reset_ops = {
 
 static int zynqmp_reset_probe(struct platform_device *pdev)
 {
-	struct zynqmp_reset *zynqmp_reset;
-	int ret;
+	struct zynqmp_reset_data *priv;
 
-	zynqmp_reset = devm_kzalloc(&pdev->dev,
-				sizeof(*zynqmp_reset), GFP_KERNEL);
-	if (!zynqmp_reset)
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, zynqmp_reset);
+	priv->data = of_device_get_match_data(&pdev->dev);
+	if (!priv->data)
+		return -EINVAL;
 
-	zynqmp_reset->rcdev.ops = &zynqmp_reset_ops;
-	zynqmp_reset->rcdev.owner = THIS_MODULE;
-	zynqmp_reset->rcdev.of_node = pdev->dev.of_node;
-	zynqmp_reset->rcdev.of_reset_n_cells = 1;
-	zynqmp_reset->rcdev.nr_resets = ZYNQMP_NR_RESETS;
+	platform_set_drvdata(pdev, priv);
 
-	ret = reset_controller_register(&zynqmp_reset->rcdev);
-	if (!ret)
-		dev_info(&pdev->dev, "Xilinx zynqmp reset driver probed\n");
+	priv->rcdev.ops = &zynqmp_reset_ops;
+	priv->rcdev.owner = THIS_MODULE;
+	priv->rcdev.of_node = pdev->dev.of_node;
+	priv->rcdev.nr_resets = priv->data->num_resets;
+	priv->rcdev.of_reset_n_cells = 1;
+	priv->rcdev.of_xlate = zynqmp_reset_of_xlate;
 
-	return ret;
+	return devm_reset_controller_register(&pdev->dev, &priv->rcdev);
 }
 
 static const struct of_device_id zynqmp_reset_dt_ids[] = {
-	{ .compatible = "xlnx,zynqmp-reset", },
-	{ },
+	{ .compatible = "xlnx,zynqmp-reset", .data = &zynqmp_reset_data, },
+	{ .compatible = "xlnx,versal-reset", .data = &versal_reset_data, },
+	{ /* sentinel */ },
 };
 
 static struct platform_driver zynqmp_reset_driver = {

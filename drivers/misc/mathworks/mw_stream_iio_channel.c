@@ -9,6 +9,7 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/buffer_impl.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 #include <linux/idr.h>
@@ -297,8 +298,7 @@ static int mw_stream_iio_channel_reg_access(struct iio_dev *indio_dev,
 	return 0;
 }
 
-static const struct iio_info mw_stream_iio_channel_info = {
-	.driver_module = THIS_MODULE,
+static const struct iio_info mw_stream_iio_dev_info = {
 	.debugfs_reg_access = &mw_stream_iio_channel_reg_access,
 };
 
@@ -466,7 +466,7 @@ static int devm_mw_stream_iio_register(struct iio_dev *indio_dev) {
 
 	indio_dev->dev.parent = &mwchan->dev;
 	indio_dev->name = dev_name(&mwchan->dev);
-	indio_dev->info = &mw_stream_iio_channel_info;
+	indio_dev->info = &mw_stream_iio_dev_info;
 
 	mwchan->num_data_chan = mw_stream_count_data_channels(indio_dev);
 
@@ -576,7 +576,7 @@ static struct iio_dev *devm_mw_stream_iio_alloc(
 	memcpy(&mwchan->dev.archdata, &IP2DEVP(mwdev)->archdata, sizeof(struct dev_archdata));
 	mwchan->dev.coherent_dma_mask = IP2DEVP(mwdev)->coherent_dma_mask;
 	mwchan->dev.dma_mask = IP2DEVP(mwdev)->dma_mask;
-	mwchan->dev.dma_pfn_offset = IP2DEVP(mwdev)->dma_pfn_offset;
+	mwchan->dev.dma_range_map = IP2DEVP(mwdev)->dma_range_map;
 
 
 	status = of_property_read_string(node, "mathworks,dev-name", &devname);

@@ -8,6 +8,7 @@
  * http://wiki.analog.com/resources/fpga/xilinx/fmc/ad9467
  */
 
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
@@ -27,61 +28,145 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/buffer_impl.h>
+#include <linux/iio/buffer-dma.h>
+#include <linux/iio/buffer-dmaengine.h>
+
+#include <linux/jesd204/jesd204.h>
+#include <linux/jesd204/adi-common.h>
 
 #include "cf_axi_adc.h"
 
 const unsigned int decimation_factors_available[] = {1, 8};
 
 struct axiadc_core_info {
-	bool has_fifo_interface;
 	unsigned int version;
 };
 
-static int axiadc_spi_read(struct axiadc_state *st, unsigned reg)
+struct axiadc_state {
+	struct device 			*dev_spi;
+	struct iio_info			iio_info;
+	struct clk 			*clk;
+	struct gpio_desc		*gpio_decimation;
+	struct jesd204_dev 		*jdev;
+	size_t				regs_size;
+	void __iomem			*regs;
+	void __iomem			*slave_regs;
+	unsigned int			max_usr_channel;
+	unsigned int			id;
+	unsigned int			pcore_version;
+	unsigned int			decimation_factor;
+	unsigned long long		adc_clk;
+	unsigned int			have_slave_channels;
+	bool				additional_channel;
+	bool				dp_disable;
+	bool				ext_sync_avail;
+
+	struct iio_chan_spec		channels[AXIADC_MAX_CHANNEL];
+};
+
+struct axiadc_converter *to_converter(struct device *dev)
 {
-	struct axiadc_converter *conv = to_converter(st->dev_spi);
+	struct axiadc_converter *conv = spi_get_drvdata(to_spi_device(dev));
 
-	if (IS_ERR(conv))
-		return PTR_ERR(conv);
+	if (conv)
+		return conv;
 
-	return conv->read(conv->spi, reg);
+	return ERR_PTR(-ENODEV);
+}
+EXPORT_SYMBOL_GPL(to_converter);
+
+void axiadc_write(struct axiadc_state *st, unsigned reg, unsigned val)
+{
+	iowrite32(val, st->regs + reg);
+}
+EXPORT_SYMBOL_GPL(axiadc_write);
+
+unsigned int axiadc_read(struct axiadc_state *st, unsigned reg)
+{
+	return ioread32(st->regs + reg);
+}
+EXPORT_SYMBOL_GPL(axiadc_read);
+
+void axiadc_slave_write(struct axiadc_state *st, unsigned reg, unsigned val)
+{
+	iowrite32(val, st->slave_regs + reg);
+}
+EXPORT_SYMBOL_GPL(axiadc_slave_write);
+
+unsigned int axiadc_slave_read(struct axiadc_state *st, unsigned reg)
+{
+	return ioread32(st->slave_regs + reg);
+}
+EXPORT_SYMBOL_GPL(axiadc_slave_read);
+
+void axiadc_idelay_set(struct axiadc_state *st, unsigned lane, unsigned val)
+{
+	axiadc_write(st, ADI_REG_DELAY(lane), val);
+}
+EXPORT_SYMBOL_GPL(axiadc_idelay_set);
+
+static int axiadc_hw_submit_block(struct iio_dma_buffer_queue *queue,
+	struct iio_dma_buffer_block *block)
+{
+	struct iio_dev *indio_dev = queue->driver_data;
+	struct axiadc_state *st = iio_priv(indio_dev);
+
+	block->block.bytes_used = block->block.size;
+
+	iio_dmaengine_buffer_submit_block(queue, block, DMA_FROM_DEVICE);
+
+	axiadc_write(st, ADI_REG_STATUS, ~0);
+	axiadc_write(st, ADI_REG_DMA_STATUS, ~0);
+
+	return 0;
 }
 
-static int axiadc_spi_write(struct axiadc_state *st, unsigned reg, unsigned val)
+static const struct iio_dma_buffer_ops axiadc_dma_buffer_ops = {
+	.submit = axiadc_hw_submit_block,
+	.abort = iio_dmaengine_buffer_abort,
+};
+
+static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
+	const char *dma_name)
 {
-	struct axiadc_converter *conv = to_converter(st->dev_spi);
+	struct iio_buffer *buffer;
 
-	if (IS_ERR(conv))
-		return PTR_ERR(conv);
+	if (dma_name == NULL)
+		dma_name = "rx";
 
-	return conv->write(conv->spi, reg, val);
+	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
+			&axiadc_dma_buffer_ops, indio_dev);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	indio_dev->modes |= INDIO_BUFFER_HARDWARE;
+	iio_device_attach_buffer(indio_dev, buffer);
+
+	return 0;
 }
 
+static void axiadc_unconfigure_ring_stream(struct iio_dev *indio_dev)
+{
+	iio_dmaengine_buffer_free(indio_dev->buffer);
+}
+
+static int axiadc_chan_to_regoffset(struct iio_chan_spec const *chan)
+{
+	if (chan->modified)
+		return chan->scan_index;
+
+	return chan->channel;
+}
 
 int axiadc_set_pnsel(struct axiadc_state *st, int channel, enum adc_pn_sel sel)
 {
 	unsigned reg;
 
-	if (PCORE_VERSION_MAJOR(st->pcore_version) > 7) {
-		reg = axiadc_read(st, ADI_REG_CHAN_CNTRL_3(channel));
-		reg &= ~ADI_ADC_PN_SEL(~0);
-		reg |= ADI_ADC_PN_SEL(sel);
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_3(channel), reg);
-	} else {
-		reg = axiadc_read(st, ADI_REG_CHAN_CNTRL(channel));
-
-		if (sel == ADC_PN_CUSTOM) {
-			reg |= ADI_PN_SEL;
-		} else if (sel == ADC_PN9) {
-			reg &= ~ADI_PN23_TYPE;
-			reg &= ~ADI_PN_SEL;
-		} else {
-			reg |= ADI_PN23_TYPE;
-			reg &= ~ADI_PN_SEL;
-		}
-
-		axiadc_write(st, ADI_REG_CHAN_CNTRL(channel), reg);
-	}
+	reg = axiadc_read(st, ADI_REG_CHAN_CNTRL_3(channel));
+	reg &= ~ADI_ADC_PN_SEL(~0);
+	reg |= ADI_ADC_PN_SEL(sel);
+	axiadc_write(st, ADI_REG_CHAN_CNTRL_3(channel), reg);
 
 	return 0;
 }
@@ -91,35 +176,25 @@ enum adc_pn_sel axiadc_get_pnsel(struct axiadc_state *st,
 			       int channel, const char **name)
 {
 	unsigned val;
+	const char *ident[] = {"PN9", "PN23A", "UNDEF", "UNDEF",
+			"PN7", "PN15", "PN23", "PN31", "UNDEF", "PN_CUSTOM"};
 
-	if (PCORE_VERSION_MAJOR(st->pcore_version) > 7) {
-		const char *ident[] = {"PN9", "PN23A", "UNDEF", "UNDEF",
-				"PN7", "PN15", "PN23", "PN31", "UNDEF", "PN_CUSTOM"};
+	val = ADI_TO_ADC_PN_SEL(axiadc_read(st, ADI_REG_CHAN_CNTRL_3(channel)));
 
-		val = ADI_TO_ADC_PN_SEL(axiadc_read(st, ADI_REG_CHAN_CNTRL_3(channel)));
-
-		if (name)
+	if (name) {
+		if (val >= ARRAY_SIZE(ident))
+			*name = "UNDEF";
+		else
 			*name = ident[val];
-
-		return val;
-	} else {
-		val = axiadc_read(st, ADI_REG_CHAN_CNTRL(channel));;
-
-		if (name) {
-			if (val & ADI_PN_SEL)
-				*name = "PN_CUSTOM";
-			else if (val & ADI_PN23_TYPE)
-				*name = "PN23";
-			else
-				*name = "PN9";
-		}
-		return val & (ADI_PN23_TYPE | ADI_PN_SEL);
 	}
+
+	return val;
 }
 
-static void axiadc_toggle_scale_offset_en(struct axiadc_state *st)
+static unsigned int axiadc_num_phys_channels(struct axiadc_state *st)
 {
-	return;
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+	return conv->chip_info->num_channels - st->have_slave_channels;
 }
 
 static ssize_t axiadc_debugfs_pncheck_read(struct file *file, char __user *userbuf,
@@ -127,13 +202,12 @@ static ssize_t axiadc_debugfs_pncheck_read(struct file *file, char __user *userb
 {
 	struct iio_dev *indio_dev = file->private_data;
 	struct axiadc_state *st = iio_priv(indio_dev);
-	struct axiadc_converter *conv = to_converter(st->dev_spi);
 	char buf[1000];
 	const char *pn_name;
 	ssize_t len = 0;
 	unsigned stat, i;
 
-	for (i = 0; i < conv->chip_info->num_channels; i++) {
+	for (i = 0; i < axiadc_num_phys_channels(st); i++) {
 		stat = axiadc_read(st, ADI_REG_CHAN_STATUS(i));
 		axiadc_get_pnsel(st, i, &pn_name);
 
@@ -154,7 +228,8 @@ static ssize_t axiadc_debugfs_pncheck_write(struct file *file,
 	struct iio_dev *indio_dev = file->private_data;
 	struct axiadc_state *st = iio_priv(indio_dev);
 	struct axiadc_converter *conv = to_converter(st->dev_spi);
-	unsigned i, mode = TESTMODE_OFF;
+	enum adc_pn_sel mode;
+	unsigned int i;
 	char buf[80], *p = buf;
 
 	count = min_t(size_t, count, (sizeof(buf)-1));
@@ -164,24 +239,27 @@ static ssize_t axiadc_debugfs_pncheck_write(struct file *file,
 	p[count] = 0;
 
 	if (sysfs_streq(p, "PN9"))
-		mode = TESTMODE_PN9_SEQ;
+		mode = ADC_PN9;
 	else if (sysfs_streq(p, "PN23"))
-		mode = TESTMODE_PN23_SEQ;
+		mode = ADC_PN23A;
 	else
-		mode = TESTMODE_OFF;
+		mode = ADC_PN_OFF;
 
 	mutex_lock(&indio_dev->mlock);
 
-	for (i = 0; i < conv->chip_info->num_channels; i++) {
-		if (conv->testmode_set)
-			conv->testmode_set(indio_dev, i, mode);
+	for (i = 0; i < axiadc_num_phys_channels(st); i++) {
+		if (conv->set_pnsel)
+			conv->set_pnsel(indio_dev, i, mode);
 
-		axiadc_set_pnsel(st, i, (mode == TESTMODE_PN9_SEQ) ?
-				ADC_PN9 : ADC_PN23A);
-		axiadc_write(st, ADI_REG_CHAN_STATUS(i), ~0);
+		if (mode != ADC_PN_OFF)
+			axiadc_set_pnsel(st, i, mode);
 	}
 
-	mdelay(1); /* FIXME */
+	mdelay(1);
+
+	for (i = 0; i < axiadc_num_phys_channels(st); i++)
+		axiadc_write(st, ADI_REG_CHAN_STATUS(i), ~0);
+
 	mutex_unlock(&indio_dev->mlock);
 
 	return count;
@@ -200,30 +278,31 @@ static int axiadc_reg_access(struct iio_dev *indio_dev,
 	struct axiadc_state *st = iio_priv(indio_dev);
 	int ret;
 
+	/* Check that the register is in range and aligned */
+	if ((reg & DEBUGFS_DRA_PCORE_REG_MAGIC) &&
+	    ((reg & 0xffff) >= st->regs_size || (reg & 0x3)))
+		return -EINVAL;
+
 	mutex_lock(&indio_dev->mlock);
-	if (readval == NULL) {
-		if (reg & DEBUGFS_DRA_PCORE_REG_MAGIC) {
-			axiadc_write(st, reg & 0xFFFF, writeval);
-			ret = 0;
-		} else {
-			ret = axiadc_spi_write(st, reg, writeval);
-			axiadc_spi_write(st, ADC_REG_TRANSFER, TRANSFER_SYNC);
-		}
+
+	if (!(reg & DEBUGFS_DRA_PCORE_REG_MAGIC)) {
+		struct axiadc_converter *conv = to_converter(st->dev_spi);
+		if (IS_ERR(conv))
+			ret = PTR_ERR(conv);
+		else if (!conv->reg_access)
+			ret = -ENODEV;
+		else
+			ret = conv->reg_access(indio_dev, reg, writeval, readval);
 	} else {
-		if (reg & DEBUGFS_DRA_PCORE_REG_MAGIC) {
+		if (readval == NULL)
+			axiadc_write(st, reg & 0xFFFF, writeval);
+		else
 			*readval = axiadc_read(st, reg & 0xFFFF);
-		} else {
-			ret = axiadc_spi_read(st, reg);
-			if (ret < 0)
-				goto out_unlock;
-			*readval = ret;
-		}
 		ret = 0;
 	}
-out_unlock:
 	mutex_unlock(&indio_dev->mlock);
 
-	return ret;
+	return 0;
 }
 
 static int axiadc_decimation_set(struct axiadc_state *st,
@@ -237,12 +316,17 @@ static int axiadc_decimation_set(struct axiadc_state *st,
 		case 8:
 			reg = axiadc_read(st, ADI_REG_GP_CONTROL);
 
-			if (st->decimation_factor == 8)
+			if (decimation_factor == 8)
 				reg |= BIT(0);
 			else
 				reg &= ~BIT(0);
 
-			axiadc_write(st, ADI_REG_GP_CONTROL, reg);
+			if (st->gpio_decimation)
+				gpiod_set_value(st->gpio_decimation,
+						reg & BIT(0));
+			else
+				axiadc_write(st, ADI_REG_GP_CONTROL, reg);
+			st->decimation_factor = decimation_factor;
 			break;
 		default:
 			ret = -EINVAL;
@@ -280,10 +364,8 @@ static ssize_t axiadc_decimation_store(struct axiadc_state *st,
 	val = DIV_ROUND_CLOSEST(parent, frequency);
 
 	for (i = 0; i < ARRAY_SIZE(decimation_factors_available); i++) {
-		if (val == decimation_factors_available[i]) {
-			st->decimation_factor = val;
+		if (val == decimation_factors_available[i])
 			return axiadc_decimation_set(st, val);
-		}
 	}
 
 	return -EINVAL;
@@ -319,12 +401,93 @@ static ssize_t axiadc_sampling_frequency_available(struct device *dev,
 	return ret;
 }
 
+static const char * const axiadc_sync_ctrls[] = {
+	"arm", "disarm", "trigger_manual",
+};
+
+static ssize_t axiadc_sync_start_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t len)
+{
+	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
+	struct axiadc_state *st = iio_priv(indio_dev);
+	int ret;
+
+	ret = sysfs_match_string(axiadc_sync_ctrls, buf);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&indio_dev->mlock);
+	if (st->ext_sync_avail) {
+		switch (ret) {
+		case 0:
+			axiadc_write(st, ADI_REG_CNTRL_2, ADI_EXT_SYNC_ARM);
+			break;
+		case 1:
+			axiadc_write(st, ADI_REG_CNTRL_2, ADI_EXT_SYNC_DISARM);
+			break;
+		case 2:
+			axiadc_write(st, ADI_REG_CNTRL_2, ADI_MANUAL_SYNC_REQUEST);
+			break;
+		default:
+			ret = -EINVAL;
+		}
+	} else if (ret == 0) {
+		u32 reg;
+
+		reg = axiadc_read(st, ADI_REG_CNTRL);
+		axiadc_write(st, ADI_REG_CNTRL, reg | ADI_SYNC);
+	}
+	mutex_unlock(&indio_dev->mlock);
+
+	return ret < 0 ? ret : len;
+}
+
+static ssize_t axiadc_sync_start_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
+	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
+	struct axiadc_state *st = iio_priv(indio_dev);
+	u32 reg;
+
+	switch ((u32)this_attr->address) {
+	case 0:
+		reg = axiadc_read(st, ADI_REG_SYNC_STATUS);
+
+		return sprintf(buf, "%s\n", reg & ADI_ADC_SYNC_STATUS ?
+			axiadc_sync_ctrls[0] : axiadc_sync_ctrls[1]);
+	case 1:
+		if (st->ext_sync_avail)
+			return sprintf(buf, "arm disarm trigger_manual\n");
+		else
+			return sprintf(buf, "arm\n");
+	default:
+		return -EINVAL;
+	}
+
+	return -EINVAL;
+}
+
+static IIO_DEVICE_ATTR(sync_start_enable, 0644,
+		       axiadc_sync_start_show,
+		       axiadc_sync_start_store,
+		       0);
+
+static IIO_DEVICE_ATTR(sync_start_enable_available, 0444,
+		       axiadc_sync_start_show,
+		       NULL,
+		       1);
+
 static IIO_DEVICE_ATTR(in_voltage_sampling_frequency_available, S_IRUGO,
 		       axiadc_sampling_frequency_available,
 		       NULL,
 		       0);
 
 static struct attribute *axiadc_attributes[] = {
+	&iio_dev_attr_sync_start_enable.dev_attr.attr,
+	&iio_dev_attr_sync_start_enable_available.dev_attr.attr,
 	&iio_dev_attr_in_voltage_sampling_frequency_available.dev_attr.attr,
 	NULL,
 };
@@ -342,17 +505,20 @@ static int axiadc_read_raw(struct iio_dev *indio_dev,
 	struct axiadc_state *st = iio_priv(indio_dev);
 	struct axiadc_converter *conv = to_converter(st->dev_spi);
 	int ret, sign;
-	unsigned tmp, phase = 0;
+	unsigned tmp, phase = 0, channel;
 	unsigned long long llval;
+
+	channel = axiadc_chan_to_regoffset(chan);
 
 	switch (m) {
 	case IIO_CHAN_INFO_CALIBPHASE:
 		phase = 1;
+		/* fall-through */
 	case IIO_CHAN_INFO_CALIBSCALE:
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_2(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_2(channel));
 		/*  format is 1.1.14 (sign, integer and fractional bits) */
 
-		if (!((phase + chan->channel) % 2)) {
+		if (!((phase + channel) % 2)) {
 			tmp = ADI_TO_IQCOR_COEFF_1(tmp);
 		} else {
 			tmp = ADI_TO_IQCOR_COEFF_2(tmp);
@@ -380,7 +546,7 @@ static int axiadc_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT_PLUS_MICRO;
 
 	case IIO_CHAN_INFO_CALIBBIAS:
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(channel));
 		*val = (short)ADI_TO_DCFILT_OFFSET(tmp);
 
 		return IIO_VAL_INT;
@@ -389,39 +555,43 @@ static int axiadc_read_raw(struct iio_dev *indio_dev,
 		 * approx: F_cut = C * Fsample / (2 * pi)
 		 */
 
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL(channel));
 		if (!(tmp & ADI_DCFILT_ENB)) {
 			*val = 0;
 			return IIO_VAL_INT;
 		}
 
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(channel));
 		llval = ADI_TO_DCFILT_COEFF(tmp) * (unsigned long long)conv->adc_clk;
 		do_div(llval, 102944); /* 2 * pi * 0x4000 */
 		*val = llval;
 
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SAMP_FREQ:
+		*val2 = 0;
 		ret = conv->read_raw(indio_dev, chan, val, val2, m);
-		if (ret < 0 || !*val) {
+		llval = (u64)*val2 << 32 | *val;
+		if (ret < 0 || !llval) {
 			tmp = ADI_TO_CLK_FREQ(axiadc_read(st, ADI_REG_CLK_FREQ));
 			llval = tmp * 100000000ULL /* FIXME */ * ADI_TO_CLK_RATIO(axiadc_read(st, ADI_REG_CLK_RATIO));
-			*val = llval >> 16;
+			llval = llval >> 16;
 		}
 
-		if (chan->extend_name) {
+		if (chan->extend_name && !strcmp(chan->extend_name, "user_logic")) {
 			tmp = axiadc_read(st,
-				ADI_REG_CHAN_USR_CNTRL_2(chan->channel));
+				ADI_REG_CHAN_USR_CNTRL_2(channel));
 
 			llval = ADI_TO_USR_DECIMATION_M(tmp) * conv->adc_clk;
 			do_div(llval, ADI_TO_USR_DECIMATION_N(tmp));
-			*val = llval;
 		}
 
 		if (st->decimation_factor)
-			*val /= st->decimation_factor;
+			do_div(llval, st->decimation_factor);
 
-		return IIO_VAL_INT;
+		*val = lower_32_bits(llval);
+		*val2 = upper_32_bits(llval);
+
+		return IIO_VAL_INT_64;
 	default:
 		return conv->read_raw(indio_dev, chan, val, val2, m);
 
@@ -438,12 +608,15 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 {
 	struct axiadc_state *st = iio_priv(indio_dev);
 	struct axiadc_converter *conv = to_converter(st->dev_spi);
-	unsigned fract, tmp, phase = 0;
+	unsigned fract, tmp, phase = 0, channel;
 	unsigned long long llval;
+
+	channel = axiadc_chan_to_regoffset(chan);
 
 	switch (mask) {
 	case IIO_CHAN_INFO_CALIBPHASE:
 		phase = 1;
+		/* fall-through */
 	case IIO_CHAN_INFO_CALIBSCALE:
 		/*  format is 1.1.14 (sign, integer and fractional bits) */
 		switch (val) {
@@ -468,9 +641,9 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 		do_div(llval, 1000000UL);
 		fract |= llval;
 
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_2(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_2(channel));
 
-		if (!((chan->channel + phase) % 2)) {
+		if (!((channel + phase) % 2)) {
 			tmp &= ~ADI_IQCOR_COEFF_1(~0);
 			tmp |= ADI_IQCOR_COEFF_1(fract);
 		} else {
@@ -478,9 +651,7 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 			tmp |= ADI_IQCOR_COEFF_2(fract);
 		}
 
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_2(chan->channel), tmp);
-
-		axiadc_toggle_scale_offset_en(st);
+		axiadc_write(st, ADI_REG_CHAN_CNTRL_2(channel), tmp);
 
 		return 0;
 
@@ -489,11 +660,11 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 		 * approx: C = 2 * pi * F_cut / Fsample
 		 */
 
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL(channel));
 
 		if (val == 0 && val2 == 0) {
 			tmp &= ~ADI_DCFILT_ENB;
-			axiadc_write(st, ADI_REG_CHAN_CNTRL(chan->channel), tmp);
+			axiadc_write(st, ADI_REG_CHAN_CNTRL(channel), tmp);
 			return 0;
 		}
 
@@ -502,19 +673,18 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 		llval = 102944ULL * val; /* 2 * pi * 0x4000 * val */
 		do_div(llval, conv->adc_clk);
 
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_1(chan->channel),
+		axiadc_write(st, ADI_REG_CHAN_CNTRL_1(channel),
 			     ADI_DCFILT_COEFF(clamp_t(unsigned short, llval, 1, 0x4000)));
-		axiadc_write(st, ADI_REG_CHAN_CNTRL(chan->channel), tmp);
+		axiadc_write(st, ADI_REG_CHAN_CNTRL(channel), tmp);
 
 		return 0;
 
 	case IIO_CHAN_INFO_CALIBBIAS:
-		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(chan->channel));
+		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_1(channel));
 		tmp &= ~ADI_DCFILT_OFFSET(~0);
 		tmp |= ADI_DCFILT_OFFSET((short)val);
 
-		axiadc_write(st, ADI_REG_CHAN_CNTRL_1(chan->channel), tmp);
-		axiadc_toggle_scale_offset_en(st);
+		axiadc_write(st, ADI_REG_CHAN_CNTRL_1(channel), tmp);
 		return 0;
 
 	case IIO_CHAN_INFO_SAMP_FREQ:
@@ -526,6 +696,20 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 	default:
 		return conv->write_raw(indio_dev, chan, val, val2, mask);
 	}
+}
+
+static int axiadc_read_label(struct iio_dev *indio_dev,
+			     const struct iio_chan_spec *chan, char *label)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
+
+	if (conv && conv->read_label)
+		return conv->read_label(indio_dev, chan, label);
+	else if (chan->extend_name)
+		return sprintf(label, "%s\n", chan->extend_name);
+	else
+		return -ENOSYS;
 }
 
 static int axiadc_read_event_value(struct iio_dev *indio_dev,
@@ -631,6 +815,13 @@ static int axiadc_channel_setup(struct iio_dev *indio_dev,
 	for (i = 0, cnt = 0; i < adc_chan_num; i++)
 		st->channels[cnt++] = adc_channels[i];
 
+	if (st->additional_channel && cnt < AXIADC_MAX_CHANNEL) {
+		st->channels[cnt] = adc_channels[0];
+		st->channels[cnt].channel = cnt;
+		st->channels[cnt].scan_index = cnt;
+		cnt++;
+	}
+
 	for (i = 0; i < st->max_usr_channel; i++) {
 		usr_ctrl = axiadc_read(st, ADI_REG_CHAN_USR_CNTRL_1(cnt));
 		st->channels[cnt].type = IIO_VOLTAGE;
@@ -655,7 +846,6 @@ static int axiadc_channel_setup(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info axiadc_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &axiadc_read_raw,
 	.write_raw = &axiadc_write_raw,
 	.read_event_value = &axiadc_read_event_value,
@@ -664,6 +854,12 @@ static const struct iio_info axiadc_info = {
 	.write_event_config = &axiadc_write_event_config,
 	.debugfs_reg_access = &axiadc_reg_access,
 	.update_scan_mode = &axiadc_update_scan_mode,
+	.read_label = &axiadc_read_label,
+};
+
+struct axiadc_spidev {
+	struct device_node *of_nspi;
+	struct device *dev_spi;
 };
 
 static int axiadc_attach_spi_client(struct device *dev, void *data)
@@ -681,42 +877,185 @@ static int axiadc_attach_spi_client(struct device *dev, void *data)
 	return ret;
 }
 
-static const struct axiadc_core_info ad9467_core_1_00_a_info = {
-	.has_fifo_interface = true,
-	.version = PCORE_VERSION(10, 0, 'a'),
+static int axiadc_jesd204_link_supported(struct jesd204_dev *jdev,
+		enum jesd204_state_op_reason reason,
+		struct jesd204_link *lnk)
+{
+	struct device *dev = jesd204_dev_to_device(jdev);
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct axiadc_state *st = iio_priv(indio_dev);
+	u32 i, d1, d2, num, multi_device_link;
+	bool failed, last;
+
+	if (reason != JESD204_STATE_OP_REASON_INIT)
+		return JESD204_STATE_CHANGE_DONE;
+
+	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__,
+		lnk->link_id, jesd204_state_op_reason_str(reason));
+
+	num = ADI_JESD204_TPL_TO_PROFILE_NUM(axiadc_read(st, ADI_JESD204_REG_TPL_STATUS));
+
+	for (i = 0; i < num; i++) {
+		last = (i == (num - 1));
+		failed = false;
+
+		axiadc_write(st, ADI_JESD204_REG_TPL_CNTRL, ADI_JESD204_PROFILE_SEL(i));
+		d1 = axiadc_read(st, ADI_JESD204_REG_TPL_DESCRIPTOR_1);
+		d2 = axiadc_read(st, ADI_JESD204_REG_TPL_DESCRIPTOR_2);
+
+		if ((ADI_JESD204_TPL_TO_L(d1) / lnk->num_lanes) ==
+			(ADI_JESD204_TPL_TO_M(d1) / lnk->num_converters))
+			multi_device_link = ADI_JESD204_TPL_TO_L(d1) / lnk->num_lanes;
+		else
+			multi_device_link = 1;
+
+		if (ADI_JESD204_TPL_TO_L(d1) != lnk->num_lanes * multi_device_link) {
+			if (last)
+				dev_warn(dev,
+					"profile%u:link_num%u param L mismatch %u!=%u*%u\n",
+					i, lnk->link_id, ADI_JESD204_TPL_TO_L(d1), lnk->num_lanes,
+					multi_device_link);
+			failed = true;
+		}
+
+		if (ADI_JESD204_TPL_TO_M(d1) != lnk->num_converters * multi_device_link) {
+			if (last)
+				dev_warn(dev,
+					"profile%u:link_num%u param M mismatch %u!=%u*%u\n",
+					i, lnk->link_id, ADI_JESD204_TPL_TO_M(d1),
+					lnk->num_converters, multi_device_link);
+			failed = true;
+		}
+
+		if (lnk->samples_per_conv_frame && ADI_JESD204_TPL_TO_S(d1) !=
+			lnk->samples_per_conv_frame) {
+			if (last)
+				dev_warn(dev,
+					"profile%u:link_num%u param S mismatch %u!=%u\n",
+					i, lnk->link_id, ADI_JESD204_TPL_TO_S(d1),
+					lnk->samples_per_conv_frame);
+			failed = true;
+		}
+
+		if (ADI_JESD204_TPL_TO_F(d1) != lnk->octets_per_frame) {
+			if (last)
+				dev_warn(dev,
+					"profile%u:link_num%u param F mismatch %u!=%u\n",
+					i, lnk->link_id, ADI_JESD204_TPL_TO_F(d1),
+					lnk->octets_per_frame);
+			failed = true;
+		}
+
+		if (ADI_JESD204_TPL_TO_NP(d2) != lnk->bits_per_sample) {
+			if (last)
+				dev_warn(dev,
+					"profile%u:link_num%u param NP mismatch %u!=%u\n",
+					i, lnk->link_id, ADI_JESD204_TPL_TO_NP(d2),
+					lnk->bits_per_sample);
+			failed = true;
+		}
+
+		if (!failed)
+			return JESD204_STATE_CHANGE_DONE;
+	}
+
+	dev_err(dev, "JESD param mismatch between TPL and Link configuration !\n");
+
+	return JESD204_STATE_CHANGE_DONE;
+}
+
+static const struct jesd204_dev_data jesd204_axiadc_init = {
+	.state_ops = {
+		[JESD204_OP_LINK_SUPPORTED] = {
+			.per_link = axiadc_jesd204_link_supported,
+		},
+	},
 };
 
-static const struct axiadc_core_info ad9361_6_00_a_info = {
-	.has_fifo_interface = true,
-	.version = PCORE_VERSION(10, 0, 'a'),
+static const struct axiadc_core_info axi_adc_10_0_a_info = {
+	.version = ADI_AXI_PCORE_VER(10, 0, 'a'),
 };
 
-static const struct axiadc_core_info ad9643_6_00_a_info = {
-	.has_fifo_interface = true,
-	.version = PCORE_VERSION(10, 0, 'a'),
-};
-
-static const struct axiadc_core_info ad9680_6_00_a_info = {
-	.has_fifo_interface = true,
-	.version = PCORE_VERSION(10, 0, 'a'),
+static const struct axiadc_core_info axi_adc_10_1_b_info = {
+	.version = ADI_AXI_PCORE_VER(10, 1, 'b'),
 };
 
 /* Match table for of_platform binding */
 static const struct of_device_id axiadc_of_match[] = {
-	{ .compatible = "xlnx,cf-ad9467-core-1.00.a", .data = &ad9467_core_1_00_a_info },
-	{ .compatible =	"xlnx,axi-adc-1c-1.00.a", },
-	{ .compatible =	"xlnx,axi-ad9234-1.00.a", .data = &ad9680_6_00_a_info },
-	{ .compatible =	"xlnx,axi-ad9250-1.00.a", .data = &ad9680_6_00_a_info },
-	{ .compatible =	"xlnx,axi-ad9434-1.00.a", .data = &ad9680_6_00_a_info },
-	{ .compatible = "adi,axi-ad9643-6.00.a", .data = &ad9643_6_00_a_info },
-	{ .compatible = "adi,axi-ad9361-6.00.a", .data = &ad9361_6_00_a_info },
-	{ .compatible = "adi,axi-ad9680-1.0", .data = &ad9680_6_00_a_info },
-	{ .compatible = "adi,axi-ad9625-1.0", .data = &ad9680_6_00_a_info },
-	{ .compatible = "adi,axi-ad6676-1.0", .data = &ad9680_6_00_a_info },
-	{ .compatible = "adi,axi-ad9684-1.0", .data = &ad9680_6_00_a_info },
+	{ .compatible =	"xlnx,axi-ad9234-1.00.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible =	"xlnx,axi-ad9250-1.00.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible =	"xlnx,axi-ad9434-1.00.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9643-6.00.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9361-6.00.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9680-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9694-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9625-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad6676-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9371-rx-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9684-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-adrv9009-rx-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9208-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-ad9081-rx-1.0", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-adc-10.0.a", .data = &axi_adc_10_0_a_info },
+	{ .compatible = "adi,axi-adrv9002-rx-1.0", .data = &axi_adc_10_1_b_info},
+	{ .compatible = "adi,axi-ad9083-rx-1.0", .data = &axi_adc_10_0_a_info },
 	{ /* end of list */ },
 };
 MODULE_DEVICE_TABLE(of, axiadc_of_match);
+
+int axiadc_append_attrs(struct iio_dev *indio_dev,
+	const struct attribute_group *add_group, unsigned int skip_cnt)
+{
+	size_t old_cnt = 0, add_cnt = 0, new_cnt;
+	struct attribute **attrs;
+	struct attribute_group *group;
+	struct iio_info	*iio_info = (struct iio_info *) indio_dev->info;
+
+	if (!add_group)
+		return -EINVAL;
+
+	if (indio_dev->info->attrs) {
+		attrs = indio_dev->info->attrs->attrs;
+		while (*attrs++ != NULL)
+			old_cnt++;
+	} else if (!skip_cnt) {
+		iio_info->attrs = add_group;
+
+		return 0;
+	}
+
+	if (add_group->attrs) {
+		attrs = add_group->attrs;
+		while (*attrs++ != NULL)
+			add_cnt++;
+	}
+
+	if (skip_cnt > add_cnt)
+		return -EINVAL;
+
+	add_cnt -= skip_cnt;
+	new_cnt = old_cnt + add_cnt + 1;
+	attrs = devm_kcalloc(indio_dev->dev.parent, new_cnt,
+		sizeof(*attrs), GFP_KERNEL);
+	if (!attrs)
+		return -ENOMEM;
+
+	group = devm_kzalloc(indio_dev->dev.parent,
+		sizeof(*group), GFP_KERNEL);
+	if (!group)
+		return -ENOMEM;
+
+	if (old_cnt)
+		memcpy(attrs, indio_dev->info->attrs->attrs,
+			old_cnt * sizeof(*attrs));
+	memcpy(attrs + old_cnt, add_group->attrs, add_cnt * sizeof(*attrs));
+	attrs[new_cnt - 1] = NULL;
+	group->attrs = attrs;
+
+	iio_info->attrs = group;
+
+	return 0;
+}
 
 /**
  * axiadc_of_probe - probe method for the AIM device.
@@ -737,7 +1076,7 @@ static int axiadc_probe(struct platform_device *pdev)
 	struct resource *mem;
 	struct axiadc_spidev axiadc_spidev;
 	struct axiadc_converter *conv;
-	unsigned int expected_version;
+	unsigned int config, skip = 1;
 	int ret;
 
 	dev_dbg(&pdev->dev, "Device Tree Probing \'%s\'\n",
@@ -777,7 +1116,14 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	st = iio_priv(indio_dev);
 
+	st->jdev = devm_jesd204_dev_register(&pdev->dev, &jesd204_axiadc_init);
+	if (IS_ERR(st->jdev)) {
+		ret = PTR_ERR(st->jdev);
+		goto err_put_converter;
+	}
+
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	st->regs_size = resource_size(mem);
 	st->regs = devm_ioremap_resource(&pdev->dev, mem);
 	if (IS_ERR(st->regs))
 		return PTR_ERR(st->regs);
@@ -786,21 +1132,9 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, indio_dev);
 
-	st->dp_disable = axiadc_read(st, ADI_REG_ADC_DP_DISABLE);
-
-	if (!st->dp_disable) {
-		st->streaming_dma = of_property_read_bool(pdev->dev.of_node,
-				"adi,streaming-dma");
-
-		/* FIFO interface only supports streaming DMA */
-		if (info)
-			st->has_fifo_interface = info->has_fifo_interface;
-		else
-			st->has_fifo_interface = false;
-
-		if (st->has_fifo_interface)
-			st->streaming_dma = true;
-	}
+	config = axiadc_read(st, ADI_REG_CONFIG);
+	st->ext_sync_avail = !!(config & ADI_EXT_SYNC);
+	st->dp_disable = false; /* FIXME: resolve later which reg & bit to read for this */
 
 	conv = to_converter(st->dev_spi);
 	if (IS_ERR(conv)) {
@@ -825,6 +1159,9 @@ static int axiadc_probe(struct platform_device *pdev)
 		}
 	}
 
+	st->additional_channel = of_property_read_bool(pdev->dev.of_node,
+		"adi,axi-additional-channel-available");
+
 	/* Reset all HDL Cores */
 	axiadc_write(st, ADI_REG_RSTN, 0);
 	mdelay(10);
@@ -832,22 +1169,17 @@ static int axiadc_probe(struct platform_device *pdev)
 	mdelay(10);
 	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
-	st->pcore_version = axiadc_read(st, ADI_REG_VERSION);
+	st->pcore_version = axiadc_read(st, ADI_AXI_REG_VERSION);
 
-	if (info)
-		expected_version = info->version;
-	else
-		expected_version = PCORE_VERSION(4, 0, 'a');
-
-	if (PCORE_VERSION_MAJOR(st->pcore_version) >
-		PCORE_VERSION_MAJOR(expected_version)) {
+	if (ADI_AXI_PCORE_VER_MAJOR(st->pcore_version) >
+		ADI_AXI_PCORE_VER_MAJOR(info->version)) {
 		dev_err(&pdev->dev, "Major version mismatch between PCORE and driver. Driver expected %d.%.2d.%c, PCORE reported %d.%.2d.%c\n",
-			PCORE_VERSION_MAJOR(expected_version),
-			PCORE_VERSION_MINOR(expected_version),
-			PCORE_VERSION_LETTER(expected_version),
-			PCORE_VERSION_MAJOR(st->pcore_version),
-			PCORE_VERSION_MINOR(st->pcore_version),
-			PCORE_VERSION_LETTER(st->pcore_version));
+			ADI_AXI_PCORE_VER_MAJOR(info->version),
+			ADI_AXI_PCORE_VER_MINOR(info->version),
+			ADI_AXI_PCORE_VER_PATCH(info->version),
+			ADI_AXI_PCORE_VER_MAJOR(st->pcore_version),
+			ADI_AXI_PCORE_VER_MINOR(st->pcore_version),
+			ADI_AXI_PCORE_VER_PATCH(st->pcore_version));
 		ret = -ENODEV;
 		goto err_put_converter;
 	}
@@ -864,58 +1196,72 @@ static int axiadc_probe(struct platform_device *pdev)
 	st->iio_info.attrs = conv->attrs;
 	indio_dev->info = &st->iio_info;
 
-	ret = conv->post_setup(indio_dev);
-	if (ret < 0)
-		goto err_put_converter;
-
-	if (!st->dp_disable && !axiadc_read(st, ADI_REG_ID)) {
-
-		if (st->streaming_dma)
-			ret = axiadc_configure_ring_stream(indio_dev, NULL);
-		else
-			ret = axiadc_configure_ring(indio_dev, NULL);
-
+	if (conv->post_setup) {
+		ret = conv->post_setup(indio_dev);
 		if (ret < 0)
 			goto err_put_converter;
 	}
 
-	if (!st->dp_disable && of_property_read_bool(pdev->dev.of_node, "adi,axi-decimation-core-available")) {
+	if (!st->dp_disable && !axiadc_read(st, ADI_AXI_REG_ID) &&
+		of_find_property(pdev->dev.of_node, "dmas", NULL)) {
+		ret = axiadc_configure_ring_stream(indio_dev, NULL);
+		if (ret < 0)
+			goto err_put_converter;
+	}
+
+	if (!st->dp_disable && of_property_read_bool(pdev->dev.of_node,
+		"adi,axi-decimation-core-available")) {
 		st->decimation_factor = 1;
-		WARN_ON(st->iio_info.attrs != NULL);
-		st->iio_info.attrs = &axiadc_dec_attribute_group;
+		st->gpio_decimation = devm_gpiod_get_optional(&pdev->dev,
+							      "decimation",
+							      GPIOD_OUT_LOW);
+		if (IS_ERR(st->gpio_decimation))
+			dev_err(&pdev->dev, "decimation gpio error\n");
+		skip = 0;
+	}
+
+	ret = axiadc_append_attrs(indio_dev,
+		&axiadc_dec_attribute_group, skip);
+	if (ret) {
+		dev_err(&pdev->dev,
+			"Failed to add sysfs attributes (%d)\n", ret);
+		goto err_unconfigure_ring;
 	}
 
 	ret = iio_device_register(indio_dev);
 	if (ret)
 		goto err_unconfigure_ring;
 
-	if (indio_dev->buffer && indio_dev->buffer->scan_mask)
-		*indio_dev->buffer->scan_mask =
-			(1UL << conv->chip_info->num_channels) - 1;
-
 	dev_info(&pdev->dev, "ADI AIM (%d.%.2d.%c) at 0x%08llX mapped to 0x%p,"
 		 " probed ADC %s as %s\n",
-		PCORE_VERSION_MAJOR(st->pcore_version),
-		PCORE_VERSION_MINOR(st->pcore_version),
-		PCORE_VERSION_LETTER(st->pcore_version),
+		ADI_AXI_PCORE_VER_MAJOR(st->pcore_version),
+		ADI_AXI_PCORE_VER_MINOR(st->pcore_version),
+		ADI_AXI_PCORE_VER_PATCH(st->pcore_version),
 		 (unsigned long long)mem->start, st->regs,
 		 conv->chip_info->name,
-		 axiadc_read(st, ADI_REG_ID) ? "SLAVE" : "MASTER");
+		 axiadc_read(st, ADI_AXI_REG_ID) ? "SLAVE" : "MASTER");
 
 	if (iio_get_debugfs_dentry(indio_dev))
 		debugfs_create_file("pseudorandom_err_check", 0644,
 					iio_get_debugfs_dentry(indio_dev),
 					indio_dev, &axiadc_debugfs_pncheck_fops);
 
+	if (conv->post_iio_register) {
+		ret = conv->post_iio_register(indio_dev);
+		if (ret < 0)
+			dev_err(&pdev->dev,
+				"post_iio_register callback failed (%d)", ret);
+	}
+
+	ret = jesd204_fsm_start(st->jdev, JESD204_LINKS_ALL);
+	if (ret)
+		goto err_unconfigure_ring;
+
 	return 0;
 
 err_unconfigure_ring:
-	if (!st->dp_disable) {
-		if (st->streaming_dma)
+	if (!st->dp_disable)
 			axiadc_unconfigure_ring_stream(indio_dev);
-		else
-			axiadc_unconfigure_ring(indio_dev);
-	}
 err_put_converter:
 	put_device(axiadc_spidev.dev_spi);
 	module_put(axiadc_spidev.dev_spi->driver->owner);
@@ -937,12 +1283,10 @@ static int axiadc_remove(struct platform_device *pdev)
 	struct axiadc_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
-	if (!st->dp_disable) {
-		if (st->streaming_dma)
-			axiadc_unconfigure_ring_stream(indio_dev);
-		else
-			axiadc_unconfigure_ring(indio_dev);
-	}
+	if (!st->dp_disable && !axiadc_read(st, ADI_AXI_REG_ID) &&
+		of_find_property(pdev->dev.of_node, "dmas", NULL))
+		axiadc_unconfigure_ring_stream(indio_dev);
+
 	put_device(st->dev_spi);
 	module_put(st->dev_spi->driver->owner);
 

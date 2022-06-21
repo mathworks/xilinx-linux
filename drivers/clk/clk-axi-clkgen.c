@@ -1,15 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AXI clkgen driver
  *
  * Copyright 2012-2013 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
- *
- * Licensed under the GPL-2.
- *
  */
 
+#include <linux/clk.h>
 #include <linux/platform_device.h>
 #include <linux/clk-provider.h>
+#include <linux/fpga/adi-axi-common.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/of.h>
@@ -29,20 +29,31 @@
 
 #define AXI_CLKGEN_V2_DRP_STATUS_BUSY	BIT(16)
 
+#define MMCM_REG_CLKOUT5_2	0x07
 #define MMCM_REG_CLKOUT0_1	0x08
 #define MMCM_REG_CLKOUT0_2	0x09
+#define MMCM_REG_CLKOUT6_2	0x13
 #define MMCM_REG_CLK_FB1	0x14
 #define MMCM_REG_CLK_FB2	0x15
 #define MMCM_REG_CLK_DIV	0x16
 #define MMCM_REG_LOCK1		0x18
 #define MMCM_REG_LOCK2		0x19
 #define MMCM_REG_LOCK3		0x1a
+#define MMCM_REG_POWER		0x28
 #define MMCM_REG_FILTER1	0x4e
 #define MMCM_REG_FILTER2	0x4f
+
+#define MMCM_CLKOUT_NOCOUNT	BIT(6)
+
+#define MMCM_CLK_DIV_DIVIDE	BIT(11)
+#define MMCM_CLK_DIV_NOCOUNT	BIT(12)
 
 struct axi_clkgen {
 	void __iomem *base;
 	struct clk_hw clk_hw;
+	unsigned int pcore_version;
+	struct clk *parent_clocks[2];
+	struct clk *axi_clk;
 };
 
 static uint32_t axi_clkgen_lookup_filter(unsigned int m)
@@ -94,10 +105,17 @@ static uint32_t axi_clkgen_lookup_lock(unsigned int m)
 	return 0x1f1f00fa;
 }
 
-static const unsigned int fpfd_min = 10000;
-static const unsigned int fpfd_max = 300000;
-static const unsigned int fvco_min = 600000;
-static const unsigned int fvco_max = 1200000;
+#ifdef ARCH_ZYNQMP
+static unsigned int fpfd_min = 10000;
+static unsigned int fpfd_max = 450000;
+static unsigned int fvco_min = 800000;
+static unsigned int fvco_max = 1600000;
+#else
+static unsigned int fpfd_min = 10000;
+static unsigned int fpfd_max = 300000;
+static unsigned int fvco_min = 600000;
+static unsigned int fvco_max = 1200000;
+#endif
 
 static void axi_clkgen_calc_params(unsigned long fin, unsigned long fout,
 	unsigned int *best_d, unsigned int *best_m, unsigned int *best_dout)
@@ -105,6 +123,8 @@ static void axi_clkgen_calc_params(unsigned long fin, unsigned long fout,
 	unsigned long d, d_min, d_max, _d_min, _d_max;
 	unsigned long m, m_min, m_max;
 	unsigned long f, dout, best_f, fvco;
+	unsigned long fract_shift = 0;
+	unsigned long fvco_min_fract, fvco_max_fract;
 
 	fin /= 1000;
 	fout /= 1000;
@@ -117,42 +137,89 @@ static void axi_clkgen_calc_params(unsigned long fin, unsigned long fout,
 	d_min = max_t(unsigned long, DIV_ROUND_UP(fin, fpfd_max), 1);
 	d_max = min_t(unsigned long, fin / fpfd_min, 80);
 
-	m_min = max_t(unsigned long, DIV_ROUND_UP(fvco_min, fin) * d_min, 1);
-	m_max = min_t(unsigned long, fvco_max * d_max / fin, 64);
+again:
+	fvco_min_fract = fvco_min << fract_shift;
+	fvco_max_fract = fvco_max << fract_shift;
+
+	m_min = max_t(unsigned long, DIV_ROUND_UP(fvco_min_fract, fin) * d_min, 1);
+	m_max = min_t(unsigned long, fvco_max_fract * d_max / fin, 64 << fract_shift);
 
 	for (m = m_min; m <= m_max; m++) {
-		_d_min = max(d_min, DIV_ROUND_UP(fin * m, fvco_max));
-		_d_max = min(d_max, fin * m / fvco_min);
+		_d_min = max(d_min, DIV_ROUND_UP(fin * m, fvco_max_fract));
+		_d_max = min(d_max, fin * m / fvco_min_fract);
 
 		for (d = _d_min; d <= _d_max; d++) {
 			fvco = fin * m / d;
 
 			dout = DIV_ROUND_CLOSEST(fvco, fout);
-			dout = clamp_t(unsigned long, dout, 1, 128);
+			dout = clamp_t(unsigned long, dout, 1, 128 << fract_shift);
 			f = fvco / dout;
 			if (abs(f - fout) < abs(best_f - fout)) {
 				best_f = f;
 				*best_d = d;
-				*best_m = m;
-				*best_dout = dout;
+				*best_m = m << (3 - fract_shift);
+				*best_dout = dout << (3 - fract_shift);
 				if (best_f == fout)
 					return;
 			}
 		}
 	}
+
+	/* Lets see if we find a better setting in fractional mode */
+	if (fract_shift == 0) {
+		fract_shift = 3;
+		goto again;
+	}
 }
 
-static void axi_clkgen_calc_clk_params(unsigned int divider, unsigned int *low,
-	unsigned int *high, unsigned int *edge, unsigned int *nocount)
-{
-	if (divider == 1)
-		*nocount = 1;
-	else
-		*nocount = 0;
+struct axi_clkgen_div_params {
+	unsigned int low;
+	unsigned int high;
+	unsigned int edge;
+	unsigned int nocount;
+	unsigned int frac_en;
+	unsigned int frac;
+	unsigned int frac_wf_f;
+	unsigned int frac_wf_r;
+	unsigned int frac_phase;
+};
 
-	*high = divider / 2;
-	*edge = divider % 2;
-	*low = divider - *high;
+static void axi_clkgen_calc_clk_params(unsigned int divider,
+	unsigned int frac_divider, struct axi_clkgen_div_params *params)
+{
+
+	memset(params, 0x0, sizeof(*params));
+
+	if (divider == 1) {
+		params->nocount = 1;
+		return;
+	}
+
+	if (frac_divider == 0) {
+		params->high = divider / 2;
+		params->edge = divider % 2;
+		params->low = divider - params->high;
+	} else {
+		params->frac_en = 1;
+		params->frac = frac_divider;
+
+		params->high = divider / 2;
+		params->edge = divider % 2;
+		params->low = params->high;
+
+		if (params->edge == 0) {
+			params->high--;
+			params->frac_wf_r = 1;
+		}
+
+		if (params->edge == 0 || frac_divider == 1)
+			params->low--;
+		if (((params->edge == 0) ^ (frac_divider == 1)) ||
+			(divider == 2 && frac_divider == 1))
+			params->frac_wf_f = 1;
+
+		params->frac_phase = params->edge * 4 + frac_divider / 2;
+	}
 }
 
 static void axi_clkgen_write(struct axi_clkgen *axi_clkgen,
@@ -165,6 +232,49 @@ static void axi_clkgen_read(struct axi_clkgen *axi_clkgen,
 	unsigned int reg, unsigned int *val)
 {
 	*val = readl(axi_clkgen->base + reg);
+}
+
+static void axi_clkgen_setup_ranges(struct axi_clkgen *axi_clkgen)
+{
+	unsigned int reg_value;
+	unsigned int tech, family, speed_grade, voltage;
+
+	axi_clkgen_read(axi_clkgen, ADI_AXI_REG_FPGA_INFO, &reg_value);
+	tech = ADI_AXI_INFO_FPGA_TECH(reg_value);
+	family = ADI_AXI_INFO_FPGA_FAMILY(reg_value);
+	speed_grade = ADI_AXI_INFO_FPGA_SPEED_GRADE(reg_value);
+
+	axi_clkgen_read(axi_clkgen, ADI_AXI_REG_FPGA_VOLTAGE, &reg_value);
+	voltage = ADI_AXI_INFO_FPGA_VOLTAGE(reg_value);
+
+	switch (speed_grade) {
+	case ADI_AXI_FPGA_SPEED_1 ... ADI_AXI_FPGA_SPEED_1LV:
+		fvco_max = 1200000;
+		fpfd_max = 450000;
+		break;
+	case ADI_AXI_FPGA_SPEED_2 ... ADI_AXI_FPGA_SPEED_2LV:
+		fvco_max = 1440000;
+		fpfd_max = 500000;
+		if ((family == ADI_AXI_FPGA_FAMILY_KINTEX) ||
+		    (family == ADI_AXI_FPGA_FAMILY_ARTIX)) {
+			if (voltage < 950) {
+				fvco_max = 1200000;
+				fpfd_max = 450000;
+			}
+		}
+		break;
+	case ADI_AXI_FPGA_SPEED_3:
+		fvco_max = 1600000;
+		fpfd_max = 550000;
+		break;
+	default:
+		break;
+	};
+
+	if (tech == ADI_AXI_FPGA_TECH_ULTRASCALE_PLUS) {
+		fvco_max = 1600000;
+		fvco_min = 800000;
+	}
 }
 
 static int axi_clkgen_wait_non_busy(struct axi_clkgen *axi_clkgen)
@@ -244,15 +354,29 @@ static struct axi_clkgen *clk_hw_to_axi_clkgen(struct clk_hw *clk_hw)
 	return container_of(clk_hw, struct axi_clkgen, clk_hw);
 }
 
+static void axi_clkgen_set_div(struct axi_clkgen *axi_clkgen,
+	unsigned int reg1, unsigned int reg2, unsigned int reg3,
+	struct axi_clkgen_div_params *params)
+{
+	axi_clkgen_mmcm_write(axi_clkgen, reg1,
+		(params->high << 6) | params->low, 0xefff);
+	axi_clkgen_mmcm_write(axi_clkgen, reg2,
+		(params->frac << 12) | (params->frac_en << 11) |
+		(params->frac_wf_r << 10) | (params->edge << 7) |
+		(params->nocount << 6), 0x7fff);
+	if (reg3 != 0) {
+		axi_clkgen_mmcm_write(axi_clkgen, reg3,
+			(params->frac_phase << 11) | (params->frac_wf_f << 10), 0x3c00);
+	}
+}
+
 static int axi_clkgen_set_rate(struct clk_hw *clk_hw,
 	unsigned long rate, unsigned long parent_rate)
 {
 	struct axi_clkgen *axi_clkgen = clk_hw_to_axi_clkgen(clk_hw);
 	unsigned int d, m, dout;
-	unsigned int nocount;
-	unsigned int high;
-	unsigned int edge;
-	unsigned int low;
+	struct axi_clkgen_div_params params;
+	uint32_t power = 0;
 	uint32_t filter;
 	uint32_t lock;
 
@@ -264,24 +388,26 @@ static int axi_clkgen_set_rate(struct clk_hw *clk_hw,
 	if (d == 0 || dout == 0 || m == 0)
 		return -EINVAL;
 
+	if ((dout & 0x7) != 0 || (m & 0x7) != 0)
+		power |= 0x9800;
+
+	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_POWER, power, 0x9800);
+
 	filter = axi_clkgen_lookup_filter(m - 1);
 	lock = axi_clkgen_lookup_lock(m - 1);
 
-	axi_clkgen_calc_clk_params(dout, &low, &high, &edge, &nocount);
-	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_CLKOUT0_1,
-		(high << 6) | low, 0xefff);
-	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_CLKOUT0_2,
-		(edge << 7) | (nocount << 6), 0x03ff);
+	axi_clkgen_calc_clk_params(dout >> 3, dout & 0x7, &params);
+	axi_clkgen_set_div(axi_clkgen,  MMCM_REG_CLKOUT0_1, MMCM_REG_CLKOUT0_2,
+		MMCM_REG_CLKOUT5_2, &params);
 
-	axi_clkgen_calc_clk_params(d, &low, &high, &edge, &nocount);
+	axi_clkgen_calc_clk_params(d, 0, &params);
 	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_CLK_DIV,
-		(edge << 13) | (nocount << 12) | (high << 6) | low, 0x3fff);
+		(params.edge << 13) | (params.nocount << 12) |
+		(params.high << 6) | params.low, 0x3fff);
 
-	axi_clkgen_calc_clk_params(m, &low, &high, &edge, &nocount);
-	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_CLK_FB1,
-		(high << 6) | low, 0xefff);
-	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_CLK_FB2,
-		(edge << 7) | (nocount << 6), 0x03ff);
+	axi_clkgen_calc_clk_params(m >> 3, m & 0x7, &params);
+	axi_clkgen_set_div(axi_clkgen,  MMCM_REG_CLK_FB1, MMCM_REG_CLK_FB2,
+		MMCM_REG_CLKOUT6_2, &params);
 
 	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_LOCK1, lock & 0x3ff, 0x3ff);
 	axi_clkgen_mmcm_write(axi_clkgen, MMCM_REG_LOCK2,
@@ -298,13 +424,44 @@ static long axi_clkgen_round_rate(struct clk_hw *hw, unsigned long rate,
 	unsigned long *parent_rate)
 {
 	unsigned int d, m, dout;
+	unsigned long long tmp;
 
 	axi_clkgen_calc_params(*parent_rate, rate, &d, &m, &dout);
 
 	if (d == 0 || dout == 0 || m == 0)
 		return -EINVAL;
 
-	return *parent_rate / d * m / dout;
+	tmp = (unsigned long long)*parent_rate * m;
+	tmp = DIV_ROUND_CLOSEST_ULL(tmp, dout * d);
+
+	return min_t(unsigned long long, tmp, LONG_MAX);
+}
+
+static unsigned int axi_clkgen_get_div(struct axi_clkgen *axi_clkgen,
+	unsigned int reg1, unsigned int reg2)
+{
+	unsigned int val1, val2;
+	unsigned int div;
+
+	axi_clkgen_mmcm_read(axi_clkgen, reg2, &val2);
+	if (val2 & MMCM_CLKOUT_NOCOUNT)
+		return 8;
+
+	axi_clkgen_mmcm_read(axi_clkgen, reg1, &val1);
+
+	div = (val1 & 0x3f) + ((val1 >> 6) & 0x3f);
+	div <<= 3;
+
+	if (val2 & MMCM_CLK_DIV_DIVIDE) {
+		if ((val2 & BIT(7)) && (val2 & 0x7000) != 0x1000)
+			div += 8;
+		else
+			div += 16;
+
+		div += (val2 >> 12) & 0x7;
+	}
+
+	return div;
 }
 
 static unsigned long axi_clkgen_recalc_rate(struct clk_hw *clk_hw,
@@ -312,36 +469,25 @@ static unsigned long axi_clkgen_recalc_rate(struct clk_hw *clk_hw,
 {
 	struct axi_clkgen *axi_clkgen = clk_hw_to_axi_clkgen(clk_hw);
 	unsigned int d, m, dout;
-	unsigned int reg;
 	unsigned long long tmp;
+	unsigned int val;
 
-	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLKOUT0_2, &reg);
-	if (reg & BIT(6)) {
-		dout = 1;
-	} else {
-		axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLKOUT0_1, &reg);
-		dout = (reg & 0x3f) + ((reg >> 6) & 0x3f);
-	}
+	dout = axi_clkgen_get_div(axi_clkgen, MMCM_REG_CLKOUT0_1,
+		MMCM_REG_CLKOUT0_2);
+	m = axi_clkgen_get_div(axi_clkgen, MMCM_REG_CLK_FB1,
+		MMCM_REG_CLK_FB2);
 
-	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_DIV, &reg);
-	if (reg & BIT(12))
+	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_DIV, &val);
+	if (val & MMCM_CLK_DIV_NOCOUNT)
 		d = 1;
 	else
-		d = (reg & 0x3f) + ((reg >> 6) & 0x3f);
-
-	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_FB2, &reg);
-	if (reg & BIT(6)) {
-		m = 1;
-	} else {
-		axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_FB1, &reg);
-		m = (reg & 0x3f) + ((reg >> 6) & 0x3f);
-	}
+		d = (val & 0x3f) + ((val >> 6) & 0x3f);
 
 	if (d == 0 || dout == 0)
 		return 0;
 
-	tmp = (unsigned long long)(parent_rate / d) * m;
-	do_div(tmp, dout);
+	tmp = (unsigned long long)parent_rate * m;
+	tmp = DIV_ROUND_CLOSEST_ULL(tmp, dout * d);
 
 	return min_t(unsigned long long, tmp, ULONG_MAX);
 }
@@ -404,6 +550,7 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	const struct of_device_id *id;
 	struct axi_clkgen *axi_clkgen;
 	struct clk_init_data init;
+	char clkin_name[7];
 	const char *parent_names[2];
 	const char *clk_name;
 	struct resource *mem;
@@ -426,14 +573,50 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	if (IS_ERR(axi_clkgen->base))
 		return PTR_ERR(axi_clkgen->base);
 
-	init.num_parents = of_clk_get_parent_count(pdev->dev.of_node);
-	if (init.num_parents < 1 || init.num_parents > 2)
-		return -EINVAL;
+	axi_clkgen->axi_clk = devm_clk_get(&pdev->dev, "s_axi_aclk");
+	if (IS_ERR(axi_clkgen->axi_clk)) {
+		if (PTR_ERR(axi_clkgen->axi_clk) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to get s_axi_aclk\n");
+		return PTR_ERR(axi_clkgen->axi_clk);
+	}
+
+	ret = clk_prepare_enable(axi_clkgen->axi_clk);
+	if (ret)
+		return ret;
+
+	axi_clkgen_read(axi_clkgen, ADI_AXI_REG_VERSION,
+			&axi_clkgen->pcore_version);
+
+	if (ADI_AXI_PCORE_VER_MAJOR(axi_clkgen->pcore_version) > 0x04)
+		axi_clkgen_setup_ranges(axi_clkgen);
+
+	for (i = 0, init.num_parents = 0; i < ARRAY_SIZE(axi_clkgen->parent_clocks); i++) {
+		sprintf(clkin_name, "clkin%d", i + 1);
+		axi_clkgen->parent_clocks[i] = devm_clk_get(&pdev->dev, clkin_name);
+		if (PTR_ERR(axi_clkgen->parent_clocks[i]) == -ENOENT)
+			continue;
+		if (IS_ERR(axi_clkgen->parent_clocks[i])) {
+			ret = PTR_ERR(axi_clkgen->parent_clocks[i]);
+			goto err_disable_axi_clk;
+		}
+
+		parent_names[i] = __clk_get_name(axi_clkgen->parent_clocks[i]);
+		init.num_parents++;
+	}
+
+	if (init.num_parents < 1) {
+		dev_err(&pdev->dev, "Missing input clock, see 'clkin1' and 'clkin2'\n");
+		ret = -EINVAL;
+		goto err_disable_axi_clk;
+	}
 
 	for (i = 0; i < init.num_parents; i++) {
-		parent_names[i] = of_clk_get_parent_name(pdev->dev.of_node, i);
-		if (!parent_names[i])
-			return -EINVAL;
+		ret = clk_prepare_enable(axi_clkgen->parent_clocks[i]);
+		if (ret) {
+			while (--i >= 0)
+				clk_disable_unprepare(axi_clkgen->parent_clocks[i]);
+			goto err_disable_axi_clk;
+		}
 	}
 
 	clk_name = pdev->dev.of_node->name;
@@ -450,15 +633,34 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	axi_clkgen->clk_hw.init = &init;
 	ret = devm_clk_hw_register(&pdev->dev, &axi_clkgen->clk_hw);
 	if (ret)
-		return ret;
+		goto err_disable_parent_clocks;
+
+	platform_set_drvdata(pdev, axi_clkgen);
 
 	return of_clk_add_hw_provider(pdev->dev.of_node, of_clk_hw_simple_get,
 				      &axi_clkgen->clk_hw);
+
+err_disable_parent_clocks:
+	for (i = 0; i < init.num_parents; i++)
+		clk_disable_unprepare(axi_clkgen->parent_clocks[i]);
+
+err_disable_axi_clk:
+	clk_disable_unprepare(axi_clkgen->axi_clk);
+
+	return ret;
 }
 
 static int axi_clkgen_remove(struct platform_device *pdev)
 {
+	struct axi_clkgen *axi_clkgen = platform_get_drvdata(pdev);
+	int i;
+
 	of_clk_del_provider(pdev->dev.of_node);
+
+	for (i = 0; i < ARRAY_SIZE(axi_clkgen->parent_clocks); i++)
+		clk_disable_unprepare(axi_clkgen->parent_clocks[i]);
+
+	clk_disable_unprepare(axi_clkgen->axi_clk);
 
 	return 0;
 }

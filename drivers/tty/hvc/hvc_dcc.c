@@ -1,23 +1,13 @@
-/* Copyright (c) 2010, 2014 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (c) 2010, 2014 The Linux Foundation. All rights reserved.  */
 
+#include <linux/console.h>
 #include <linux/init.h>
+#include <linux/serial.h>
+#include <linux/serial_core.h>
 
 #include <asm/dcc.h>
 #include <asm/processor.h>
-
-#include <linux/serial.h>
-#include <linux/console.h>
-#include <linux/serial_core.h>
 
 #include "hvc_console.h"
 
@@ -41,12 +31,13 @@ static void dcc_early_write(struct console *con, const char *s, unsigned n)
 }
 
 static int __init dcc_early_console_setup(struct earlycon_device *device,
-                                         const char *opt)
+					  const char *opt)
 {
 	device->con->write = dcc_early_write;
 
 	return 0;
 }
+
 EARLYCON_DECLARE(dcc, dcc_early_console_setup);
 
 static int hvc_dcc_put_chars(uint32_t vt, const char *buf, int count)

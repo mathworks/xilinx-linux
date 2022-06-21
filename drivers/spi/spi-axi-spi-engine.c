@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SPI-Engine SPI controller driver
  * Copyright 2015 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/clk.h>
@@ -63,6 +62,7 @@
 
 #define SPI_ENGINE_CMD_REG_CLK_DIV		0x0
 #define SPI_ENGINE_CMD_REG_CONFIG		0x1
+#define SPI_ENGINE_CMD_REG_WORD_LENGTH		0x2
 
 #define SPI_ENGINE_MISC_SYNC			0x0
 #define SPI_ENGINE_MISC_SLEEP			0x1
@@ -93,6 +93,8 @@ struct spi_engine {
 	struct clk *clk;
 	struct clk *ref_clk;
 
+	struct spi_master *master;
+
 	spinlock_t lock;
 
 	void __iomem *base;
@@ -116,6 +118,7 @@ struct spi_engine {
 	unsigned int int_enable;
 
 	struct timer_list watchdog_timer;
+	unsigned int word_length;
 };
 
 static void spi_engine_program_add_cmd(struct spi_engine_program *p,
@@ -161,6 +164,30 @@ static unsigned int spi_engine_get_clk_div(struct spi_engine *spi_engine,
 	return clk_div;
 }
 
+static unsigned int spi_engine_get_word_length(struct spi_engine *spi_engine,
+	struct spi_device *spi, struct spi_transfer *xfer)
+{
+	/* if bits_per_word is 0 this will default to 8 bit words */
+	if (xfer->bits_per_word)
+		return xfer->bits_per_word;
+	else if (spi->bits_per_word)
+		return spi->bits_per_word;
+	else
+		return 8;
+}
+
+static void spi_engine_update_xfer_len(struct spi_engine *spi_engine,
+				       struct spi_transfer *xfer)
+{
+	unsigned int word_length = spi_engine->word_length;
+	unsigned int word_len_bytes = word_length / 8;
+
+	if ((xfer->len * 8) < word_length)
+		xfer->len = 1;
+	else
+		xfer->len = DIV_ROUND_UP(xfer->len, word_len_bytes);
+}
+
 static void spi_engine_gen_xfer(struct spi_engine_program *p, bool dry,
 	struct spi_transfer *xfer)
 {
@@ -182,15 +209,28 @@ static void spi_engine_gen_xfer(struct spi_engine_program *p, bool dry,
 }
 
 static void spi_engine_gen_sleep(struct spi_engine_program *p, bool dry,
-	struct spi_engine *spi_engine, unsigned int clk_div, unsigned int delay)
+	struct spi_engine *spi_engine, unsigned int clk_div,
+	struct spi_transfer *xfer)
 {
 	unsigned int spi_clk = clk_get_rate(spi_engine->ref_clk);
 	unsigned int t;
+	int delay;
+
+	if (xfer->delay_usecs) {
+		delay = xfer->delay_usecs;
+	} else {
+		delay = spi_delay_to_ns(&xfer->delay, xfer);
+		if (delay < 0)
+			return;
+		delay /= 1000;
+	}
 
 	if (delay == 0)
 		return;
 
 	t = DIV_ROUND_UP(delay * spi_clk, (clk_div + 1) * 2);
+	/* spi_clk is in Hz while delay is usec, a division is required */
+	t /= 1000000;
 	while (t) {
 		unsigned int n = min(t, 256U);
 
@@ -216,9 +256,11 @@ static int spi_engine_compile_message(struct spi_engine *spi_engine,
 	struct spi_device *spi = msg->spi;
 	struct spi_transfer *xfer;
 	int clk_div, new_clk_div;
+	int word_len, new_word_len;
 	bool cs_change = true;
 
 	clk_div = -1;
+	word_len = -1;
 
 	spi_engine_program_add_cmd(p, dry,
 		SPI_ENGINE_CMD_WRITE(SPI_ENGINE_CMD_REG_CONFIG,
@@ -233,12 +275,21 @@ static int spi_engine_compile_message(struct spi_engine *spi_engine,
 					clk_div));
 		}
 
+		new_word_len = spi_engine_get_word_length(spi_engine, spi, xfer);
+		if (new_word_len != word_len) {
+			word_len = new_word_len;
+			spi_engine->word_length = word_len;
+			spi_engine_program_add_cmd(p, dry,
+				SPI_ENGINE_CMD_WRITE(SPI_ENGINE_CMD_REG_WORD_LENGTH,
+					word_len));
+		}
+
 		if (cs_change)
 			spi_engine_gen_cs(p, dry, spi, true);
 
+		spi_engine_update_xfer_len(spi_engine, xfer);
 		spi_engine_gen_xfer(p, dry, xfer);
-		spi_engine_gen_sleep(p, dry, spi_engine, clk_div,
-			xfer->delay_usecs);
+		spi_engine_gen_sleep(p, dry, spi_engine, clk_div, xfer);
 
 		cs_change = xfer->cs_change;
 		if (list_is_last(&xfer->transfer_list, &msg->transfers))
@@ -304,10 +355,10 @@ int spi_engine_offload_load_msg(struct spi_device *spi,
 	sdo_addr = spi_engine->base + SPI_ENGINE_REG_OFFLOAD_SDO_MEM(0);
 
 	spi_engine_compile_message(spi_engine, msg, false, p);
-	spi_engine_program_add_cmd(p, false, SPI_ENGINE_CMD_SLEEP(10));
 	spi_engine_program_add_cmd(p, false, SPI_ENGINE_CMD_SYNC(0));
 
 	writel(1, spi_engine->base + SPI_ENGINE_REG_OFFLOAD_RESET(0));
+	writel(0, spi_engine->base + SPI_ENGINE_REG_OFFLOAD_RESET(0));
 	j = 0;
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
 		if (!xfer->tx_buf)
@@ -398,19 +449,52 @@ static bool spi_engine_write_cmd_fifo(struct spi_engine *spi_engine)
 	return spi_engine->cmd_length != 0;
 }
 
-static bool spi_engine_write_tx_fifo(struct spi_engine *spi_engine)
+static void spi_engine_read_buff(struct spi_engine *spi_engine, uint8_t m)
+{
+	void __iomem *addr = spi_engine->base + SPI_ENGINE_REG_SDI_DATA_FIFO;
+	uint32_t val;
+	uint8_t bytes_len, i, j, *buf;
+
+	bytes_len = DIV_ROUND_UP(spi_engine->word_length, 8);
+	buf = spi_engine->rx_buf;
+
+	for (i = 0; i < (m * bytes_len); i += bytes_len) {
+		val = readl_relaxed(addr);
+		for (j = 0; j < bytes_len; j++)
+			buf[j] = val >> (8 * j);
+		buf += bytes_len;
+	}
+
+	spi_engine->rx_buf += i;
+}
+
+static void spi_engine_write_buff(struct spi_engine *spi_engine, uint8_t m)
 {
 	void __iomem *addr = spi_engine->base + SPI_ENGINE_REG_SDO_DATA_FIFO;
-	unsigned int n, m, i;
-	const uint8_t *buf;
+	uint8_t bytes_len, word_len, i, j;
+	uint32_t val = 0;
+
+	bytes_len = DIV_ROUND_DOWN_ULL(spi_engine->word_length, 8);
+	word_len = spi_engine->word_length;
+
+	for (i = 0; i < (m * bytes_len); i += bytes_len) {
+		for (j = 0; j < bytes_len; j++)
+			val |= spi_engine->tx_buf[i + j] << (word_len - 8 * (j + 1));
+		writel_relaxed(val, addr);
+		val = 0;
+	}
+
+	spi_engine->tx_buf += i;
+}
+
+static bool spi_engine_write_tx_fifo(struct spi_engine *spi_engine)
+{
+	unsigned int n, m;
 
 	n = readl_relaxed(spi_engine->base + SPI_ENGINE_REG_SDO_FIFO_ROOM);
 	while (n && spi_engine->tx_length) {
 		m = min(n, spi_engine->tx_length);
-		buf = spi_engine->tx_buf;
-		for (i = 0; i < m; i++)
-			writel_relaxed(buf[i], addr);
-		spi_engine->tx_buf += m;
+		spi_engine_write_buff(spi_engine, m);
 		spi_engine->tx_length -= m;
 		n -= m;
 		if (spi_engine->tx_length == 0)
@@ -422,17 +506,12 @@ static bool spi_engine_write_tx_fifo(struct spi_engine *spi_engine)
 
 static bool spi_engine_read_rx_fifo(struct spi_engine *spi_engine)
 {
-	void __iomem *addr = spi_engine->base + SPI_ENGINE_REG_SDI_DATA_FIFO;
-	unsigned int n, m, i;
-	uint8_t *buf;
+	unsigned int n, m;
 
 	n = readl_relaxed(spi_engine->base + SPI_ENGINE_REG_SDI_FIFO_LEVEL);
 	while (n && spi_engine->rx_length) {
 		m = min(n, spi_engine->rx_length);
-		buf = spi_engine->rx_buf;
-		for (i = 0; i < m; i++)
-			buf[i] = readl_relaxed(addr);
-		spi_engine->rx_buf += m;
+		spi_engine_read_buff(spi_engine, m);
 		spi_engine->rx_length -= m;
 		n -= m;
 		if (spi_engine->rx_length == 0)
@@ -462,7 +541,6 @@ static irqreturn_t spi_engine_irq(int irq, void *devid)
 	unsigned int pending;
 
 	pending = readl_relaxed(spi_engine->base + SPI_ENGINE_REG_INT_PENDING);
-
 	if (pending & SPI_ENGINE_INT_SYNC) {
 		writel_relaxed(SPI_ENGINE_INT_SYNC,
 			spi_engine->base + SPI_ENGINE_REG_INT_PENDING);
@@ -510,11 +588,10 @@ static irqreturn_t spi_engine_irq(int irq, void *devid)
 	return IRQ_HANDLED;
 }
 
-static void spi_engine_timeout(unsigned long data)
+static void spi_engine_timeout(struct timer_list *t)
 {
-	struct spi_master *master = (struct spi_master *)data;
-	struct spi_engine *spi_engine = spi_master_get_devdata(master);
-
+	struct spi_engine *spi_engine = from_timer(spi_engine, t, watchdog_timer);
+	struct spi_master *master = spi_engine->master;
 
 	spin_lock(&spi_engine->lock);
 	if (spi_engine->msg) {
@@ -582,7 +659,6 @@ static int spi_engine_probe(struct platform_device *pdev)
 	struct spi_engine *spi_engine;
 	struct spi_master *master;
 	unsigned int version;
-	struct resource *res;
 	int irq;
 	int ret;
 
@@ -599,24 +675,9 @@ static int spi_engine_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	spi_master_set_devdata(master, spi_engine);
+	spi_engine->master = master;
 
 	spin_lock_init(&spi_engine->lock);
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	spi_engine->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(spi_engine->base)) {
-		ret = PTR_ERR(spi_engine->base);
-		goto err_put_master;
-	}
-
-	version = readl(spi_engine->base + SPI_ENGINE_REG_VERSION);
-	if (SPI_ENGINE_VERSION_MAJOR(version) != 1) {
-		dev_err(&pdev->dev, "Unsupported peripheral version %u.%u.%c\n",
-			SPI_ENGINE_VERSION_MAJOR(version),
-			SPI_ENGINE_VERSION_MINOR(version),
-			SPI_ENGINE_VERSION_PATCH(version));
-		return -ENODEV;
-	}
 
 	spi_engine->clk = devm_clk_get(&pdev->dev, "s_axi_aclk");
 	if (IS_ERR(spi_engine->clk)) {
@@ -638,6 +699,22 @@ static int spi_engine_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_clk_disable;
 
+	spi_engine->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(spi_engine->base)) {
+		ret = PTR_ERR(spi_engine->base);
+		goto err_ref_clk_disable;
+	}
+
+	version = readl(spi_engine->base + SPI_ENGINE_REG_VERSION);
+	if (SPI_ENGINE_VERSION_MAJOR(version) != 1) {
+		dev_err(&pdev->dev, "Unsupported peripheral version %u.%u.%c\n",
+			SPI_ENGINE_VERSION_MAJOR(version),
+			SPI_ENGINE_VERSION_MINOR(version),
+			SPI_ENGINE_VERSION_PATCH(version));
+		ret = -ENODEV;
+		goto err_ref_clk_disable;
+	}
+
 	writel_relaxed(0x00, spi_engine->base + SPI_ENGINE_REG_RESET);
 	writel_relaxed(0xff, spi_engine->base + SPI_ENGINE_REG_INT_PENDING);
 	writel_relaxed(0x00, spi_engine->base + SPI_ENGINE_REG_INT_ENABLE);
@@ -648,13 +725,11 @@ static int spi_engine_probe(struct platform_device *pdev)
 
 	master->dev.of_node = pdev->dev.of_node;
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_3WIRE;
-	master->bits_per_word_mask = SPI_BPW_MASK(8);
 	master->max_speed_hz = clk_get_rate(spi_engine->ref_clk) / 2;
 	master->transfer_one_message = spi_engine_transfer_one_message;
 	master->num_chipselect = 8;
 
-	setup_timer(&spi_engine->watchdog_timer, spi_engine_timeout,
-		(unsigned long)master);
+	timer_setup(&spi_engine->watchdog_timer, spi_engine_timeout, 0);
 
 	ret = spi_register_master(master);
 	if (ret)
@@ -676,13 +751,15 @@ err_put_master:
 
 static int spi_engine_remove(struct platform_device *pdev)
 {
-	struct spi_master *master = platform_get_drvdata(pdev);
+	struct spi_master *master = spi_master_get(platform_get_drvdata(pdev));
 	struct spi_engine *spi_engine = spi_master_get_devdata(master);
 	int irq = platform_get_irq(pdev, 0);
 
 	spi_unregister_master(master);
 
 	free_irq(irq, master);
+
+	spi_master_put(master);
 
 	writel_relaxed(0xff, spi_engine->base + SPI_ENGINE_REG_INT_PENDING);
 	writel_relaxed(0x00, spi_engine->base + SPI_ENGINE_REG_INT_ENABLE);
@@ -698,6 +775,7 @@ static const struct of_device_id spi_engine_match_table[] = {
 	{ .compatible = "adi,axi-spi-engine-1.00.a" },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, spi_engine_match_table);
 
 static struct platform_driver spi_engine_driver = {
 	.probe = spi_engine_probe,

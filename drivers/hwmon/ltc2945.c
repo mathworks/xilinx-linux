@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Linear Technology LTC2945 I2C Power Monitor
  *
  * Copyright (c) 2014 Guenter Roeck
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -67,6 +58,16 @@
 #define CONTROL_MULT_SELECT	(1 << 0)
 #define CONTROL_TEST_MODE	(1 << 4)
 
+/**
+ * struct ltc2945_state - driver instance specific data
+ * @regmap		regmap object to access device registers
+ * @r_sense_uohm	current sense resistor value
+ */
+struct ltc2945_state {
+	struct regmap		*regmap;
+	u32			r_sense_uohm;
+};
+
 static inline bool is_power_reg(u8 reg)
 {
 	return reg < LTC2945_SENSE_H;
@@ -75,7 +76,8 @@ static inline bool is_power_reg(u8 reg)
 /* Return the value from the given register in uW, mV, or mA */
 static long long ltc2945_reg_to_val(struct device *dev, u8 reg)
 {
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct ltc2945_state *st = dev_get_drvdata(dev);
+	struct regmap *regmap = st->regmap;
 	unsigned int control;
 	u8 buf[3];
 	long long val;
@@ -101,9 +103,8 @@ static long long ltc2945_reg_to_val(struct device *dev, u8 reg)
 	case LTC2945_MAX_POWER_THRES_H:
 	case LTC2945_MIN_POWER_THRES_H:
 		/*
-		 * Convert to uW by assuming current is measured with
-		 * an 1mOhm sense resistor, similar to current
-		 * measurements.
+		 * Convert to uW by and scale it with the configured
+		 * sense resistor, similar to current measurements.
 		 * Control register bit 0 selects if voltage at SENSE+/VDD
 		 * or voltage at ADIN is used to measure power.
 		 */
@@ -112,10 +113,10 @@ static long long ltc2945_reg_to_val(struct device *dev, u8 reg)
 			return ret;
 		if (control & CONTROL_MULT_SELECT) {
 			/* 25 mV * 25 uV = 0.625 uV resolution. */
-			val *= 625LL;
+			val = DIV_ROUND_CLOSEST_ULL(val * 625LL * 1000, st->r_sense_uohm);
 		} else {
 			/* 0.5 mV * 25 uV = 0.0125 uV resolution. */
-			val = (val * 25LL) >> 1;
+			val = DIV_ROUND_CLOSEST_ULL(val * 25LL * 1000, st->r_sense_uohm) >> 1;
 		}
 		break;
 	case LTC2945_VIN_H:
@@ -140,13 +141,10 @@ static long long ltc2945_reg_to_val(struct device *dev, u8 reg)
 	case LTC2945_MAX_SENSE_THRES_H:
 	case LTC2945_MIN_SENSE_THRES_H:
 		/*
-		 * 25 uV resolution. Convert to current as measured with
-		 * an 1 mOhm sense resistor, in mA. If a different sense
-		 * resistor is installed, calculate the actual current by
-		 * dividing the reported current by the sense resistor value
-		 * in mOhm.
+		 * 25 uV resolution. Convert to current and scale it
+		 * with the value of the sense resistor.
 		 */
-		val *= 25;
+		val = DIV_ROUND_CLOSEST_ULL(val * 25 * 1000, st->r_sense_uohm);
 		break;
 	default:
 		return -EINVAL;
@@ -155,9 +153,10 @@ static long long ltc2945_reg_to_val(struct device *dev, u8 reg)
 }
 
 static int ltc2945_val_to_reg(struct device *dev, u8 reg,
-			      unsigned long val)
+			      unsigned long long val)
 {
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct ltc2945_state *st = dev_get_drvdata(dev);
+	struct regmap *regmap = st->regmap;
 	unsigned int control;
 	int ret;
 
@@ -168,9 +167,8 @@ static int ltc2945_val_to_reg(struct device *dev, u8 reg,
 	case LTC2945_MAX_POWER_THRES_H:
 	case LTC2945_MIN_POWER_THRES_H:
 		/*
-		 * Convert to register value by assuming current is measured
-		 * with an 1mOhm sense resistor, similar to current
-		 * measurements.
+		 * Convert to register value, scale it with the configured sense
+		 * resistor value, similar to current measurements.
 		 * Control register bit 0 selects if voltage at SENSE+/VDD
 		 * or voltage at ADIN is used to measure power, which in turn
 		 * determines register calculations.
@@ -180,14 +178,10 @@ static int ltc2945_val_to_reg(struct device *dev, u8 reg,
 			return ret;
 		if (control & CONTROL_MULT_SELECT) {
 			/* 25 mV * 25 uV = 0.625 uV resolution. */
-			val = DIV_ROUND_CLOSEST(val, 625);
+			val = DIV_ROUND_CLOSEST_ULL(val * 1000, 625 * st->r_sense_uohm);
 		} else {
-			/*
-			 * 0.5 mV * 25 uV = 0.0125 uV resolution.
-			 * Divide first to avoid overflow;
-			 * accept loss of accuracy.
-			 */
-			val = DIV_ROUND_CLOSEST(val, 25) * 2;
+			/* 0.5 mV * 25 uV = 0.0125 uV resolution. */
+			val = DIV_ROUND_CLOSEST_ULL(val * 2 * 1000, 25 * st->r_sense_uohm);
 		}
 		break;
 	case LTC2945_VIN_H:
@@ -196,7 +190,7 @@ static int ltc2945_val_to_reg(struct device *dev, u8 reg,
 	case LTC2945_MAX_VIN_THRES_H:
 	case LTC2945_MIN_VIN_THRES_H:
 		/* 25 mV resolution. */
-		val /= 25;
+		val = div_u64(val, 25);
 		break;
 	case LTC2945_ADIN_H:
 	case LTC2945_MAX_ADIN_H:
@@ -212,13 +206,10 @@ static int ltc2945_val_to_reg(struct device *dev, u8 reg,
 	case LTC2945_MAX_SENSE_THRES_H:
 	case LTC2945_MIN_SENSE_THRES_H:
 		/*
-		 * 25 uV resolution. Convert to current as measured with
-		 * an 1 mOhm sense resistor, in mA. If a different sense
-		 * resistor is installed, calculate the actual current by
-		 * dividing the reported current by the sense resistor value
-		 * in mOhm.
+		 * 25 uV resolution. Convert to current and scale it
+		 * with the value of the sense resistor, in mA.
 		 */
-		val = DIV_ROUND_CLOSEST(val, 25);
+		val = DIV_ROUND_CLOSEST_ULL(val * 1000, 25 * st->r_sense_uohm);
 		break;
 	default:
 		return -EINVAL;
@@ -226,7 +217,7 @@ static int ltc2945_val_to_reg(struct device *dev, u8 reg,
 	return val;
 }
 
-static ssize_t ltc2945_show_value(struct device *dev,
+static ssize_t ltc2945_value_show(struct device *dev,
 				  struct device_attribute *da, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
@@ -238,20 +229,21 @@ static ssize_t ltc2945_show_value(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%lld\n", value);
 }
 
-static ssize_t ltc2945_set_value(struct device *dev,
-				     struct device_attribute *da,
-				     const char *buf, size_t count)
+static ssize_t ltc2945_value_store(struct device *dev,
+				   struct device_attribute *da,
+				   const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct ltc2945_state *st = dev_get_drvdata(dev);
+	struct regmap *regmap = st->regmap;
 	u8 reg = attr->index;
-	unsigned long val;
+	unsigned long long val;
 	u8 regbuf[3];
 	int num_regs;
 	int regval;
 	int ret;
 
-	ret = kstrtoul(buf, 10, &val);
+	ret = kstrtoull(buf, 10, &val);
 	if (ret)
 		return ret;
 
@@ -273,12 +265,13 @@ static ssize_t ltc2945_set_value(struct device *dev,
 	return ret < 0 ? ret : count;
 }
 
-static ssize_t ltc2945_reset_history(struct device *dev,
+static ssize_t ltc2945_history_store(struct device *dev,
 				     struct device_attribute *da,
 				     const char *buf, size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct ltc2945_state *st = dev_get_drvdata(dev);
+	struct regmap *regmap = st->regmap;
 	u8 reg = attr->index;
 	int num_regs = is_power_reg(reg) ? 3 : 2;
 	u8 buf_min[3] = { 0xff, 0xff, 0xff };
@@ -326,11 +319,12 @@ static ssize_t ltc2945_reset_history(struct device *dev,
 	return ret ? : count;
 }
 
-static ssize_t ltc2945_show_bool(struct device *dev,
+static ssize_t ltc2945_bool_show(struct device *dev,
 				 struct device_attribute *da, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	struct regmap *regmap = dev_get_drvdata(dev);
+	struct ltc2945_state *st = dev_get_drvdata(dev);
+	struct regmap *regmap = st->regmap;
 	unsigned int fault;
 	int ret;
 
@@ -347,86 +341,65 @@ static ssize_t ltc2945_show_bool(struct device *dev,
 
 /* Input voltages */
 
-static SENSOR_DEVICE_ATTR(in1_input, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_VIN_H);
-static SENSOR_DEVICE_ATTR(in1_min, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MIN_VIN_THRES_H);
-static SENSOR_DEVICE_ATTR(in1_max, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MAX_VIN_THRES_H);
-static SENSOR_DEVICE_ATTR(in1_lowest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MIN_VIN_H);
-static SENSOR_DEVICE_ATTR(in1_highest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MAX_VIN_H);
-static SENSOR_DEVICE_ATTR(in1_reset_history, S_IWUSR, NULL,
-			  ltc2945_reset_history, LTC2945_MIN_VIN_H);
+static SENSOR_DEVICE_ATTR_RO(in1_input, ltc2945_value, LTC2945_VIN_H);
+static SENSOR_DEVICE_ATTR_RW(in1_min, ltc2945_value, LTC2945_MIN_VIN_THRES_H);
+static SENSOR_DEVICE_ATTR_RW(in1_max, ltc2945_value, LTC2945_MAX_VIN_THRES_H);
+static SENSOR_DEVICE_ATTR_RO(in1_lowest, ltc2945_value, LTC2945_MIN_VIN_H);
+static SENSOR_DEVICE_ATTR_RO(in1_highest, ltc2945_value, LTC2945_MAX_VIN_H);
+static SENSOR_DEVICE_ATTR_WO(in1_reset_history, ltc2945_history,
+			     LTC2945_MIN_VIN_H);
 
-static SENSOR_DEVICE_ATTR(in2_input, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_ADIN_H);
-static SENSOR_DEVICE_ATTR(in2_min, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MIN_ADIN_THRES_H);
-static SENSOR_DEVICE_ATTR(in2_max, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MAX_ADIN_THRES_H);
-static SENSOR_DEVICE_ATTR(in2_lowest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MIN_ADIN_H);
-static SENSOR_DEVICE_ATTR(in2_highest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MAX_ADIN_H);
-static SENSOR_DEVICE_ATTR(in2_reset_history, S_IWUSR, NULL,
-			  ltc2945_reset_history, LTC2945_MIN_ADIN_H);
+static SENSOR_DEVICE_ATTR_RO(in2_input, ltc2945_value, LTC2945_ADIN_H);
+static SENSOR_DEVICE_ATTR_RW(in2_min, ltc2945_value, LTC2945_MIN_ADIN_THRES_H);
+static SENSOR_DEVICE_ATTR_RW(in2_max, ltc2945_value, LTC2945_MAX_ADIN_THRES_H);
+static SENSOR_DEVICE_ATTR_RO(in2_lowest, ltc2945_value, LTC2945_MIN_ADIN_H);
+static SENSOR_DEVICE_ATTR_RO(in2_highest, ltc2945_value, LTC2945_MAX_ADIN_H);
+static SENSOR_DEVICE_ATTR_WO(in2_reset_history, ltc2945_history,
+			     LTC2945_MIN_ADIN_H);
 
 /* Voltage alarms */
 
-static SENSOR_DEVICE_ATTR(in1_min_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_VIN_UV);
-static SENSOR_DEVICE_ATTR(in1_max_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_VIN_OV);
-static SENSOR_DEVICE_ATTR(in2_min_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_ADIN_UV);
-static SENSOR_DEVICE_ATTR(in2_max_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_ADIN_OV);
+static SENSOR_DEVICE_ATTR_RO(in1_min_alarm, ltc2945_bool, FAULT_VIN_UV);
+static SENSOR_DEVICE_ATTR_RO(in1_max_alarm, ltc2945_bool, FAULT_VIN_OV);
+static SENSOR_DEVICE_ATTR_RO(in2_min_alarm, ltc2945_bool, FAULT_ADIN_UV);
+static SENSOR_DEVICE_ATTR_RO(in2_max_alarm, ltc2945_bool, FAULT_ADIN_OV);
 
 /* Currents (via sense resistor) */
 
-static SENSOR_DEVICE_ATTR(curr1_input, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_SENSE_H);
-static SENSOR_DEVICE_ATTR(curr1_min, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MIN_SENSE_THRES_H);
-static SENSOR_DEVICE_ATTR(curr1_max, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MAX_SENSE_THRES_H);
-static SENSOR_DEVICE_ATTR(curr1_lowest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MIN_SENSE_H);
-static SENSOR_DEVICE_ATTR(curr1_highest, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_MAX_SENSE_H);
-static SENSOR_DEVICE_ATTR(curr1_reset_history, S_IWUSR, NULL,
-			  ltc2945_reset_history, LTC2945_MIN_SENSE_H);
+static SENSOR_DEVICE_ATTR_RO(curr1_input, ltc2945_value, LTC2945_SENSE_H);
+static SENSOR_DEVICE_ATTR_RW(curr1_min, ltc2945_value,
+			     LTC2945_MIN_SENSE_THRES_H);
+static SENSOR_DEVICE_ATTR_RW(curr1_max, ltc2945_value,
+			     LTC2945_MAX_SENSE_THRES_H);
+static SENSOR_DEVICE_ATTR_RO(curr1_lowest, ltc2945_value, LTC2945_MIN_SENSE_H);
+static SENSOR_DEVICE_ATTR_RO(curr1_highest, ltc2945_value,
+			     LTC2945_MAX_SENSE_H);
+static SENSOR_DEVICE_ATTR_WO(curr1_reset_history, ltc2945_history,
+			     LTC2945_MIN_SENSE_H);
 
 /* Current alarms */
 
-static SENSOR_DEVICE_ATTR(curr1_min_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_SENSE_UV);
-static SENSOR_DEVICE_ATTR(curr1_max_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_SENSE_OV);
+static SENSOR_DEVICE_ATTR_RO(curr1_min_alarm, ltc2945_bool, FAULT_SENSE_UV);
+static SENSOR_DEVICE_ATTR_RO(curr1_max_alarm, ltc2945_bool, FAULT_SENSE_OV);
 
 /* Power */
 
-static SENSOR_DEVICE_ATTR(power1_input, S_IRUGO, ltc2945_show_value, NULL,
-			  LTC2945_POWER_H);
-static SENSOR_DEVICE_ATTR(power1_min, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MIN_POWER_THRES_H);
-static SENSOR_DEVICE_ATTR(power1_max, S_IRUGO | S_IWUSR, ltc2945_show_value,
-			  ltc2945_set_value, LTC2945_MAX_POWER_THRES_H);
-static SENSOR_DEVICE_ATTR(power1_input_lowest, S_IRUGO, ltc2945_show_value,
-			  NULL, LTC2945_MIN_POWER_H);
-static SENSOR_DEVICE_ATTR(power1_input_highest, S_IRUGO, ltc2945_show_value,
-			  NULL, LTC2945_MAX_POWER_H);
-static SENSOR_DEVICE_ATTR(power1_reset_history, S_IWUSR, NULL,
-			  ltc2945_reset_history, LTC2945_MIN_POWER_H);
+static SENSOR_DEVICE_ATTR_RO(power1_input, ltc2945_value, LTC2945_POWER_H);
+static SENSOR_DEVICE_ATTR_RW(power1_min, ltc2945_value,
+			     LTC2945_MIN_POWER_THRES_H);
+static SENSOR_DEVICE_ATTR_RW(power1_max, ltc2945_value,
+			     LTC2945_MAX_POWER_THRES_H);
+static SENSOR_DEVICE_ATTR_RO(power1_input_lowest, ltc2945_value,
+			     LTC2945_MIN_POWER_H);
+static SENSOR_DEVICE_ATTR_RO(power1_input_highest, ltc2945_value,
+			     LTC2945_MAX_POWER_H);
+static SENSOR_DEVICE_ATTR_WO(power1_reset_history, ltc2945_history,
+			     LTC2945_MIN_POWER_H);
 
 /* Power alarms */
 
-static SENSOR_DEVICE_ATTR(power1_min_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_POWER_UV);
-static SENSOR_DEVICE_ATTR(power1_max_alarm, S_IRUGO, ltc2945_show_bool, NULL,
-			  FAULT_POWER_OV);
+static SENSOR_DEVICE_ATTR_RO(power1_min_alarm, ltc2945_bool, FAULT_POWER_UV);
+static SENSOR_DEVICE_ATTR_RO(power1_max_alarm, ltc2945_bool, FAULT_POWER_OV);
 
 static struct attribute *ltc2945_attrs[] = {
 	&sensor_dev_attr_in1_input.dev_attr.attr,
@@ -475,12 +448,16 @@ static const struct regmap_config ltc2945_regmap_config = {
 	.max_register = LTC2945_MIN_ADIN_THRES_L,
 };
 
-static int ltc2945_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int ltc2945_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
+	struct ltc2945_state *st;
 	struct device *hwmon_dev;
 	struct regmap *regmap;
+
+	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	if (!st)
+		return -ENOMEM;
 
 	regmap = devm_regmap_init_i2c(client, &ltc2945_regmap_config);
 	if (IS_ERR(regmap)) {
@@ -488,11 +465,17 @@ static int ltc2945_probe(struct i2c_client *client,
 		return PTR_ERR(regmap);
 	}
 
+	if (device_property_read_u32(dev, "shunt-resistor-micro-ohms",
+				     &st->r_sense_uohm))
+		st->r_sense_uohm = 1000;
+
+	st->regmap = regmap;
+
 	/* Clear faults */
 	regmap_write(regmap, LTC2945_FAULT, 0x00);
 
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
-							   regmap,
+							   st,
 							   ltc2945_groups);
 	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
@@ -508,7 +491,7 @@ static struct i2c_driver ltc2945_driver = {
 	.driver = {
 		   .name = "ltc2945",
 		   },
-	.probe = ltc2945_probe,
+	.probe_new = ltc2945_probe,
 	.id_table = ltc2945_id,
 };
 

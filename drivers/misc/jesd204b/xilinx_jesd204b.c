@@ -24,7 +24,6 @@
 
 #include "xilinx_jesd204b.h"
 
-
 struct child_clk {
 	struct clk_hw		hw;
 	struct jesd204b_state	*st;
@@ -35,24 +34,24 @@ struct child_clk {
 #define to_clk_priv(_hw) container_of(_hw, struct child_clk, hw)
 
 static inline void jesd204b_write(struct jesd204b_state *st,
-				  unsigned reg, unsigned val)
+				  unsigned int reg, unsigned int val)
 {
 	iowrite32(val, st->regs + reg);
 }
 
 static inline unsigned int jesd204b_read(struct jesd204b_state *st,
-					 unsigned reg)
+					 unsigned int reg)
 {
 	return ioread32(st->regs + reg);
 }
 
 static ssize_t jesd204b_laneinfo_read(struct device *dev,
 				      struct device_attribute *attr,
-				      char *buf, unsigned lane)
+				      char *buf, unsigned int lane)
 {
 	struct jesd204b_state *st = dev_get_drvdata(dev);
 	int ret;
-	unsigned val1, val2, val3;
+	unsigned int val1, val2, val3;
 
 	val1 = jesd204b_read(st, XLNX_JESD204_REG_ID_L(lane));
 	val2 = jesd204b_read(st, XLNX_JESD204_REG_LANE_F(lane));
@@ -118,7 +117,7 @@ static ssize_t jesd204b_lane##_x##_info_read(struct device *dev,	    \
 {									    \
 	return jesd204b_laneinfo_read(dev, attr, buf, _x);		    \
 }									    \
-static DEVICE_ATTR(lane##_x##_info, S_IRUSR, jesd204b_lane##_x##_info_read, \
+static DEVICE_ATTR(lane##_x##_info, 0400, jesd204b_lane##_x##_info_read, \
 		   NULL)
 
 JESD_LANE(0);
@@ -132,10 +131,10 @@ JESD_LANE(7);
 
 static ssize_t jesd204b_lane_syscstat_read(struct device *dev,
 			struct device_attribute *attr,
-			char *buf, unsigned lane)
+			char *buf, unsigned int lane)
 {
+	unsigned int stat;
 	struct jesd204b_state *st = dev_get_drvdata(dev);
-	unsigned stat;
 
 	stat = jesd204b_read(st, XLNX_JESD204_REG_SYNC_ERR_STAT);
 
@@ -153,7 +152,7 @@ static ssize_t jesd204b_lane##_x##_syncstat_read(struct device *dev,	       \
 {									       \
 	return jesd204b_lane_syscstat_read(dev, attr, buf, _x);		       \
 }									       \
-static DEVICE_ATTR(lane##_x##_syncstat, S_IRUSR,			       \
+static DEVICE_ATTR(lane##_x##_syncstat, 0400,			       \
 		   jesd204b_lane##_x##_syncstat_read, NULL)
 
 JESD_SYNCSTAT_LANE(0);
@@ -170,7 +169,7 @@ static ssize_t jesd204b_reg_write(struct device *dev,
 				  const char *buf, size_t count)
 {
 	struct jesd204b_state *st = dev_get_drvdata(dev);
-	unsigned val;
+	unsigned int val;
 	int ret;
 
 	ret = sscanf(buf, "%i %i", &st->addr, &val);
@@ -189,7 +188,7 @@ static ssize_t jesd204b_reg_read(struct device *dev,
 	return sprintf(buf, "0x%X\n", jesd204b_read(st, st->addr));
 }
 
-static DEVICE_ATTR(reg_access, S_IWUSR | S_IRUSR, jesd204b_reg_read,
+static DEVICE_ATTR(reg_access, 0600, jesd204b_reg_read,
 		   jesd204b_reg_write);
 
 static ssize_t jesd204b_syncreg_read(struct device *dev,
@@ -202,37 +201,7 @@ static ssize_t jesd204b_syncreg_read(struct device *dev,
 					XLNX_JESD204_REG_SYNC_STATUS));
 }
 
-static DEVICE_ATTR(sync_status, S_IRUSR, jesd204b_syncreg_read, NULL);
-
-static unsigned long jesd204b_clk_recalc_rate(struct clk_hw *hw,
-					      unsigned long parent_rate)
-{
-	return parent_rate;
-}
-
-static int jesd204b_clk_enable(struct clk_hw *hw)
-{
-	to_clk_priv(hw)->enabled = true;
-
-	return 0;
-}
-
-static void jesd204b_clk_disable(struct clk_hw *hw)
-{
-	to_clk_priv(hw)->enabled = false;
-}
-
-static int jesd204b_clk_is_enabled(struct clk_hw *hw)
-{
-	return to_clk_priv(hw)->enabled;
-}
-
-static const struct clk_ops clkout_ops = {
-	.recalc_rate = jesd204b_clk_recalc_rate,
-	.enable = jesd204b_clk_enable,
-	.disable = jesd204b_clk_disable,
-	.is_enabled = jesd204b_clk_is_enabled,
-};
+static DEVICE_ATTR(sync_status, 0400, jesd204b_syncreg_read, NULL);
 
 /* Match table for of_platform binding */
 static const struct of_device_id jesd204b_of_match[] = {
@@ -250,7 +219,7 @@ static int jesd204b_probe(struct platform_device *pdev)
 	struct clk *clk;
 	struct child_clk *clk_priv;
 	struct clk_init_data init;
-	unsigned val;
+	unsigned int val;
 	int ret;
 
 	clk = devm_clk_get(&pdev->dev, NULL);
@@ -276,7 +245,6 @@ static int jesd204b_probe(struct platform_device *pdev)
 	clk_set_rate(st->clk, 156250000);
 	st->rate = clk_get_rate(clk);
 
-
 	of_property_read_u32(pdev->dev.of_node, "xlnx,node-is-transmit",
 			     &st->transmit);
 
@@ -287,7 +255,7 @@ static int jesd204b_probe(struct platform_device *pdev)
 
 	jesd204b_write(st, XLNX_JESD204_REG_RESET, XLNX_JESD204_RESET);
 	while (!jesd204b_read(st, XLNX_JESD204_REG_RESET))
-		msleep(1);
+		msleep(20);
 
 	jesd204b_write(st, XLNX_JESD204_REG_ILA_CTRL,
 		       (of_property_read_bool(pdev->dev.of_node,
@@ -301,7 +269,6 @@ static int jesd204b_probe(struct platform_device *pdev)
 		       (of_property_read_bool(pdev->dev.of_node,
 			"xlnx,sysref-always-enable") ?
 			XLNX_JESD204_ALWAYS_SYSREF_EN : 0));
-
 
 	device_create_file(&pdev->dev, &dev_attr_reg_access);
 

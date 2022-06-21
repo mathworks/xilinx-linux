@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Support for dynamic device trees.
  *
@@ -15,6 +16,11 @@
 #include <linux/proc_fs.h>
 
 #include "of_private.h"
+
+static struct device_node *kobj_to_device_node(struct kobject *kobj)
+{
+	return container_of(kobj, struct device_node, kobj);
+}
 
 /**
  * of_node_get() - Increment refcount of a node
@@ -42,28 +48,6 @@ void of_node_put(struct device_node *node)
 		kobject_put(&node->kobj);
 }
 EXPORT_SYMBOL(of_node_put);
-
-void __of_detach_node_sysfs(struct device_node *np)
-{
-	struct property *pp;
-
-	if (!IS_ENABLED(CONFIG_SYSFS))
-		return;
-
-	BUG_ON(!of_node_is_initialized(np));
-	if (!of_kset)
-		return;
-
-	/* only remove properties if on sysfs */
-	if (of_node_is_attached(np)) {
-		for_each_property_of_node(np, pp)
-			__of_sysfs_remove_bin_file(np, pp);
-		kobject_del(&np->kobj);
-	}
-
-	/* finally remove the kobj_init ref */
-	of_node_put(np);
-}
 
 static BLOCKING_NOTIFIER_HEAD(of_reconfig_chain);
 
@@ -98,14 +82,14 @@ int of_reconfig_notify(unsigned long action, struct of_reconfig_data *p)
 	switch (action) {
 	case OF_RECONFIG_ATTACH_NODE:
 	case OF_RECONFIG_DETACH_NODE:
-		pr_debug("notify %-15s %s\n", action_names[action],
-			pr->dn->full_name);
+		pr_debug("notify %-15s %pOF\n", action_names[action],
+			pr->dn);
 		break;
 	case OF_RECONFIG_ADD_PROPERTY:
 	case OF_RECONFIG_REMOVE_PROPERTY:
 	case OF_RECONFIG_UPDATE_PROPERTY:
-		pr_debug("notify %-15s %s:%s\n", action_names[action],
-			pr->dn->full_name, pr->prop->name);
+		pr_debug("notify %-15s %pOF:%s\n", action_names[action],
+			pr->dn, pr->prop->name);
 		break;
 
 	}
@@ -216,20 +200,26 @@ int of_property_notify(int action, struct device_node *np,
 	return of_reconfig_notify(action, &pr);
 }
 
-void __of_attach_node(struct device_node *np)
+static void __of_attach_node(struct device_node *np)
 {
 	const __be32 *phandle;
 	int sz;
 
-	np->name = __of_get_property(np, "name", NULL) ? : "<NULL>";
-	np->type = __of_get_property(np, "device_type", NULL) ? : "<NULL>";
+	if (!of_node_check_flag(np, OF_OVERLAY)) {
+		np->name = __of_get_property(np, "name", NULL);
+		if (!np->name)
+			np->name = "<NULL>";
 
-	phandle = __of_get_property(np, "phandle", &sz);
-	if (!phandle)
-		phandle = __of_get_property(np, "linux,phandle", &sz);
-	if (IS_ENABLED(CONFIG_PPC_PSERIES) && !phandle)
-		phandle = __of_get_property(np, "ibm,phandle", &sz);
-	np->phandle = (phandle && (sz >= 4)) ? be32_to_cpup(phandle) : 0;
+		phandle = __of_get_property(np, "phandle", &sz);
+		if (!phandle)
+			phandle = __of_get_property(np, "linux,phandle", &sz);
+		if (IS_ENABLED(CONFIG_PPC_PSERIES) && !phandle)
+			phandle = __of_get_property(np, "ibm,phandle", &sz);
+		if (phandle && (sz >= 4))
+			np->phandle = be32_to_cpup(phandle);
+		else
+			np->phandle = 0;
+	}
 
 	np->child = NULL;
 	np->sibling = np->parent->child;
@@ -284,19 +274,18 @@ void __of_detach_node(struct device_node *np)
 	}
 
 	of_node_set_flag(np, OF_DETACHED);
+
+	/* race with of_find_node_by_phandle() prevented by devtree_lock */
+	__of_phandle_cache_inv_entry(np->phandle);
 }
 
 /**
  * of_detach_node() - "Unplug" a node from the device tree.
- *
- * The caller must hold a reference to the node.  The memory associated with
- * the node is not freed until its refcount goes to zero.
  */
 int of_detach_node(struct device_node *np)
 {
 	struct of_reconfig_data rd;
 	unsigned long flags;
-	int rc = 0;
 
 	memset(&rd, 0, sizeof(rd));
 	rd.dn = np;
@@ -311,9 +300,21 @@ int of_detach_node(struct device_node *np)
 
 	of_reconfig_notify(OF_RECONFIG_DETACH_NODE, &rd);
 
-	return rc;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(of_detach_node);
+
+static void property_list_free(struct property *prop_list)
+{
+	struct property *prop, *next;
+
+	for (prop = prop_list; prop != NULL; prop = next) {
+		next = prop->next;
+		kfree(prop->name);
+		kfree(prop->value);
+		kfree(prop);
+	}
+}
 
 /**
  * of_node_release() - release a dynamically allocated node
@@ -324,30 +325,38 @@ EXPORT_SYMBOL_GPL(of_detach_node);
 void of_node_release(struct kobject *kobj)
 {
 	struct device_node *node = kobj_to_device_node(kobj);
-	struct property *prop = node->properties;
 
 	/* We should never be releasing nodes that haven't been detached. */
 	if (!of_node_check_flag(node, OF_DETACHED)) {
-		pr_err("ERROR: Bad of_node_put() on %s\n", node->full_name);
+		pr_err("ERROR: Bad of_node_put() on %pOF\n", node);
 		dump_stack();
 		return;
 	}
-
 	if (!of_node_check_flag(node, OF_DYNAMIC))
 		return;
 
-	while (prop) {
-		struct property *next = prop->next;
-		kfree(prop->name);
-		kfree(prop->value);
-		kfree(prop);
-		prop = next;
+	if (of_node_check_flag(node, OF_OVERLAY)) {
 
-		if (!prop) {
-			prop = node->deadprops;
-			node->deadprops = NULL;
+		if (!of_node_check_flag(node, OF_OVERLAY_FREE_CSET)) {
+			/* premature refcount of zero, do not free memory */
+			pr_err("ERROR: memory leak before free overlay changeset,  %pOF\n",
+			       node);
+			return;
 		}
+
+		/*
+		 * If node->properties non-empty then properties were added
+		 * to this node either by different overlay that has not
+		 * yet been removed, or by a non-overlay mechanism.
+		 */
+		if (node->properties)
+			pr_err("ERROR: %s(), unexpected properties in %pOF\n",
+			       __func__, node);
 	}
+
+	property_list_free(node->properties);
+	property_list_free(node->deadprops);
+
 	kfree(node->full_name);
 	kfree(node->data);
 	kfree(node);
@@ -397,25 +406,25 @@ struct property *__of_prop_dup(const struct property *prop, gfp_t allocflags)
 }
 
 /**
- * __of_node_dupv() - Duplicate or create an empty device node dynamically.
- * @fmt: Format string for new full name of the device node
- * @vargs: va_list containing the arugments for the node full name
+ * __of_node_dup() - Duplicate or create an empty device node dynamically.
+ * @np:		if not NULL, contains properties to be duplicated in new node
+ * @full_name:	string value to be duplicated into new node's full_name field
  *
- * Create an device tree node, either by duplicating an empty node or by allocating
- * an empty one suitable for further modification.  The node data are
- * dynamically allocated and all the node flags have the OF_DYNAMIC &
- * OF_DETACHED bits set. Returns the newly allocated node or NULL on out of
- * memory error.
+ * Create a device tree node, optionally duplicating the properties of
+ * another node.  The node data are dynamically allocated and all the node
+ * flags have the OF_DYNAMIC & OF_DETACHED bits set.
+ *
+ * Returns the newly allocated node or NULL on out of memory error.
  */
-struct device_node *__of_node_dupv(const struct device_node *np,
-		const char *fmt, va_list vargs)
+struct device_node *__of_node_dup(const struct device_node *np,
+				  const char *full_name)
 {
 	struct device_node *node;
 
 	node = kzalloc(sizeof(*node), GFP_KERNEL);
 	if (!node)
 		return NULL;
-	node->full_name = kvasprintf(GFP_KERNEL, fmt, vargs);
+	node->full_name = kstrdup(full_name, GFP_KERNEL);
 	if (!node->full_name) {
 		kfree(node);
 		return NULL;
@@ -447,26 +456,18 @@ struct device_node *__of_node_dupv(const struct device_node *np,
 	return NULL;
 }
 
-/**
- * __of_node_dup() - Duplicate or create an empty device node dynamically.
- * @fmt: Format string (plus vargs) for new full name of the device node
- *
- * See: __of_node_dupv()
- */
-struct device_node *__of_node_dup(const struct device_node *np,
-		const char *fmt, ...)
-{
-	va_list vargs;
-	struct device_node *node;
-
-	va_start(vargs, fmt);
-	node = __of_node_dupv(np, fmt, vargs);
-	va_end(vargs);
-	return node;
-}
-
 static void __of_changeset_entry_destroy(struct of_changeset_entry *ce)
 {
+	if (ce->action == OF_RECONFIG_ATTACH_NODE &&
+	    of_node_check_flag(ce->np, OF_OVERLAY)) {
+		if (kref_read(&ce->np->kobj.kref) > 1) {
+			pr_err("ERROR: memory leak, expected refcount 1 instead of %d, of_node_get()/of_node_put() unbalanced - destroy cset entry: attach overlay node %pOF\n",
+			       kref_read(&ce->np->kobj.kref), ce->np);
+		} else {
+			of_node_set_flag(ce->np, OF_OVERLAY_FREE_CSET);
+		}
+	}
+
 	of_node_put(ce->np);
 	list_del(&ce->node);
 	kfree(ce);
@@ -479,13 +480,13 @@ static void __of_changeset_entry_dump(struct of_changeset_entry *ce)
 	case OF_RECONFIG_ADD_PROPERTY:
 	case OF_RECONFIG_REMOVE_PROPERTY:
 	case OF_RECONFIG_UPDATE_PROPERTY:
-		pr_debug("cset<%p> %-15s %s/%s\n", ce, action_names[ce->action],
-			ce->np->full_name, ce->prop->name);
+		pr_debug("cset<%p> %-15s %pOF/%s\n", ce, action_names[ce->action],
+			ce->np, ce->prop->name);
 		break;
 	case OF_RECONFIG_ATTACH_NODE:
 	case OF_RECONFIG_DETACH_NODE:
-		pr_debug("cset<%p> %-15s %s\n", ce, action_names[ce->action],
-			ce->np->full_name);
+		pr_debug("cset<%p> %-15s %pOF\n", ce, action_names[ce->action],
+			ce->np);
 		break;
 	}
 }
@@ -526,11 +527,12 @@ static void __of_changeset_entry_invert(struct of_changeset_entry *ce,
 	}
 }
 
-static void __of_changeset_entry_notify(struct of_changeset_entry *ce, bool revert)
+static int __of_changeset_entry_notify(struct of_changeset_entry *ce,
+		bool revert)
 {
 	struct of_reconfig_data rd;
 	struct of_changeset_entry ce_inverted;
-	int ret;
+	int ret = 0;
 
 	if (revert) {
 		__of_changeset_entry_invert(ce, &ce_inverted);
@@ -552,11 +554,12 @@ static void __of_changeset_entry_notify(struct of_changeset_entry *ce, bool reve
 	default:
 		pr_err("invalid devicetree changeset action: %i\n",
 			(int)ce->action);
-		return;
+		ret = -EINVAL;
 	}
 
 	if (ret)
-		pr_err("changeset notifier error @%s\n", ce->np->full_name);
+		pr_err("changeset notifier error @%pOF\n", ce->np);
+	return ret;
 }
 
 static int __of_changeset_entry_apply(struct of_changeset_entry *ce)
@@ -587,8 +590,8 @@ static int __of_changeset_entry_apply(struct of_changeset_entry *ce)
 
 		ret = __of_add_property(ce->np, ce->prop);
 		if (ret) {
-			pr_err("changeset: add_property failed @%s/%s\n",
-				ce->np->full_name,
+			pr_err("changeset: add_property failed @%pOF/%s\n",
+				ce->np,
 				ce->prop->name);
 			break;
 		}
@@ -596,8 +599,8 @@ static int __of_changeset_entry_apply(struct of_changeset_entry *ce)
 	case OF_RECONFIG_REMOVE_PROPERTY:
 		ret = __of_remove_property(ce->np, ce->prop);
 		if (ret) {
-			pr_err("changeset: remove_property failed @%s/%s\n",
-				ce->np->full_name,
+			pr_err("changeset: remove_property failed @%pOF/%s\n",
+				ce->np,
 				ce->prop->name);
 			break;
 		}
@@ -615,8 +618,8 @@ static int __of_changeset_entry_apply(struct of_changeset_entry *ce)
 
 		ret = __of_update_property(ce->np, ce->prop, &old_prop);
 		if (ret) {
-			pr_err("changeset: update_property failed @%s/%s\n",
-				ce->np->full_name,
+			pr_err("changeset: update_property failed @%pOF/%s\n",
+				ce->np,
 				ce->prop->name);
 			break;
 		}
@@ -690,32 +693,82 @@ void of_changeset_destroy(struct of_changeset *ocs)
 }
 EXPORT_SYMBOL_GPL(of_changeset_destroy);
 
-int __of_changeset_apply(struct of_changeset *ocs)
+/*
+ * Apply the changeset entries in @ocs.
+ * If apply fails, an attempt is made to revert the entries that were
+ * successfully applied.
+ *
+ * If multiple revert errors occur then only the final revert error is reported.
+ *
+ * Returns 0 on success, a negative error value in case of an error.
+ * If a revert error occurs, it is returned in *ret_revert.
+ */
+int __of_changeset_apply_entries(struct of_changeset *ocs, int *ret_revert)
 {
 	struct of_changeset_entry *ce;
-	int ret;
+	int ret, ret_tmp;
 
-	/* perform the rest of the work */
 	pr_debug("changeset: applying...\n");
 	list_for_each_entry(ce, &ocs->entries, node) {
 		ret = __of_changeset_entry_apply(ce);
 		if (ret) {
 			pr_err("Error applying changeset (%d)\n", ret);
-			list_for_each_entry_continue_reverse(ce, &ocs->entries, node)
-				__of_changeset_entry_revert(ce);
+			list_for_each_entry_continue_reverse(ce, &ocs->entries,
+							     node) {
+				ret_tmp = __of_changeset_entry_revert(ce);
+				if (ret_tmp)
+					*ret_revert = ret_tmp;
+			}
 			return ret;
 		}
 	}
-	pr_debug("changeset: applied, emitting notifiers.\n");
+
+	return 0;
+}
+
+/*
+ * Returns 0 on success, a negative error value in case of an error.
+ *
+ * If multiple changeset entry notification errors occur then only the
+ * final notification error is reported.
+ */
+int __of_changeset_apply_notify(struct of_changeset *ocs)
+{
+	struct of_changeset_entry *ce;
+	int ret = 0, ret_tmp;
+
+	pr_debug("changeset: emitting notifiers.\n");
 
 	/* drop the global lock while emitting notifiers */
 	mutex_unlock(&of_mutex);
-	list_for_each_entry(ce, &ocs->entries, node)
-		__of_changeset_entry_notify(ce, 0);
+	list_for_each_entry(ce, &ocs->entries, node) {
+		ret_tmp = __of_changeset_entry_notify(ce, 0);
+		if (ret_tmp)
+			ret = ret_tmp;
+	}
 	mutex_lock(&of_mutex);
 	pr_debug("changeset: notifiers sent.\n");
 
-	return 0;
+	return ret;
+}
+
+/*
+ * Returns 0 on success, a negative error value in case of an error.
+ *
+ * If a changeset entry apply fails, an attempt is made to revert any
+ * previous entries in the changeset.  If any of the reverts fails,
+ * that failure is not reported.  Thus the state of the device tree
+ * is unknown if an apply error occurs.
+ */
+static int __of_changeset_apply(struct of_changeset *ocs)
+{
+	int ret, ret_revert = 0;
+
+	ret = __of_changeset_apply_entries(ocs, &ret_revert);
+	if (!ret)
+		ret = __of_changeset_apply_notify(ocs);
+
+	return ret;
 }
 
 /**
@@ -742,31 +795,74 @@ int of_changeset_apply(struct of_changeset *ocs)
 }
 EXPORT_SYMBOL_GPL(of_changeset_apply);
 
-int __of_changeset_revert(struct of_changeset *ocs)
+/*
+ * Revert the changeset entries in @ocs.
+ * If revert fails, an attempt is made to re-apply the entries that were
+ * successfully removed.
+ *
+ * If multiple re-apply errors occur then only the final apply error is
+ * reported.
+ *
+ * Returns 0 on success, a negative error value in case of an error.
+ * If an apply error occurs, it is returned in *ret_apply.
+ */
+int __of_changeset_revert_entries(struct of_changeset *ocs, int *ret_apply)
 {
 	struct of_changeset_entry *ce;
-	int ret;
+	int ret, ret_tmp;
 
 	pr_debug("changeset: reverting...\n");
 	list_for_each_entry_reverse(ce, &ocs->entries, node) {
 		ret = __of_changeset_entry_revert(ce);
 		if (ret) {
 			pr_err("Error reverting changeset (%d)\n", ret);
-			list_for_each_entry_continue(ce, &ocs->entries, node)
-				__of_changeset_entry_apply(ce);
+			list_for_each_entry_continue(ce, &ocs->entries, node) {
+				ret_tmp = __of_changeset_entry_apply(ce);
+				if (ret_tmp)
+					*ret_apply = ret_tmp;
+			}
 			return ret;
 		}
 	}
-	pr_debug("changeset: reverted, emitting notifiers.\n");
+
+	return 0;
+}
+
+/*
+ * If multiple changeset entry notification errors occur then only the
+ * final notification error is reported.
+ */
+int __of_changeset_revert_notify(struct of_changeset *ocs)
+{
+	struct of_changeset_entry *ce;
+	int ret = 0, ret_tmp;
+
+	pr_debug("changeset: emitting notifiers.\n");
 
 	/* drop the global lock while emitting notifiers */
 	mutex_unlock(&of_mutex);
-	list_for_each_entry_reverse(ce, &ocs->entries, node)
-		__of_changeset_entry_notify(ce, 1);
+	list_for_each_entry_reverse(ce, &ocs->entries, node) {
+		ret_tmp = __of_changeset_entry_notify(ce, 1);
+		if (ret_tmp)
+			ret = ret_tmp;
+	}
 	mutex_lock(&of_mutex);
 	pr_debug("changeset: notifiers sent.\n");
 
-	return 0;
+	return ret;
+}
+
+static int __of_changeset_revert(struct of_changeset *ocs)
+{
+	int ret, ret_reply;
+
+	ret_reply = 0;
+	ret = __of_changeset_revert_entries(ocs, &ret_reply);
+
+	if (!ret)
+		ret = __of_changeset_revert_notify(ocs);
+
+	return ret;
 }
 
 /**
@@ -793,7 +889,7 @@ int of_changeset_revert(struct of_changeset *ocs)
 EXPORT_SYMBOL_GPL(of_changeset_revert);
 
 /**
- * of_changeset_action - Perform a changeset action
+ * of_changeset_action - Add an action to the tail of the changeset list
  *
  * @ocs:	changeset pointer
  * @action:	action to perform
@@ -830,229 +926,3 @@ int of_changeset_action(struct of_changeset *ocs, unsigned long action,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(of_changeset_action);
-
-/* changeset helpers */
-
-/**
- * of_changeset_create_device_node - Create an empty device node
- *
- * @ocs:	changeset pointer
- * @parent:	parent device node
- * @fmt:	format string for the node's full_name
- * @args:	argument list for the format string
- *
- * Create an empty device node, marking it as detached and allocated.
- *
- * Returns a device node on success, an error encoded pointer otherwise
- */
-struct device_node *of_changeset_create_device_nodev(
-	struct of_changeset *ocs, struct device_node *parent,
-	const char *fmt, va_list vargs)
-{
-	struct device_node *node;
-
-	node = __of_node_dupv(NULL, fmt, vargs);
-	if (!node)
-		return ERR_PTR(-ENOMEM);
-
-	node->parent = parent;
-	return node;
-}
-EXPORT_SYMBOL_GPL(of_changeset_create_device_nodev);
-
-/**
- * of_changeset_create_device_node - Create an empty device node
- *
- * @ocs:	changeset pointer
- * @parent:	parent device node
- * @fmt:	Format string for the node's full_name
- * ...		Arguments
- *
- * Create an empty device node, marking it as detached and allocated.
- *
- * Returns a device node on success, an error encoded pointer otherwise
- */
-__printf(3, 4) struct device_node *
-of_changeset_create_device_node(struct of_changeset *ocs,
-	struct device_node *parent, const char *fmt, ...)
-{
-	va_list vargs;
-	struct device_node *node;
-
-	va_start(vargs, fmt);
-	node = of_changeset_create_device_nodev(ocs, parent, fmt, vargs);
-	va_end(vargs);
-	return node;
-}
-EXPORT_SYMBOL_GPL(of_changeset_create_device_node);
-
-/**
- * __of_changeset_add_property_copy - Create/update a new property copying
- *                                    name & value
- *
- * @ocs:	changeset pointer
- * @np:		device node pointer
- * @name:	name of the property
- * @value:	pointer to the value data
- * @length:	length of the value in bytes
- * @update:	True on update operation
- *
- * Adds/updates a property to the changeset by making copies of the name & value
- * entries. The @update parameter controls whether an add or update takes place.
- *
- * Returns zero on success, a negative error value otherwise.
- */
-int __of_changeset_add_update_property_copy(struct of_changeset *ocs,
-		struct device_node *np, const char *name, const void *value,
-		int length, bool update)
-{
-	struct property *prop;
-	char *new_name;
-	void *new_value;
-	int ret = -ENOMEM;
-
-	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
-	if (!prop)
-		return -ENOMEM;
-
-	new_name = kstrdup(name, GFP_KERNEL);
-	if (!new_name)
-		goto out_err;
-
-	/*
-	 * NOTE: There is no check for zero length value.
-	 * In case of a boolean property, this will allocate a value
-	 * of zero bytes. We do this to work around the use
-	 * of of_get_property() calls on boolean values.
-	 */
-	new_value = kmemdup(value, length, GFP_KERNEL);
-	if (!new_value)
-		goto out_err;
-
-	of_property_set_flag(prop, OF_DYNAMIC);
-
-	prop->name = new_name;
-	prop->value = new_value;
-	prop->length = length;
-
-	if (!update)
-		ret = of_changeset_add_property(ocs, np, prop);
-	else
-		ret = of_changeset_update_property(ocs, np, prop);
-
-	if (!ret)
-		return 0;
-
-out_err:
-	kfree(prop->value);
-	kfree(prop->name);
-	kfree(prop);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(__of_changeset_add_update_property_copy);
-
-/**
- * of_changeset_add_property_stringf - Create a new formatted string property
- *
- * @ocs:	changeset pointer
- * @np:		device node pointer
- * @name:	name of the property
- * @fmt:	format of string property
- * ...		arguments of the format string
- *
- * Adds a string property to the changeset by making copies of the name
- * and the formatted value.
- *
- * Returns zero on success, a negative error value otherwise.
- */
-__printf(4, 5) int of_changeset_add_property_stringf(
-		struct of_changeset *ocs, struct device_node *np,
-		const char *name, const char *fmt, ...)
-{
-	va_list vargs;
-	int ret;
-
-	va_start(vargs, fmt);
-	ret = __of_changeset_add_update_property_stringv(ocs, np, name, fmt,
-			vargs, false);
-	va_end(vargs);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(of_changeset_add_property_stringf);
-
-/**
- * of_changeset_update_property_stringf - Update formatted string property
- *
- * @ocs:	changeset pointer
- * @np:		device node pointer
- * @name:	name of the property
- * @fmt:	format of string property
- * ...		arguments of the format string
- *
- * Updates a string property to the changeset by making copies of the name
- * and the formatted value.
- *
- * Returns zero on success, a negative error value otherwise.
- */
-int of_changeset_update_property_stringf(
-	struct of_changeset *ocs, struct device_node *np,
-	const char *name, const char *fmt, ...)
-{
-	va_list vargs;
-	int ret;
-
-	va_start(vargs, fmt);
-	ret = __of_changeset_add_update_property_stringv(ocs, np, name, fmt,
-			vargs, true);
-	va_end(vargs);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(of_changeset_update_property_stringf);
-
-/**
- * __of_changeset_add_update_property_string_list - Create/update a string
- *                                                  list property
- *
- * @ocs:	changeset pointer
- * @np:		device node pointer
- * @name:	name of the property
- * @strs:	pointer to the string list
- * @count:	string count
- * @update:	True on update operation
- *
- * Adds a string list property to the changeset.
- *
- * Returns zero on success, a negative error value otherwise.
- */
-int __of_changeset_add_update_property_string_list(
-		struct of_changeset *ocs, struct device_node *np,
-		const char *name, const char **strs, int count, bool update)
-{
-	int total = 0, i, ret;
-	char *value, *s;
-
-	for (i = 0; i < count; i++) {
-		/* check if  it's NULL */
-		if (!strs[i])
-			return -EINVAL;
-		total += strlen(strs[i]) + 1;
-	}
-
-	value = kmalloc(total, GFP_KERNEL);
-	if (!value)
-		return -ENOMEM;
-
-	for (i = 0, s = value; i < count; i++) {
-		/* no need to check for NULL, check above */
-		strcpy(s, strs[i]);
-		s += strlen(strs[i]) + 1;
-	}
-
-	ret = __of_changeset_add_update_property_copy(ocs, np, name, value,
-			total, update);
-
-	kfree(value);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(__of_changeset_add_update_property_string_list);

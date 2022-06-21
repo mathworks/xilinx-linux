@@ -1,15 +1,36 @@
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	clocks {
+		adc_clkin: clock@0 {
+			#clock-cells = <0>;
+			compatible = "fixed-clock";
+			clock-frequency = <25000>;
+			clock-output-names = "sampl_clk";
+		};
+	};
+};
+
 &fpga_axi {
 
-	rx_dma: dma@44a300000 {
+	rx_dma: dma@44a30000 {
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x44a30000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 15>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <0>;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <32>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <0>;
+			};
 		};
 	};
 
@@ -17,17 +38,19 @@
 		compatible = "adi,cn0363-adc-1.00.a";
 		reg = <0x43c00000 0x10000>;
 
+		clocks = <&adc_clkin>;
+		clock-names = "sampl_clk";
 		dmas = <&rx_dma 0>;
 		dma-names = "rx";
 
 		io-channels = <&ad7175 1>, <&ad7175 2>;
 	};
 
-	axi_spi_engine_0: axi-spi-engine@0x44a00000 {
+	axi_spi_engine_0: spi@44a00000 {
 		compatible = "adi,axi-spi-engine-1.00.a";
 		reg = <0x44a00000 0x1000>;
 		interrupt-parent = <&intc>;
-		interrupts = <0 56 4>;
+		interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 15 &clkc 15>;
 		clock-names = "s_axi_aclk", "spi_clk";
 		num-cs = <2>;

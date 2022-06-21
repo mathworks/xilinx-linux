@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Xilinx gpio driver for xps/axi_gpio IP.
  *
  * Copyright 2008 - 2013 Xilinx, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/bitops.h>
@@ -19,16 +12,9 @@
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
-#include <linux/of_gpio.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/irq.h>
-#include <linux/irqchip/chained_irq.h>
-#include <linux/irqdomain.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/slab.h>
-#include <linux/pm_runtime.h>
-#include <linux/clk.h>
 
 /* Register Offset Definitions */
 #define XGPIO_DATA_OFFSET	0x0 /* Data register */
@@ -52,26 +38,23 @@
 
 /**
  * struct xgpio_instance - Stores information about GPIO device
- * @mmchip: OF GPIO chip for memory mapped banks
+ * @gc: GPIO chip
+ * @regs: register block
+ * @gpio_width: GPIO width for every channel
  * @gpio_state: GPIO state shadow register
  * @gpio_dir: GPIO direction shadow register
  * @offset: GPIO channel offset
  * @irq_base: GPIO channel irq base address
  * @irq_enable: GPIO irq enable/disable bitfield
  * @gpio_lock: Lock used for synchronization
- * @irq_domain: irq_domain of the controller
- * @clk: clock resource for this driver
  */
 struct xgpio_instance {
-	struct of_mm_gpio_chip mmchip;
-	u32 gpio_state;
-	u32 gpio_dir;
-	u32 offset;
-	int irq_base;
-	u32 irq_enable;
-	spinlock_t gpio_lock;
-	struct irq_domain *irq_domain;
-	struct clk *clk;
+	struct gpio_chip gc;
+	void __iomem *regs;
+	unsigned int gpio_width[2];
+	u32 gpio_state[2];
+	u32 gpio_dir[2];
+	spinlock_t gpio_lock[2];
 };
 
 /**
@@ -87,11 +70,11 @@ struct xgpio_instance {
  */
 static int xgpio_get(struct gpio_chip *gc, unsigned int gpio)
 {
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
+	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	u32 val;
 
-	void __iomem *regs = mm_gc->regs + chip->offset;
+	val = xgpio_readreg(chip->regs + XGPIO_DATA_OFFSET +
+			    xgpio_regoffset(chip, gpio));
 
 	return !!(xgpio_readreg(regs + XGPIO_DATA_OFFSET) & BIT(gpio));
 }
@@ -108,10 +91,9 @@ static int xgpio_get(struct gpio_chip *gc, unsigned int gpio)
 static void xgpio_set(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	unsigned long flags;
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
-	void __iomem *regs = mm_gc->regs;
+	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	int index =  xgpio_index(chip, gpio);
+	int offset =  xgpio_offset(chip, gpio);
 
 	spin_lock_irqsave(&chip->gpio_lock, flags);
 
@@ -121,8 +103,8 @@ static void xgpio_set(struct gpio_chip *gc, unsigned int gpio, int val)
 	else
 		chip->gpio_state &= ~BIT(gpio);
 
-	xgpio_writereg(regs + chip->offset + XGPIO_DATA_OFFSET,
-							 chip->gpio_state);
+	xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET +
+		       xgpio_regoffset(chip, gpio), chip->gpio_state[index]);
 
 	spin_unlock_irqrestore(&chip->gpio_lock, flags);
 }
@@ -140,19 +122,24 @@ static void xgpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 			       unsigned long *bits)
 {
 	unsigned long flags;
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
-	void __iomem *regs = mm_gc->regs;
-	int i;
+	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	int index = xgpio_index(chip, 0);
+	int offset, i;
 
 	spin_lock_irqsave(&chip->gpio_lock, flags);
 
 	/* Write to GPIO signals */
 	for (i = 0; i < gc->ngpio; i++) {
-		if (*mask == 0)
-			break;
+		if (index != xgpio_index(chip, i)) {
+			xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET +
+				       xgpio_regoffset(chip, i - 1),
+				       chip->gpio_state[index]);
+			spin_unlock_irqrestore(&chip->gpio_lock[index], flags);
+			index = xgpio_index(chip, i);
+			spin_lock_irqsave(&chip->gpio_lock[index], flags);
+		}
 		if (__test_and_clear_bit(i, mask)) {
+			offset = xgpio_offset(chip, i);
 			if (test_bit(i, bits))
 				chip->gpio_state |= BIT(i);
 			else
@@ -160,8 +147,8 @@ static void xgpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 		}
 	}
 
-	xgpio_writereg(regs + chip->offset + XGPIO_DATA_OFFSET,
-		       chip->gpio_state);
+	xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET +
+		       xgpio_regoffset(chip, i), chip->gpio_state[index]);
 
 	spin_unlock_irqrestore(&chip->gpio_lock, flags);
 }
@@ -180,16 +167,16 @@ static void xgpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 static int xgpio_dir_in(struct gpio_chip *gc, unsigned int gpio)
 {
 	unsigned long flags;
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
-	void __iomem *regs = mm_gc->regs;
+	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	int index =  xgpio_index(chip, gpio);
+	int offset =  xgpio_offset(chip, gpio);
 
 	spin_lock_irqsave(&chip->gpio_lock, flags);
 
 	/* Set the GPIO bit in shadow register and set direction as input */
-	chip->gpio_dir |= BIT(gpio);
-	xgpio_writereg(regs + chip->offset + XGPIO_TRI_OFFSET, chip->gpio_dir);
+	chip->gpio_dir[index] |= BIT(offset);
+	xgpio_writereg(chip->regs + XGPIO_TRI_OFFSET +
+		       xgpio_regoffset(chip, gpio), chip->gpio_dir[index]);
 
 	spin_unlock_irqrestore(&chip->gpio_lock, flags);
 
@@ -211,10 +198,9 @@ static int xgpio_dir_in(struct gpio_chip *gc, unsigned int gpio)
 static int xgpio_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	unsigned long flags;
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
-	void __iomem *regs = mm_gc->regs;
+	struct xgpio_instance *chip = gpiochip_get_data(gc);
+	int index =  xgpio_index(chip, gpio);
+	int offset =  xgpio_offset(chip, gpio);
 
 	spin_lock_irqsave(&chip->gpio_lock, flags);
 
@@ -222,13 +208,14 @@ static int xgpio_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 	if (val)
 		chip->gpio_state |= BIT(gpio);
 	else
-		chip->gpio_state &= ~BIT(gpio);
-	xgpio_writereg(regs + chip->offset + XGPIO_DATA_OFFSET,
-		       chip->gpio_state);
+		chip->gpio_state[index] &= ~BIT(offset);
+	xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET +
+			xgpio_regoffset(chip, gpio), chip->gpio_state[index]);
 
 	/* Clear the GPIO bit in shadow register and set direction as output */
-	chip->gpio_dir &= ~BIT(gpio);
-	xgpio_writereg(regs + chip->offset + XGPIO_TRI_OFFSET, chip->gpio_dir);
+	chip->gpio_dir[index] &= ~BIT(offset);
+	xgpio_writereg(chip->regs + XGPIO_TRI_OFFSET +
+			xgpio_regoffset(chip, gpio), chip->gpio_dir[index]);
 
 	spin_unlock_irqrestore(&chip->gpio_lock, flags);
 
@@ -237,125 +224,12 @@ static int xgpio_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 
 /**
  * xgpio_save_regs - Set initial values of GPIO pins
- * @mm_gc: Pointer to memory mapped GPIO chip structure
+ * @chip: Pointer to GPIO instance
  */
-static void xgpio_save_regs(struct of_mm_gpio_chip *mm_gc)
+static void xgpio_save_regs(struct xgpio_instance *chip)
 {
-	struct xgpio_instance *chip =
-	    container_of(mm_gc, struct xgpio_instance, mmchip);
-
-	xgpio_writereg(mm_gc->regs + chip->offset + XGPIO_DATA_OFFSET,
-							chip->gpio_state);
-	xgpio_writereg(mm_gc->regs + chip->offset + XGPIO_TRI_OFFSET,
-							 chip->gpio_dir);
-}
-
-/**
- * xgpio_xlate - Translate gpio_spec to the GPIO number and flags
- * @gc: Pointer to gpio_chip device structure.
- * @gpiospec:  gpio specifier as found in the device tree
- * @flags: A flags pointer based on binding
- *
- * Return:
- * irq number otherwise -EINVAL
- */
-static int xgpio_xlate(struct gpio_chip *gc,
-		       const struct of_phandle_args *gpiospec, u32 *flags)
-{
-	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
-	struct xgpio_instance *chip = container_of(mm_gc, struct xgpio_instance,
-						   mmchip);
-
-	if (gpiospec->args[1] == chip->offset)
-		return gpiospec->args[0];
-
-	return -EINVAL;
-}
-
-/**
- * xgpio_irq_mask - Write the specified signal of the GPIO device.
- * @irq_data: per irq and chip data passed down to chip functions
- */
-static void xgpio_irq_mask(struct irq_data *irq_data)
-{
-	unsigned long flags;
-	struct xgpio_instance *chip = irq_data_get_irq_chip_data(irq_data);
-	struct of_mm_gpio_chip *mm_gc = &chip->mmchip;
-	u32 offset = irq_data->irq - chip->irq_base;
-	u32 temp;
-
-	pr_debug("%s: Disable %d irq, irq_enable_mask 0x%x\n",
-		__func__, offset, chip->irq_enable);
-
-	spin_lock_irqsave(&chip->gpio_lock, flags);
-
-	chip->irq_enable &= ~BIT(offset);
-
-	if (!chip->irq_enable) {
-		/* Enable per channel interrupt */
-		temp = xgpio_readreg(mm_gc->regs + XGPIO_IPIER_OFFSET);
-		temp &= chip->offset / XGPIO_CHANNEL_OFFSET + 1;
-		xgpio_writereg(mm_gc->regs + XGPIO_IPIER_OFFSET, temp);
-
-		/* Disable global interrupt if channel interrupts are unused */
-		temp = xgpio_readreg(mm_gc->regs + XGPIO_IPIER_OFFSET);
-		if (!temp)
-			xgpio_writereg(mm_gc->regs + XGPIO_GIER_OFFSET,
-				       ~XGPIO_GIER_IE);
-
-	}
-	spin_unlock_irqrestore(&chip->gpio_lock, flags);
-}
-
-/**
- * xgpio_irq_unmask - Write the specified signal of the GPIO device.
- * @irq_data: per irq and chip data passed down to chip functions
- */
-static void xgpio_irq_unmask(struct irq_data *irq_data)
-{
-	unsigned long flags;
-	struct xgpio_instance *chip = irq_data_get_irq_chip_data(irq_data);
-	struct of_mm_gpio_chip *mm_gc = &chip->mmchip;
-	u32 offset = irq_data->irq - chip->irq_base;
-	u32 temp;
-
-	pr_debug("%s: Enable %d irq, irq_enable_mask 0x%x\n",
-		__func__, offset, chip->irq_enable);
-
-	/* Setup pin as input */
-	xgpio_dir_in(&mm_gc->gc, offset);
-
-	spin_lock_irqsave(&chip->gpio_lock, flags);
-
-	chip->irq_enable |= BIT(offset);
-
-	if (chip->irq_enable) {
-
-		/* Enable per channel interrupt */
-		temp = xgpio_readreg(mm_gc->regs + XGPIO_IPIER_OFFSET);
-		temp |= chip->offset / XGPIO_CHANNEL_OFFSET + 1;
-		xgpio_writereg(mm_gc->regs + XGPIO_IPIER_OFFSET, temp);
-
-		/* Enable global interrupts */
-		xgpio_writereg(mm_gc->regs + XGPIO_GIER_OFFSET, XGPIO_GIER_IE);
-	}
-
-	spin_unlock_irqrestore(&chip->gpio_lock, flags);
-}
-
-/**
- * xgpio_set_irq_type - Write the specified signal of the GPIO device.
- * @irq_data: Per irq and chip data passed down to chip functions
- * @type: Interrupt type that is to be set for the gpio pin
- *
- * Return:
- * 0 if interrupt type is supported otherwise otherwise -EINVAL
- */
-static int xgpio_set_irq_type(struct irq_data *irq_data, unsigned int type)
-{
-	/* Only rising edge case is supported now */
-	if (type == IRQ_TYPE_EDGE_RISING)
-		return 0;
+	xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET,	chip->gpio_state[0]);
+	xgpio_writereg(chip->regs + XGPIO_TRI_OFFSET, chip->gpio_dir[0]);
 
 	return -EINVAL;
 }
@@ -382,186 +256,10 @@ static int xgpio_to_irq(struct gpio_chip *gc, unsigned offset)
 	struct xgpio_instance *chip = container_of(mm_gc, struct xgpio_instance,
 						   mmchip);
 
-	return irq_find_mapping(chip->irq_domain, offset);
-}
-
-/**
- * xgpio_irqhandler - Gpio interrupt service routine
- * @irq: gpio irq number
- * @desc: Pointer to interrupt description
- */
-static void xgpio_irqhandler(struct irq_desc *desc)
-{
-	unsigned int irq = irq_desc_get_irq(desc);
-
-	struct xgpio_instance *chip = (struct xgpio_instance *)
-						irq_get_handler_data(irq);
-	struct of_mm_gpio_chip *mm_gc = &chip->mmchip;
-	struct irq_chip *irqchip = irq_desc_get_chip(desc);
-	int offset;
-	unsigned long val;
-
-	chained_irq_enter(irqchip, desc);
-
-	val = xgpio_readreg(mm_gc->regs + chip->offset);
-	/* Only rising edge is supported */
-	val &= chip->irq_enable;
-
-	for_each_set_bit(offset, &val, chip->mmchip.gc.ngpio) {
-		generic_handle_irq(chip->irq_base + offset);
-	}
-
-	xgpio_writereg(mm_gc->regs + XGPIO_IPISR_OFFSET,
-		       chip->offset / XGPIO_CHANNEL_OFFSET + 1);
-
-	chained_irq_exit(irqchip, desc);
-}
-
-static struct lock_class_key gpio_lock_class;
-
-/**
- * xgpio_irq_setup - Allocate irq for gpio and setup appropriate functions
- * @np: Device node of the GPIO chip
- * @chip: Pointer to private gpio channel structure
- *
- * Return:
- * 0 if success, otherwise -1
- */
-static int xgpio_irq_setup(struct device_node *np, struct xgpio_instance *chip)
-{
-	u32 pin_num;
-	struct resource res;
-
-	int ret = of_irq_to_resource(np, 0, &res);
-	if (!ret) {
-		pr_info("GPIO IRQ not connected\n");
-		return 0;
-	}
-
-	chip->mmchip.gc.to_irq = xgpio_to_irq;
-
-	chip->irq_base = irq_alloc_descs(-1, 0, chip->mmchip.gc.ngpio, 0);
-	if (chip->irq_base < 0) {
-		pr_err("Couldn't allocate IRQ numbers\n");
-		return -1;
-	}
-	chip->irq_domain = irq_domain_add_legacy(np, chip->mmchip.gc.ngpio,
-						 chip->irq_base, 0,
-						 &irq_domain_simple_ops, NULL);
-
-	/*
-	 * set the irq chip, handler and irq chip data for callbacks for
-	 * each pin
-	 */
-	for (pin_num = 0; pin_num < chip->mmchip.gc.ngpio; pin_num++) {
-		u32 gpio_irq = irq_find_mapping(chip->irq_domain, pin_num);
-		irq_set_lockdep_class(gpio_irq, &gpio_lock_class);
-		pr_debug("IRQ Base: %d, Pin %d = IRQ %d\n",
-			chip->irq_base,	pin_num, gpio_irq);
-		irq_set_chip_and_handler(gpio_irq, &xgpio_irqchip,
-					 handle_simple_irq);
-		irq_set_chip_data(gpio_irq, (void *)chip);
-	}
-	irq_set_handler_data(res.start, (void *)chip);
-	irq_set_chained_handler(res.start, xgpio_irqhandler);
-
-	return 0;
-}
-
-static int xgpio_request(struct gpio_chip *chip, unsigned int offset)
-{
-	int ret = pm_runtime_get_sync(chip->parent);
-
-	/*
-	 * If the device is already active pm_runtime_get() will return 1 on
-	 * success, but gpio_request still needs to return 0.
-	 */
-	return ret < 0 ? ret : 0;
-}
-
-static void xgpio_free(struct gpio_chip *chip, unsigned int offset)
-{
-	pm_runtime_put(chip->parent);
-}
-
-static int __maybe_unused xgpio_suspend(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	int irq;
-	struct irq_data *data;
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		dev_dbg(dev, "failed to get IRQ\n");
-		return 0;
-	}
-
-	data = irq_get_irq_data(irq);
-	if (!irqd_is_wakeup_set(data))
-		return pm_runtime_force_suspend(dev);
-
-	return 0;
-}
-
-static int __maybe_unused xgpio_resume(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	int irq;
-	struct irq_data *data;
-
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		dev_dbg(dev, "failed to get IRQ\n");
-		return 0;
-	}
-
-	data = irq_get_irq_data(irq);
-	if (!irqd_is_wakeup_set(data))
-		return pm_runtime_force_resume(dev);
-
-	return 0;
-}
-
-static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
-
-	clk_disable(gpio->clk);
-
-	return 0;
-}
-
-static int __maybe_unused xgpio_runtime_resume(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
-
-	return clk_enable(gpio->clk);
-}
-
-static const struct dev_pm_ops xgpio_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(xgpio_suspend, xgpio_resume)
-	SET_RUNTIME_PM_OPS(xgpio_runtime_suspend,
-			xgpio_runtime_resume, NULL)
-};
-
-/**
- * xgpio_remove - Remove method for the GPIO device.
- * @pdev: pointer to the platform device
- *
- * This function remove gpiochips and frees all the allocated resources.
- *
- * Return: 0 always
- */
-static int xgpio_remove(struct platform_device *pdev)
-{
-	struct xgpio_instance *chip = platform_get_drvdata(pdev);
-
-	of_mm_gpiochip_remove(&chip->mmchip);
-
-	return 0;
+	xgpio_writereg(chip->regs + XGPIO_DATA_OFFSET + XGPIO_CHANNEL_OFFSET,
+		       chip->gpio_state[1]);
+	xgpio_writereg(chip->regs + XGPIO_TRI_OFFSET + XGPIO_CHANNEL_OFFSET,
+		       chip->gpio_dir[1]);
 }
 
 /**
@@ -622,12 +320,15 @@ static int xgpio_of_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, chip);
 
-	chip->clk = devm_clk_get(&pdev->dev, "axi_clk");
-	if (IS_ERR(chip->clk)) {
-		if (PTR_ERR(chip->clk) != -ENOENT) {
-			dev_err(&pdev->dev, "Input clock not found\n");
-			return PTR_ERR(chip->clk);
-		}
+	if (is_dual) {
+		/* Update GPIO state shadow register with default value */
+		of_property_read_u32(np, "xlnx,dout-default-2",
+				     &chip->gpio_state[1]);
+
+		/* Update GPIO direction shadow register with default value */
+		if (of_property_read_u32(np, "xlnx,tri-default-2",
+					 &chip->gpio_dir[1]))
+			chip->gpio_dir[1] = 0xFFFFFFFF;
 
 		/*
 		 * Clock framework support is optional, continue on
@@ -642,99 +343,32 @@ static int xgpio_of_probe(struct platform_device *pdev)
 		return status;
 	}
 
-	pm_runtime_enable(&pdev->dev);
-	status = pm_runtime_get_sync(&pdev->dev);
-	if (status < 0)
-		goto err_unprepare_clk;
+	chip->gc.base = -1;
+	chip->gc.ngpio = chip->gpio_width[0] + chip->gpio_width[1];
+	chip->gc.parent = &pdev->dev;
+	chip->gc.direction_input = xgpio_dir_in;
+	chip->gc.direction_output = xgpio_dir_out;
+	chip->gc.get = xgpio_get;
+	chip->gc.set = xgpio_set;
+	chip->gc.set_multiple = xgpio_set_multiple;
 
-	/* Call the OF gpio helper to setup and register the GPIO device */
-	status = of_mm_gpiochip_add(np, &chip->mmchip);
+	chip->gc.label = dev_name(&pdev->dev);
+
+	chip->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(chip->regs)) {
+		dev_err(&pdev->dev, "failed to ioremap memory resource\n");
+		return PTR_ERR(chip->regs);
+	}
+
+	xgpio_save_regs(chip);
+
+	status = devm_gpiochip_add_data(&pdev->dev, &chip->gc, chip);
 	if (status) {
-		pr_err("%s: error in probe function with status %d\n",
-		       np->full_name, status);
-		goto err_pm_put;
+		dev_err(&pdev->dev, "failed to add GPIO chip\n");
+		return status;
 	}
 
-	status = xgpio_irq_setup(np, chip);
-	if (status) {
-		pr_err("%s: GPIO IRQ initialization failed %d\n",
-		       np->full_name, status);
-		goto err_pm_put;
-	}
-
-	pr_info("XGpio: %s: registered, base is %d\n", np->full_name,
-							chip->mmchip.gc.base);
-
-	tree_info = of_get_property(np, "xlnx,is-dual", NULL);
-	if (tree_info && be32_to_cpup(tree_info)) {
-		chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
-		if (!chip)
-			return -ENOMEM;
-
-		/* Add dual channel offset */
-		chip->offset = XGPIO_CHANNEL_OFFSET;
-
-		/* Update GPIO state shadow register with default value */
-		of_property_read_u32(np, "xlnx,dout-default-2",
-				     &chip->gpio_state);
-
-		/* By default, all pins are inputs */
-		chip->gpio_dir = 0xFFFFFFFF;
-
-		/* Update GPIO direction shadow register with default value */
-		of_property_read_u32(np, "xlnx,tri-default-2", &chip->gpio_dir);
-
-		/*
-		 * Check device node and parent device node for device width
-		 * and assume default width of 32
-		 */
-		if (of_property_read_u32(np, "xlnx,gpio2-width", &ngpio))
-			ngpio = 32;
-		chip->mmchip.gc.ngpio = (u16)ngpio;
-
-		spin_lock_init(&chip->gpio_lock);
-
-		chip->mmchip.gc.parent = &pdev->dev;
-		chip->mmchip.gc.owner = THIS_MODULE;
-		chip->mmchip.gc.of_xlate = xgpio_xlate;
-		chip->mmchip.gc.of_gpio_n_cells = 2;
-		chip->mmchip.gc.direction_input = xgpio_dir_in;
-		chip->mmchip.gc.direction_output = xgpio_dir_out;
-		chip->mmchip.gc.get = xgpio_get;
-		chip->mmchip.gc.set = xgpio_set;
-		chip->mmchip.gc.request = xgpio_request;
-		chip->mmchip.gc.free = xgpio_free;
-		chip->mmchip.gc.set_multiple = xgpio_set_multiple;
-
-		chip->mmchip.save_regs = xgpio_save_regs;
-
-		status = xgpio_irq_setup(np, chip);
-		if (status) {
-			pr_err("%s: GPIO IRQ initialization failed %d\n",
-			      np->full_name, status);
-			goto err_pm_put;
-		}
-
-		/* Call the OF gpio helper to setup and register the GPIO dev */
-		status = of_mm_gpiochip_add(np, &chip->mmchip);
-		if (status) {
-			pr_err("%s: error in probe function with status %d\n",
-			       np->full_name, status);
-			goto err_pm_put;
-		}
-		pr_info("XGpio: %s: dual channel registered, base is %d\n",
-					np->full_name, chip->mmchip.gc.base);
-	}
-
-	pm_runtime_put(&pdev->dev);
 	return 0;
-
-err_pm_put:
-	pm_runtime_put(&pdev->dev);
-err_unprepare_clk:
-	pm_runtime_disable(&pdev->dev);
-	clk_unprepare(chip->clk);
-	return status;
 }
 
 static const struct of_device_id xgpio_of_match[] = {
@@ -743,13 +377,11 @@ static const struct of_device_id xgpio_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, xgpio_of_match);
 
-static struct platform_driver xilinx_gpio_driver = {
-	.probe = xgpio_of_probe,
-	.remove = xgpio_remove,
-	.driver = {
-		.name = "xilinx-gpio",
-		.of_match_table = xgpio_of_match,
-		.pm = &xgpio_dev_pm_ops,
+static struct platform_driver xgpio_plat_driver = {
+	.probe		= xgpio_probe,
+	.driver		= {
+			.name = "gpio-xilinx",
+			.of_match_table	= xgpio_of_match,
 	},
 };
 
@@ -763,7 +395,7 @@ subsys_initcall(xgpio_init);
 
 static void __exit xgpio_exit(void)
 {
-	platform_driver_unregister(&xilinx_gpio_driver);
+	platform_driver_unregister(&xgpio_plat_driver);
 }
 module_exit(xgpio_exit);
 

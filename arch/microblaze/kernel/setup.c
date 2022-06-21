@@ -9,7 +9,7 @@
  */
 
 #include <linux/init.h>
-#include <linux/clk-provider.h>
+#include <linux/of_clk.h>
 #include <linux/clocksource.h>
 #include <linux/string.h>
 #include <linux/seq_file.h>
@@ -18,6 +18,7 @@
 #include <linux/console.h>
 #include <linux/debugfs.h>
 #include <linux/of_fdt.h>
+#include <linux/pgtable.h>
 
 #include <asm/setup.h>
 #include <asm/sections.h>
@@ -27,32 +28,44 @@
 #include <linux/param.h>
 #include <linux/pci.h>
 #include <linux/cache.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/smp.h>
 #include <linux/dma-mapping.h>
 #include <asm/cacheflush.h>
 #include <asm/entry.h>
 #include <asm/cpuinfo.h>
 
-#include <asm/prom.h>
-#include <asm/pgtable.h>
 
+#ifdef CONFIG_SMP
+static void __init smp_setup_cpu_maps(void)
+{
+	int i;
+
+	for (i = 0; i < NR_CPUS; i++) {
+		set_cpu_present(i, true);
+		set_cpu_possible(i, true);
+	}
+}
+#else
 DEFINE_PER_CPU(unsigned int, KSP);	/* Saved kernel stack pointer */
 DEFINE_PER_CPU(unsigned int, KM);	/* Kernel/user mode */
 DEFINE_PER_CPU(unsigned int, ENTRY_SP);	/* Saved SP on kernel entry */
 DEFINE_PER_CPU(unsigned int, R11_SAVE);	/* Temp variable for entry */
 DEFINE_PER_CPU(unsigned int, CURRENT_SAVE);	/* Saved current pointer */
+#endif /* CONFIG_SMP */
 
-unsigned int boot_cpuid;
 /*
  * Placed cmd_line to .data section because can be initialized from
  * ASM code. Default position is BSS section which is cleared
  * in machine_early_init().
  */
-char cmd_line[COMMAND_LINE_SIZE] __attribute__ ((section(".data")));
+char cmd_line[COMMAND_LINE_SIZE] __section(".data");
 
 void __init setup_arch(char **cmdline_p)
 {
 	*cmdline_p = boot_command_line;
+
+	setup_memory();
 
 	console_verbose();
 
@@ -62,17 +75,10 @@ void __init setup_arch(char **cmdline_p)
 
 	microblaze_cache_init();
 
-	setup_memory();
-
-#ifdef CONFIG_EARLY_PRINTK
-	/* remap early console to virtual address */
-	remap_early_printk();
-#endif
-
 	xilinx_pci_init();
 
-#if defined(CONFIG_DUMMY_CONSOLE)
-	conswitchp = &dummy_con;
+#ifdef CONFIG_SMP
+	smp_setup_cpu_maps();
 #endif
 }
 
@@ -133,10 +139,6 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 /* initialize device tree for usage in early_printk */
 	early_init_devtree(_fdt_start);
 
-#ifdef CONFIG_EARLY_PRINTK
-	setup_early_printk(NULL);
-#endif
-
 	/* setup kernel_tlb after BSS cleaning
 	 * Maybe worth to move to asm code */
 	kernel_tlb = tlb0 + tlb1;
@@ -147,7 +149,7 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 	if (fdt)
 		pr_info("FDT at 0x%08x\n", fdt);
 	else
-		pr_info("Compiled-in FDT at %p\n", _fdt_start);
+		pr_info("Compiled-in FDT at 0x%08x\n", (unsigned)&_fdt_start);
 
 #ifdef CONFIG_MTD_UCLINUX
 	pr_info("Found romfs @ 0x%08x (0x%08x)\n",
@@ -184,15 +186,17 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 		*dst = *src;
 
 	/* Initialize global data */
+#ifndef CONFIG_SMP
 	per_cpu(KM, 0) = 0x1;	/* We start in kernel mode */
 	per_cpu(CURRENT_SAVE, 0) = (unsigned long)current;
+#endif
 }
 
 void __init time_init(void)
 {
 	of_clk_init(NULL);
 	setup_cpuinfo_clk();
-	clocksource_probe();
+	timer_probe();
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -201,25 +205,14 @@ struct dentry *of_debugfs_root;
 static int microblaze_debugfs_init(void)
 {
 	of_debugfs_root = debugfs_create_dir("microblaze", NULL);
-
-	return of_debugfs_root == NULL;
+	return 0;
 }
 arch_initcall(microblaze_debugfs_init);
 
-# ifdef CONFIG_MMU
 static int __init debugfs_tlb(void)
 {
-	struct dentry *d;
-
-	if (!of_debugfs_root)
-		return -ENODEV;
-
-	d = debugfs_create_u32("tlb_skip", S_IRUGO, of_debugfs_root, &tlb_skip);
-	if (!d)
-		return -ENOMEM;
-
+	debugfs_create_u32("tlb_skip", S_IRUGO, of_debugfs_root, &tlb_skip);
 	return 0;
 }
 device_initcall(debugfs_tlb);
-# endif
 #endif

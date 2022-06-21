@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * dts file for Xilinx ZynqMP zc1751-xm018-dc4
  *
- * (C) Copyright 2015 - 2016, Xilinx, Inc.
+ * (C) Copyright 2015 - 2020, Xilinx, Inc.
  *
  * Michal Simek <michal.simek@xilinx.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
  */
 
 /dts-v1/;
@@ -55,19 +51,12 @@
 	status = "okay";
 };
 
-/* fpd_dma clk 667MHz, lpd_dma 500MHz */
 &fpd_dma_chan1 {
 	status = "okay";
-	xlnx,include-sg; /* for testing purpose */
-	xlnx,overfetch; /* for testing purpose */
-	xlnx,ratectrl = <0>; /* for testing purpose */
-	xlnx,src-issue = <31>;
 };
 
 &fpd_dma_chan2 {
 	status = "okay";
-	xlnx,ratectrl = <100>; /* for testing purpose */
-	xlnx,src-issue = <4>; /* for testing purpose */
 };
 
 &fpd_dma_chan3 {
@@ -76,7 +65,6 @@
 
 &fpd_dma_chan4 {
 	status = "okay";
-	xlnx,include-sg; /* for testing purpose */
 };
 
 &fpd_dma_chan5 {
@@ -85,7 +73,6 @@
 
 &fpd_dma_chan6 {
 	status = "okay";
-	xlnx,include-sg; /* for testing purpose */
 };
 
 &fpd_dma_chan7 {
@@ -94,7 +81,6 @@
 
 &fpd_dma_chan8 {
 	status = "okay";
-	xlnx,include-sg; /* for testing purpose */
 };
 
 &lpd_dma_chan1 {
@@ -129,11 +115,11 @@
 	status = "okay";
 };
 
-&xlnx_dp {
+&zynqmp_dpsub {
 	status = "okay";
 };
 
-&xlnx_dpdma {
+&zynqmp_dpdma {
 	status = "okay";
 };
 
@@ -194,26 +180,26 @@
 &qspi {
 	status = "okay";
 	flash@0 {
-		compatible = "m25p80"; /* 32MB */
+		compatible = "m25p80", "jedec,spi-nor"; /* 32MB */
 		#address-cells = <1>;
 		#size-cells = <1>;
 		reg = <0x0>;
 		spi-tx-bus-width = <1>;
-		spi-rx-bus-width = <4>; /* FIXME also DUAL configuration possible */
+		spi-rx-bus-width = <4>; /* also DUAL configuration possible */
 		spi-max-frequency = <108000000>; /* Based on DC1 spec */
-		partition@qspi-fsbl-uboot { /* for testing purpose */
+		partition@0 { /* for testing purpose */
 			label = "qspi-fsbl-uboot";
 			reg = <0x0 0x100000>;
 		};
-		partition@qspi-linux { /* for testing purpose */
+		partition@100000 { /* for testing purpose */
 			label = "qspi-linux";
 			reg = <0x100000 0x500000>;
 		};
-		partition@qspi-device-tree { /* for testing purpose */
+		partition@600000 { /* for testing purpose */
 			label = "qspi-device-tree";
 			reg = <0x600000 0x20000>;
 		};
-		partition@qspi-rootfs { /* for testing purpose */
+		partition@620000 { /* for testing purpose */
 			label = "qspi-rootfs";
 			reg = <0x620000 0x5E0000>;
 		};

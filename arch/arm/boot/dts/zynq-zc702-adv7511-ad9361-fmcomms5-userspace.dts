@@ -1,7 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices AD-FMCOMMS5-EBZ
+ * https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms5-ebz
+ *
+ * hdl_project: <fmcomms5/zc702>
+ * board_revision: <>
+ *
+ * Copyright (C) 2014-2020 Analog Devices Inc.
+ */
 /dts-v1/;
 
-/include/ "zynq-zc702.dtsi"
-/include/ "zynq-zc702-adv7511.dtsi"
+#include "zynq-zc702.dtsi"
+#include "zynq-zc702-adv7511.dtsi"
 
 &fmc_i2c {
 	eeprom@50 {
@@ -23,13 +33,13 @@
 
 &fmc_spi {
 	spi@0 {
-		compatible = "spidev";
+		compatible = "adi,swspi";
 		spi-cpha;
 		reg = <0x0>;
 		spi-max-frequency = <1000000>;
 	};
 	spi@1 {
-		compatible = "spidev";
+		compatible = "adi,swspi";
 		spi-cpha;
 		reg = <0x1>;
 		spi-max-frequency = <1000000>;
@@ -37,9 +47,14 @@
 };
 
 &fpga_axi {
-	ad9361@79020000 {
+	ad9361_rx@79020000 {
 		compatible = "dmem-uio";
 		reg = <0x79020000 0x6000>;
+	};
+
+	ad9361_tx@79024000 {
+		compatible = "dmem-uio";
+		reg = <0x79024000 0x2000>;
 	};
 
 	rx_dma@7c400000 {
@@ -56,9 +71,14 @@
 		uio,dynamic-regions-sizes = <262144>;
 	};
 
-	ad9361_b@79040000 {
+	ad9361_b_rx@79040000 {
 		compatible = "dmem-uio";
 		reg = <0x79040000 0x6000>;
+	};
+
+	ad9361_b_tx@79044000 {
+		compatible = "dmem-uio";
+		reg = <0x79044000 0x2000>;
 	};
 };
 

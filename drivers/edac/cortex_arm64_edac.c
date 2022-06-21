@@ -19,7 +19,7 @@
 #include <linux/platform_device.h>
 #include <ras/ras_event.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 
 #define DRV_NAME			"cortex_edac"
 
@@ -224,6 +224,7 @@ static void a53_parse_l2merrsr_way(u8 ramid, u8 val)
 	switch (ramid) {
 	case L2_TAG_RAM:
 		pr_cont("(way %d)", val);
+		fallthrough;
 	case L2_DATA_RAM:
 		pr_cont("(bank %d)", val);
 		break;

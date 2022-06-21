@@ -16,6 +16,7 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/buffer_impl.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 
@@ -24,9 +25,27 @@
 static int dds_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	struct iio_dma_buffer_block *block)
 {
+	struct cf_axi_dds_state *st = iio_priv(queue->driver_data);
+	bool enable_fifo = false;
+	bool oneshot = true;
+
+	if (block->block.bytes_used) {
+		if (cf_axi_dds_dma_fifo_en(st)) {
+			enable_fifo = true;
+
+			if (block->block.flags & IIO_BUFFER_BLOCK_FLAG_CYCLIC) {
+				block->block.flags &= ~IIO_BUFFER_BLOCK_FLAG_CYCLIC;
+				oneshot = false;
+			}
+
+			cf_axi_dds_pl_ddr_fifo_ctrl_oneshot(st, oneshot);
+		}
+
+		cf_axi_dds_pl_ddr_fifo_ctrl(st, enable_fifo);
+	}
+
 	return iio_dmaengine_buffer_submit_block(queue, block, DMA_TO_DEVICE);
 }
-
 
 static int dds_buffer_state_set(struct iio_dev *indio_dev, bool state)
 {
@@ -43,12 +62,8 @@ static int dds_buffer_state_set(struct iio_dev *indio_dev, bool state)
 	if (!state)
 		return cf_axi_dds_datasel(st, -1, DATA_SEL_DDS);
 
-	cf_axi_dds_stop(st);
-	st->enable = false;
-
 	dds_write(st, ADI_REG_VDMA_STATUS, ADI_VDMA_OVF | ADI_VDMA_UNF);
 
-	st->enable = true;
 	cf_axi_dds_start_sync(st, 1);
 
 	return 0;

@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AD5755, AD5755-1, AD5757, AD5735, AD5737 Digital to analog converters driver
  *
  * Copyright 2012 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/device.h>
@@ -14,7 +13,7 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/delay.h>
-#include <linux/of.h>
+#include <linux/property.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/platform_data/ad5755.h>
@@ -83,6 +82,7 @@ struct ad5755_chip_info {
  * @pwr_down:	bitmask which contains  hether a channel is powered down or not
  * @ctrl:	software shadow of the channel ctrl registers
  * @channels:	iio channel spec for the device
+ * @lock:	lock to protect the data buffer during SPI ops
  * @data:	spi transfer buffers
  */
 struct ad5755_state {
@@ -91,6 +91,7 @@ struct ad5755_state {
 	unsigned int			pwr_down;
 	unsigned int			ctrl[AD5755_NUM_CHANNELS];
 	struct iio_chan_spec		channels[AD5755_NUM_CHANNELS];
+	struct mutex			lock;
 
 	/*
 	 * DMA (thus cache coherency maintenance) requires the
@@ -175,11 +176,12 @@ static int ad5755_write_ctrl_unlocked(struct iio_dev *indio_dev,
 static int ad5755_write(struct iio_dev *indio_dev, unsigned int reg,
 	unsigned int val)
 {
+	struct ad5755_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	ret = ad5755_write_unlocked(indio_dev, reg, val);
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -187,11 +189,12 @@ static int ad5755_write(struct iio_dev *indio_dev, unsigned int reg,
 static int ad5755_write_ctrl(struct iio_dev *indio_dev, unsigned int channel,
 	unsigned int reg, unsigned int val)
 {
+	struct ad5755_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	ret = ad5755_write_ctrl_unlocked(indio_dev, channel, reg, val);
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -212,7 +215,7 @@ static int ad5755_read(struct iio_dev *indio_dev, unsigned int addr)
 		},
 	};
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 
 	st->data[0].d32 = cpu_to_be32(AD5755_READ_FLAG | (addr << 16));
 	st->data[1].d32 = cpu_to_be32(AD5755_NOOP);
@@ -221,7 +224,7 @@ static int ad5755_read(struct iio_dev *indio_dev, unsigned int addr)
 	if (ret >= 0)
 		ret = be32_to_cpu(st->data[1].d32) & 0xffff;
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -247,7 +250,7 @@ static int ad5755_set_channel_pwr_down(struct iio_dev *indio_dev,
 	struct ad5755_state *st = iio_priv(indio_dev);
 	unsigned int mask = BIT(channel);
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 
 	if ((bool)(st->pwr_down & mask) == pwr_down)
 		goto out_unlock;
@@ -267,7 +270,7 @@ static int ad5755_set_channel_pwr_down(struct iio_dev *indio_dev,
 	}
 
 out_unlock:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return 0;
 }
@@ -417,7 +420,6 @@ static ssize_t ad5755_write_powerdown(struct iio_dev *indio_dev, uintptr_t priv,
 static const struct iio_info ad5755_info = {
 	.read_raw = ad5755_read_raw,
 	.write_raw = ad5755_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static const struct iio_chan_spec_ext_info ad5755_ext_info[] = {
@@ -605,8 +607,8 @@ static const struct ad5755_platform_data ad5755_default_pdata = {
 #ifdef CONFIG_OF
 static struct ad5755_platform_data *ad5755_parse_dt(struct device *dev)
 {
-	struct device_node *np = dev->of_node;
-	struct device_node *pp;
+	struct fwnode_handle *fwnode;
+	struct fwnode_handle *child;
 	struct ad5755_platform_data *pdata;
 	unsigned int tmp;
 	unsigned int tmparray[3];
@@ -617,15 +619,15 @@ static struct ad5755_platform_data *ad5755_parse_dt(struct device *dev)
 		return NULL;
 
 	pdata->ext_dc_dc_compenstation_resistor =
-	    of_property_read_bool(np, "adi,ext-dc-dc-compenstation-resistor");
+		device_property_read_bool(dev, "adi,ext-dc-dc-compenstation-resistor");
 
-	if (!of_property_read_u32(np, "adi,dc-dc-phase", &tmp))
+	if (!device_property_read_u32(dev, "adi,dc-dc-phase", &tmp))
 		pdata->dc_dc_phase = tmp;
 	else
 		pdata->dc_dc_phase = AD5755_DC_DC_PHASE_ALL_SAME_EDGE;
 
 	pdata->dc_dc_freq = AD5755_DC_DC_FREQ_410kHZ;
-	if (!of_property_read_u32(np, "adi,dc-dc-freq-hz", &tmp)) {
+	if (!device_property_read_u32(dev, "adi,dc-dc-freq-hz", &tmp)) {
 		for (i = 0; i < ARRAY_SIZE(ad5755_dcdc_freq_table); i++) {
 			if (tmp == ad5755_dcdc_freq_table[i][0]) {
 				pdata->dc_dc_freq = ad5755_dcdc_freq_table[i][1];
@@ -633,46 +635,45 @@ static struct ad5755_platform_data *ad5755_parse_dt(struct device *dev)
 			}
 		}
 
-		if (i == ARRAY_SIZE(ad5755_dcdc_freq_table)) {
+		if (i == ARRAY_SIZE(ad5755_dcdc_freq_table))
 			dev_err(dev,
-				"adi,dc-dc-freq out of range selecting 410kHz");
-		}
+				"adi,dc-dc-freq out of range selecting 410kHz\n");
 	}
 
 	pdata->dc_dc_maxv = AD5755_DC_DC_MAXV_23V;
-	if (!of_property_read_u32(np, "adi,dc-dc-max-microvolt", &tmp)) {
+	if (!device_property_read_u32(dev, "adi,dc-dc-max-microvolt", &tmp)) {
 		for (i = 0; i < ARRAY_SIZE(ad5755_dcdc_maxv_table); i++) {
 			if (tmp == ad5755_dcdc_maxv_table[i][0]) {
 				pdata->dc_dc_maxv = ad5755_dcdc_maxv_table[i][1];
 				break;
 			}
 		}
-		if (i == ARRAY_SIZE(ad5755_dcdc_maxv_table)) {
+		if (i == ARRAY_SIZE(ad5755_dcdc_maxv_table))
 				dev_err(dev,
-					"adi,dc-dc-maxv out of range selecting 23V");
-		}
+					"adi,dc-dc-maxv out of range selecting 23V\n");
 	}
 
 	devnr = 0;
-	for_each_child_of_node(np, pp) {
+	fwnode = dev_fwnode(dev);
+	fwnode_for_each_child_node(fwnode, child) {
 		if (devnr >= AD5755_NUM_CHANNELS) {
 			dev_err(dev,
-				"There is to many channels defined in DT\n");
+				"There are too many channels defined in DT\n");
 			goto error_out;
 		}
 
-		if (!of_property_read_u32(pp, "adi,mode", &tmp))
+		if (!fwnode_property_read_u32(child, "adi,mode", &tmp))
 			pdata->dac[devnr].mode = tmp;
 		else
 			pdata->dac[devnr].mode = AD5755_MODE_CURRENT_4mA_20mA;
 
 		pdata->dac[devnr].ext_current_sense_resistor =
-		    of_property_read_bool(pp, "adi,ext-current-sense-resistor");
+			fwnode_property_read_bool(child, "adi,ext-current-sense-resistor");
 
 		pdata->dac[devnr].enable_voltage_overrange =
-		    of_property_read_bool(pp, "adi,enable-voltage-overrange");
+			fwnode_property_read_bool(child, "adi,enable-voltage-overrange");
 
-		if (!of_property_read_u32_array(pp, "adi,slew", tmparray, 3)) {
+		if (!fwnode_property_read_u32_array(child, "adi,slew", tmparray, 3)) {
 			pdata->dac[devnr].slew.enable = tmparray[0];
 
 			pdata->dac[devnr].slew.rate = AD5755_SLEW_RATE_64k;
@@ -683,11 +684,10 @@ static struct ad5755_platform_data *ad5755_parse_dt(struct device *dev)
 					break;
 				}
 			}
-			if (i == ARRAY_SIZE(ad5755_slew_rate_table)) {
+			if (i == ARRAY_SIZE(ad5755_slew_rate_table))
 				dev_err(dev,
-					"channel %d slew rate out of range selecting 64kHz",
+					"channel %d slew rate out of range selecting 64kHz\n",
 					devnr);
-			}
 
 			pdata->dac[devnr].slew.step_size = AD5755_SLEW_STEP_SIZE_1;
 			for (i = 0; i < ARRAY_SIZE(ad5755_slew_step_table); i++) {
@@ -697,11 +697,10 @@ static struct ad5755_platform_data *ad5755_parse_dt(struct device *dev)
 					break;
 				}
 			}
-			if (i == ARRAY_SIZE(ad5755_slew_step_table)) {
+			if (i == ARRAY_SIZE(ad5755_slew_step_table))
 				dev_err(dev,
-					"channel %d slew step size out of range selecting 1 LSB",
+					"channel %d slew step size out of range selecting 1 LSB\n",
 					devnr);
-			}
 		} else {
 			pdata->dac[devnr].slew.enable = false;
 			pdata->dac[devnr].slew.rate = AD5755_SLEW_RATE_64k;
@@ -746,13 +745,14 @@ static int ad5755_probe(struct spi_device *spi)
 	st->spi = spi;
 	st->pwr_down = 0xf;
 
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad5755_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->num_channels = AD5755_NUM_CHANNELS;
 
-	if (spi->dev.of_node)
+	mutex_init(&st->lock);
+
+	if (dev_fwnode(&spi->dev))
 		pdata = ad5755_parse_dt(&spi->dev);
 	else
 		pdata = spi->dev.platform_data;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Zynq Remote Processor driver
  *
@@ -8,15 +9,6 @@
  *
  * Copyright (C) 2011 Texas Instruments, Inc.
  * Copyright (C) 2011 Google, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -26,25 +18,32 @@
 #include <linux/dma-mapping.h>
 #include <linux/remoteproc.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
+#include <linux/irq.h>
+#include <linux/irqchip.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/smp.h>
 #include <linux/irqchip/arm-gic.h>
 #include <asm/outercache.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
 #include <linux/genalloc.h>
+#include <../../arch/arm/mach-zynq/common.h>
 
 #include "remoteproc_internal.h"
 
 #define MAX_NUM_VRINGS 2
 #define NOTIFYID_ANY (-1)
 /* Maximum on chip memories used by the driver*/
-#define MAX_ON_CHIP_MEMS        32
+#define MAX_ON_CHIP_MEMS	32
+#define REMOTE_SGI		0
+#define HOST_SGI		1
 
-extern int zynq_cpun_start(u32 address, int cpu);
-
-/* Module parameter */
-static char *firmware = "firmware";
+static int vring_sgis[MAX_NUM_VRINGS] = { 14, 15 };
+/* count number of SGIs passed via command line if applicable. */
+static int n_vring_sgis = MAX_NUM_VRINGS;
 
 /* Structure for storing IRQs */
 struct irq_list {
@@ -59,41 +58,57 @@ struct ipi_info {
 	bool pending;
 };
 
-/* On-chip memory pool element */
-struct mem_pool_st {
+/**
+ * struct zynq_mem_res - zynq memory resource for firmware memory
+ * @res: memory resource
+ * @node: list node
+ */
+struct zynq_mem_res {
+	struct resource res;
 	struct list_head node;
-	struct gen_pool *pool;
-	u32 pd_id;
 };
 
-/* Private data */
+/**
+ * struct zynq_rproc_data - zynq rproc private data
+ * @irqs: inter processor soft IRQs
+ * @ipi_desc: list of IRQ descriptors for each vring's IRQ.
+ * @rproc: pointer to remoteproc instance
+ * @ipis: interrupt processor interrupts statistics
+ * @fw_mems: list of firmware memories
+ */
 struct zynq_rproc_pdata {
-	struct irq_list irqs;
+	int irqs[MAX_NUM_VRINGS];
+	struct irq_desc *ipi_desc[MAX_NUM_VRINGS];
 	struct rproc *rproc;
 	struct ipi_info ipis[MAX_NUM_VRINGS];
-	struct list_head mem_pools;
-	struct list_head mems;
-	u32 mem_start;
-	u32 mem_end;
+	struct list_head fw_mems;
 };
+
+static bool autoboot __read_mostly;
 
 /* Store rproc for IPI handler */
 static struct rproc *rproc;
 static struct work_struct workqueue;
 
+static irqreturn_t zynq_remoteproc_interrupt(int irq, void *dev_id)
+{
+	struct zynq_rproc_pdata *local = dev_id;
+
+	dev_dbg(local->rproc->dev.parent, "KICK Linux because of pending message\n");
+	schedule_work(&workqueue);
+
+	return IRQ_HANDLED;
+}
+
+struct irqaction action = {
+	.handler = zynq_remoteproc_interrupt,
+};
+
 static void handle_event(struct work_struct *work)
 {
 	struct zynq_rproc_pdata *local = rproc->priv;
 
-	if (rproc_vq_interrupt(local->rproc, local->ipis[0].notifyid) ==
-				IRQ_NONE)
-		dev_dbg(rproc->dev.parent, "no message found in vqid 0\n");
-}
-
-static void ipi_kick(void)
-{
-	dev_dbg(rproc->dev.parent, "KICK Linux because of pending message\n");
-	schedule_work(&workqueue);
+	rproc_vq_interrupt(local->rproc, local->ipis[0].notifyid);
 }
 
 static void kick_pending_ipi(struct rproc *rproc)
@@ -102,11 +117,9 @@ static void kick_pending_ipi(struct rproc *rproc)
 	int i;
 
 	for (i = 0; i < MAX_NUM_VRINGS; i++) {
-
 		/* Send swirq to firmware */
-		if (local->ipis[i].pending == true) {
-			gic_raise_softirq(cpumask_of(1),
-					local->ipis[i].irq);
+		if (local->ipis[i].pending) {
+			gic_send_sgi(1, local->irqs[HOST_SGI]);
 			local->ipis[i].pending = false;
 		}
 	}
@@ -120,7 +133,7 @@ static int zynq_rproc_start(struct rproc *rproc)
 	dev_dbg(dev, "%s\n", __func__);
 	INIT_WORK(&workqueue, handle_event);
 
-	ret = cpu_down(1);
+	ret = remove_cpu(1);
 	/* EBUSY means CPU is already released */
 	if (ret && (ret != -EBUSY)) {
 		dev_err(dev, "Can't release cpu1\n");
@@ -140,13 +153,11 @@ static void zynq_rproc_kick(struct rproc *rproc, int vqid)
 	struct device *dev = rproc->dev.parent;
 	struct zynq_rproc_pdata *local = rproc->priv;
 	struct rproc_vdev *rvdev, *rvtmp;
-	struct fw_rsc_vdev *rsc;
 	int i;
 
 	dev_dbg(dev, "KICK Firmware to start send messages vqid %d\n", vqid);
 
 	list_for_each_entry_safe(rvdev, rvtmp, &rproc->rvdevs, node) {
-		rsc = (void *)rproc->table_ptr + rvdev->rsc_offset;
 		for (i = 0; i < MAX_NUM_VRINGS; i++) {
 			struct rproc_vring *rvring = &rvdev->vring[i];
 
@@ -157,13 +168,12 @@ static void zynq_rproc_kick(struct rproc *rproc, int vqid)
 				 * we delay firmware kick
 				 */
 				if (rproc->state == RPROC_RUNNING)
-					gic_raise_softirq(cpumask_of(1),
-						local->ipis[i].irq);
+					gic_send_sgi(1,
+						     local->irqs[REMOTE_SGI]);
 				else
 					local->ipis[i].pending = true;
 			}
 		}
-
 	}
 }
 
@@ -176,133 +186,120 @@ static int zynq_rproc_stop(struct rproc *rproc)
 	dev_dbg(rproc->dev.parent, "%s\n", __func__);
 
 	/* Cpu can't be power on - for example in nosmp mode */
-	ret = cpu_up(1);
+	ret = add_cpu(1);
 	if (ret)
 		dev_err(dev, "Can't power on cpu1 %d\n", ret);
 
 	return 0;
 }
 
-static void *zynq_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
+static int zynq_parse_fw(struct rproc *rproc, const struct firmware *fw)
 {
+	int num_mems, i, ret;
+	struct device *dev = rproc->dev.parent;
+	struct device_node *np = dev->of_node;
 	struct rproc_mem_entry *mem;
-	void *va = 0;
-	struct zynq_rproc_pdata *local = rproc->priv;
 
-	list_for_each_entry(mem, &local->mems, node) {
-		int offset = da - mem->da;
+	num_mems = of_count_phandle_with_args(np, "memory-region", NULL);
+	if (num_mems <= 0)
+		return 0;
+	for (i = 0; i < num_mems; i++) {
+		struct device_node *node;
+		struct reserved_mem *rmem;
 
-		/* try next carveout if da is too small */
-		if (offset < 0)
-			continue;
+		node = of_parse_phandle(np, "memory-region", i);
+		rmem = of_reserved_mem_lookup(node);
+		if (!rmem) {
+			dev_err(dev, "unable to acquire memory-region\n");
+			return -EINVAL;
+		}
+		if (strstr(node->name, "vdev") &&
+			strstr(node->name, "buffer")) {
+			/* Register DMA region */
+			mem = rproc_mem_entry_init(dev, NULL,
+						   (dma_addr_t)rmem->base,
+						   rmem->size, rmem->base,
+						   NULL, NULL,
+						   node->name);
+			if (!mem) {
+				dev_err(dev,
+					"unable to initialize memory-region %s \n",
+					node->name);
+				return -ENOMEM;
+			}
+			rproc_add_carveout(rproc, mem);
+		} else if (strstr(node->name, "vdev") &&
+			   strstr(node->name, "vring")) {
+			/* Register vring */
+			mem = rproc_mem_entry_init(dev, NULL,
+						   (dma_addr_t)rmem->base,
+						   rmem->size, rmem->base,
+						   NULL, NULL,
+						   node->name);
+			mem->va = devm_ioremap_wc(dev, rmem->base, rmem->size);
+			if (!mem->va)
+				return -ENOMEM;
+			if (!mem) {
+				dev_err(dev,
+					"unable to initialize memory-region %s\n",
+					node->name);
+				return -ENOMEM;
+			}
+			rproc_add_carveout(rproc, mem);
+		} else {
+			mem = rproc_of_resm_mem_entry_init(dev, i,
+							rmem->size,
+							rmem->base,
+							node->name);
+			if (!mem) {
+				dev_err(dev,
+					"unable to initialize memory-region %s \n",
+					node->name);
+				return -ENOMEM;
+			}
+			mem->va = devm_ioremap_wc(dev, rmem->base, rmem->size);
+			if (!mem->va)
+				return -ENOMEM;
 
-		/* try next carveout if da is too large */
-		if (offset + len > mem->len)
-			continue;
-
-		va = mem->va + offset;
-
-		break;
+			rproc_add_carveout(rproc, mem);
+		}
 	}
-	return va;
+
+	ret = rproc_elf_load_rsc_table(rproc, fw);
+	if (ret == -EINVAL)
+		ret = 0;
+	return ret;
 }
 
 static struct rproc_ops zynq_rproc_ops = {
 	.start		= zynq_rproc_start,
 	.stop		= zynq_rproc_stop,
+	.load		= rproc_elf_load_segments,
+	.parse_fw	= zynq_parse_fw,
+	.find_loaded_rsc_table = rproc_elf_find_loaded_rsc_table,
+	.get_boot_addr	= rproc_elf_get_boot_addr,
 	.kick		= zynq_rproc_kick,
-	.da_to_va	= zynq_rproc_da_to_va,
 };
-
-/* Just to detect bug if interrupt forwarding is broken */
-static irqreturn_t zynq_remoteproc_interrupt(int irq, void *dev_id)
-{
-	struct device *dev = dev_id;
-
-	dev_err(dev, "GIC IRQ %d is not forwarded correctly\n", irq);
-
-	/*
-	 *  MS: Calling this function doesn't need to be BUG
-	 * especially for cases where firmware doesn't disable
-	 * interrupts. In next probing can be som interrupts pending.
-	 * The next scenario is for cases when you want to monitor
-	 * non frequent interrupt through Linux kernel. Interrupt happen
-	 * and it is forwarded to Linux which update own statistic
-	 * in (/proc/interrupt) and forward it to firmware.
-	 *
-	 * gic_set_cpu(1, irq);	- setup cpu1 as destination cpu
-	 * gic_raise_softirq(cpumask_of(1), irq); - forward irq to firmware
-	 */
-
-	gic_set_cpu(1, irq);
-	return IRQ_HANDLED;
-}
-
-static void clear_irq(struct rproc *rproc)
-{
-	struct list_head *pos, *q;
-	struct irq_list *tmp;
-	struct zynq_rproc_pdata *local = rproc->priv;
-
-	dev_info(rproc->dev.parent, "Deleting the irq_list\n");
-	list_for_each_safe(pos, q, &local->irqs.list) {
-		tmp = list_entry(pos, struct irq_list, list);
-		free_irq(tmp->irq, rproc->dev.parent);
-		gic_set_cpu(0, tmp->irq);
-		list_del(pos);
-		kfree(tmp);
-	}
-}
-
-static int zynq_rproc_add_mems(struct zynq_rproc_pdata *pdata)
-{
-	struct mem_pool_st *mem_node;
-	size_t mem_size;
-	struct gen_pool *mem_pool;
-	struct rproc_mem_entry *mem;
-	dma_addr_t dma;
-	void *va;
-	struct device *dev = pdata->rproc->dev.parent;
-
-	list_for_each_entry(mem_node, &pdata->mem_pools, node) {
-		mem_pool = mem_node->pool;
-		mem_size = gen_pool_size(mem_pool);
-		mem  = devm_kzalloc(dev, sizeof(struct rproc_mem_entry),
-				GFP_KERNEL);
-		if (!mem)
-			return -ENOMEM;
-
-		va = gen_pool_dma_alloc(mem_pool, mem_size, &dma);
-		if (!va) {
-			dev_err(dev, "Failed to allocate dma carveout mem.\n");
-			return -ENOMEM;
-		}
-		mem->priv = (void *)mem_pool;
-		mem->va = va;
-		mem->len = mem_size;
-		mem->dma = dma;
-		mem->da = dma;
-		dev_dbg(dev, "%s: va = %p, da = 0x%x dma = 0x%x\n",
-			__func__, va, mem->da, mem->dma);
-		list_add_tail(&mem->node, &pdata->mems);
-	}
-	return 0;
-}
 
 static int zynq_remoteproc_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-	struct irq_list *tmp;
-	int count = 0;
+	int i, virq;
 	struct zynq_rproc_pdata *local;
-	struct device_node *tmp_node;
-	struct gen_pool *mem_pool = NULL;
-	struct mem_pool_st *mem_node = NULL;
-	char mem_name[16];
-	int i;
+	/*
+	 * IRQ related structures are used for the following:
+	 * for each SGI interrupt ensure its mapped by GIC IRQ domain
+	 * and that each corresponding linux IRQ for the HW IRQ has
+	 * a handler for when receiving an interrupt from the remote
+	 * processor.
+	 */
+	struct irq_domain *domain;
+	struct irq_desc *ipi_desc;
+	struct irq_fwspec sgi_fwspec;
+	struct device_node *interrupt_parent, *node = (&pdev->dev)->of_node;
 
 	rproc = rproc_alloc(&pdev->dev, dev_name(&pdev->dev),
-		&zynq_rproc_ops, firmware,
+			    &zynq_rproc_ops, NULL,
 		sizeof(struct zynq_rproc_pdata));
 	if (!rproc) {
 		dev_err(&pdev->dev, "rproc allocation failed\n");
@@ -320,122 +317,71 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 		goto dma_mask_fault;
 	}
 
-	/* Init list for IRQs - it can be long list */
-	INIT_LIST_HEAD(&local->irqs.list);
+	/* validate SGIs */
+	if (n_vring_sgis != MAX_NUM_VRINGS) {
+		dev_err(&pdev->dev, "invalid number of SGIs provided.\n");
+		return -EINVAL;
+	}
 
-	/* Alloc IRQ based on DTS to be sure that no other driver will use it */
-	while (1) {
-		int irq;
+	/* Find GIC controller to map SGIs. */
+	interrupt_parent = of_irq_find_parent(node);
+	if (!interrupt_parent) {
+		dev_err(&pdev->dev, "invalid phandle for interrupt parent.\n");
+		return -EINVAL;
+	}
 
-		irq = platform_get_irq(pdev, count++);
-		if (irq == -ENXIO || irq == -EINVAL)
-			break;
+	/* Each SGI needs to be associated with GIC's IRQ domain. */
+	domain = irq_find_host(interrupt_parent);
 
-		tmp = kzalloc(sizeof(struct irq_list), GFP_KERNEL);
-		if (!tmp) {
-			dev_err(&pdev->dev, "Unable to alloc irq list\n");
-			ret = -ENOMEM;
-			goto irq_fault;
-		}
+	/* Each mapping needs GIC domain when finding IRQ mapping. */
+	sgi_fwspec.fwnode = domain->fwnode;
 
-		tmp->irq = irq;
+	/*
+	 * When irq domain looks at mapping each arg is as follows:
+	 * 1 args for: interrupt # (set later)
+	 */
+	sgi_fwspec.param_count = 1;
 
-		dev_dbg(&pdev->dev, "%d: Alloc irq: %d\n", count, tmp->irq);
-
-		/* Allocating shared IRQs will ensure that any module will
-		 * use these IRQs */
-		ret = request_irq(tmp->irq, zynq_remoteproc_interrupt, 0,
-					dev_name(&pdev->dev), &pdev->dev);
-		if (ret) {
-			dev_err(&pdev->dev, "IRQ %d already allocated\n",
-								tmp->irq);
-			goto irq_fault;
-		}
-
+	/*
+	 * For each SGI:
+	 * Set HW IRQ.
+	 * Get corresponding Linux IRQ.
+	 * Associate a handler for remotproc driver.
+	 * For the IRQ descriptor for each wire in handler for IRQ action.
+	 *   (this comes into play when receiving HW IRQ)
+	 * Save HW IRQ for later remoteproc handling.
+	 */
+	for (i = 0; i < MAX_NUM_VRINGS; i++) {
+		/* Set SGI's hwirq */
+		sgi_fwspec.param[0] = vring_sgis[i];
+		virq = irq_create_fwspec_mapping(&sgi_fwspec);
 		/*
-		 * MS: Here is place for detecting problem with firmware
-		 * which doesn't work correctly with interrupts
-		 *
-		 * MS: Comment if you want to count IRQs on Linux
+		 * Request_percpu_irq is not used because Linux only runs on
+		 * one CPU.
 		 */
-		gic_set_cpu(1, tmp->irq);
-		list_add(&(tmp->list), &(local->irqs.list));
+		ret = devm_request_irq(&pdev->dev, virq,
+				       zynq_remoteproc_interrupt,
+				       0, "vring0", local);
+		/*
+		 * The IPI descriptor relates Linux IRQ to HW IRQ and
+		 * irqaction. The irqaction will point to the zynq_remoteproc_interrupt.
+		 */
+		ipi_desc = irq_to_desc(virq);
+		ipi_desc->action = &action;
+		irq_set_status_flags(virq, IRQ_HIDDEN);
+		enable_percpu_irq(virq, 0);
+		local->irqs[i] = vring_sgis[i];
 	}
 
-	/* Allocate free IPI number */
-	/* Read vring0 ipi number */
-	ret = of_property_read_u32(pdev->dev.of_node, "vring0",
-				&local->ipis[0].irq);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
-		goto irq_fault;
-	}
-
-	ret = set_ipi_handler(local->ipis[0].irq, ipi_kick,
-			"Firmware kick");
-	if (ret) {
-		dev_err(&pdev->dev, "IPI handler already registered\n");
-		goto irq_fault;
-	}
-
-	/* Read vring1 ipi number */
-	ret = of_property_read_u32(pdev->dev.of_node, "vring1",
-				&local->ipis[1].irq);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
-		goto ipi_fault;
-	}
-
-	/* Find on-chip memory */
-	INIT_LIST_HEAD(&local->mem_pools);
-	INIT_LIST_HEAD(&local->mems);
-	for (i = 0; i < MAX_ON_CHIP_MEMS; i++) {
-		sprintf(mem_name, "sram_%d", i);
-		mem_pool = of_gen_pool_get(pdev->dev.of_node,
-					mem_name, 0);
-		if (mem_pool) {
-			mem_node = devm_kzalloc(&pdev->dev,
-					sizeof(struct mem_pool_st),
-					GFP_KERNEL);
-			if (!mem_node)
-				goto ipi_fault;
-			mem_node->pool = mem_pool;
-			/* Get the memory node power domain id */
-			tmp_node = of_parse_phandle(pdev->dev.of_node,
-						mem_name, 0);
-			if (tmp_node) {
-				struct device_node *pd_node;
-
-				pd_node = of_parse_phandle(tmp_node,
-						"pd-handle", 0);
-				if (pd_node)
-					of_property_read_u32(pd_node,
-						"pd-id", &mem_node->pd_id);
-			}
-			dev_dbg(&pdev->dev, "mem[%d] pd_id = %d.\n",
-				i, mem_node->pd_id);
-			list_add_tail(&mem_node->node, &local->mem_pools);
-		}
-	}
-	ret = zynq_rproc_add_mems(local);
-	if (ret) {
-		dev_err(&pdev->dev, "rproc failed to add mems\n");
-		goto ipi_fault;
-	}
+	rproc->auto_boot = autoboot;
 
 	ret = rproc_add(local->rproc);
 	if (ret) {
 		dev_err(&pdev->dev, "rproc registration failed\n");
-		goto ipi_fault;
+		goto dma_mask_fault;
 	}
 
 	return 0;
-
-ipi_fault:
-	clear_ipi_handler(local->ipis[0].irq);
-
-irq_fault:
-	clear_irq(rproc);
 
 dma_mask_fault:
 	rproc_free(rproc);
@@ -446,22 +392,12 @@ dma_mask_fault:
 static int zynq_remoteproc_remove(struct platform_device *pdev)
 {
 	struct rproc *rproc = platform_get_drvdata(pdev);
-	struct zynq_rproc_pdata *local = rproc->priv;
-	struct rproc_mem_entry *mem;
 
 	dev_info(&pdev->dev, "%s\n", __func__);
 
 	rproc_del(rproc);
 
-	clear_ipi_handler(local->ipis[0].irq);
-	clear_irq(rproc);
-
-	list_for_each_entry(mem, &local->mems, node) {
-		if (mem->priv)
-			gen_pool_free((struct gen_pool *)mem->priv,
-				      (unsigned long)mem->va, mem->len);
-	}
-
+	of_reserved_mem_device_release(&pdev->dev);
 	rproc_free(rproc);
 
 	return 0;
@@ -484,8 +420,10 @@ static struct platform_driver zynq_remoteproc_driver = {
 };
 module_platform_driver(zynq_remoteproc_driver);
 
-module_param(firmware, charp, 0);
-MODULE_PARM_DESC(firmware, "Override the firmware image name. Default value in DTS.");
+module_param_named(autoboot,  autoboot, bool, 0444);
+MODULE_PARM_DESC(autoboot,
+		 "enable | disable autoboot. (default: false)");
+module_param_array(vring_sgis, int, &n_vring_sgis, 0);
 
 MODULE_AUTHOR("Michal Simek <monstr@monstr.eu");
 MODULE_LICENSE("GPL v2");

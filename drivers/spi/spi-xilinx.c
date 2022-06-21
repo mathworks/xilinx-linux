@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Xilinx SPI controller driver (master mode only)
  *
@@ -8,9 +9,6 @@
  * Copyright (c) 2009 Intel Corporation
  * 2002-2007 (c) MontaVista Software, Inc.
 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -30,18 +28,8 @@
 /* Register definitions as per "OPB Serial Peripheral Interface (SPI) (v1.00e)
  * Product Specification", DS464
  */
-/* Register Offsets */
-#define XSPI_CR_OFFSET		0x60
-#define XSPI_SR_OFFSET		0x64
-#define XSPI_TXD_OFFSET		0x68
-#define XSPI_RXD_OFFSET		0x6c
-#define XSPI_SSR_OFFSET		0x70
-#define XIPIF_V123B_DGIER_OFFSET	0x1c
-#define XIPIF_V123B_IISR_OFFSET		0x20
-#define XIPIF_V123B_IIER_OFFSET		0x28
-#define XIPIF_V123B_RESETR_OFFSET	0x40
+#define XSPI_CR_OFFSET		0x60	/* Control Register */
 
-/* Register bit masks */
 #define XSPI_CR_LOOP		0x01
 #define XSPI_CR_ENABLE		0x02
 #define XSPI_CR_MASTER_MODE	0x04
@@ -54,20 +42,40 @@
 #define XSPI_CR_MANUAL_SSELECT	0x80
 #define XSPI_CR_TRANS_INHIBIT	0x100
 #define XSPI_CR_LSB_FIRST	0x200
-#define XSPI_SR_RX_EMPTY_MASK	0x01
-#define XSPI_SR_RX_FULL_MASK	0x02
-#define XSPI_SR_TX_EMPTY_MASK	0x04
-#define XSPI_SR_TX_FULL_MASK	0x08
-#define XSPI_SR_MODE_FAULT_MASK	0x10
+
+#define XSPI_SR_OFFSET		0x64	/* Status Register */
+
+#define XSPI_SR_RX_EMPTY_MASK	0x01	/* Receive FIFO is empty */
+#define XSPI_SR_RX_FULL_MASK	0x02	/* Receive FIFO is full */
+#define XSPI_SR_TX_EMPTY_MASK	0x04	/* Transmit FIFO is empty */
+#define XSPI_SR_TX_FULL_MASK	0x08	/* Transmit FIFO is full */
+#define XSPI_SR_MODE_FAULT_MASK	0x10	/* Mode fault error */
+
+#define XSPI_TXD_OFFSET		0x68	/* Data Transmit Register */
+#define XSPI_RXD_OFFSET		0x6c	/* Data Receive Register */
+
+#define XSPI_SSR_OFFSET		0x70	/* 32-bit Slave Select Register */
+
+/* Register definitions as per "OPB IPIF (v3.01c) Product Specification", DS414
+ * IPIF registers are 32 bit
+ */
+#define XIPIF_V123B_DGIER_OFFSET	0x1c	/* IPIF global int enable reg */
 #define XIPIF_V123B_GINTR_ENABLE	0x80000000
-#define XSPI_INTR_MODE_FAULT		0x01
-#define XSPI_INTR_SLAVE_MODE_FAULT	0x02
-#define XSPI_INTR_TX_EMPTY		0x04
-#define XSPI_INTR_TX_UNDERRUN		0x08
-#define XSPI_INTR_RX_FULL		0x10
-#define XSPI_INTR_RX_OVERRUN		0x20
-#define XSPI_INTR_TX_HALF_EMPTY		0x40
-#define XIPIF_V123B_RESET_MASK		0x0a
+
+#define XIPIF_V123B_IISR_OFFSET		0x20	/* IPIF interrupt status reg */
+#define XIPIF_V123B_IIER_OFFSET		0x28	/* IPIF interrupt enable reg */
+
+#define XSPI_INTR_MODE_FAULT		0x01	/* Mode fault error */
+#define XSPI_INTR_SLAVE_MODE_FAULT	0x02	/* Selected as slave while
+						 * disabled */
+#define XSPI_INTR_TX_EMPTY		0x04	/* TxFIFO is empty */
+#define XSPI_INTR_TX_UNDERRUN		0x08	/* TxFIFO was underrun */
+#define XSPI_INTR_RX_FULL		0x10	/* RxFIFO is full */
+#define XSPI_INTR_RX_OVERRUN		0x20	/* RxFIFO was overrun */
+#define XSPI_INTR_TX_HALF_EMPTY		0x40	/* TxFIFO is half empty */
+
+#define XIPIF_V123B_RESETR_OFFSET	0x40	/* IPIF reset register */
+#define XIPIF_V123B_RESET_MASK		0x0a	/* the value to write */
 
 /* Number of bits per word */
 #define XSPI_ONE_BITS_PER_WORD 1
@@ -81,6 +89,9 @@
 /* Auto suspend timeout in milliseconds */
 #define SPI_AUTOSUSPEND_TIMEOUT		3000
 
+/* Command used for Dummy read Id */
+#define SPI_READ_ID		0x9F
+
 /**
  * struct xilinx_spi - This definition define spi driver instance
  * @regs:		virt. address of the control registers
@@ -88,6 +99,7 @@
  * @axi_clk:		Pointer to the AXI clock
  * @axi4_clk:		Pointer to the AXI4 clock
  * @spi_clk:		Pointer to the SPI clock
+ * @dev:		Pointer to the device
  * @rx_ptr:		Pointer to the RX buffer
  * @tx_ptr:		Pointer to the TX buffer
  * @bytes_per_word:	Number of bytes in a word
@@ -102,16 +114,19 @@
  * @rx_fifo:		For reading data from fifo
  */
 struct xilinx_spi {
-	void __iomem *regs;
-	int irq;
+	void __iomem	*regs;	/* virt. address of the control registers */
+
+	int		irq;
+
 	struct clk *axi_clk;
 	struct clk *axi4_clk;
 	struct clk *spi_clk;
-	u8 *rx_ptr;
-	const u8 *tx_ptr;
+	struct device *dev;
+	u8 *rx_ptr;		/* pointer in the Tx buffer */
+	const u8 *tx_ptr;	/* pointer in the Rx buffer */
 	u8 bytes_per_word;
-	int buffer_size;
-	u32 cs_inactive;
+	int buffer_size;	/* buffer size in words */
+	u32 cs_inactive;	/* Level of the CS pins when inactive*/
 	unsigned int (*read_fn)(void __iomem *);
 	void (*write_fn)(u32, void __iomem *);
 	u32 bytes_to_transfer;
@@ -136,7 +151,7 @@ static void xspi_read_rx_fifo_##size(struct xilinx_spi *xqspi)		\
 	int count = (xqspi->bytes_to_receive > xqspi->buffer_size) ?	\
 			xqspi->buffer_size : xqspi->bytes_to_receive;	\
 	u32 data;							\
-	for (i = 0; i < count; i += (size/8)) {				\
+	for (i = 0; i < count; i += (size / 8)) {			\
 		data = readl_relaxed(xqspi->regs + XSPI_RXD_OFFSET);	\
 		if (xqspi->rx_ptr)					\
 			((type *)xqspi->rx_ptr)[i] = (type)data;	\
@@ -161,9 +176,9 @@ static void xspi_fill_tx_fifo_##size(struct xilinx_spi *xqspi)		\
 	int count = (xqspi->bytes_to_transfer > xqspi->buffer_size) ?	\
 			xqspi->buffer_size : xqspi->bytes_to_transfer;	\
 	u32 data = 0;							\
-	for (i = 0; i < count; i += (size/8)) {				\
+	for (i = 0; i < count; i += (size / 8)) {			\
 		if (xqspi->tx_ptr)					\
-			data = (type)((u8 *)xqspi->tx_ptr)[i];		\
+			data = *(type *)&xqspi->tx_ptr[i];		\
 		writel_relaxed(data, (xqspi->regs + XSPI_TXD_OFFSET));	\
 	}								\
 	xqspi->bytes_to_transfer -= count;				\
@@ -177,52 +192,21 @@ XSPI_FIFO_READ(32, u32)
 XSPI_FIFO_WRITE(8, u8)
 XSPI_FIFO_WRITE(16, u16)
 XSPI_FIFO_WRITE(32, u32)
-
-/**
- * xspi_write32 - Write a value to the device register little endian
- * @val:	Value to write at the Register offset
- * @addr:	Register offset
- *
- * Write data to the paricular SPI register
- */
 static void xspi_write32(u32 val, void __iomem *addr)
 {
 	iowrite32(val, addr);
 }
 
-/**
- * xspi_read32 - read a value from the device register little endian
- * @addr:	Register offset
- *
- * Read data from the paricular SPI register
- *
- * Return:	return value from the SPI register.
- */
 static unsigned int xspi_read32(void __iomem *addr)
 {
 	return ioread32(addr);
 }
 
-/**
- * xspi_write32_be - Write a value to the device register big endian
- * @val:	Value to write at the Register offset
- * @addr:	Register offset
- *
- * Write data to the paricular SPI register
- */
 static void xspi_write32_be(u32 val, void __iomem *addr)
 {
 	iowrite32be(val, addr);
 }
 
-/**
- * xspi_read32_be - read a value from the device register big endian
- * @addr:	Register offset
- *
- * Read data from the paricular SPI register
- *
- * Return:	return value from the SPI register.
- */
 static unsigned int xspi_read32_be(void __iomem *addr)
 {
 	return ioread32be(addr);
@@ -243,9 +227,8 @@ static void xspi_init_hw(struct xilinx_spi *xspi)
 
 	/* Reset the SPI device */
 	xspi->write_fn(XIPIF_V123B_RESET_MASK,
-			regs_base + XIPIF_V123B_RESETR_OFFSET);
-	/*
-	 * Enable the transmit empty interrupt, which we use to determine
+		regs_base + XIPIF_V123B_RESETR_OFFSET);
+	/* Enable the transmit empty interrupt, which we use to determine
 	 * progress on the transmission.
 	 */
 	xspi->write_fn(XSPI_INTR_TX_EMPTY,
@@ -254,8 +237,7 @@ static void xspi_init_hw(struct xilinx_spi *xspi)
 	xspi->write_fn(0, regs_base + XIPIF_V123B_DGIER_OFFSET);
 	/* Deselect the slave on the SPI bus */
 	xspi->write_fn(0xffff, regs_base + XSPI_SSR_OFFSET);
-	/*
-	 * Disable the transmitter, enable Manual Slave Select Assertion,
+	/* Disable the transmitter, enable Manual Slave Select Assertion,
 	 * put SPI controller into master mode, and enable it */
 	xspi->write_fn(XSPI_CR_MANUAL_SSELECT |	XSPI_CR_MASTER_MODE |
 		XSPI_CR_ENABLE | XSPI_CR_TXFIFO_RESET |	XSPI_CR_RXFIFO_RESET,
@@ -286,51 +268,59 @@ static void xspi_chipselect(struct spi_device *qspi, bool is_high)
 }
 
 /**
- * xilinx_spi_irq -	Interrupt service routine of the SPI controller
- * @irq:	IRQ number
- * @dev_id:	Pointer to the xspi structure
+ * xilinx_spi_startup_block - Perform a dummy read as a
+ * work around for the startup block issue in the spi controller.
+ * @xspi:	Pointer to the xilinx_spi structure
+ * @cs_num:	chip select number.
  *
- * This function handles TX empty only.
- * On TX empty interrupt this function reads the received data from RX FIFO
- * and fills the TX FIFO if there is any data remaining to be transferred.
+ * Perform a dummy read if startup block is enabled in the
+ * spi controller.
  *
- * Return:	IRQ_HANDLED when interrupt is handled
- *		IRQ_NONE otherwise.
+ * Return:	None
  */
-static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
+static void xilinx_spi_startup_block(struct xilinx_spi *xspi, u32 cs_num)
 {
-	struct spi_master *master = dev_id;
-	struct xilinx_spi *xspi = spi_master_get_devdata(dev_id);
-	u32 ipif_isr;
-	int status = IRQ_NONE;
+	void __iomem *regs_base = xspi->regs;
+	u32 chip_sel, config_reg, status_reg;
 
-	/* Get the IPIF interrupts, and clear them immediately */
-	ipif_isr = xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET);
-	xspi->write_fn(ipif_isr, xspi->regs + XIPIF_V123B_IISR_OFFSET);
-	if (ipif_isr & XSPI_INTR_TX_EMPTY)  {
-		/* Transmission completed */
-		xspi->rx_fifo(xspi);
-		if (xspi->bytes_to_transfer) {
-			/* There is more data to send */
-			xspi->tx_fifo(xspi);
-		}
-		status = IRQ_HANDLED;
+	/* Activate the chip select */
+	chip_sel = xspi->cs_inactive;
+	chip_sel ^= BIT(cs_num);
+	xspi->write_fn(chip_sel, regs_base + XSPI_SSR_OFFSET);
+
+	/* Write ReadId to the TXD register */
+	xspi->write_fn(SPI_READ_ID, regs_base + XSPI_TXD_OFFSET);
+	xspi->write_fn(0x0, regs_base + XSPI_TXD_OFFSET);
+	xspi->write_fn(0x0, regs_base + XSPI_TXD_OFFSET);
+
+	config_reg = xspi->read_fn(regs_base + XSPI_CR_OFFSET);
+	/* Enable master transaction  */
+	config_reg &= ~XSPI_CR_TRANS_INHIBIT;
+	xspi->write_fn(config_reg, regs_base + XSPI_CR_OFFSET);
+
+	status_reg = xspi->read_fn(regs_base + XSPI_SR_OFFSET);
+	while ((status_reg & XSPI_SR_TX_EMPTY_MASK) == 0)
+		status_reg = xspi->read_fn(regs_base + XSPI_SR_OFFSET);
+
+	/* Disable master transaction */
+	config_reg |= XSPI_CR_TRANS_INHIBIT;
+	xspi->write_fn(config_reg, regs_base + XSPI_CR_OFFSET);
+
+	/* Read the RXD Register */
+	status_reg = xspi->read_fn(regs_base + XSPI_SR_OFFSET);
+	while ((status_reg & XSPI_SR_RX_EMPTY_MASK) == 0) {
+		xspi->read_fn(regs_base + XSPI_RXD_OFFSET);
+		status_reg = xspi->read_fn(regs_base + XSPI_SR_OFFSET);
 	}
 
-	if (!xspi->bytes_to_receive && !xspi->bytes_to_transfer) {
-		spi_finalize_current_transfer(master);
-		/* Disable the interrupts here. */
-		xspi->write_fn(0x0, xspi->regs + XIPIF_V123B_DGIER_OFFSET);
-	}
-
-	return status;
+	xspi_init_hw(xspi);
 }
 
 /**
- * xspi_setup_transfer - Configure SPI controller for specified
+ * xilinx_spi_setup_transfer - Configure SPI controller for specified
  *			 transfer
- * @qspi:	Pointer to the spi_device structure
- * @transfer:	Pointer to the spi_transfer structure which provides
+ * @spi:	Pointer to the spi_device structure
+ * @t:	Pointer to the spi_transfer structure which provides
  *		information about next transfer setup parameters
  *
  * Sets the operational mode of QSPI controller for the next QSPI
@@ -338,27 +328,27 @@ static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
  *
  * Return:	0 always
  */
-static int xspi_setup_transfer(struct spi_device *qspi,
-				    struct spi_transfer *transfer)
+static int xilinx_spi_setup_transfer(struct spi_device *spi,
+		struct spi_transfer *t)
 {
-	struct xilinx_spi *xqspi = spi_master_get_devdata(qspi->master);
+	struct xilinx_spi *xspi = spi_master_get_devdata(spi->master);
 	u32 config_reg;
 
-	config_reg = xqspi->read_fn(xqspi->regs + XSPI_CR_OFFSET);
+	config_reg = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 	/* Set the QSPI clock phase and clock polarity */
 	config_reg &= ~(XSPI_CR_CPHA | XSPI_CR_CPOL);
-	if (qspi->mode & SPI_CPHA)
+	if (spi->mode & SPI_CPHA)
 		config_reg |= XSPI_CR_CPHA;
-	if (qspi->mode & SPI_CPOL)
+	if (spi->mode & SPI_CPOL)
 		config_reg |= XSPI_CR_CPOL;
-	if (qspi->mode & SPI_LSB_FIRST)
+	if (spi->mode & SPI_LSB_FIRST)
 		config_reg |= XSPI_CR_LSB_FIRST;
-	xqspi->write_fn(config_reg, xqspi->regs + XSPI_CR_OFFSET);
+	xspi->write_fn(config_reg, xspi->regs + XSPI_CR_OFFSET);
 
-	if (qspi->mode & SPI_CS_HIGH)
-		xqspi->cs_inactive &= ~BIT(qspi->chip_select);
+	if (spi->mode & SPI_CS_HIGH)
+		xspi->cs_inactive &= ~BIT(spi->chip_select);
 	else
-		xqspi->cs_inactive |= BIT(qspi->chip_select);
+		xspi->cs_inactive |= BIT(spi->chip_select);
 
 	return 0;
 }
@@ -375,16 +365,17 @@ static int xspi_setup_transfer(struct spi_device *qspi,
 static int xspi_setup(struct spi_device *qspi)
 {
 	int ret;
+	struct xilinx_spi *xqspi = spi_master_get_devdata(qspi->master);
 
 	if (qspi->master->busy)
 		return -EBUSY;
 
-	ret = pm_runtime_get_sync(&qspi->dev);
+	ret = pm_runtime_get_sync(xqspi->dev);
 	if (ret < 0)
 		return ret;
 
-	ret = xspi_setup_transfer(qspi, NULL);
-	pm_runtime_put_sync(&qspi->dev);
+	ret = xilinx_spi_setup_transfer(qspi, NULL);
+	pm_runtime_put_sync(xqspi->dev);
 
 	return ret;
 }
@@ -404,8 +395,8 @@ static int xspi_setup(struct spi_device *qspi)
  */
 
 static int xspi_start_transfer(struct spi_master *master,
-				    struct spi_device *qspi,
-				    struct spi_transfer *transfer)
+			       struct spi_device *qspi,
+			       struct spi_transfer *transfer)
 {
 	struct xilinx_spi *xqspi = spi_master_get_devdata(master);
 	u32 cr;
@@ -414,18 +405,18 @@ static int xspi_start_transfer(struct spi_master *master,
 	xqspi->rx_ptr = transfer->rx_buf;
 
 	if (transfer->dummy) {
-		xqspi->bytes_to_transfer = (transfer->len - (transfer->dummy/8))
-							+ ((transfer->dummy/8) *
+		xqspi->bytes_to_transfer = (transfer->len - (transfer->dummy / 8))
+							+ ((transfer->dummy / 8) *
 							xqspi->rx_bus_width);
-		xqspi->bytes_to_receive = (transfer->len - (transfer->dummy/8))
-							+ ((transfer->dummy/8) *
+		xqspi->bytes_to_receive = (transfer->len - (transfer->dummy / 8))
+							+ ((transfer->dummy / 8) *
 							xqspi->rx_bus_width);
 	} else {
 		xqspi->bytes_to_transfer = transfer->len;
 		xqspi->bytes_to_receive = transfer->len;
 	}
 
-	xspi_setup_transfer(qspi, transfer);
+	xilinx_spi_setup_transfer(qspi, transfer);
 	cr = xqspi->read_fn(xqspi->regs + XSPI_CR_OFFSET);
 	/* Enable master transaction inhibit */
 	cr |= XSPI_CR_TRANS_INHIBIT;
@@ -452,10 +443,11 @@ static int xspi_start_transfer(struct spi_master *master,
 static int xspi_prepare_transfer_hardware(struct spi_master *master)
 {
 	struct xilinx_spi *xqspi = spi_master_get_devdata(master);
+
 	u32 cr;
 	int ret;
 
-	ret = pm_runtime_get_sync(&master->dev);
+	ret = pm_runtime_get_sync(xqspi->dev);
 	if (ret < 0)
 		return ret;
 
@@ -484,7 +476,7 @@ static int xspi_unprepare_transfer_hardware(struct spi_master *master)
 	cr &= ~XSPI_CR_ENABLE;
 	xqspi->write_fn(cr, xqspi->regs + XSPI_CR_OFFSET);
 
-	pm_runtime_put_sync(&master->dev);
+	pm_runtime_put_sync(xqspi->dev);
 
 	return 0;
 }
@@ -582,7 +574,6 @@ static int __maybe_unused xilinx_spi_resume(struct device *dev)
 	return ret;
 }
 
-
 /**
  * xilinx_spi_suspend - Suspend method for the SPI driver
  * @dev:	Address of the platform_device structure
@@ -614,27 +605,54 @@ static const struct dev_pm_ops xilinx_spi_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(xilinx_spi_suspend, xilinx_spi_resume)
 };
 
-/**
- * xilinx_spi_probe -	Probe method for the SPI driver
- * @pdev:	Pointer to the platform_device structure
- *
- * This function initializes the driver data structures and the hardware.
- *
- * Return:	0 on success; error value otherwise
+/* This driver supports single master mode only. Hence Tx FIFO Empty
+ * is the only interrupt we care about.
+ * Receive FIFO Overrun, Transmit FIFO Underrun, Mode Fault, and Slave Mode
+ * Fault are not to happen.
  */
+static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
+{
+	struct spi_master *master = dev_id;
+	struct xilinx_spi *xspi = spi_master_get_devdata(dev_id);
+	u32 ipif_isr;
+	irqreturn_t status = IRQ_NONE;
+
+	/* Get the IPIF interrupts, and clear them immediately */
+	ipif_isr = xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET);
+	xspi->write_fn(ipif_isr, xspi->regs + XIPIF_V123B_IISR_OFFSET);
+	if (ipif_isr & XSPI_INTR_TX_EMPTY)  {
+		/* Transmission completed */
+		xspi->rx_fifo(xspi);
+		if (xspi->bytes_to_transfer) {
+			/* There is more data to send */
+			xspi->tx_fifo(xspi);
+		}
+		status = IRQ_HANDLED;
+	}
+
+	if (!xspi->bytes_to_receive && !xspi->bytes_to_transfer) {
+		spi_finalize_current_transfer(master);
+		/* Disable the interrupts here. */
+		xspi->write_fn(0x0, xspi->regs + XIPIF_V123B_DGIER_OFFSET);
+	}
+
+	return status;
+}
 static int xilinx_spi_probe(struct platform_device *pdev)
 {
 	struct xilinx_spi *xspi;
-	struct xspi_platform_data *pdata;
 	struct resource *res;
-	int ret, num_cs = 0, bits_per_word = 8;
+	int ret;
+	u32 num_cs = 0, bits_per_word = 8;
+	u32 cs_num;
 	struct spi_master *master;
 	struct device_node *nc;
 	u32 tmp, rx_bus_width, fifo_size;
+	bool startup_block;
 
-	pdata = dev_get_platdata(&pdev->dev);
-	of_property_read_u32(pdev->dev.of_node, "num-cs",
-				&num_cs);
+	if (of_property_read_u32(pdev->dev.of_node, "num-cs", &num_cs))
+		dev_info(&pdev->dev,
+			 "Missing num-cs optional property, assuming default as <1>\n");
 	if (!num_cs)
 		num_cs = 1;
 
@@ -643,6 +661,8 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	startup_block = of_property_read_bool(pdev->dev.of_node,
+					      "xlnx,startup-block");
 	master = spi_alloc_master(&pdev->dev, sizeof(struct xilinx_spi));
 	if (!master)
 		return -ENODEV;
@@ -656,21 +676,28 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 		ret = PTR_ERR(xspi->regs);
 		goto put_master;
 	}
-
 	ret = of_property_read_u32(pdev->dev.of_node, "fifo-size",
-				&fifo_size);
+				   &fifo_size);
 	if (ret < 0) {
 		dev_err(&pdev->dev,
 			"Missing fifo size\n");
 		return -EINVAL;
 	}
-	of_property_read_u32(pdev->dev.of_node, "bits-per-word",
-				&bits_per_word);
+	if (of_property_read_u32(pdev->dev.of_node, "bits-per-word",
+				 &bits_per_word))
+		dev_info(&pdev->dev,
+			 "Missing bits-per-word optional property, assuming default as <8>\n");
 
 	xspi->rx_bus_width = XSPI_ONE_BITS_PER_WORD;
 	for_each_available_child_of_node(pdev->dev.of_node, nc) {
+		if (startup_block) {
+			ret = of_property_read_u32(nc, "reg",
+						   &cs_num);
+			if (ret < 0)
+				return -EINVAL;
+		}
 		ret = of_property_read_u32(nc, "spi-rx-bus-width",
-						&rx_bus_width);
+					   &rx_bus_width);
 		if (!ret) {
 			xspi->rx_bus_width = rx_bus_width;
 			break;
@@ -744,9 +771,18 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto clk_unprepare_all;
 
+	xspi->dev = &pdev->dev;
+
+	/*
+	 * Detect endianess on the IP via loop bit in CR. Detection
+	 * must be done before reset is sent because incorrect reset
+	 * value generates error interrupt.
+	 * Setup little endian helper functions first and try to use them
+	 * and check if bit was correctly setup or not.
+	 */
 	xspi->read_fn = xspi_read32;
 	xspi->write_fn = xspi_write32;
-	/* Detect endianness on the IP via loop bit in CR register*/
+
 	xspi->write_fn(XSPI_CR_LOOP, xspi->regs + XSPI_CR_OFFSET);
 	tmp = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 	tmp &= XSPI_CR_LOOP;
@@ -763,7 +799,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 	} else if (xspi->irq >= 0) {
 		/* Register for SPI Interrupt */
 		ret = devm_request_irq(&pdev->dev, xspi->irq, xilinx_spi_irq,
-					0, dev_name(&pdev->dev), master);
+				       0, dev_name(&pdev->dev), master);
 		if (ret)
 			goto clk_unprepare_all;
 	}
@@ -801,6 +837,16 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 		goto clk_unprepare_all;
 	}
 	xspi->cs_inactive = 0xffffffff;
+
+	/*
+	 * This is the work around for the startup block issue in
+	 * the spi controller. SPI clock is passing through STARTUP
+	 * block to FLASH. STARTUP block don't provide clock as soon
+	 * as QSPI provides command. So first command fails.
+	 */
+	if (startup_block)
+		xilinx_spi_startup_block(xspi, cs_num);
+
 	ret = spi_register_master(master);
 	if (ret) {
 		dev_err(&pdev->dev, "spi_register_master failed\n");
@@ -859,6 +905,7 @@ static int xilinx_spi_remove(struct platform_device *pdev)
 MODULE_ALIAS("platform:" XILINX_SPI_NAME);
 
 static const struct of_device_id xilinx_spi_of_match[] = {
+	{ .compatible = "xlnx,axi-quad-spi-1.00.a", },
 	{ .compatible = "xlnx,xps-spi-2.00.a", },
 	{ .compatible = "xlnx,xps-spi-2.00.b", },
 	{}

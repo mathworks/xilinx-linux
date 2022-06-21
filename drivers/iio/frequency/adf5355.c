@@ -1,7 +1,7 @@
 /*
  * ADF5355 SPI Wideband Synthesizer driver
  *
- * Copyright 2015 Analog Devices Inc.
+ * Copyright 2015-2021 Analog Devices Inc.
  *
  * Licensed under the GPL-2.
  */
@@ -26,6 +26,8 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/frequency/adf5355.h>
+
+#include <linux/clk/clkscale.h>
 
 /* REG0 Bit Definitions */
 #define ADF5355_REG0_INT(x)			(((x) & 0xFFFF) << 4)
@@ -70,7 +72,7 @@
 #define ADF5355_REG5_DEFAULT			0x00800025
 
 /* REG6 Bit Definitions */
-#define ADF4355_REG6_OUTPUTB_PWR(x)		(((x) & 0x7) << 4)
+#define ADF4355_REG6_OUTPUTB_PWR(x)		(((x) & 0x3) << 7)
 #define ADF4355_REG6_RF_OUTB_EN(x)		((x) << 9)
 #define ADF5355_REG6_OUTPUT_PWR(x)		(((x) & 0x3) << 4)
 #define ADF5355_REG6_RF_OUT_EN(x)		((x) << 6)
@@ -81,6 +83,7 @@
 #define ADF5355_REG6_FEEDBACK_FUND(x)		((x) << 24)
 #define ADF5355_REG6_NEG_BLEED_EN(x)		((x) << 29)
 #define ADF5355_REG6_GATED_BLEED_EN(x)		((x) << 30)
+#define ADF5356_REG6_BLEED_POLARITY(x)		((x) << 31)
 #define ADF5355_REG6_DEFAULT			0x14000006
 
 
@@ -90,10 +93,13 @@
 #define ADF5355_REG7_LOL_MODE_EN(x)		((x) << 7)
 #define ADF5355_REG7_LD_CYCLE_CNT(x)		(((x) & 0x3) << 8)
 #define ADF5355_REG7_LE_SYNCED_REFIN_EN(x)	((x) << 25)
+#define ADF5356_REG7_LE_SYNCE_EDGE_RISING_EN(x)	((x) << 27)
 #define ADF5355_REG7_DEFAULT			0x10000007
+#define ADF5356_REG7_DEFAULT			0x04000007
 
 /* REG8 Bit Definitions */
 #define ADF5355_REG8_DEFAULT			0x102D0428
+#define ADF5356_REG8_DEFAULT			0x15596568
 
 /* REG9 Bit Definitions */
 #define ADF5355_REG9_SYNTH_LOCK_TIMEOUT(x)	(((x) & 0x1F) << 4)
@@ -108,26 +114,57 @@
 #define ADF5355_REG10_DEFAULT			0x00C0000A
 
 /* REG11 Bit Definitions */
+#define ADF5356_REG11_VCO_BAND_HOLD_EN(x)	((x) << 24)
 #define ADF5355_REG11_DEFAULT			0x0061300B
+#define ADF5356_REG11_DEFAULT			0x0061200B
 
 /* REG12 Bit Definitions */
 #define ADF5355_REG12_PHASE_RESYNC_CLK_DIV(x)	(((x) & 0xFFFF) << 16)
 #define ADF5355_REG12_DEFAULT			0x0000041C
+#define ADF5356_REG12_PHASE_RESYNC_CLK_DIV(x)	(((x) & 0xFFFFF) << 12)
+#define ADF5356_REG12_DEFAULT			0x000005FC
 
+/* REG13 Bit Definitions (ADF5356) */
+#define ADF5356_REG13_MOD2_MSB(x)		(((x) & 0x3FFF) << 4)
+#define ADF5356_REG13_FRAC2_MSB(x)		(((x) & 0x3FFF) << 18)
 
 /* Specifications */
 #define ADF5355_MIN_VCO_FREQ		3400000000ULL /* Hz */
 #define ADF5355_MAX_VCO_FREQ		6800000000ULL /* Hz */
-
-#define ADF4355_MAX_OUT_FREQ		4400000000ULL /* Hz */
 #define ADF5355_MAX_OUT_FREQ		ADF5355_MAX_VCO_FREQ /* Hz */
 #define ADF5355_MIN_OUT_FREQ		(ADF5355_MIN_VCO_FREQ / 64) /* Hz */
 #define ADF5355_MAX_OUTB_FREQ		(ADF5355_MAX_VCO_FREQ * 2) /* Hz */
 #define ADF5355_MIN_OUTB_FREQ		(ADF5355_MIN_VCO_FREQ * 2) /* Hz */
 
-#define ADF5355_MAX_FREQ_PFD		125000000UL /* Hz */
+
+#define ADF4355_MIN_VCO_FREQ		3400000000ULL /* Hz */
+#define ADF4355_MAX_VCO_FREQ		6800000000ULL /* Hz */
+#define ADF4355_MAX_OUT_FREQ		ADF4355_MAX_VCO_FREQ /* Hz */
+#define ADF4355_MIN_OUT_FREQ		(ADF4355_MIN_VCO_FREQ / 64) /* Hz */
+
+
+#define ADF4355_3_MIN_VCO_FREQ		3300000000ULL /* Hz */
+#define ADF4355_3_MAX_VCO_FREQ		6600000000ULL /* Hz */
+#define ADF4355_3_MAX_OUT_FREQ		ADF4355_3_MAX_VCO_FREQ /* Hz */
+#define ADF4355_3_MIN_OUT_FREQ		(ADF4355_3_MIN_VCO_FREQ / 64) /* Hz */
+
+
+#define ADF4355_2_MIN_VCO_FREQ		3400000000ULL /* Hz */
+#define ADF4355_2_MAX_VCO_FREQ		6800000000ULL /* Hz */
+#define ADF4355_2_MAX_OUT_FREQ		4400000000ULL /* Hz */
+#define ADF4355_2_MIN_OUT_FREQ		(ADF4355_2_MIN_VCO_FREQ / 64) /* Hz */
+
+/*
+ * FIXME: Register update sequence for fPFD > 75MHz not yet implemented
+ *	  Limtit max PFD to 75MHz for now.
+ *
+ * #define ADF5355_MAX_FREQ_PFD		125000000UL
+ */
+
+#define ADF5355_MAX_FREQ_PFD		75000000UL /* Hz */
 #define ADF5355_MAX_FREQ_REFIN		600000000UL /* Hz */
 #define ADF5355_MAX_MODULUS2		16384
+#define ADF5356_MAX_MODULUS2		268435456
 #define ADF5355_MAX_R_CNT		1023
 
 #define ADF5355_MODULUS1			16777216ULL
@@ -148,6 +185,7 @@ enum adf5433_reg {
 	ADF5355_REG10,
 	ADF5355_REG11,
 	ADF5355_REG12,
+	ADF5356_REG13,
 	ADF5355_REG_NUM,
 };
 
@@ -155,6 +193,14 @@ enum {
 	ADF5355_FREQ,
 	ADF5355_FREQ_REFIN,
 	ADF5355_PWRDOWN,
+};
+
+enum {
+	ADF5355,
+	ADF4355,
+	ADF4355_2,
+	ADF4355_3,
+	ADF5356,
 };
 
 struct adf5355_state {
@@ -165,6 +211,7 @@ struct adf5355_state {
 	unsigned long long	freq_req;
 	unsigned long		clkin;
 	unsigned long		fpfd; /* Phase Frequency Detector */
+	unsigned long long	min_vco_freq;
 	unsigned long long	min_out_freq;
 	unsigned long long	max_out_freq;
 	u32			freq_req_chan;
@@ -178,6 +225,7 @@ struct adf5355_state {
 	u32			clock_shift;
 	bool			all_synced;
 	bool			is_5355;
+	bool			is_5356;
 	/*
 	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
@@ -189,6 +237,7 @@ struct child_clk {
 	struct clk_hw		hw;
 	struct adf5355_state	*st;
 	bool			enabled;
+	struct clock_scale 	scale;
 };
 
 #define to_clk_priv(_hw) container_of(_hw, struct child_clk, hw)
@@ -207,48 +256,52 @@ static int adf5355_sync_config(struct adf5355_state *st, bool sync_all)
 	int ret, i;
 
 	if (sync_all || !st->all_synced) {
-		for (i = ADF5355_REG12; i >= ADF5355_REG0; i--) {
-				ret = adf5355_spi_write(st, st->regs[i] | i);
-				if (ret < 0)
-					return ret;
+		for (i = st->is_5356 ? ADF5356_REG13 : ADF5355_REG12;
+			i >= ADF5355_REG1; i--) {
+			ret = adf5355_spi_write(st, st->regs[i] | i);
+			if (ret < 0)
+				return ret;
 		}
 		st->all_synced = true;
 	} else {
-			ret = adf5355_spi_write(st, st->regs[6] | 6);
+		if (st->is_5356) {
+			ret = adf5355_spi_write(st, st->regs[13] | 13);
 			if (ret < 0)
 				return ret;
-			ret = adf5355_spi_write(st, st->regs[4] |
-				ADF5355_REG4_COUNTER_RESET_EN(1) | 4);
-			if (ret < 0)
-				return ret;
-			ret = adf5355_spi_write(st, st->regs[2] | 2);
-			if (ret < 0)
-				return ret;
-			ret = adf5355_spi_write(st, st->regs[1] | 1);
-			if (ret < 0)
-				return ret;
-			ret = adf5355_spi_write(st, st->regs[0] &
-				~ADF5355_REG0_AUTOCAL(1));
-			if (ret < 0)
-				return ret;
-			ret = adf5355_spi_write(st, st->regs[4] | 4);
-			if (ret < 0)
-				return ret;
-
-			udelay(st->delay_us);
-
-			ret = adf5355_spi_write(st, st->regs[0]);
-			if (ret < 0)
-				return ret;
-
+		}
+		ret = adf5355_spi_write(st, st->regs[10] | 10);
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[6] | 6);
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[4] |
+			ADF5355_REG4_COUNTER_RESET_EN(1) | 4);
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[2] | 2);
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[1] | 1);
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[0] &
+			~ADF5355_REG0_AUTOCAL(1));
+		if (ret < 0)
+			return ret;
+		ret = adf5355_spi_write(st, st->regs[4] | 4);
+		if (ret < 0)
+			return ret;
 	}
 
-	return 0;
+	udelay(st->delay_us);
+
+	return adf5355_spi_write(st, st->regs[0]);
 }
 
 static int adf5355_reg_access(struct iio_dev *indio_dev,
-			      unsigned reg, unsigned writeval,
-			      unsigned *readval)
+			      unsigned int reg, unsigned int writeval,
+			      unsigned int *readval)
 {
 	struct adf5355_state *st = iio_priv(indio_dev);
 	int ret;
@@ -271,8 +324,9 @@ static int adf5355_reg_access(struct iio_dev *indio_dev,
 
 static int adf5355_pll_fract_n_compute(unsigned long long vco,
 				       unsigned long long pfd,
-				       unsigned *integer, unsigned *fract1,
-				       unsigned *fract2, unsigned *mod2)
+				       unsigned int *integer, unsigned int *fract1,
+				       unsigned int *fract2, unsigned int *mod2,
+				       unsigned int max_modulus2)
 {
 	unsigned long long tmp;
 	u32 gcd_div;
@@ -286,7 +340,7 @@ static int adf5355_pll_fract_n_compute(unsigned long long vco,
 
 	*mod2 = pfd;
 
-	while (*mod2 > ADF5355_MAX_MODULUS2) {
+	while (*mod2 > max_modulus2) {
 		*mod2 >>= 1;
 		*fract2 >>=1;
 	}
@@ -337,7 +391,6 @@ static int adf5355_setup(struct adf5355_state *st, unsigned long parent_rate)
 			   (ref_div_factor * (pdata->ref_div2_en ? 2 : 1));
 	} while (st->fpfd > ADF5355_MAX_FREQ_PFD);
 
-
 	tmp = DIV_ROUND_CLOSEST(pdata->cp_curr_uA - 315, 315U);
 	tmp = clamp(tmp, 0U, 15U);
 
@@ -362,9 +415,11 @@ static int adf5355_setup(struct adf5355_state *st, unsigned long parent_rate)
 		ADF5355_REG7_LOL_MODE_EN(0) |
 		ADF5355_REG7_LD_CYCLE_CNT(0) |
 		ADF5355_REG7_LE_SYNCED_REFIN_EN(1) |
-		ADF5355_REG7_DEFAULT;
+		ADF5356_REG7_LE_SYNCE_EDGE_RISING_EN(0) |
+		(st->is_5356 ? ADF5356_REG7_DEFAULT : ADF5355_REG7_DEFAULT);
 
-	st->regs[ADF5355_REG8] = ADF5355_REG8_DEFAULT;
+	st->regs[ADF5355_REG8] = st->is_5356 ?
+		ADF5356_REG8_DEFAULT : ADF5355_REG8_DEFAULT;
 
 	/* Calculate Timeouts */
 	tmp = DIV_ROUND_UP(st->fpfd, 20000U * 30U);
@@ -373,7 +428,7 @@ static int adf5355_setup(struct adf5355_state *st, unsigned long parent_rate)
 	st->regs[ADF5355_REG9] = ADF5355_REG9_TIMEOUT(tmp) |
 		ADF5355_REG9_SYNTH_LOCK_TIMEOUT(DIV_ROUND_UP(st->fpfd * 2U, 100000U * tmp)) |
 		ADF5355_REG9_ALC_TIMEOUT(DIV_ROUND_UP(st->fpfd * 5U, 100000U * tmp)) |
-		ADF5355_REG9_VCO_BAND_DIV(DIV_ROUND_UP(st->fpfd, 2400000U));
+		ADF5355_REG9_VCO_BAND_DIV(DIV_ROUND_UP(st->fpfd, st->is_5356 ? 1600000U : 2400000U));
 
 	tmp = DIV_ROUND_UP(st->fpfd / 100000U - 2, 4);
 	tmp = clamp(tmp, 1U, 255U);
@@ -386,10 +441,12 @@ static int adf5355_setup(struct adf5355_state *st, unsigned long parent_rate)
 		ADF5355_REG10_ADC_CLK_DIV(tmp) |
 		ADF5355_REG10_DEFAULT;
 
-	st->regs[ADF5355_REG11] = ADF5355_REG11_DEFAULT;
+	st->regs[ADF5355_REG11] = ADF5356_REG11_VCO_BAND_HOLD_EN(0) |
+		(st->is_5356 ? ADF5356_REG11_DEFAULT : ADF5355_REG11_DEFAULT);
 
-	st->regs[ADF5355_REG12] = ADF5355_REG12_PHASE_RESYNC_CLK_DIV(0) |
-		ADF5355_REG12_DEFAULT;
+	st->regs[ADF5355_REG12] = st->is_5356 ?
+		ADF5356_REG12_PHASE_RESYNC_CLK_DIV(1) | ADF5356_REG12_DEFAULT :
+		ADF5355_REG12_PHASE_RESYNC_CLK_DIV(1) | ADF5355_REG12_DEFAULT;
 
 	st->all_synced = false;
 
@@ -400,16 +457,16 @@ static int adf5355_set_freq(struct adf5355_state *st, unsigned long long freq,
 			    u32 channel)
 {
 	struct adf5355_platform_data *pdata = st->pdata;
-	bool prescaler;
+	bool prescaler, cp_neg_bleed_en;
 	u32 cp_bleed;
 
 	if (channel == 0) {
-		if ((freq > st->max_out_freq) || (freq < ADF5355_MIN_OUT_FREQ))
+		if ((freq > st->max_out_freq) || (freq < st->min_out_freq))
 			return -EINVAL;
 
 		st->rf_div_sel = 0;
 
-		while (freq < ADF5355_MIN_VCO_FREQ) {
+		while (freq < st->min_vco_freq) {
 			freq <<= 1;
 			st->rf_div_sel++;
 		}
@@ -422,14 +479,30 @@ static int adf5355_set_freq(struct adf5355_state *st, unsigned long long freq,
 	}
 
 	adf5355_pll_fract_n_compute(freq, st->fpfd, &st->integer, &st->fract1,
-			&st->fract2, &st->mod2);
+			&st->fract2, &st->mod2,
+			st->is_5356 ? ADF5356_MAX_MODULUS2 : ADF5355_MAX_MODULUS2);
 
 	prescaler = (st->integer >= ADF5355_MIN_INT_PRESCALER_89);
 
-	/* Tests have shown that the optimal bleed set is the following:
-	 * 4/N < IBLEED/ICP < 10/N
+
+	/*
+	 * Do not use negative bleed when operating in integer N mode,
+	 * that is, FRAC1 = FRAC2 = 0. Do not use negative bleed for fPFD
+	 * values greater than 100 MHz.
 	 */
-	cp_bleed = DIV_ROUND_UP(400 * pdata->cp_curr_uA , st->integer * 375);
+
+	if (st->fpfd > 100000000UL || ((st->fract1 == 0) && (st->fract2 == 0)))
+		cp_neg_bleed_en = false;
+	else
+		cp_neg_bleed_en = pdata->cp_neg_bleed_en;
+
+	if (st->is_5356)
+		/* Bleed Value = floor(24 × (fPFD/61.44 MHz) × (ICP/0.9 mA)) */
+		cp_bleed = (24U * (st->fpfd / 1000) * pdata->cp_curr_uA) / (61440 * 900);
+	else
+		/* 4/N < IBLEED/ICP < 10/N */
+		cp_bleed = DIV_ROUND_UP(400 * pdata->cp_curr_uA, st->integer * 375);
+
 	cp_bleed = clamp(cp_bleed, 1U, 255U);
 
 	st->regs[ADF5355_REG0] = ADF5355_REG0_INT(st->integer) |
@@ -440,18 +513,25 @@ static int adf5355_set_freq(struct adf5355_state *st, unsigned long long freq,
 	st->regs[ADF5355_REG2] = ADF5355_REG2_MOD2(st->mod2) |
 				ADF5355_REG2_FRAC2(st->fract2);
 
+	if (st->is_5356)
+		st->regs[ADF5356_REG13] = ADF5356_REG13_MOD2_MSB(st->mod2 >> 14) |
+					 ADF5356_REG13_FRAC2_MSB(st->fract2 >> 14);
+
+
 	st->regs[ADF5355_REG6] =
 		ADF5355_REG6_OUTPUT_PWR(pdata->outa_power) |
 		ADF5355_REG6_RF_OUT_EN(pdata->outa_en) |
-		(st->is_5355 ? ADF5355_REG6_RF_OUTB_EN(pdata->outb_en) :
-			ADF4355_REG6_OUTPUTB_PWR(pdata->outa_power) |
+		(st->is_5355 ? ADF5355_REG6_RF_OUTB_EN(!pdata->outb_en) :
+			ADF4355_REG6_OUTPUTB_PWR(pdata->outb_power) |
 			ADF4355_REG6_RF_OUTB_EN(pdata->outb_en)) |
 		ADF5355_REG6_MUTE_TILL_LOCK_EN(pdata->mute_till_lock_detect_en) |
 		ADF5355_REG6_CP_BLEED_CURR(cp_bleed) |
 		ADF5355_REG6_RF_DIV_SEL(st->rf_div_sel) |
 		ADF5355_REG6_FEEDBACK_FUND(1) |
-		ADF5355_REG6_NEG_BLEED_EN(pdata->cp_neg_bleed_en) |
+		ADF5355_REG6_NEG_BLEED_EN(cp_neg_bleed_en) |
 		ADF5355_REG6_GATED_BLEED_EN(pdata->cp_gated_bleed_en) |
+		ADF5356_REG6_BLEED_POLARITY(st->is_5356 ?
+			pdata->cp_bleed_current_polarity_en : 0) |
 		ADF5355_REG6_DEFAULT;
 
 	st->freq_req = freq;
@@ -473,7 +553,7 @@ static ssize_t adf5355_write(struct iio_dev *indio_dev,
 {
 	struct adf5355_state *st = iio_priv(indio_dev);
 	unsigned long long readin;
-	unsigned long tmp;
+	unsigned long tmp = 0;
 	int ret;
 
 	ret = kstrtoull(buf, 10, &readin);
@@ -514,7 +594,7 @@ static ssize_t adf5355_write(struct iio_dev *indio_dev,
 				ADF5355_REG6_RF_OUTB_EN(1) :
 				ADF4355_REG6_RF_OUTB_EN(1));
 			st->regs[ADF5355_REG6] |= (st->is_5355 ?
-				ADF5355_REG6_RF_OUTB_EN(!!!readin) :
+				ADF5355_REG6_RF_OUTB_EN(!!readin) :
 				ADF4355_REG6_RF_OUTB_EN(!!!readin));
 		}
 		adf5355_sync_config(st, false);
@@ -560,9 +640,12 @@ static ssize_t adf5355_read(struct iio_dev *indio_dev,
 		if (chan->channel == 0) {
 			val = !(st->regs[ADF5355_REG6] & ADF5355_REG6_RF_OUT_EN(1));
 		} else {
-			val = ! (st->regs[ADF5355_REG6] & (st->is_5355 ?
-				ADF5355_REG6_RF_OUTB_EN(1) :
-				ADF4355_REG6_RF_OUTB_EN(1)));
+			if (st->is_5355)
+				val = st->regs[ADF5355_REG6] &
+					ADF5355_REG6_RF_OUTB_EN(1);
+			else
+				val = !(st->regs[ADF5355_REG6] &
+					ADF4355_REG6_RF_OUTB_EN(1));
 		}
 		break;
 	default:
@@ -638,7 +721,6 @@ static const struct iio_chan_spec adf4355_chan[] = {
 
 static const struct iio_info adf5355_info = {
 	.debugfs_reg_access = &adf5355_reg_access,
-	.driver_module = THIS_MODULE,
 };
 
 #ifdef CONFIG_OF
@@ -650,10 +732,8 @@ static struct adf5355_platform_data *adf5355_parse_dt(struct device *dev)
 	int ret;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
+	if (!pdata)
 		return NULL;
-	}
 
 	strncpy(&pdata->name[0], np->name, SPI_NAME_SIZE - 1);
 
@@ -705,8 +785,12 @@ static struct adf5355_platform_data *adf5355_parse_dt(struct device *dev)
 	pdata->outb_en = of_property_read_bool(np, "adi,output-b-enable");
 	pdata->outa_en = of_property_read_bool(np, "adi,output-a-enable");
 
-	pdata->cp_neg_bleed_en = of_property_read_bool(np, "adi,charge-pump-negative-bleed-enable");
-	pdata->cp_gated_bleed_en = of_property_read_bool(np, "adi,charge-pump-gated-bleed-enable");
+	pdata->cp_neg_bleed_en = of_property_read_bool(np,
+		"adi,charge-pump-negative-bleed-enable");
+	pdata->cp_gated_bleed_en = of_property_read_bool(np,
+		"adi,charge-pump-gated-bleed-enable");
+	pdata->cp_bleed_current_polarity_en = of_property_read_bool(np,
+		"adi,charge-pump-bleed-current-polarity-enable");
 
 	pdata->clock_shift = 1;
 	of_property_read_u32(np, "adi,clock-shift", &pdata->clock_shift);
@@ -728,7 +812,7 @@ static unsigned long adf5355_clk_recalc_rate(struct clk_hw *hw,
 
 	rate = adf5355_pll_fract_n_get_rate(to_clk_priv(hw)->st, 0);
 
-	return rate >> to_clk_priv(hw)->st->pdata->clock_shift;
+	return to_ccf_scaled(rate, &to_clk_priv(hw)->scale);
 }
 
 static long adf5355_clk_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -745,8 +829,7 @@ static int adf5355_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (parent_rate != st->clkin)
 		adf5355_setup(st, parent_rate);
 
-	return adf5355_set_freq(st, (unsigned long long)rate <<
-		to_clk_priv(hw)->st->pdata->clock_shift, 0);
+	return adf5355_set_freq(st, from_ccf_scaled(rate, &to_clk_priv(hw)->scale), 0);
 }
 
 static int adf5355_clk_enable(struct clk_hw *hw)
@@ -823,7 +906,36 @@ static int adf5355_probe(struct spi_device *spi)
 	st->pdata = pdata;
 	st->clk = clk;
 
-	st->is_5355 = (spi_get_device_id(spi)->driver_data == 5355);
+	switch (spi_get_device_id(spi)->driver_data) {
+	case ADF5356:
+		st->is_5356 = true;
+		/* fall-through */
+	case ADF5355:
+		st->is_5355 = true;
+		st->max_out_freq = ADF5355_MAX_OUT_FREQ;
+		st->min_out_freq = ADF5355_MIN_OUT_FREQ;
+		st->min_vco_freq = ADF5355_MIN_VCO_FREQ;
+		break;
+	case ADF4355:
+		st->is_5355 = false;
+		st->max_out_freq = ADF4355_MAX_OUT_FREQ;
+		st->min_out_freq = ADF4355_MIN_OUT_FREQ;
+		st->min_vco_freq = ADF4355_MIN_VCO_FREQ;
+		break;
+	case ADF4355_2:
+		st->is_5355 = false;
+		st->max_out_freq = ADF4355_2_MAX_OUT_FREQ;
+		st->min_out_freq = ADF4355_2_MIN_OUT_FREQ;
+		st->min_vco_freq = ADF4355_2_MIN_VCO_FREQ;
+		break;
+	case ADF4355_3:
+		st->is_5355 = false;
+		st->max_out_freq = ADF4355_3_MAX_OUT_FREQ;
+		st->min_out_freq = ADF4355_3_MIN_OUT_FREQ;
+		st->min_vco_freq = ADF4355_3_MIN_VCO_FREQ;
+		break;
+	}
+
 	st->max_out_freq = st->is_5355 ? ADF5355_MAX_OUT_FREQ : ADF4355_MAX_OUT_FREQ;
 
 	indio_dev->dev.parent = &spi->dev;
@@ -869,7 +981,6 @@ static int adf5355_probe(struct spi_device *spi)
 
 		clk_priv = devm_kzalloc(&spi->dev, sizeof(*clk_priv), GFP_KERNEL);
 		if (!clk_priv) {
-			dev_err(&spi->dev, "%s: could not allocate fixed factor clk\n", __func__);
 			ret = -ENOMEM;
 			goto error_disable_reg;
 		}
@@ -882,11 +993,18 @@ static int adf5355_probe(struct spi_device *spi)
 		of_property_read_string(spi->dev.of_node, "clock-output-names",
 			&clk_name);
 
+		ret = of_clk_get_scale(spi->dev.of_node, NULL, &clk_priv->scale);
+
+		if (ret < 0) {
+			clk_priv->scale.mult = 1;
+			clk_priv->scale.div = (1 << pdata->clock_shift);
+		}
+
 		init.name = clk_name;
 		init.ops = &clkout_ops;
 		init.flags = 0;
 
-		parent_name = of_clk_get_parent_name(spi->dev.of_node, 0);
+		parent_name = __clk_get_name(clk);
 		init.parent_names = &parent_name;
 		init.num_parents = 1;
 
@@ -934,10 +1052,13 @@ static int adf5355_remove(struct spi_device *spi)
 	return 0;
 }
 
+
 static const struct spi_device_id adf5355_id[] = {
-	{"adf5355", 5355},
-	{"adf4355-2", 4355},
-	{"adf4355-3", 4355},
+	{"adf5355", ADF5355},
+	{"adf4355", ADF4355},
+	{"adf4355-2", ADF4355_2},
+	{"adf4355-3", ADF4355_3},
+	{"adf5356", ADF5356},
 	{}
 };
 

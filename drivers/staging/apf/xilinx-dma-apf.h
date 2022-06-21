@@ -179,7 +179,6 @@ struct xdma_chan {
 	int    max_len;				/* Maximum len per transfer */
 	int    err;				/* Channel has errors */
 	int    client_count;
-	struct scatterlist scratch_sglist[XDMA_MAX_BD_CNT];
 };
 
 struct xdma_device {
@@ -195,8 +194,10 @@ struct xdma_head {
 	unsigned int size;
 	unsigned int dmaflag;
 	enum dma_data_direction dmadir;
-	void *sglist;
+	struct scatterlist *sglist;
 	unsigned int sgcnt;
+	struct scatterlist *pagelist;
+	unsigned int pagecnt;
 	struct completion cmp;
 	struct xdma_chan *chan;
 	unsigned int nappwords_o;
@@ -228,5 +229,6 @@ int xdma_getconfig(struct xdma_chan *chan,
 int xdma_setconfig(struct xdma_chan *chan,
 		   unsigned char irq_thresh,
 		   unsigned char irq_delay);
+unsigned int xlate_irq(unsigned int hwirq);
 
 #endif

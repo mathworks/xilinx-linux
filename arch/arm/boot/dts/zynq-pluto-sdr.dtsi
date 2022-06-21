@@ -5,7 +5,9 @@
  *
  * Licensed under the GPL-2.
  */
-/include/ "zynq.dtsi"
+#include "zynq.dtsi"
+
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Analog Devices PlutoSDR Rev.A (Z7010/AD9363)";
@@ -15,7 +17,7 @@
 	};
 
 	chosen {
-		linux,stdout-path = "/amba@0/uart@E0001000";
+		stdout-path = "/amba@0/uart@E0001000";
 	};
 
 	clocks {
@@ -58,12 +60,14 @@
 	status = "okay";
 	is-dual = <0>;
 	num-cs = <1>;
+	spi-nor-locking-disable;
+
 	primary_flash: ps7-qspi@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		spi-tx-bus-width = <1>;
 		spi-rx-bus-width = <4>;
-		compatible = "n25q256a"; /* same as S25FL256 */
+		compatible = "jedec,spi-nor";
 		reg = <0x0>;
 		spi-max-frequency = <50000000>;
 		partition@qspi-fsbl-uboot {
@@ -106,7 +110,7 @@
 			compatible = "xlnx,axi-iic-1.02.a", "xlnx,xps-iic-2.00.a";
 			reg = <0x41600000 0x10000>;
 			interrupt-parent = <&intc>;
-			interrupts = <0 59 4>;
+			interrupts = <0 59 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&clkc 15>;
 			clock-names = "pclk";
 
@@ -119,13 +123,20 @@
 			compatible = "adi,axi-dmac-1.00.a";
 			reg = <0x7c400000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 57 0>;
+			interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&clkc 16>;
 
-			dma-channel {
-				adi,source-bus-width = <64>;
-				adi,destination-bus-width = <64>;
-				adi,type = <0>;
+			adi,channels {
+				#size-cells = <0>;
+				#address-cells = <1>;
+
+				dma-channel@0 {
+					reg = <0>;
+					adi,source-bus-width = <32>;
+					adi,source-bus-type = <2>;
+					adi,destination-bus-width = <64>;
+					adi,destination-bus-type = <0>;
+				};
 			};
 		};
 
@@ -133,14 +144,20 @@
 			compatible = "adi,axi-dmac-1.00.a";
 			reg = <0x7c420000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 56 0>;
+			interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&clkc 16>;
 
-			dma-channel {
-				adi,source-bus-width = <64>;
-				adi,destination-bus-width = <64>;
-				adi,type = <1>;
-				adi,cyclic;
+			adi,channels {
+				#size-cells = <0>;
+				#address-cells = <1>;
+
+				dma-channel@0 {
+					reg = <0>;
+					adi,source-bus-width = <64>;
+					adi,source-bus-type = <0>;
+					adi,destination-bus-width = <32>;
+					adi,destination-bus-type = <2>;
+				};
 			};
 		};
 
@@ -164,9 +181,9 @@
 			adi,axi-dds-default-scale = <0>;
 		};
 
-		mwipcore@43C00000 {
+		mwipcore@43c00000 {
 			compatible = "mathworks,mwipcore-axi4lite-v1.00";
-			reg = <0x43C00000 0xffff>;
+			reg = <0x43c00000 0xffff>;
 		};
 	};
 };
@@ -178,7 +195,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
-		compatible = "ad9363a";
+		compatible = "adi,ad9363a";
 
 		/* SPI Setup */
 		reg = <0>;
@@ -209,8 +226,7 @@
 		adi,full-port-enable;
 		adi,digital-interface-tune-fir-disable;
 
-		/* Temporary workaround - HDL issue? need to investigate further */
-		adi,digital-interface-tune-skip-mode = <0>; /* SKIP TX */
+		adi,digital-interface-tune-skip-mode = <0>; /* TUNE RX & TX */
 		adi,tx-fb-clock-delay = <0>;
 		adi,tx-data-delay = <9>;
 		adi,swap-ports-enable;
@@ -239,6 +255,7 @@
 		 */
 
 		adi,rx-rf-port-input-select = <0>; /* (RX1A_N &  RX1A_P) and (RX2A_N & RX2A_P) enabled; balanced */
+		adi,rx-rf-port-input-select-lock-enable;
 
 		/* adi,tx-rf-port-input-select:
 		 * 0	TX1A, TX2A
@@ -246,8 +263,11 @@
 		 */
 
 		adi,tx-rf-port-input-select = <0>; /* TX1A, TX2A */
+		adi,tx-rf-port-input-select-lock-enable;
+
 		//adi,update-tx-gain-in-alert-enable;
 		adi,tx-attenuation-mdB = <10000>;
+		adi,tx-lo-powerdown-managed-enable;
 
 		adi,rf-rx-bandwidth-hz = <18000000>;
 		adi,rf-tx-bandwidth-hz = <18000000>;

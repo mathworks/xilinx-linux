@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Xilinx AXI Performance Monitor
  *
- * Copyright (C) 2013 Xilinx, Inc. All rights reserved.
+ * Copyright (C) 2013 - 2019 Xilinx, Inc. All rights reserved.
  *
  * Description:
  * This driver is developed for AXI Performance Monitor IP,
@@ -9,18 +10,6 @@
  * of AXI bus in the system. Driver maps HW registers and parameters
  * to userspace. Userspace need not clear the interrupt of IP since
  * driver clears the interrupt.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/clk.h>
@@ -28,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/uio_driver.h>
 
@@ -52,6 +42,7 @@
  * @globalcntwidth: Global Clock counter width
  * @scalefactor: Scaling factor
  * @isr: Interrupts info shared to userspace
+ * @is_32bit_filter: Flags for 32bit filter
  * @clk: Clock handle
  */
 struct xapm_param {
@@ -86,6 +77,8 @@ struct xapm_dev {
  * xapm_handler - Interrupt handler for APM
  * @irq: IRQ number
  * @info: Pointer to uio_info structure
+ *
+ * Return: Always returns IRQ_HANDLED
  */
 static irqreturn_t xapm_handler(int irq, struct uio_info *info)
 {
@@ -105,6 +98,8 @@ static irqreturn_t xapm_handler(int irq, struct uio_info *info)
  * xapm_getprop - Retrieves dts properties to param structure
  * @pdev: Pointer to platform device
  * @param: Pointer to param structure
+ *
+ * Returns: '0' on success and failure value on error
  */
 static int xapm_getprop(struct platform_device *pdev, struct xapm_param *param)
 {
@@ -190,7 +185,8 @@ static int xapm_getprop(struct platform_device *pdev, struct xapm_param *param)
 		return ret;
 	}
 
-	param->is_32bit_filter = of_property_read_bool(node, "xlnx,id-filter-32bit");
+	param->is_32bit_filter = of_property_read_bool(node,
+						"xlnx,id-filter-32bit");
 
 	return 0;
 }
@@ -199,7 +195,7 @@ static int xapm_getprop(struct platform_device *pdev, struct xapm_param *param)
  * xapm_probe - Driver probe function
  * @pdev: Pointer to the platform_device structure
  *
- * Returns '0' on success and failure value on error
+ * Returns: '0' on success and failure value on error
  */
 
 static int xapm_probe(struct platform_device *pdev)
@@ -216,15 +212,16 @@ static int xapm_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	xapm->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (!xapm->regs) {
+	if (IS_ERR(xapm->regs)) {
 		dev_err(&pdev->dev, "unable to iomap registers\n");
-		return -ENOMEM;
+		return PTR_ERR(xapm->regs);
 	}
 
 	xapm->param.clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(xapm->param.clk)) {
+		if (PTR_ERR(xapm->param.clk) != -EPROBE_DEFER)
 			dev_err(&pdev->dev, "axi clock error\n");
-			return PTR_ERR(xapm->param.clk);
+		return PTR_ERR(xapm->param.clk);
 	}
 
 	ret = clk_prepare_enable(xapm->param.clk);
@@ -232,6 +229,9 @@ static int xapm_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Unable to enable clock.\n");
 		return ret;
 	}
+	pm_runtime_get_noresume(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
 	/* Initialize mode as Advanced so that if no mode in dts, default
 	 * is Advanced
 	 */
@@ -264,6 +264,7 @@ static int xapm_probe(struct platform_device *pdev)
 	xapm->info.irq = irq;
 	xapm->info.handler = xapm_handler;
 	xapm->info.priv = xapm;
+	xapm->info.irq_flags = IRQF_SHARED;
 
 	memcpy(ptr, &xapm->param, sizeof(struct xapm_param));
 
@@ -281,6 +282,8 @@ static int xapm_probe(struct platform_device *pdev)
 
 err_clk_dis:
 	clk_disable_unprepare(xapm->param.clk);
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 	return ret;
 }
 
@@ -288,7 +291,7 @@ err_clk_dis:
  * xapm_remove - Driver remove function
  * @pdev: Pointer to the platform_device structure
  *
- * Always returns '0'
+ * Return: Always returns '0'
  */
 static int xapm_remove(struct platform_device *pdev)
 {
@@ -296,11 +299,42 @@ static int xapm_remove(struct platform_device *pdev)
 
 	uio_unregister_device(&xapm->info);
 	clk_disable_unprepare(xapm->param.clk);
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 
 	return 0;
 }
 
-static struct of_device_id xapm_of_match[] = {
+static int __maybe_unused xapm_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xapm_dev *xapm = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(xapm->param.clk);
+	return 0;
+};
+
+static int __maybe_unused xapm_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xapm_dev *xapm = platform_get_drvdata(pdev);
+	int ret;
+
+	ret = clk_prepare_enable(xapm->param.clk);
+	if (ret) {
+		dev_err(&pdev->dev, "Unable to enable clock.\n");
+		return ret;
+	}
+	return 0;
+};
+
+static const struct dev_pm_ops xapm_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(xapm_runtime_suspend, xapm_runtime_resume)
+	SET_RUNTIME_PM_OPS(xapm_runtime_suspend,
+			   xapm_runtime_resume, NULL)
+};
+
+static const struct of_device_id xapm_of_match[] = {
 	{ .compatible = "xlnx,axi-perf-monitor", },
 	{ /* end of table*/ }
 };
@@ -311,6 +345,7 @@ static struct platform_driver xapm_driver = {
 	.driver = {
 		.name = "xilinx-axipmon",
 		.of_match_table = xapm_of_match,
+		.pm = &xapm_dev_pm_ops,
 	},
 	.probe = xapm_probe,
 	.remove = xapm_remove,

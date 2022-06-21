@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AD9523 SPI Low Jitter Clock Generator
  *
- * Copyright 2012-2014 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
+ * Copyright 2012 Analog Devices Inc.
  */
 
 #include <linux/device.h>
@@ -17,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/of.h>
+#include <linux/rational.h>
 
 #include <linux/clk.h>
 #include <linux/clkdev.h>
@@ -249,6 +249,9 @@
 #define AD_IFE(_pde, _a, _b) ((pdata->_pde) ? _a : _b)
 #define AD_IF(_pde, _a) AD_IFE(_pde, _a, 0)
 
+#define AD9523_VCO_FREQ_MIN	2940000
+#define AD9523_VCO_FREQ_MAX 3100000
+
 enum {
 	AD9523_STAT_PLL1_LD,
 	AD9523_STAT_PLL2_LD,
@@ -284,17 +287,24 @@ struct ad9523_state {
 	struct ad9523_platform_data	*pdata;
 	struct ad9523_outputs		output[AD9523_NUM_CHAN];
 	struct iio_chan_spec		ad9523_channels[AD9523_NUM_CHAN];
+	struct gpio_desc		*pwrdown_gpio;
+	struct gpio_desc		*reset_gpio;
+	struct gpio_desc		*sync_gpio;
 	struct clk_onecell_data		clk_data;
 	struct clk 			*clks[AD9523_NUM_CHAN];
-	struct gpio_desc			*pwrdown_gpio;
-	struct gpio_desc			*reset_gpio;
-	struct gpio_desc			*sync_gpio;
 
 	unsigned long		vcxo_freq;
 	unsigned long		vco_freq;
 	unsigned long		vco_out_freq[AD9523_NUM_CLK_SRC];
 	unsigned char		vco_out_map[AD9523_NUM_CHAN_ALT_CLK_SRC];
 
+	/*
+	 * Lock for accessing device registers. Some operations require
+	 * multiple consecutive R/W operations, during which the device
+	 * shouldn't be interrupted.  The buffers are also shared across
+	 * all operations so need to be protected on stand alone reads and
+	 * writes.
+	 */
 	struct mutex		lock;
 
 	/*
@@ -768,8 +778,98 @@ static const struct iio_info ad9523_info = {
 	.write_raw = &ad9523_write_raw,
 	.debugfs_reg_access = &ad9523_reg_access,
 	.attrs = &ad9523_attribute_group,
-	.driver_module = THIS_MODULE,
 };
+
+static bool ad9523_pll2_valid_div(unsigned int div)
+{
+	if (div < 16)
+		return false;
+
+	switch (div) {
+	case 18:
+	case 19:
+	case 23:
+	case 27:
+		return false;
+	}
+
+	return true;
+}
+
+static int ad9523_calc_dividers(unsigned int vcxo_freq, unsigned int m1_freq,
+	unsigned int m2_freq, struct ad9523_platform_data *pdata)
+{
+	unsigned long n2[2], r2[2];
+	unsigned int fpfd;
+	unsigned int m_freq, vco_freq;
+	unsigned int m, m1, m2;
+
+	m1_freq /= 1000;
+	m2_freq /= 1000;
+	vcxo_freq /= 1000;
+
+	if (m1_freq != 0)
+		m_freq = m1_freq;
+	else
+		m_freq = m2_freq;
+
+	for (m = 3; m <= 5; m++) {
+		vco_freq = m_freq * m;
+		if (AD9523_VCO_FREQ_MIN <= vco_freq &&
+		    AD9523_VCO_FREQ_MAX >= vco_freq)
+			break;
+	}
+
+	if (m == 6)
+		return -EINVAL;
+
+	if (m1_freq != 0) {
+		m1 = m;
+		if (m2_freq != 0) {
+			m2 = vco_freq / m2_freq;
+			if (m2 < 3 || m2 > 5 || vco_freq % m2_freq > 1)
+				return -EINVAL;
+		} else {
+			m2 = 3;
+		}
+	} else {
+		m1 = 3;
+		m2 = m;
+	}
+
+	rational_best_approximation(vco_freq, vcxo_freq, 255, 31,
+		&n2[0], &r2[0]);
+
+	pdata->pll2_freq_doubler_en = false;
+
+	if (vco_freq != vcxo_freq * n2[0] / r2[0]) {
+		rational_best_approximation(vco_freq, vcxo_freq*2, 255, 31,
+			&n2[1], &r2[1]);
+
+		if (abs((int)(vco_freq / n2[0]) - (int)(vcxo_freq / r2[0])) >
+		    abs((int)(vco_freq / n2[1] / 2) - (int)(vcxo_freq / r2[1]))) {
+			n2[0] = n2[1];
+			r2[0] = r2[1];
+			pdata->pll2_freq_doubler_en = true;
+		}
+	}
+
+	fpfd = vcxo_freq * (pdata->pll2_freq_doubler_en ? 2 : 1) / r2[0];
+
+	while (fpfd > 259000 || !ad9523_pll2_valid_div(n2[0])) {
+		fpfd /= 2;
+		n2[0] *= 2;
+		r2[0] *= 2;
+	}
+
+	pdata->pll2_r2_div = r2[0];
+	pdata->pll2_vco_div_m1 = m1;
+	pdata->pll2_vco_div_m2 = m2;
+	pdata->pll2_ndiv_a_cnt = n2[0] % 4;
+	pdata->pll2_ndiv_b_cnt = n2[0] / 4;
+
+	return 0;
+}
 
 static long ad9523_get_clk_attr(struct clk_hw *hw, long mask)
 {
@@ -909,7 +1009,7 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 
 	ret = ad9523_write(indio_dev, AD9523_SERIAL_PORT_CONFIG,
 			   AD9523_SER_CONF_SOFT_RESET |
-			  ((st->spi->mode & SPI_3WIRE || pdata->spi3wire)? 0 :
+			  ((st->spi->mode & SPI_3WIRE || pdata->spi3wire) ? 0 :
 			  AD9523_SER_CONF_SDO_ACTIVE));
 	if (ret < 0)
 		return ret;
@@ -1034,9 +1134,11 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	st->vco_freq = (pdata->vcxo_freq * (pdata->pll2_freq_doubler_en ? 2 : 1)
-			/ pdata->pll2_r2_div) * AD9523_PLL2_FB_NDIV(pdata->
-			pll2_ndiv_a_cnt, pdata->pll2_ndiv_b_cnt);
+	st->vco_freq = div_u64((unsigned long long)pdata->vcxo_freq *
+			       (pdata->pll2_freq_doubler_en ? 2 : 1) *
+			       AD9523_PLL2_FB_NDIV(pdata->pll2_ndiv_a_cnt,
+						   pdata->pll2_ndiv_b_cnt),
+			       pdata->pll2_r2_div);
 
 	ret = ad9523_write(indio_dev, AD9523_PLL2_VCO_CTRL,
 		AD9523_PLL2_VCO_CALIBRATE);
@@ -1044,22 +1146,22 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 		return ret;
 
 	ret = ad9523_write(indio_dev, AD9523_PLL2_VCO_DIVIDER,
-		AD9523_PLL2_VCO_DIV_M1(pdata->pll2_vco_diff_m1) |
-		AD9523_PLL2_VCO_DIV_M2(pdata->pll2_vco_diff_m2) |
-		AD_IFE(pll2_vco_diff_m1, 0,
+		AD9523_PLL2_VCO_DIV_M1(pdata->pll2_vco_div_m1) |
+		AD9523_PLL2_VCO_DIV_M2(pdata->pll2_vco_div_m2) |
+		AD_IFE(pll2_vco_div_m1, 0,
 		       AD9523_PLL2_VCO_DIV_M1_PWR_DOWN_EN) |
-		AD_IFE(pll2_vco_diff_m2, 0,
+		AD_IFE(pll2_vco_div_m2, 0,
 		       AD9523_PLL2_VCO_DIV_M2_PWR_DOWN_EN));
 	if (ret < 0)
 		return ret;
 
-	if (pdata->pll2_vco_diff_m1)
+	if (pdata->pll2_vco_div_m1)
 		st->vco_out_freq[AD9523_VCO1] =
-			st->vco_freq / pdata->pll2_vco_diff_m1;
+			st->vco_freq / pdata->pll2_vco_div_m1;
 
-	if (pdata->pll2_vco_diff_m2)
+	if (pdata->pll2_vco_div_m2)
 		st->vco_out_freq[AD9523_VCO2] =
-			st->vco_freq / pdata->pll2_vco_diff_m2;
+			st->vco_freq / pdata->pll2_vco_div_m2;
 
 	st->vco_out_freq[AD9523_VCXO] = pdata->vcxo_freq;
 
@@ -1083,7 +1185,6 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 	for (i = 0; i < pdata->num_channels; i++) {
 		chan = &pdata->channels[i];
 		if (chan->channel_num < AD9523_NUM_CHAN) {
-			struct clk *clk;
 			__set_bit(chan->channel_num, &active_mask);
 			ret = ad9523_write(indio_dev,
 				AD9523_CHANNEL_CLOCK_DIST(chan->channel_num),
@@ -1116,22 +1217,17 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 				BIT(IIO_CHAN_INFO_RAW) |
 				BIT(IIO_CHAN_INFO_PHASE) |
 				BIT(IIO_CHAN_INFO_FREQUENCY);
-
-			clk = ad9523_clk_register(indio_dev, chan->channel_num,
-						  !chan->output_dis);
-			if (IS_ERR(clk))
-				return PTR_ERR(clk);
 		}
 	}
 
-	of_clk_add_provider(st->spi->dev.of_node,
-			    of_clk_src_onecell_get, &st->clk_data);
-
-	for_each_clear_bit(i, &active_mask, AD9523_NUM_CHAN)
-		ad9523_write(indio_dev,
+	for_each_clear_bit(i, &active_mask, AD9523_NUM_CHAN) {
+		ret = ad9523_write(indio_dev,
 			     AD9523_CHANNEL_CLOCK_DIST(i),
 			     AD9523_CLK_DIST_DRIVER_MODE(TRISTATE) |
 			     AD9523_CLK_DIST_PWR_DOWN_EN);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = ad9523_write(indio_dev, AD9523_POWER_DOWN_CTRL, 0);
 	if (ret < 0)
@@ -1146,7 +1242,27 @@ static int ad9523_setup(struct iio_dev *indio_dev)
 	if (ret < 0)
 		return ret;
 
-	return ad9523_sync(indio_dev);
+	ret = ad9523_sync(indio_dev);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < pdata->num_channels; i++) {
+		struct clk *clk;
+
+		chan = &pdata->channels[i];
+		if (chan->channel_num >= AD9523_NUM_CHAN)
+			continue;
+
+		clk = ad9523_clk_register(indio_dev, chan->channel_num,
+					  !chan->output_dis);
+		if (IS_ERR(clk))
+			return PTR_ERR(clk);
+	}
+
+	of_clk_add_provider(st->spi->dev.of_node,
+			    of_clk_src_onecell_get, &st->clk_data);
+
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -1157,13 +1273,12 @@ static struct ad9523_platform_data *ad9523_parse_dt(struct device *dev)
 	struct ad9523_channel_spec *chan;
 	unsigned int tmp, cnt = 0;
 	const char *str;
+	u32 m1_freq, m2_freq;
 	int ret;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
-		return NULL;
-	}
+	if (!pdata)
+		return ERR_PTR(-ENOMEM);
 
 	pdata->spi3wire = of_property_read_bool(np, "adi,spi-3wire-enable");
 
@@ -1219,22 +1334,82 @@ static struct ad9523_platform_data *ad9523_parse_dt(struct device *dev)
 	of_property_read_u32(np, "adi,pll2-charge-pump-current-nA",
 			     &pdata->pll2_charge_pump_current_nA);
 
-	of_property_read_u32(np, "adi,pll2-ndiv-a-cnt", &tmp);
-	pdata->pll2_ndiv_a_cnt = tmp;
-	of_property_read_u32(np, "adi,pll2-ndiv-b-cnt", &tmp);
-	pdata->pll2_ndiv_b_cnt = tmp;
+	m1_freq = m2_freq = 0;
+	of_property_read_u32(np, "adi,pll2-m1-freq", &m1_freq);
+	of_property_read_u32(np, "adi,pll2-m2-freq", &m2_freq);
 
-	pdata->pll2_freq_doubler_en =
-		of_property_read_bool(np, "adi,pll2-freq-doubler-enable");
+	if (m1_freq == 0 && m2_freq == 0) {
+		of_property_read_u32(np, "adi,pll2-ndiv-a-cnt", &tmp);
+		pdata->pll2_ndiv_a_cnt = tmp;
+		of_property_read_u32(np, "adi,pll2-ndiv-b-cnt", &tmp);
+		pdata->pll2_ndiv_b_cnt = tmp;
 
-	of_property_read_u32(np, "adi,pll2-r2-div", &tmp);
-	pdata->pll2_r2_div = tmp;
-	tmp = 3;
-	of_property_read_u32(np, "adi,pll2-vco-diff-m1", &tmp);
-	pdata->pll2_vco_diff_m1 = tmp;
-	tmp = 3;
-	of_property_read_u32(np, "adi,pll2-vco-diff-m2", &tmp);
-	pdata->pll2_vco_diff_m2 = tmp;
+		pdata->pll2_freq_doubler_en =
+			of_property_read_bool(np, "adi,pll2-freq-doubler-enable");
+
+		tmp = 1;
+		of_property_read_u32(np, "adi,pll2-r2-div", &tmp);
+		pdata->pll2_r2_div = tmp;
+		tmp = 3;
+		of_property_read_u32(np, "adi,pll2-vco-diff-m1", &tmp);
+		of_property_read_u32(np, "adi,pll2-vco-div-m1", &tmp);
+		pdata->pll2_vco_div_m1 = tmp;
+		tmp = 3;
+		of_property_read_u32(np, "adi,pll2-vco-diff-m2", &tmp);
+		of_property_read_u32(np, "adi,pll2-vco-div-m2", &tmp);
+		pdata->pll2_vco_div_m2 = tmp;
+	} else {
+		ad9523_calc_dividers(pdata->vcxo_freq, m1_freq, m2_freq, pdata);
+	}
+
+	if (pdata->pll2_ndiv_b_cnt < 3 || pdata->pll2_ndiv_b_cnt > 63) {
+		dev_err(dev, "PLL2 B divider must be in the range 3-63\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	switch (pdata->pll2_ndiv_b_cnt) {
+	case 3:
+		if (pdata->pll2_ndiv_a_cnt > 0) {
+			dev_err(dev, "When PLL2 B counter == 3 A counter must be == 0\n");
+			return ERR_PTR(-EINVAL);
+		}
+		break;
+	case 4:
+		if (pdata->pll2_ndiv_a_cnt > 1) {
+			dev_err(dev, "When PLL2 B counter == 4 A counter must be <= 1\n");
+			return ERR_PTR(-EINVAL);
+		}
+		break;
+	case 5:
+	case 6:
+		if (pdata->pll2_ndiv_a_cnt > 2) {
+			dev_err(dev, "When PLL2 B counter == %d A counter must be <= 2\n",
+				pdata->pll2_ndiv_b_cnt);
+			return ERR_PTR(-EINVAL);
+		}
+		break;
+	default:
+		if (pdata->pll2_ndiv_a_cnt > 3) {
+			dev_err(dev, "A counter must be <= 3\n");
+			return ERR_PTR(-EINVAL);
+		}
+		break;
+	}
+
+	if (pdata->pll2_r2_div < 1 || pdata->pll2_r2_div > 31) {
+		dev_err(dev, "PLL2 R2 divider must be in the range of 1-31\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (pdata->pll2_vco_div_m1 < 3 || pdata->pll2_vco_div_m1 > 5) {
+		dev_err(dev, "PLL2 M1 divider must be in the range of 3-5\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (pdata->pll2_vco_div_m2 < 3 || pdata->pll2_vco_div_m2 > 5) {
+		dev_err(dev, "PLL2 M2 divider must be in the range of 3-5\n");
+		return ERR_PTR(-EINVAL);
+	}
 
 	/* Loop Filter PLL2 */
 
@@ -1256,10 +1431,8 @@ static struct ad9523_platform_data *ad9523_parse_dt(struct device *dev)
 
 	pdata->num_channels = cnt;
 	pdata->channels = devm_kzalloc(dev, sizeof(*chan) * cnt, GFP_KERNEL);
-	if (!pdata->channels) {
-		dev_err(dev, "could not allocate memory\n");
-		return NULL;
-	}
+	if (!pdata->channels)
+		return ERR_PTR(-ENOMEM);
 
 	cnt = 0;
 	for_each_child_of_node(np, chan_np) {
@@ -1300,6 +1473,13 @@ struct ad9523_platform_data *ad9523_parse_dt(struct device *dev)
 }
 #endif
 
+static void ad9523_reg_disable(void *data)
+{
+	struct regulator *reg = data;
+
+	regulator_disable(reg);
+}
+
 static int ad9523_probe(struct spi_device *spi)
 {
 	struct ad9523_platform_data *pdata;
@@ -1307,10 +1487,13 @@ static int ad9523_probe(struct spi_device *spi)
 	struct ad9523_state *st;
 	int ret;
 
-	if (spi->dev.of_node)
+	if (spi->dev.of_node) {
 		pdata = ad9523_parse_dt(&spi->dev);
-	else
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
+	} else {
 		pdata = spi->dev.platform_data;
+	}
 
 	if (!pdata) {
 		dev_err(&spi->dev, "no platform data?\n");
@@ -1330,27 +1513,39 @@ static int ad9523_probe(struct spi_device *spi)
 		ret = regulator_enable(st->reg);
 		if (ret)
 			return ret;
+
+		ret = devm_add_action_or_reset(&spi->dev, ad9523_reg_disable,
+					       st->reg);
+		if (ret)
+			return ret;
 	}
 
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown",
+	st->pwrdown_gpio = devm_gpiod_get_optional(&spi->dev, "powerdown",
 		GPIOD_OUT_HIGH);
+	if (IS_ERR(st->pwrdown_gpio))
+		return PTR_ERR(st->pwrdown_gpio);
 
-	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
-	if (!IS_ERR(st->reset_gpio)) {
+	st->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
+		GPIOD_OUT_LOW);
+	if (IS_ERR(st->reset_gpio))
+		return PTR_ERR(st->reset_gpio);
+
+	if (st->reset_gpio) {
 		udelay(1);
-
-		ret = gpiod_direction_output(st->reset_gpio, 1);
+		gpiod_direction_output(st->reset_gpio, 1);
 	}
 
 	mdelay(10);
 
-	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync", GPIOD_OUT_HIGH);
+	st->sync_gpio = devm_gpiod_get_optional(&spi->dev, "sync",
+		GPIOD_OUT_HIGH);
+	if (IS_ERR(st->sync_gpio))
+		return PTR_ERR(st->sync_gpio);
 
 	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
 	st->pdata = pdata;
 
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = (pdata->name[0] != 0) ? pdata->name :
 			  spi_get_device_id(spi)->name;
 	indio_dev->info = &ad9523_info;
@@ -1360,34 +1555,9 @@ static int ad9523_probe(struct spi_device *spi)
 
 	ret = ad9523_setup(indio_dev);
 	if (ret < 0)
-		goto error_disable_reg;
+		return ret;
 
-	ret = iio_device_register(indio_dev);
-	if (ret)
-		goto error_disable_reg;
-
-	dev_info(&spi->dev, "probed %s\n", indio_dev->name);
-
-	return 0;
-
-error_disable_reg:
-	if (!IS_ERR(st->reg))
-		regulator_disable(st->reg);
-
-	return ret;
-}
-
-static int ad9523_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct ad9523_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-
-	if (!IS_ERR(st->reg))
-		regulator_disable(st->reg);
-
-	return 0;
+	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
 static const struct spi_device_id ad9523_id[] = {
@@ -1401,11 +1571,10 @@ static struct spi_driver ad9523_driver = {
 		.name	= "ad9523",
 	},
 	.probe		= ad9523_probe,
-	.remove		= ad9523_remove,
 	.id_table	= ad9523_id,
 };
 module_spi_driver(ad9523_driver);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD9523 CLOCKDIST/PLL");
 MODULE_LICENSE("GPL v2");

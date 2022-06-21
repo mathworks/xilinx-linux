@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * XILINX VDMA Engine test client driver
  *
@@ -26,16 +27,25 @@
 #include <linux/platform_device.h>
 #include <linux/random.h>
 #include <linux/slab.h>
+#include <linux/sched/task.h>
 #include <linux/wait.h>
 
 static unsigned int test_buf_size = 64;
-module_param(test_buf_size, uint, S_IRUGO);
+module_param(test_buf_size, uint, 0444);
 MODULE_PARM_DESC(test_buf_size, "Size of the memcpy test buffer");
 
 static unsigned int iterations = 1;
-module_param(iterations, uint, S_IRUGO);
+module_param(iterations, uint, 0444);
 MODULE_PARM_DESC(iterations,
 		"Iterations before stopping test (default: infinite)");
+
+static unsigned int hsize = 64;
+module_param(hsize, uint, 0444);
+MODULE_PARM_DESC(hsize, "Horizontal size in bytes");
+
+static unsigned int vsize = 32;
+module_param(vsize, uint, 0444);
+MODULE_PARM_DESC(vsize, "Vertical size in bytes");
 
 /*
  * Initialization patterns. All bytes in the source buffer has bit 7
@@ -236,7 +246,6 @@ static int xilinx_vdmatest_slave_func(void *data)
 	enum dma_status status;
 	enum dma_ctrl_flags flags;
 	int ret = -ENOMEM, i;
-	int hsize = 64, vsize = 32;
 	struct xilinx_vdma_config config;
 
 	thread_name = current->comm;
@@ -311,7 +320,6 @@ static int xilinx_vdmatest_slave_func(void *data)
 		config.park = 1;
 		xilinx_vdma_channel_set_config(tx_chan, &config);
 
-		config.park = 0;
 		xilinx_vdma_channel_set_config(rx_chan, &config);
 
 		for (i = 0; i < frm_cnt; i++) {
@@ -588,16 +596,19 @@ static int xilinx_vdmatest_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	chan = dma_request_slave_channel(&pdev->dev, "vdma0");
+	chan = dma_request_chan(&pdev->dev, "vdma0");
 	if (IS_ERR(chan)) {
-		pr_err("xilinx_vdmatest: No Tx channel\n");
-		return PTR_ERR(chan);
+		err = PTR_ERR(chan);
+		if (err != -EPROBE_DEFER)
+			pr_err("xilinx_vdmatest: No Tx channel\n");
+		return err;
 	}
 
-	rx_chan = dma_request_slave_channel(&pdev->dev, "vdma1");
+	rx_chan = dma_request_chan(&pdev->dev, "vdma1");
 	if (IS_ERR(rx_chan)) {
 		err = PTR_ERR(rx_chan);
-		pr_err("xilinx_vdmatest: No Rx channel\n");
+		if (err != -EPROBE_DEFER)
+			pr_err("xilinx_vdmatest: No Rx channel\n");
 		goto free_tx;
 	}
 
@@ -627,6 +638,7 @@ static int xilinx_vdmatest_remove(struct platform_device *pdev)
 		xilinx_vdmatest_cleanup_channel(dtc);
 		pr_info("xilinx_vdmatest: dropped channel %s\n",
 			dma_chan_name(chan));
+		dmaengine_terminate_async(chan);
 		dma_release_channel(chan);
 	}
 	return 0;

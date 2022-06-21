@@ -1,38 +1,37 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AD9523 SPI Low Jitter Clock Generator
  *
  * Copyright 2012 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
  */
 
 #ifndef IIO_FREQUENCY_AD9523_H_
 #define IIO_FREQUENCY_AD9523_H_
 
 enum outp_drv_mode {
-	TRISTATE,	/* 0 */
-	LVPECL_8mA,	/* 1 */
-	LVDS_4mA,	/* 2 */
-	LVDS_7mA,	/* 3 */
-	HSTL0_16mA,	/* 4 */
-	HSTL1_8mA,	/* 5 */
-	CMOS_CONF1,	/* 6 */
-	CMOS_CONF2,	/* 7 */
-	CMOS_CONF3,	/* 8 */
-	CMOS_CONF4,	/* 9 */
-	CMOS_CONF5,	/* 10 */
-	CMOS_CONF6,	/* 11 */
-	CMOS_CONF7,	/* 12 */
-	CMOS_CONF8,	/* 13 */
-	CMOS_CONF9	/* 14 */
+	TRISTATE,
+	LVPECL_8mA,
+	LVDS_4mA,
+	LVDS_7mA,
+	HSTL0_16mA,
+	HSTL1_8mA,
+	CMOS_CONF1,
+	CMOS_CONF2,
+	CMOS_CONF3,
+	CMOS_CONF4,
+	CMOS_CONF5,
+	CMOS_CONF6,
+	CMOS_CONF7,
+	CMOS_CONF8,
+	CMOS_CONF9
 };
 
 enum ref_sel_mode {
-	NONEREVERTIVE_STAY_ON_REFB,	/* 0 */
-	REVERT_TO_REFA,	/* 1 */
-	SELECT_REFA,	/* 2 */
-	SELECT_REFB,	/* 3 */
-	EXT_REF_SEL	/* 4 */
+	NONEREVERTIVE_STAY_ON_REFB,
+	REVERT_TO_REFA,
+	SELECT_REFA,
+	SELECT_REFB,
+	EXT_REF_SEL
 };
 
 /**
@@ -131,8 +130,8 @@ enum cpole1_capacitor {
  * @pll2_ndiv_b_cnt: PLL2 Feedback N-divider, B Counter, range 0..63.
  * @pll2_freq_doubler_en: PLL2 frequency doubler enable.
  * @pll2_r2_div: PLL2 R2 divider, range 0..31.
- * @pll2_vco_diff_m1: VCO1 divider, range 3..5.
- * @pll2_vco_diff_m2: VCO2 divider, range 3..5.
+ * @pll2_vco_div_m1: VCO1 divider, range 3..5.
+ * @pll2_vco_div_m2: VCO2 divider, range 3..5.
  * @rpole2: PLL2 loop filter Rpole resistor value.
  * @rzero: PLL2 loop filter Rzero resistor value.
  * @cpole1: PLL2 loop filter Cpole capacitor value.
@@ -180,8 +179,8 @@ struct ad9523_platform_data {
 	unsigned char			pll2_ndiv_b_cnt;
 	bool				pll2_freq_doubler_en;
 	unsigned char			pll2_r2_div;
-	unsigned char			pll2_vco_diff_m1; /* 3..5 */
-	unsigned char			pll2_vco_diff_m2; /* 3..5 */
+	unsigned char			pll2_vco_div_m1; /* 3..5 */
+	unsigned char			pll2_vco_div_m2; /* 3..5 */
 
 	/* Loop Filter PLL2 */
 	enum rpole2_resistor		rpole2;

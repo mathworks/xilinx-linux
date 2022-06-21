@@ -1,10 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Support code for Analog Devices Sigma-Delta ADCs
  *
  * Copyright 2012 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
- *
- * Licensed under the GPL-2.
  */
 #ifndef __AD_SIGMA_DELTA_H__
 #define __AD_SIGMA_DELTA_H__
@@ -44,7 +43,9 @@ struct iio_dev;
  * @addr_shift: Shift of the register address in the communications register.
  * @read_mask: Mask for the communications register having the read bit set.
  * @data_reg: Address of the data register, if 0 the default address of 0x3 will
+ * @irq_flags: flags for the interrupt used by the triggered buffer
  *   be used.
+ * @irq_flags: flags for the interrupt used by the triggered buffer
  */
 struct ad_sigma_delta_info {
 	int (*set_channel)(struct ad_sigma_delta *, unsigned int slot,
@@ -57,6 +58,7 @@ struct ad_sigma_delta_info {
 	unsigned int addr_shift;
 	unsigned int read_mask;
 	unsigned int data_reg;
+	unsigned long irq_flags;
 };
 
 /**
@@ -95,7 +97,7 @@ struct ad_sigma_delta {
 	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	uint8_t				reg_data[4] ____cacheline_aligned;
+	uint8_t				data[4] ____cacheline_aligned;
 };
 
 static inline int ad_sigma_delta_prepare_channel(struct ad_sigma_delta *sd,
@@ -115,6 +117,7 @@ static inline int ad_sigma_delta_set_channel(struct ad_sigma_delta *sd,
 
 	return 0;
 }
+
 static inline int ad_sigma_delta_set_mode(struct ad_sigma_delta *sd,
 	unsigned int mode)
 {
@@ -139,8 +142,13 @@ int ad_sd_write_reg(struct ad_sigma_delta *sigma_delta, unsigned int reg,
 int ad_sd_read_reg(struct ad_sigma_delta *sigma_delta, unsigned int reg,
 	unsigned int size, unsigned int *val);
 
+int ad_sd_reset(struct ad_sigma_delta *sigma_delta,
+	unsigned int reset_length);
+
 int ad_sigma_delta_single_conversion(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, int *val);
+int ad_sd_calibrate(struct ad_sigma_delta *sigma_delta,
+	unsigned int mode, unsigned int channel);
 int ad_sd_calibrate_all(struct ad_sigma_delta *sigma_delta,
 	const struct ad_sd_calib_data *cd, unsigned int n);
 int ad_sd_init(struct ad_sigma_delta *sigma_delta, struct iio_dev *indio_dev,
@@ -150,52 +158,5 @@ int ad_sd_setup_buffer_and_trigger(struct iio_dev *indio_dev);
 void ad_sd_cleanup_buffer_and_trigger(struct iio_dev *indio_dev);
 
 int ad_sd_validate_trigger(struct iio_dev *indio_dev, struct iio_trigger *trig);
-
-#define __AD_SD_CHANNEL(_si, _channel1, _channel2, _address, _bits, \
-	_storagebits, _shift, _extend_name, _type) \
-	{ \
-		.type = (_type), \
-		.differential = (_channel2 == -1 ? 0 : 1), \
-		.indexed = 1, \
-		.channel = (_channel1), \
-		.channel2 = (_channel2), \
-		.address = (_address), \
-		.extend_name = (_extend_name), \
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) | \
-			BIT(IIO_CHAN_INFO_OFFSET), \
-		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE), \
-		.scan_index = (_si), \
-		.scan_type = { \
-			.sign = 'u', \
-			.realbits = (_bits), \
-			.storagebits = (_storagebits), \
-			.shift = (_shift), \
-			.endianness = IIO_BE, \
-		}, \
-	}
-
-#define AD_SD_DIFF_CHANNEL(_si, _channel1, _channel2, _address, _bits, \
-	_storagebits, _shift) \
-	__AD_SD_CHANNEL(_si, _channel1, _channel2, _address, _bits, \
-		_storagebits, _shift, NULL, IIO_VOLTAGE)
-
-#define AD_SD_SHORTED_CHANNEL(_si, _channel, _address, _bits, \
-	_storagebits, _shift) \
-	__AD_SD_CHANNEL(_si, _channel, _channel, _address, _bits, \
-		_storagebits, _shift, "shorted", IIO_VOLTAGE)
-
-#define AD_SD_CHANNEL(_si, _channel, _address, _bits, \
-	_storagebits, _shift) \
-	__AD_SD_CHANNEL(_si, _channel, -1, _address, _bits, \
-		_storagebits, _shift, NULL, IIO_VOLTAGE)
-
-#define AD_SD_TEMP_CHANNEL(_si, _address, _bits, _storagebits, _shift) \
-	__AD_SD_CHANNEL(_si, 0, -1, _address, _bits, \
-		_storagebits, _shift, NULL, IIO_TEMP)
-
-#define AD_SD_SUPPLY_CHANNEL(_si, _channel, _address, _bits, _storagebits, \
-	_shift) \
-	__AD_SD_CHANNEL(_si, _channel, -1, _address, _bits, \
-		_storagebits, _shift, "supply", IIO_VOLTAGE)
 
 #endif

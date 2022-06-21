@@ -17,6 +17,11 @@
 #define CF_FLAG_CACHE_FLUSH_INVALIDATE	0x00000001
 #define CF_FLAG_PHYSICALLY_CONTIGUOUS	0x00000002
 #define CF_FLAG_DMAPOLLING		0x00000004
+#define XLNK_IRQ_LEVEL			0x00000001
+#define XLNK_IRQ_EDGE			0x00000002
+#define XLNK_IRQ_ACTIVE_HIGH		0x00000004
+#define XLNK_IRQ_ACTIVE_LOW		0x00000008
+#define XLNK_IRQ_RESET_REG_VALID	0x00000010
 
 enum xlnk_dma_direction {
 	XLNK_DMA_BI = 0,
@@ -31,8 +36,6 @@ struct xlnk_dma_transfer_handle {
 	void *kern_addr;
 	unsigned long user_addr;
 	enum dma_data_direction transfer_direction;
-	struct scatterlist *sg_list;
-	int sg_list_size;
 	int sg_effective_length;
 	int flags;
 	struct dma_chan *channel;
@@ -47,11 +50,15 @@ struct xlnk_dmabuf_reg {
 	struct dma_buf *dbuf;
 	struct dma_buf_attachment *dbuf_attach;
 	struct sg_table *dbuf_sg_table;
-	struct scatterlist *sg_list;
-	int sg_list_cnt;
 	int is_mapped;
 	int dma_direction;
 	struct list_head list;
+};
+
+struct xlnk_irq_control {
+	int irq;
+	int enabled;
+	struct completion cmp;
 };
 
 /* CROSSES KERNEL-USER BOUNDARY */
@@ -132,16 +139,6 @@ union xlnk_args {
 		xlnk_uint_type chan1_data_width;
 	} dmaregister;
 	struct __attribute__ ((__packed__)) {
-		xlnk_char_type name[32];
-		xlnk_uint_type id;
-		xlnk_intptr_type base;
-		xlnk_uint_type size;
-		xlnk_uint_type mm2s_chan_num;
-		xlnk_uint_type mm2s_chan_irq;
-		xlnk_uint_type s2mm_chan_num;
-		xlnk_uint_type s2mm_chan_irq;
-	} mcdmaregister;
-	struct __attribute__ ((__packed__)) {
 		xlnk_intptr_type phys_addr;
 		xlnk_uint_type size;
 		xlnk_int_type action;
@@ -154,6 +151,25 @@ union xlnk_args {
 		xlnk_intptr_type phys_addr;
 		xlnk_intptr_type token;
 	} memop;
+	struct __attribute__ ((__packed__)) {
+		xlnk_int_type irq;
+		xlnk_int_type subirq;
+		xlnk_uint_type type;
+		xlnk_intptr_type control_base;
+		xlnk_intptr_type reset_reg_base;
+		xlnk_uint_type reset_offset;
+		xlnk_uint_type reset_valid_high;
+		xlnk_uint_type reset_valid_low;
+		xlnk_int_type irq_id;
+	} irqregister;
+	struct __attribute__ ((__packed__)) {
+		xlnk_int_type irq_id;
+	} irqunregister;
+	struct __attribute__ ((__packed__)) {
+		xlnk_int_type irq_id;
+		xlnk_int_type polling;
+		xlnk_int_type success;
+	} irqwait;
 };
 
 #endif

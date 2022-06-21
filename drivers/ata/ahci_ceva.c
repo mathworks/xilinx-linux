@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2015 Xilinx, Inc.
  * CEVA AHCI SATA platform driver
  *
  * based on the AHCI SATA platform driver by Jeff Garzik and Anton Vorontsov
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/ahci_platform.h>
@@ -23,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/reset.h>
 #include "ahci.h"
 
 /* Vendor Specific Register Offsets */
@@ -38,8 +28,10 @@
 
 /* Vendor Specific Register bit definitions */
 #define PAXIC_ADBW_BW64 0x1
-#define PAXIC_MAWIDD	(1 << 8)
-#define PAXIC_MARIDD	(1 << 16)
+#define PAXIC_MAWID(i)	(((i) * 2) << 4)
+#define PAXIC_MARID(i)	(((i) * 2) << 12)
+#define PAXIC_MARIDD(i)	((((i) * 2) + 1) << 16)
+#define PAXIC_MAWIDD(i)	((((i) * 2) + 1) << 8)
 #define PAXIC_OTL	(0x4 << 20)
 
 /* Register bit definitions for cache control */
@@ -82,7 +74,7 @@
 #define CEVA_FLAG_BROKEN_GEN2	1
 
 static unsigned int rx_watermark = PTC_RX_WM_VAL;
-module_param(rx_watermark, uint, 0);
+module_param(rx_watermark, uint, 0644);
 MODULE_PARM_DESC(rx_watermark, "RxWaterMark value (0 - 0x80)");
 
 struct ceva_ahci_priv {
@@ -96,6 +88,7 @@ struct ceva_ahci_priv {
 	u32 axicc;
 	bool is_cci_enabled;
 	int flags;
+	struct reset_control *rst;
 };
 
 static unsigned int ceva_ahci_read_id(struct ata_device *dev,
@@ -147,9 +140,11 @@ static void ahci_ceva_setup(struct ahci_host_priv *hpriv)
 		/*
 		 * AXI Data bus width to 64
 		 * Set Mem Addr Read, Write ID for data transfers
+		 * Set Mem Addr Read ID, Write ID for non-data transfers
 		 * Transfer limit to 72 DWord
 		 */
-		tmp = PAXIC_ADBW_BW64 | PAXIC_MAWIDD | PAXIC_MARIDD | PAXIC_OTL;
+		tmp = PAXIC_ADBW_BW64 | PAXIC_MAWIDD(i) | PAXIC_MARIDD(i) |
+			PAXIC_MAWID(i) | PAXIC_MARID(i) | PAXIC_OTL;
 		writel(tmp, mmio + AHCI_VEND_PAXIC);
 
 		/* Set AXI cache control register if CCi is enabled */
@@ -209,13 +204,46 @@ static int ceva_ahci_probe(struct platform_device *pdev)
 
 	cevapriv->ahci_pdev = pdev;
 
-	hpriv = ahci_platform_get_resources(pdev);
+	cevapriv->rst = devm_reset_control_get_optional_exclusive(&pdev->dev,
+								  NULL);
+	if (IS_ERR(cevapriv->rst))
+		dev_err_probe(&pdev->dev, PTR_ERR(cevapriv->rst),
+			      "failed to get reset\n");
+
+	hpriv = ahci_platform_get_resources(pdev, 0);
 	if (IS_ERR(hpriv))
 		return PTR_ERR(hpriv);
 
-	rc = ahci_platform_enable_resources(hpriv);
-	if (rc)
-		return rc;
+	if (!cevapriv->rst) {
+		rc = ahci_platform_enable_resources(hpriv);
+		if (rc)
+			return rc;
+	} else {
+		int i;
+
+		rc = ahci_platform_enable_clks(hpriv);
+		if (rc)
+			return rc;
+		/* Assert the controller reset */
+		reset_control_assert(cevapriv->rst);
+
+		for (i = 0; i < hpriv->nports; i++) {
+			rc = phy_init(hpriv->phys[i]);
+			if (rc)
+				return rc;
+		}
+
+		/* De-assert the controller reset */
+		reset_control_deassert(cevapriv->rst);
+
+		for (i = 0; i < hpriv->nports; i++) {
+			rc = phy_power_on(hpriv->phys[i]);
+			if (rc) {
+				phy_exit(hpriv->phys[i]);
+				return rc;
+			}
+		}
+	}
 
 	if (of_property_read_bool(np, "ceva,broken-gen2"))
 		cevapriv->flags = CEVA_FLAG_BROKEN_GEN2;
@@ -298,12 +326,37 @@ disable_resources:
 
 static int __maybe_unused ceva_ahci_suspend(struct device *dev)
 {
-	return ahci_platform_suspend_host(dev);
+	return ahci_platform_suspend(dev);
 }
 
 static int __maybe_unused ceva_ahci_resume(struct device *dev)
 {
-	return ahci_platform_resume_host(dev);
+	struct ata_host *host = dev_get_drvdata(dev);
+	struct ahci_host_priv *hpriv = host->private_data;
+	int rc;
+
+	rc = ahci_platform_enable_resources(hpriv);
+	if (rc)
+		return rc;
+
+	/* Configure CEVA specific config before resuming HBA */
+	ahci_ceva_setup(hpriv);
+
+	rc = ahci_platform_resume_host(dev);
+	if (rc)
+		goto disable_resources;
+
+	/* We resumed so update PM runtime state */
+	pm_runtime_disable(dev);
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
+
+	return 0;
+
+disable_resources:
+	ahci_platform_disable_resources(hpriv);
+
+	return rc;
 }
 
 static SIMPLE_DEV_PM_OPS(ahci_ceva_pm_ops, ceva_ahci_suspend, ceva_ahci_resume);

@@ -56,7 +56,11 @@ static const struct xilinx_dp_codec_fmt rates[] = {
 	}
 };
 
-static const struct snd_soc_codec_driver xilinx_dp_codec_codec_driver = {
+static const struct snd_soc_component_driver xilinx_dp_component_driver = {
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static int xilinx_dp_codec_probe(struct platform_device *pdev)
@@ -101,8 +105,9 @@ static int xilinx_dp_codec_probe(struct platform_device *pdev)
 		goto error_clk;
 	}
 
-	ret = snd_soc_register_codec(&pdev->dev, &xilinx_dp_codec_codec_driver,
-				     &xilinx_dp_codec_dai, 1);
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					      &xilinx_dp_component_driver,
+					      &xilinx_dp_codec_dai, 1);
 	if (ret)
 		goto error_clk;
 
@@ -121,11 +126,36 @@ static int xilinx_dp_codec_dev_remove(struct platform_device *pdev)
 {
 	struct xilinx_dp_codec *codec = platform_get_drvdata(pdev);
 
-	snd_soc_unregister_codec(&pdev->dev);
 	clk_disable_unprepare(codec->aud_clk);
 
 	return 0;
 }
+
+static int __maybe_unused xilinx_dp_codec_pm_suspend(struct device *dev)
+{
+	struct xilinx_dp_codec *codec = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(codec->aud_clk);
+
+	return 0;
+}
+
+static int __maybe_unused xilinx_dp_codec_pm_resume(struct device *dev)
+{
+	struct xilinx_dp_codec *codec = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare_enable(codec->aud_clk);
+	if (ret)
+		dev_err(dev, "failed to enable the aud_clk\n");
+
+	return ret;
+}
+
+static const struct dev_pm_ops xilinx_dp_codec_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(xilinx_dp_codec_pm_suspend,
+				xilinx_dp_codec_pm_resume)
+};
 
 static const struct of_device_id xilinx_dp_codec_of_match[] = {
 	{ .compatible = "xlnx,dp-snd-codec", },
@@ -137,6 +167,7 @@ static struct platform_driver xilinx_dp_codec_driver = {
 	.driver	= {
 		.name		= "xilinx-dp-snd-codec",
 		.of_match_table	= xilinx_dp_codec_of_match,
+		.pm		= &xilinx_dp_codec_pm_ops,
 	},
 	.probe	= xilinx_dp_codec_probe,
 	.remove	= xilinx_dp_codec_dev_remove,

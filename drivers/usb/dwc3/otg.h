@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /**
  * otg.h - DesignWare USB3 DRD OTG Header
  *
@@ -5,15 +6,6 @@
  *
  * Authors: Felipe Balbi <balbi@ti.com>,
  *	    Sebastian Andrzej Siewior <bigeasy@linutronix.de>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2  of
- * the License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #define otg_dbg(d, fmt, args...)  dev_dbg((d)->dev, "%s(): " fmt,\
@@ -227,6 +219,11 @@ struct dwc3_otg {
 #define INITIAL_SRP			0x40
 	/** A-device connected event*/
 #define USER_A_CONN_EVENT		0x80
+	/** User initiated HNP END Session. This will make the A-device and
+	 *  B-device to return back to their previous roles before HNP got
+	 *  initiated
+	 */
+#define USER_HNP_END_SESSION		0x100
 
 	/* States */
 	enum usb_otg_state prev;

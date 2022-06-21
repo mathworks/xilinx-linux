@@ -144,7 +144,6 @@ static const struct iio_chan_spec adm1177_channels[] = {
 
 static const struct iio_info adm1177_info = {
 	.read_raw = &adm1177_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int adm1177_probe(struct i2c_client *client,
@@ -220,20 +219,20 @@ static int adm1177_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm1177_ids[] = {
-	{ "adm1177", 0 },
+	{ "adm1177-iio", 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, adm1177_ids);
 
 static const struct of_device_id adm1177_dt_ids[] = {
-	{ .compatible = "adi,adm1177" },
+	{ .compatible = "adi,adm1177-iio" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, nau7802_dt_ids);
 
 static struct i2c_driver adm1177_driver = {
 	.driver = {
-		.name = KBUILD_MODNAME,
+		.name = "adm1177-iio",
 		.of_match_table = adm1177_dt_ids,
 	},
 	.probe = adm1177_probe,

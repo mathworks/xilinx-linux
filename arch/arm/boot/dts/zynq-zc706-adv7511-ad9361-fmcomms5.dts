@@ -1,7 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices AD-FMCOMMS5-EBZ
+ * https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms5-ebz
+ *
+ * hdl_project: <fmcomms5/zc706>
+ * board_revision: <>
+ *
+ * Copyright (C) 2014-2020 Analog Devices Inc.
+ */
 /dts-v1/;
 
-/include/ "zynq-zc706.dtsi"
-/include/ "zynq-zc706-adv7511.dtsi"
+#include "zynq-zc706.dtsi"
+#include "zynq-zc706-adv7511.dtsi"
 
 &i2c_mux {
 	fmc_i2c: i2c@5 { /* HPC */
@@ -16,12 +26,20 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c400000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <0>;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <128>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <0>;
+			};
 		};
 	};
 
@@ -29,13 +47,20 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 56 0>;
+		interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <1>;
-			adi,cyclic;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <64>;
+				adi,source-bus-type = <0>;
+				adi,destination-bus-width = <128>;
+				adi,destination-bus-type = <2>;
+			};
 		};
 	};
 
@@ -75,9 +100,9 @@
 		mastercore-reg = <0x79024000 0x1000>;
 	};
 
-	mwipcore@43C00000 {
+	mwipcore@43c00000 {
 		compatible = "mathworks,mwipcore-axi4lite-v1.00";
-		reg = <0x43C00000 0xffff>;
+		reg = <0x43c00000 0xffff>;
 	};
 };
 

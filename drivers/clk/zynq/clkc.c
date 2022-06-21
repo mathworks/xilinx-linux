@@ -1,21 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Zynq clock controller
  *
  *  Copyright (C) 2012 - 2013 Xilinx
  *
  *  Sören Brinkmann <soren.brinkmann@xilinx.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License v2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/clk/zynq.h>
@@ -201,7 +190,7 @@ static void __init zynq_clk_register_fclk(enum zynq_clk fclk,
 	clks[fclk] = clk_register_gate(NULL, clk_name,
 			div1_name, CLK_SET_RATE_PARENT, fclk_gate_reg,
 			0, CLK_GATE_SET_TO_DISABLE, fclk_gate_lock);
-	enable_reg = clk_readl(fclk_gate_reg) & 1;
+	enable_reg = readl(fclk_gate_reg) & 1;
 	if (enable && !enable_reg) {
 		if (clk_prepare_enable(clks[fclk]))
 			pr_warn("%s: FCLK%u enable failed\n", __func__,
@@ -330,7 +319,7 @@ static void __init zynq_clk_setup(struct device_node *np)
 			SLCR_IOPLL_CTRL, 4, 1, 0, &iopll_lock);
 
 	/* CPU clocks */
-	tmp = clk_readl(SLCR_621_TRUE) & 1;
+	tmp = readl(SLCR_621_TRUE) & 1;
 	clk = clk_register_mux(NULL, "cpu_mux", cpu_parents, 4,
 			CLK_SET_RATE_NO_REPARENT, SLCR_ARM_CLK_CTRL, 4, 2, 0,
 			&armclk_lock);
@@ -411,14 +400,14 @@ static void __init zynq_clk_setup(struct device_node *np)
 				periph_parents, enable);
 	}
 
-	zynq_clk_register_periph_clk(lqspi, 0, clk_output_name[lqspi], NULL,
-			SLCR_LQSPI_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(lqspi, clk_max, clk_output_name[lqspi], NULL,
+				     SLCR_LQSPI_CLK_CTRL, periph_parents, 0);
 
-	zynq_clk_register_periph_clk(smc, 0, clk_output_name[smc], NULL,
-			SLCR_SMC_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(smc, clk_max, clk_output_name[smc], NULL,
+				     SLCR_SMC_CLK_CTRL, periph_parents, 0);
 
-	zynq_clk_register_periph_clk(pcap, 0, clk_output_name[pcap], NULL,
-			SLCR_PCAP_CLK_CTRL, periph_parents, 0);
+	zynq_clk_register_periph_clk(pcap, clk_max, clk_output_name[pcap], NULL,
+				     SLCR_PCAP_CLK_CTRL, periph_parents, 0);
 
 	zynq_clk_register_periph_clk(sdio0, sdio1, clk_output_name[sdio0],
 			clk_output_name[sdio1], SLCR_SDIO_CLK_CTRL,
@@ -553,7 +542,7 @@ static void __init zynq_clk_setup(struct device_node *np)
 			&dbgclk_lock);
 
 	/* leave debug clocks in the state the bootloader set them up to */
-	tmp = clk_readl(SLCR_DBG_CLK_CTRL);
+	tmp = readl(SLCR_DBG_CLK_CTRL);
 	if (tmp & DBG_CLK_CTRL_CLKACT_TRC)
 		if (clk_prepare_enable(clks[dbg_trc]))
 			pr_warn("%s: trace clk enable failed\n", __func__);
@@ -645,7 +634,7 @@ void __init zynq_clock_init(void)
 	}
 
 	if (of_address_to_resource(np, 0, &res)) {
-		pr_err("%s: failed to get resource\n", np->name);
+		pr_err("%pOFn: failed to get resource\n", np);
 		goto np_err;
 	}
 
@@ -654,7 +643,7 @@ void __init zynq_clock_init(void)
 	if (slcr->data) {
 		zynq_clkc_base = (__force void __iomem *)slcr->data + res.start;
 	} else {
-		pr_err("%s: Unable to get I/O memory\n", np->name);
+		pr_err("%pOFn: Unable to get I/O memory\n", np);
 		of_node_put(slcr);
 		goto np_err;
 	}

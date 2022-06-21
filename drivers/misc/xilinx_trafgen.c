@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Xilinx AXI Traffic Generator
+ * Xilinx AXI Traffic Generator driver.
  *
- * Copyright (C) 2013 - 2014 Xilinx, Inc.
+ * Copyright (c) 2013 - 2019 Xilinx Inc.
  *
  * Description:
  * This driver is developed for AXI Traffic Generator IP, which is
@@ -10,21 +11,9 @@
  * configurable options which are provided through sysfs entries
  * allow the user to generate a wide variety of traffic based on
  * their requirements.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -44,6 +33,7 @@
 #define XTG_COMMAND_RAM_MSB_OFFSET 0xa000	/**< Command RAM MSB Offset */
 #define XTG_MASTER_RAM_INIT_OFFSET 0x10000 /* Master RAM initial offset(v1.0) */
 #define XTG_MASTER_RAM_OFFSET	   0xc000  /* Master RAM offset */
+#define XTG_WRITE_COMMAND_RAM_OFFSET	0x9000  /* Write Command RAM offset */
 
 /* Register Offsets */
 #define XTG_MCNTL_OFFSET	0x00	/* Master control */
@@ -53,7 +43,12 @@
 #define XTG_MSTERR_INTR_OFFSET	0x10	/* Master error interrupt enable */
 #define XTG_CFG_STS_OFFSET	0x14	/* Config status */
 #define XTG_STREAM_CNTL_OFFSET	0x30	/* Streaming Control */
+#define XTG_STREAM_CFG_OFFSET	0x34	/* Streaming Control */
 #define XTG_STREAM_TL_OFFSET	0x38    /* Streaming Transfer Length */
+#define XTG_STREAM_TKTS1_OFFSET	0x40    /* Streaming tkeep tstrb set1*/
+#define XTG_STREAM_TKTS2_OFFSET	0x44    /* Streaming tkeep tstrb set2*/
+#define XTG_STREAM_TKTS3_OFFSET	0x48    /* Streaming tkeep tstrb set3*/
+#define XTG_STREAM_TKTS4_OFFSET	0x4C    /* Streaming tkeep tstrb set4*/
 #define XTG_STATIC_CNTL_OFFSET	0x60	/* Static Control */
 #define XTG_STATIC_LEN_OFFSET	0x64	/* Static Length */
 
@@ -61,6 +56,8 @@
 
 /* Master logic enable */
 #define XTG_MCNTL_MSTEN_MASK		0x00100000
+/* Loop enable */
+#define XTG_MCNTL_LOOPEN_MASK		0x00080000
 /* Slave error interrupt enable */
 #define XTG_SCNTL_ERREN_MASK		0x00008000
 /* Master complete interrupt enable */
@@ -70,7 +67,7 @@
 /* Master complete done status */
 #define XTG_ERR_STS_MSTDONE_MASK	0x80000000
 /* Error mask for error status/enable registers */
-#define XTG_ERR_ALL_ERRS_MASK		0x001F0003
+#define XTG_ERR_ALL_ERRS_MASK		0x801F0003
 /* Core Revision shift */
 #define XTG_MCNTL_REV_SHIFT		24
 
@@ -288,6 +285,7 @@ struct xtg_pram {
  * @last_wr_valid_idx: Last Write Valid Command Index
  * @id: Device instance id
  * @xtg_mram_offset: MasterRam offset
+ * @clk: Input clock
  */
 struct xtg_dev_info {
 	void __iomem *regs;
@@ -297,6 +295,7 @@ struct xtg_dev_info {
 	s16 last_wr_valid_idx;
 	u32 id;
 	u32 xtg_mram_offset;
+	struct clk *clk;
 };
 
 /**
@@ -314,6 +313,12 @@ struct xtg_dev_info {
  * @XTG_GET_STREAM_ENABLE : get strean mode traffic genration state
  * @XTG_GET_STREAM_TRANSFERLEN: get streaming mode transfer length
  * @XTG_GET_STREAM_TRANSFERCNT: get streaming mode transfer count
+ * @XTG_GET_MASTER_LOOP_EN: get master loop enable status
+ * @XTG_GET_STREAM_TKTS1: get stream tstrb and tkeep set1 values
+ * @XTG_GET_STREAM_TKTS2: get stream tstrb and tkeep set2 values
+ * @XTG_GET_STREAM_TKTS3: get stream tstrb and tkeep set3 values
+ * @XTG_GET_STREAM_TKTS4: get stream tstrb and tkeep set4 values
+ * @XTG_GET_STREAM_CFG: get stream configuration values
  * @XTG_START_MASTER_LOGIC: start master logic
  * @XTG_SET_SLV_CTRL_REG: set slave control
  * @XTG_CLEAR_ERRORS: clear errors
@@ -330,6 +335,12 @@ struct xtg_dev_info {
  * @XTG_SET_STREAM_DISABLE: disable streaming mode traffic genration
  * @XTG_SET_STREAM_TRANSFERLEN: set streaming mode transfer length
  * @XTG_SET_STREAM_TRANSFERCNT: set streaming mode transfer count
+ * @XTG_SET_STREAM_TKTS1: set stream tstrb and tkeep set1 values
+ * @XTG_SET_STREAM_TKTS2: set stream tstrb and tkeep set2 values
+ * @XTG_SET_STREAM_TKTS3: set stream tstrb and tkeep set3 values
+ * @XTG_SET_STREAM_TKTS4: set stream tstrb and tkeep set4 values
+ * @XTG_SET_STREAM_CFG: set stream configuration values
+ * @XTG_MASTER_LOOP_EN: enable master loop
  */
 enum xtg_sysfs_ioctl_opcode {
 	XTG_GET_MASTER_CMP_STS,
@@ -344,6 +355,12 @@ enum xtg_sysfs_ioctl_opcode {
 	XTG_GET_STATIC_TRANSFERDONE,
 	XTG_GET_STREAM_ENABLE,
 	XTG_GET_STREAM_TRANSFERLEN,
+	XTG_GET_MASTER_LOOP_EN,
+	XTG_GET_STREAM_TKTS1,
+	XTG_GET_STREAM_TKTS2,
+	XTG_GET_STREAM_TKTS3,
+	XTG_GET_STREAM_TKTS4,
+	XTG_GET_STREAM_CFG,
 	XTG_GET_STREAM_TRANSFERCNT,
 	XTG_START_MASTER_LOGIC,
 	XTG_SET_SLV_CTRL_REG,
@@ -360,7 +377,13 @@ enum xtg_sysfs_ioctl_opcode {
 	XTG_SET_STREAM_ENABLE,
 	XTG_SET_STREAM_DISABLE,
 	XTG_SET_STREAM_TRANSFERLEN,
-	XTG_SET_STREAM_TRANSFERCNT
+	XTG_SET_STREAM_TRANSFERCNT,
+	XTG_SET_STREAM_TKTS1,
+	XTG_SET_STREAM_TKTS2,
+	XTG_SET_STREAM_TKTS3,
+	XTG_SET_STREAM_TKTS4,
+	XTG_SET_STREAM_CFG,
+	XTG_MASTER_LOOP_EN
 };
 
 /**
@@ -372,7 +395,7 @@ enum xtg_sysfs_ioctl_opcode {
  * @data: Data pointer
  */
 static void xtg_access_rams(struct xtg_dev_info *tg, int where,
-				int count, int flags, u32 *data)
+			    int count, int flags, u32 *data)
 {
 	u32 index;
 
@@ -389,7 +412,24 @@ static void xtg_access_rams(struct xtg_dev_info *tg, int where,
 		for (index = 0; count > 0; index++, count -= 4)
 			writel(data[index], tg->regs + where + index * 4);
 #ifdef CONFIG_PHYS_ADDR_T_64BIT
-		writel(data[MSB_INDEX],	tg->regs + where +
+	/*
+	 * This additional logic is required only for command ram.
+	 * when writing to READ Command RAM write higher address to READ addr
+	 * RAM
+	 */
+	if (where >= XTG_COMMAND_RAM_OFFSET &&
+	    where < XTG_WRITE_COMMAND_RAM_OFFSET)
+		writel(data[MSB_INDEX],	tg->regs + XTG_COMMAND_RAM_OFFSET +
+			(where - XTG_COMMAND_RAM_OFFSET) / 4 +
+			(XTG_COMMAND_RAM_MSB_OFFSET - XTG_COMMAND_RAM_OFFSET));
+	/*
+	 * Writing to WRITE Command RAM write higher address to WRITE addr RAM
+	 */
+	if (where >=  XTG_WRITE_COMMAND_RAM_OFFSET &&
+	    where < XTG_COMMAND_RAM_MSB_OFFSET)
+		writel(data[MSB_INDEX],	tg->regs +
+			XTG_WRITE_COMMAND_RAM_OFFSET +
+			(where - XTG_WRITE_COMMAND_RAM_OFFSET) / 4 +
 			(XTG_COMMAND_RAM_MSB_OFFSET - XTG_COMMAND_RAM_OFFSET) +
 			XTG_EXTCMD_RAM_BLOCK_SIZE - XTG_CMD_RAM_BLOCK_SIZE);
 #endif
@@ -398,8 +438,19 @@ static void xtg_access_rams(struct xtg_dev_info *tg, int where,
 		for (index = 0; count > 0; index++, count -= 4)
 			data[index] = readl(tg->regs + where + index * 4);
 #ifdef CONFIG_PHYS_ADDR_T_64BIT
-		data[MSB_INDEX] = readl(tg->regs + where +
+	if (where >= XTG_COMMAND_RAM_OFFSET &&
+	    where < XTG_WRITE_COMMAND_RAM_OFFSET)
+		data[MSB_INDEX] = readl(tg->regs + XTG_COMMAND_RAM_OFFSET +
+			(where - XTG_COMMAND_RAM_OFFSET) / 4 +
 			(XTG_COMMAND_RAM_MSB_OFFSET - XTG_COMMAND_RAM_OFFSET));
+
+	if (where >=  XTG_WRITE_COMMAND_RAM_OFFSET &&
+	    where < XTG_COMMAND_RAM_MSB_OFFSET)
+		data[MSB_INDEX] = readl(tg->regs +
+			XTG_WRITE_COMMAND_RAM_OFFSET +
+			(where - XTG_WRITE_COMMAND_RAM_OFFSET) / 4 +
+			(XTG_COMMAND_RAM_MSB_OFFSET - XTG_COMMAND_RAM_OFFSET) +
+			XTG_EXTCMD_RAM_BLOCK_SIZE - XTG_CMD_RAM_BLOCK_SIZE);
 #endif
 		break;
 	}
@@ -412,7 +463,7 @@ static void xtg_access_rams(struct xtg_dev_info *tg, int where,
  * @cmd_words: Pointer to Command Words that needs to be prepared
  */
 static void xtg_prepare_cmd_words(struct xtg_dev_info *tg,
-				const struct xtg_cram *cmdp, u32 *cmd_words)
+				  const struct xtg_cram *cmdp, u32 *cmd_words)
 {
 	/* Command Word 0 */
 	cmd_words[0] = lower_32_bits(cmdp->addr);
@@ -460,7 +511,7 @@ static void xtg_prepare_cmd_words(struct xtg_dev_info *tg,
  * @param_word: Pointer to Param Word that needs to be prepared
  */
 static void xtg_prepare_param_word(struct xtg_dev_info *tg,
-			const struct xtg_pram *cmdp, u32 *param_word)
+				   const struct xtg_pram *cmdp, u32 *param_word)
 {
 	*param_word = 0;
 	*param_word |= (cmdp->opcode & XTG_PARAM_OP_MASK) << XTG_PARAM_OP_SHIFT;
@@ -502,14 +553,14 @@ static void xtg_prepare_param_word(struct xtg_dev_info *tg,
  * Return: value read from the sysfs opcode.
  */
 static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
-				enum xtg_sysfs_ioctl_opcode opcode)
+			       enum xtg_sysfs_ioctl_opcode opcode)
 {
 	struct xtg_dev_info *tg = to_xtg_dev_info(dev);
 	unsigned long wrval;
 	ssize_t status, rdval = 0;
 
 	if (opcode > XTG_GET_STREAM_TRANSFERCNT) {
-		status = kstrtoul(buf, 16, &wrval);
+		status = kstrtoul(buf, 0, &wrval);
 		if (status < 0)
 			return status;
 	}
@@ -518,6 +569,11 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 	case XTG_GET_MASTER_CMP_STS:
 		rdval = (readl(tg->regs + XTG_MCNTL_OFFSET) &
 				XTG_MCNTL_MSTEN_MASK) ? 1 : 0;
+		break;
+
+	case XTG_GET_MASTER_LOOP_EN:
+		rdval = (readl(tg->regs + XTG_MCNTL_OFFSET) &
+				XTG_MCNTL_LOOPEN_MASK) ? 1 : 0;
 		break;
 
 	case XTG_GET_SLV_CTRL_REG:
@@ -534,8 +590,8 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 		break;
 
 	case XTG_GET_LAST_VALID_INDEX:
-		rdval = (tg->last_wr_valid_idx << 16) |
-				tg->last_rd_valid_idx;
+		rdval = (((tg->last_wr_valid_idx << 16) & 0xffff0000) |
+				(tg->last_rd_valid_idx & 0xffff));
 		break;
 
 	case XTG_GET_DEVICE_ID:
@@ -574,10 +630,38 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 				XTG_STREAM_TL_TCNT_SHIFT);
 		break;
 
+	case XTG_GET_STREAM_TKTS1:
+		rdval = readl(tg->regs + XTG_STREAM_TKTS1_OFFSET);
+		break;
+	case XTG_GET_STREAM_TKTS2:
+		rdval = readl(tg->regs + XTG_STREAM_TKTS2_OFFSET);
+		break;
+	case XTG_GET_STREAM_TKTS3:
+		rdval = readl(tg->regs + XTG_STREAM_TKTS3_OFFSET);
+		break;
+	case XTG_GET_STREAM_TKTS4:
+		rdval = readl(tg->regs + XTG_STREAM_TKTS4_OFFSET);
+		break;
+
+	case XTG_GET_STREAM_CFG:
+		rdval = (readl(tg->regs + XTG_STREAM_CFG_OFFSET));
+		break;
+
 	case XTG_START_MASTER_LOGIC:
 		if (wrval)
 			writel(readl(tg->regs + XTG_MCNTL_OFFSET) |
 					XTG_MCNTL_MSTEN_MASK,
+				tg->regs + XTG_MCNTL_OFFSET);
+		break;
+
+	case XTG_MASTER_LOOP_EN:
+		if (wrval)
+			writel(readl(tg->regs + XTG_MCNTL_OFFSET) |
+					XTG_MCNTL_LOOPEN_MASK,
+				tg->regs + XTG_MCNTL_OFFSET);
+		else
+			writel(readl(tg->regs + XTG_MCNTL_OFFSET) &
+					~XTG_MCNTL_LOOPEN_MASK,
 				tg->regs + XTG_MCNTL_OFFSET);
 		break;
 
@@ -587,14 +671,13 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 
 	case XTG_ENABLE_ERRORS:
 		wrval &= XTG_ERR_ALL_ERRS_MASK;
-		writel(readl(tg->regs + XTG_ERR_EN_OFFSET) | wrval,
-			tg->regs + XTG_ERR_EN_OFFSET);
+		writel(wrval, tg->regs + XTG_ERR_EN_OFFSET);
 		break;
 
 	case XTG_CLEAR_ERRORS:
 		wrval &= XTG_ERR_ALL_ERRS_MASK;
 		writel(readl(tg->regs + XTG_ERR_STS_OFFSET) | wrval,
-			tg->regs + XTG_ERR_STS_OFFSET);
+		       tg->regs + XTG_ERR_STS_OFFSET);
 		break;
 
 	case XTG_ENABLE_INTRS:
@@ -619,23 +702,20 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 		break;
 
 	case XTG_CLEAR_MRAM:
-		if (wrval)
-			xtg_access_rams(tg, tg->xtg_mram_offset,
-				XTG_MASTER_RAM_SIZE, XTG_WRITE_RAM |
+		xtg_access_rams(tg, tg->xtg_mram_offset,
+				XTG_MASTER_RAM_SIZE,
 				XTG_WRITE_RAM_ZERO, NULL);
 		break;
 
 	case XTG_CLEAR_CRAM:
-		if (wrval)
-			xtg_access_rams(tg, XTG_COMMAND_RAM_OFFSET,
-				XTG_COMMAND_RAM_SIZE, XTG_WRITE_RAM |
+		xtg_access_rams(tg, XTG_COMMAND_RAM_OFFSET,
+				XTG_COMMAND_RAM_SIZE,
 				XTG_WRITE_RAM_ZERO, NULL);
 		break;
 
 	case XTG_CLEAR_PRAM:
-		if (wrval)
-			xtg_access_rams(tg, XTG_PARAM_RAM_OFFSET,
-				XTG_PARAM_RAM_SIZE, XTG_WRITE_RAM |
+		xtg_access_rams(tg, XTG_PARAM_RAM_OFFSET,
+				XTG_PARAM_RAM_SIZE,
 				XTG_WRITE_RAM_ZERO, NULL);
 		break;
 
@@ -643,7 +723,7 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 		if (wrval) {
 			wrval &= XTG_STATIC_CNTL_STEN_MASK;
 			writel(readl(tg->regs + XTG_STATIC_CNTL_OFFSET) | wrval,
-			tg->regs + XTG_STATIC_CNTL_OFFSET);
+			       tg->regs + XTG_STATIC_CNTL_OFFSET);
 		} else {
 			writel(readl(tg->regs + XTG_STATIC_CNTL_OFFSET) &
 				~XTG_STATIC_CNTL_STEN_MASK,
@@ -658,32 +738,54 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 	case XTG_SET_STATIC_TRANSFERDONE:
 		wrval |= XTG_STATIC_CNTL_TD_MASK;
 		writel(readl(tg->regs + XTG_STATIC_CNTL_OFFSET) | wrval,
-			tg->regs + XTG_STATIC_CNTL_OFFSET);
+		       tg->regs + XTG_STATIC_CNTL_OFFSET);
 		break;
 
 	case XTG_SET_STREAM_ENABLE:
 		if (wrval) {
-			wrval &= XTG_STREAM_CNTL_STEN_MASK;
-			writel(readl(tg->regs + XTG_STREAM_CNTL_OFFSET) | wrval,
-			tg->regs + XTG_STREAM_CNTL_OFFSET);
+			rdval = readl(tg->regs + XTG_STREAM_CNTL_OFFSET);
+			rdval |= XTG_STREAM_CNTL_STEN_MASK,
+			writel(rdval,
+			       tg->regs + XTG_STREAM_CNTL_OFFSET);
 		} else {
 			writel(readl(tg->regs + XTG_STREAM_CNTL_OFFSET) &
-			~XTG_STREAM_CNTL_STEN_MASK,
-			tg->regs + XTG_STREAM_CNTL_OFFSET);
+			       ~XTG_STREAM_CNTL_STEN_MASK,
+			       tg->regs + XTG_STREAM_CNTL_OFFSET);
 		}
 		break;
 
 	case XTG_SET_STREAM_TRANSFERLEN:
 		wrval &= XTG_STREAM_TL_TLEN_MASK;
-		writel(readl(tg->regs + XTG_STREAM_TL_OFFSET) | wrval,
-			tg->regs + XTG_STREAM_TL_OFFSET);
+		rdval = readl(tg->regs + XTG_STREAM_TL_OFFSET);
+		rdval &= ~XTG_STREAM_TL_TLEN_MASK;
+		writel(rdval | wrval,
+		       tg->regs + XTG_STREAM_TL_OFFSET);
 		break;
 
 	case XTG_SET_STREAM_TRANSFERCNT:
 		wrval = ((wrval << XTG_STREAM_TL_TCNT_SHIFT) &
 				XTG_STREAM_TL_TCNT_MASK);
-		writel(readl(tg->regs + XTG_STREAM_TL_OFFSET) | wrval,
-			tg->regs + XTG_STREAM_TL_OFFSET);
+		rdval = readl(tg->regs + XTG_STREAM_TL_OFFSET);
+		rdval = rdval & ~XTG_STREAM_TL_TCNT_MASK;
+		writel(rdval | wrval,
+		       tg->regs + XTG_STREAM_TL_OFFSET);
+		break;
+
+	case XTG_SET_STREAM_TKTS1:
+		writel(wrval, tg->regs + XTG_STREAM_TKTS1_OFFSET);
+		break;
+	case XTG_SET_STREAM_TKTS2:
+		writel(wrval, tg->regs + XTG_STREAM_TKTS2_OFFSET);
+		break;
+	case XTG_SET_STREAM_TKTS3:
+		writel(wrval, tg->regs + XTG_STREAM_TKTS3_OFFSET);
+		break;
+	case XTG_SET_STREAM_TKTS4:
+		writel(wrval, tg->regs + XTG_STREAM_TKTS4_OFFSET);
+		break;
+
+	case XTG_SET_STREAM_CFG:
+		writel(wrval, tg->regs + XTG_STREAM_CFG_OFFSET);
 		break;
 
 	default:
@@ -696,33 +798,34 @@ static ssize_t xtg_sysfs_ioctl(struct device *dev, const char *buf,
 /* Sysfs functions */
 
 static ssize_t id_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+		       struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_DEVICE_ID);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 static DEVICE_ATTR_RO(id);
 
 static ssize_t resource_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+			     struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_RESOURCE);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 static DEVICE_ATTR_RO(resource);
 
 static ssize_t master_start_stop_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				      struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_MASTER_CMP_STS);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 
 static ssize_t master_start_stop_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				       struct device_attribute *attr,
+				       const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_START_MASTER_LOGIC);
 
@@ -731,15 +834,17 @@ static ssize_t master_start_stop_store(struct device *dev,
 static DEVICE_ATTR_RW(master_start_stop);
 
 static ssize_t config_slave_status_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+					struct device_attribute *attr,
+					char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_SLV_CTRL_REG);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 
 static ssize_t config_slave_status_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+					 struct device_attribute *attr,
+					 const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_SLV_CTRL_REG);
 
@@ -748,15 +853,16 @@ static ssize_t config_slave_status_store(struct device *dev,
 static DEVICE_ATTR_RW(config_slave_status);
 
 static ssize_t err_sts_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+			    struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_ERR_STS);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 
 static ssize_t err_sts_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+			     struct device_attribute *attr,
+			     const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_CLEAR_ERRORS);
 
@@ -765,7 +871,8 @@ static ssize_t err_sts_store(struct device *dev,
 static DEVICE_ATTR_RW(err_sts);
 
 static ssize_t err_en_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+			    struct device_attribute *attr, const char *buf,
+			    size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_ENABLE_ERRORS);
 
@@ -774,7 +881,8 @@ static ssize_t err_en_store(struct device *dev,
 static DEVICE_ATTR_WO(err_en);
 
 static ssize_t intr_en_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+			     struct device_attribute *attr,
+			     const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_ENABLE_INTRS);
 
@@ -783,25 +891,26 @@ static ssize_t intr_en_store(struct device *dev,
 static DEVICE_ATTR_WO(intr_en);
 
 static ssize_t last_valid_index_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				     struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_LAST_VALID_INDEX);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 static DEVICE_ATTR_RO(last_valid_index);
 
 static ssize_t config_sts_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+			       struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_CFG_STS);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 static DEVICE_ATTR_RO(config_sts);
 
 static ssize_t mram_clear_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_CLEAR_MRAM);
 
@@ -810,7 +919,8 @@ static ssize_t mram_clear_store(struct device *dev,
 static DEVICE_ATTR_WO(mram_clear);
 
 static ssize_t cram_clear_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_CLEAR_CRAM);
 
@@ -819,7 +929,8 @@ static ssize_t cram_clear_store(struct device *dev,
 static DEVICE_ATTR_WO(cram_clear);
 
 static ssize_t pram_clear_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				struct device_attribute *attr,
+				const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_CLEAR_CRAM);
 
@@ -828,15 +939,16 @@ static ssize_t pram_clear_store(struct device *dev,
 static DEVICE_ATTR_WO(pram_clear);
 
 static ssize_t static_enable_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				  struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STATIC_ENABLE);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 
 static ssize_t static_enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				   struct device_attribute *attr,
+				   const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STATIC_ENABLE);
 
@@ -845,15 +957,16 @@ static ssize_t static_enable_store(struct device *dev,
 static DEVICE_ATTR_RW(static_enable);
 
 static ssize_t static_burstlen_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				    struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STATIC_BURSTLEN);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 
 static ssize_t static_burstlen_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				     struct device_attribute *attr,
+				     const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STATIC_BURSTLEN);
 
@@ -861,16 +974,108 @@ static ssize_t static_burstlen_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(static_burstlen);
 
+static ssize_t stream_cfg_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_CFG);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t stream_cfg_store(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+				size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_CFG);
+
+	return size;
+}
+static DEVICE_ATTR_RW(stream_cfg);
+
+static ssize_t stream_tkts4_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TKTS4);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t stream_tkts4_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TKTS4);
+
+	return size;
+}
+static DEVICE_ATTR_RW(stream_tkts4);
+
+static ssize_t stream_tkts3_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TKTS3);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t stream_tkts3_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TKTS3);
+
+	return size;
+}
+static DEVICE_ATTR_RW(stream_tkts3);
+
+static ssize_t stream_tkts2_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TKTS2);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t stream_tkts2_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TKTS2);
+
+	return size;
+}
+static DEVICE_ATTR_RW(stream_tkts2);
+
+static ssize_t stream_tkts1_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TKTS1);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t stream_tkts1_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TKTS1);
+
+	return size;
+}
+static DEVICE_ATTR_RW(stream_tkts1);
+
 static ssize_t static_transferdone_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+					struct device_attribute *attr,
+					char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STATIC_TRANSFERDONE);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 
 static ssize_t static_transferdone_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+					 struct device_attribute *attr,
+					 const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STATIC_TRANSFERDONE);
 
@@ -879,27 +1084,30 @@ static ssize_t static_transferdone_store(struct device *dev,
 static DEVICE_ATTR_RW(static_transferdone);
 
 static ssize_t reset_static_transferdone_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+					      struct device_attribute *attr,
+					      char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STATIC_TRANSFERDONE);
+
 	if (rdval == XTG_STATIC_CNTL_RESET_MASK)
 		rdval = 1;
 	else
 		rdval = 0;
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 static DEVICE_ATTR_RO(reset_static_transferdone);
 
 static ssize_t stream_enable_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				  struct device_attribute *attr, char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_ENABLE);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "0x%08zx\n", rdval);
 }
 
 static ssize_t stream_enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+				   struct device_attribute *attr,
+				   const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_ENABLE);
 
@@ -908,15 +1116,17 @@ static ssize_t stream_enable_store(struct device *dev,
 static DEVICE_ATTR_RW(stream_enable);
 
 static ssize_t stream_transferlen_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				       struct device_attribute *attr,
+				       char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TRANSFERLEN);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 
 static ssize_t stream_transferlen_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+					struct device_attribute *attr,
+					const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TRANSFERLEN);
 
@@ -925,15 +1135,17 @@ static ssize_t stream_transferlen_store(struct device *dev,
 static DEVICE_ATTR_RW(stream_transferlen);
 
 static ssize_t stream_transfercnt_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				       struct device_attribute *attr,
+				       char *buf)
 {
 	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_STREAM_TRANSFERCNT);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", rdval);
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
 }
 
 static ssize_t stream_transfercnt_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+					struct device_attribute *attr,
+					const char *buf, size_t size)
 {
 	xtg_sysfs_ioctl(dev, buf, XTG_SET_STREAM_TRANSFERCNT);
 
@@ -941,9 +1153,27 @@ static ssize_t stream_transfercnt_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(stream_transfercnt);
 
+static ssize_t loop_enable_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	ssize_t rdval = xtg_sysfs_ioctl(dev, buf, XTG_GET_MASTER_LOOP_EN);
+
+	return snprintf(buf, PAGE_SIZE, "%zd\n", rdval);
+}
+
+static ssize_t loop_enable_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t size)
+{
+	xtg_sysfs_ioctl(dev, buf, XTG_MASTER_LOOP_EN);
+
+	return size;
+}
+static DEVICE_ATTR_RW(loop_enable);
+
 static ssize_t xtg_pram_read(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			     struct bin_attribute *bin_attr,
+			     char *buf, loff_t off, size_t count)
 {
 	pr_info("No read access to Parameter RAM\n");
 
@@ -951,12 +1181,14 @@ static ssize_t xtg_pram_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t xtg_pram_write(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			      struct bin_attribute *bin_attr,
+			      char *buf, loff_t off, size_t count)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
 	u32 *data = (u32 *)buf;
+	struct xtg_pram *cmdp = (struct xtg_pram *)buf;
+	u32 param_word;
 
 	if (off >= XTG_PARAM_RAM_SIZE) {
 		pr_err("Requested Write len exceeds 2K PRAM size\n");
@@ -968,8 +1200,6 @@ static ssize_t xtg_pram_write(struct file *filp, struct kobject *kobj,
 
 	/* Program each command */
 	if (count == sizeof(struct xtg_pram)) {
-		struct xtg_pram *cmdp = (struct xtg_pram *)buf;
-		u32 param_word;
 
 		if (!cmdp)
 			return -EINVAL;
@@ -1000,9 +1230,9 @@ static ssize_t xtg_pram_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t xtg_pram_mmap(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *attr,
-				struct vm_area_struct *vma)
+static int xtg_pram_mmap(struct file *filp, struct kobject *kobj,
+			 struct bin_attribute *attr,
+			 struct vm_area_struct *vma)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1020,7 +1250,7 @@ static ssize_t xtg_pram_mmap(struct file *filp, struct kobject *kobj,
 static struct bin_attribute xtg_pram_attr = {
 	.attr =	{
 		.name = "parameter_ram",
-		.mode = S_IRUGO | S_IWUSR,
+		.mode = 0644,
 	},
 	.size = XTG_PARAM_RAM_SIZE,
 	.read = xtg_pram_read,
@@ -1029,8 +1259,8 @@ static struct bin_attribute xtg_pram_attr = {
 };
 
 static ssize_t xtg_cram_read(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			     struct bin_attribute *bin_attr,
+			     char *buf, loff_t off, size_t count)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1042,12 +1272,14 @@ static ssize_t xtg_cram_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t xtg_cram_write(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			      struct bin_attribute *bin_attr,
+			      char *buf, loff_t off, size_t count)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
 	u32 *data = (u32 *)buf;
+	struct xtg_cram *cmdp = (struct xtg_cram *)buf;
+	u32 cmd_words[CMD_WDS + EXT_WDS];
 
 	if (off >= XTG_COMMAND_RAM_SIZE) {
 		pr_err("Requested Write len exceeds 8K CRAM size\n");
@@ -1056,8 +1288,6 @@ static ssize_t xtg_cram_write(struct file *filp, struct kobject *kobj,
 
 	/* Program each command */
 	if (count == sizeof(struct xtg_cram)) {
-		struct xtg_cram *cmdp = (struct xtg_cram *)buf;
-		u32 cmd_words[CMD_WDS + EXT_WDS];
 
 		if (!cmdp)
 			return -EINVAL;
@@ -1097,9 +1327,9 @@ static ssize_t xtg_cram_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t xtg_cram_mmap(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *attr,
-				struct vm_area_struct *vma)
+static int xtg_cram_mmap(struct file *filp, struct kobject *kobj,
+			 struct bin_attribute *attr,
+			 struct vm_area_struct *vma)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1118,7 +1348,7 @@ static ssize_t xtg_cram_mmap(struct file *filp, struct kobject *kobj,
 static struct bin_attribute xtg_cram_attr = {
 	.attr =	{
 		.name = "command_ram",
-		.mode = S_IRUGO | S_IWUSR,
+		.mode = 0644,
 	},
 	.size = XTG_COMMAND_RAM_SIZE,
 	.read = xtg_cram_read,
@@ -1127,8 +1357,8 @@ static struct bin_attribute xtg_cram_attr = {
 };
 
 static ssize_t xtg_mram_read(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			     struct bin_attribute *bin_attr,
+			     char *buf, loff_t off, size_t count)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1140,8 +1370,8 @@ static ssize_t xtg_mram_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t xtg_mram_write(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
-				char *buf, loff_t off, size_t count)
+			      struct bin_attribute *bin_attr,
+			      char *buf, loff_t off, size_t count)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1157,9 +1387,9 @@ static ssize_t xtg_mram_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static ssize_t xtg_mram_mmap(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *attr,
-				struct vm_area_struct *vma)
+static int xtg_mram_mmap(struct file *filp, struct kobject *kobj,
+			 struct bin_attribute *attr,
+			 struct vm_area_struct *vma)
 {
 	struct xtg_dev_info *tg =
 		to_xtg_dev_info(container_of(kobj, struct device, kobj));
@@ -1178,7 +1408,7 @@ static ssize_t xtg_mram_mmap(struct file *filp, struct kobject *kobj,
 static struct bin_attribute xtg_mram_attr = {
 	.attr =	{
 		.name = "master_ram",
-		.mode = S_IRUGO | S_IWUSR,
+		.mode = 0644,
 	},
 	.size = XTG_MASTER_RAM_SIZE,
 	.read = xtg_mram_read,
@@ -1211,8 +1441,14 @@ static const struct attribute *xtg_attrs[] = {
 	&dev_attr_static_transferdone.attr,
 	&dev_attr_stream_transfercnt.attr,
 	&dev_attr_stream_transferlen.attr,
+	&dev_attr_stream_tkts1.attr,
+	&dev_attr_stream_tkts2.attr,
+	&dev_attr_stream_tkts3.attr,
+	&dev_attr_stream_tkts4.attr,
+	&dev_attr_stream_cfg.attr,
 	&dev_attr_stream_enable.attr,
 	&dev_attr_reset_static_transferdone.attr,
+	&dev_attr_loop_enable.attr,
 	NULL,
 };
 
@@ -1220,6 +1456,7 @@ static const struct attribute_group xtg_attributes = {
 	.attrs = (struct attribute **)xtg_attrs,
 	.bin_attrs = xtg_bin_attrs,
 };
+
 /**
  * xtg_cmp_intr_handler - Master Complete Interrupt handler
  * @irq: IRQ number
@@ -1232,8 +1469,7 @@ static irqreturn_t xtg_cmp_intr_handler(int irq, void *data)
 	struct xtg_dev_info *tg = (struct xtg_dev_info *)data;
 
 	writel(readl(tg->regs + XTG_ERR_STS_OFFSET) |
-			XTG_ERR_STS_MSTDONE_MASK,
-		tg->regs + XTG_ERR_STS_OFFSET);
+	       XTG_ERR_STS_MSTDONE_MASK, tg->regs + XTG_ERR_STS_OFFSET);
 
 	return IRQ_HANDLED;
 }
@@ -1251,12 +1487,12 @@ static irqreturn_t xtg_err_intr_handler(int irq, void *data)
 	u32 value;
 
 	value = readl(tg->regs + XTG_ERR_STS_OFFSET) &
-			XTG_ERR_ALL_ERRS_MASK;
+		      XTG_ERR_ALL_ERRS_MASK;
 
 	if (value) {
 		dev_err(tg->dev, "Found errors 0x%08x\n", value);
 		writel(readl(tg->regs + XTG_ERR_STS_OFFSET) | value,
-			tg->regs + XTG_ERR_STS_OFFSET);
+		       tg->regs + XTG_ERR_STS_OFFSET);
 	}
 
 	return IRQ_HANDLED;
@@ -1267,7 +1503,7 @@ static irqreturn_t xtg_err_intr_handler(int irq, void *data)
  * @pdev: Pointer to the platform_device structure
  *
  * This is the driver probe routine. It does all the memory
- * allocation and creates sysfs entires for the device.
+ * allocation and creates sysfs entries for the device.
  *
  * Return: 0 on success and failure value on error
  */
@@ -1283,7 +1519,7 @@ static int xtg_probe(struct platform_device *pdev)
 	if (!tg)
 		return -ENOMEM;
 
-	tg->dev = &(pdev->dev);
+	tg->dev = &pdev->dev;
 	dev = tg->dev;
 	node = pdev->dev.of_node;
 
@@ -1292,7 +1528,6 @@ static int xtg_probe(struct platform_device *pdev)
 	tg->regs = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(tg->regs))
 		return PTR_ERR(tg->regs);
-
 
 	/* Save physical base address */
 	tg->phys_base_addr = res->start;
@@ -1310,7 +1545,7 @@ static int xtg_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "unable to get err irq");
 	} else {
 		err = devm_request_irq(&pdev->dev, irq, xtg_err_intr_handler,
-					0, dev_name(&pdev->dev), tg);
+				       0, dev_name(&pdev->dev), tg);
 		if (err < 0) {
 			dev_err(&pdev->dev, "unable to request irq %d", irq);
 			return err;
@@ -1323,11 +1558,27 @@ static int xtg_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "unable to get cmp irq");
 	} else {
 		err = devm_request_irq(&pdev->dev, irq, xtg_cmp_intr_handler,
-					0, dev_name(&pdev->dev), tg);
+				       0, dev_name(&pdev->dev), tg);
 		if (err < 0) {
 			dev_err(&pdev->dev, "unable to request irq %d", irq);
 			return err;
 		}
+	}
+
+	tg->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(tg->clk)) {
+		if (PTR_ERR(tg->clk) != -ENOENT) {
+			if (PTR_ERR(tg->clk) != -EPROBE_DEFER)
+				dev_err(&pdev->dev, "input clock not found\n");
+			return PTR_ERR(tg->clk);
+		}
+		tg->clk = NULL;
+	}
+
+	err = clk_prepare_enable(tg->clk);
+	if (err) {
+		dev_err(&pdev->dev, "Unable to enable clock.\n");
+		return err;
 	}
 
 	/*
@@ -1336,6 +1587,7 @@ static int xtg_probe(struct platform_device *pdev)
 	err = sysfs_create_group(&dev->kobj, &xtg_attributes);
 	if (err < 0) {
 		dev_err(tg->dev, "unable to create sysfs entries\n");
+		clk_disable_unprepare(tg->clk);
 		return err;
 	}
 
@@ -1375,12 +1627,12 @@ static int xtg_remove(struct platform_device *pdev)
 	tg = dev_get_drvdata(&pdev->dev);
 	dev = tg->dev;
 	sysfs_remove_group(&dev->kobj, &xtg_attributes);
-
+	clk_disable_unprepare(tg->clk);
 
 	return 0;
 }
 
-static struct of_device_id xtg_of_match[] = {
+static const struct of_device_id xtg_of_match[] = {
 	{ .compatible = "xlnx,axi-traffic-gen", },
 	{ /* end of table */ }
 };

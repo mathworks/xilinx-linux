@@ -18,6 +18,7 @@
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/clkdev.h>
+#include <linux/math64.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -135,6 +136,25 @@ static int ad6676_spi_write(struct spi_device *spi, unsigned reg, unsigned val)
 	return 0;
 }
 
+static int ad6676_reg_access(struct iio_dev *indio_dev, unsigned int reg,
+	unsigned int writeval, unsigned int *readval)
+{
+	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
+	struct spi_device *spi = conv->spi;
+	int ret;
+
+	if (readval == NULL) {
+		return ad6676_spi_write(spi, reg, writeval);
+	} else {
+		ret = ad6676_spi_read(spi, reg);
+		if (ret < 0)
+			return ret;
+		*readval = ret;
+	}
+
+	return 0;
+}
+
 static int ad6676_set_splitreg(struct spi_device *spi, u32 reg, u32 val)
 {
 	int ret;
@@ -202,8 +222,8 @@ static u32 ad6676_get_fif(struct axiadc_converter *conv)
 	mix1 = mix1 * pdata->base.f_adc_hz;
 	mix2 = mix2 * pdata->base.f_adc_hz;
 
-	do_div(mix1, 64);
-	do_div(mix2, phy->m);
+	mix1 = div_s64(mix1, 64);
+	mix2 = div_s64(mix2, phy->m);
 
 	return mix1 + mix2;
 }
@@ -595,11 +615,24 @@ static int ad6676_testmode_set(struct iio_dev *indio_dev,
 	return 0;
 }
 
-static int ad6676_test_and_outputmode_set(struct iio_dev *indio_dev,
-					  unsigned chan, unsigned mode)
+static int ad6676_set_pnsel(struct iio_dev *indio_dev, unsigned int chan,
+	enum adc_pn_sel sel)
 {
 	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
+	unsigned int mode;
 	int ret;
+
+	switch (sel) {
+	case ADC_PN9:
+		mode = TESTGENMODE_PN9_SEQ;
+		break;
+	case ADC_PN23A:
+		mode = TESTGENMODE_PN23_SEQ;
+		break;
+	default:
+		mode = TESTGENMODE_OFF;
+		break;
+	}
 
 	if (mode == TESTGENMODE_OFF)
 		ret = ad6676_spi_write(conv->spi, AD6676_DP_CTRL,
@@ -976,6 +1009,7 @@ static int ad6676_gpio_config(struct axiadc_converter *conv)
 	struct spi_device *spi = conv->spi;
 	struct gpio_board_cfg board_cfg[5];
 	enum gpiod_flags flags;
+	struct gpio_desc *temp;
 	int i;
 
 	board_cfg[0].gpio_name = "oen";
@@ -1021,7 +1055,7 @@ static int ad6676_gpio_config(struct axiadc_converter *conv)
 		else
 			flags = GPIOD_OUT_LOW;
 
-		devm_gpiod_get(&spi->dev, board_cfg[i].gpio_name, flags);
+		temp = devm_gpiod_get(&spi->dev, board_cfg[i].gpio_name, flags);
 	}
 
 	return 0;
@@ -1042,10 +1076,8 @@ static struct ad6676_platform_data *ad6676_parse_dt(struct device *dev)
 	struct ad6676_platform_data *pdata;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
+	if (!pdata)
 		return NULL;
-	}
 
 	pdata->spi3wire = of_property_read_bool(np, "adi,spi-3wire-enable");
 
@@ -1129,10 +1161,14 @@ static int ad6676_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
+	phy->pdata->base.attenuation = 0x0C;
+
 	ad6676_gpio_config(conv);
 
 	/* RESET here */
-	conv->pwrdown_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_HIGH);
+	conv->pwrdown_gpio = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(conv->pwrdown_gpio))
+		return PTR_ERR(conv->pwrdown_gpio);
 
 	mdelay(100);
 
@@ -1169,12 +1205,11 @@ static int ad6676_probe(struct spi_device *spi)
 	if (ret < 0)
 		goto out;
 
-	conv->write = ad6676_spi_write;
-	conv->read = ad6676_spi_read;
+	conv->reg_access = ad6676_reg_access;
 	conv->write_raw = ad6676_write_raw;
 	conv->read_raw = ad6676_read_raw;
 	conv->post_setup = ad6676_post_setup;
-	conv->testmode_set = ad6676_test_and_outputmode_set;
+	conv->set_pnsel = ad6676_set_pnsel;
 	conv->attrs = &ad6676_attribute_group;
 
 	return 0;

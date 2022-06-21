@@ -1,7 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices AD-FMCJESDADC1 FMC
+ * https://wiki.analog.com/resources/eval/user-guides/ad-fmcjesdadc1-ebz
+ *
+ * hdl_project: <fmcjesdadc1/zc706>
+ * board_revision: <>
+ *
+ * Copyright (C) 2014-2021 Analog Devices Inc.
+*/
 /dts-v1/;
 
-/include/ "zynq-zc706.dtsi"
-/include/ "zynq-zc706-adv7511.dtsi"
+#include "zynq-zc706.dtsi"
+#include "zynq-zc706-adv7511.dtsi"
+#include <dt-bindings/jesd204/adxcvr.h>
 
 &i2c_mux {
 	i2c@5 { /* HPC IIC */
@@ -14,11 +25,6 @@
 			reg = <0x50>;
 		};
 
-		eeprom@54 {
-			compatible = "at24,24c02";
-			reg = <0x54>;
-		};
-
 		ad7291@2f {
 			compatible = "adi,ad7291";
 			reg = <0x2f>;
@@ -26,121 +32,76 @@
 	};
 };
 
-
 &fpga_axi {
-	rx_dma0: rx-dmac@7c420000 {
+	rx_dma: rx-dmac@7c420000 {
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <0>;
+		adi,channels {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <128>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <128>;
+				adi,destination-bus-type = <0>;
+			};
 		};
 	};
 
-	rx_dma1: rx-dmac@7c430000 {
-		compatible = "adi,axi-dmac-1.00.a";
-		reg = <0x7c430000 0x10000>;
-		#dma-cells = <1>;
-		interrupts = <0 56 0>;
-		clocks = <&clkc 16>;
-
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <0>;
-		};
-	};
-
-	axi_ad9250_core0: axi-ad9250-hpc-0@44a10000 {
+	axi_ad9250_core: axi-ad9250-hpc-0@44a10000 {
 		compatible = "xlnx,axi-ad9250-1.00.a";
-		reg = < 0x44a10000 0x10000 >;
-		dmas = <&rx_dma0 0>;
+		reg = <0x44a10000 0x10000>;
+		dmas = <&rx_dma 0>;
 		dma-names = "rx";
+
 		spibus-connected = <&adc0_ad9250>;
+	};
 
-		xlnx,pcore-device-type = <0x0>;
-		xlnx,pcore-id = <0x0>;
-		xlnx,pcore-iodelay-group = "adc_if_delay_group";
-		xlnx,s-axi-min-size = <0xffff>;
-	} ;
+	axi_jesd: axi-jesd204-rx@44aa0000 {
+		compatible = "adi,axi-jesd204-rx-1.0";
+		reg = <0x44aa0000 0x1000>;
 
-	axi_ad9250_core1: axi-ad9250-hpc-1@44a20000 {
-		compatible = "xlnx,axi-ad9250-1.00.a";
-		reg = < 0x44a20000 0x10000 >;
-		dmas = <&rx_dma1 0>;
-		dma-names = "rx";
-		spibus-connected = <&adc1_ad9250>;
+		interrupts = <0 55 IRQ_TYPE_LEVEL_HIGH>;
 
-		xlnx,pcore-device-type = <0x0>;
-		xlnx,pcore-id = <0x0>;
-		xlnx,pcore-iodelay-group = "adc_if_delay_group";
-		xlnx,s-axi-min-size = <0xffff>;
-	} ;
+		clocks = <&clkc 16>, <&axi_adxcvr 1>, <&axi_adxcvr 0>;
+		clock-names = "s_axi_aclk", "device_clk", "lane_clk";
 
-	axi_jesd: axi-jesd204b-rx@44a91000 {
 		#clock-cells = <0>;
-		compatible = "xlnx,jesd204-5.1";
-		reg = < 0x44a91000 0x1000 >;
+		clock-output-names = "jesd_adc_lane_clk";
 
-		clocks = <&axi_jesd_gt 0>;
-		clock-names = "adc_gt_clk";
-		clock-output-names = "jesd_adc_clk";
+		adi,octets-per-frame = <2>;
+		adi,frames-per-multiframe = <32>;
+	};
 
-		xlnx,gt-line-rate = "8.0";
-		xlnx,gt-refclk-freq = "200.0";
-
-		xlnx,lanes = <4>;
-		xlnx,frames-per-multiframe = <32>;
-		xlnx,bytes-per-frame = <2>;
-		xlnx,subclass = <1>;
-		xlnx,lanesync-enable;
-		xlnx,scramble-enable;
-		xlnx,sysref-enable;
-
-		xlnx,lmfc-buffer-size = <0x6>;
-		xlnx,node-is-transmit = <0x0>;
-		xlnx,speedgrade = <0xfffffffe>;
-		xlnx,supportlevel = <0x0>;
-		xlnx,transceiver = "GTXE2";
-		xlnx,transceivercontrol = "false";
-		xlnx,use-bram = <0x1>;
-		xlnx,use-jspat = "false";
-		xlnx,use-rpat = "false";
-	} ;
-
-	axi_jesd_gt: axi-jesd-gt-rx-tx@44a60000 {
-		#clock-cells = <1>;
-		compatible = "xlnx,axi-jesd-gt-1.0";
-		reg = < 0x44a60000 0x10000 >;
+	axi_adxcvr: axi-adxcvr-rx@44a60000 {
+		compatible = "adi,axi-adxcvr-1.0";
+		reg = <0x44a60000 0x1000>;
 
 		clocks = <&clk_ad9517 0>;
-		clock-names = "adc_clk";
-		clock-output-names = "adc_gt_clk";
+		clock-names = "conv";
 
-		adi,rx-sys-clk-select = <0>;
-		adi,rx-out-clk-select = <2>;
+		#clock-cells = <1>;
+		clock-output-names = "adc_gt_clk", "rx_out_clk";
+
+		adi,sys-clk-select = <XCVR_CPLL>;
+		adi,out-clk-select = <XCVR_OUTCLK_PMA>;
 		adi,use-cpll-enable;
-		adi,lanes = <4>;
+	};
+};
 
-		xlnx,pcore-cpll-fbdiv = <0x2>;
-		xlnx,pcore-device-type = <0x0>;
-		xlnx,pcore-id = <0x0>;
-		xlnx,pcore-num-of-lanes = <0x4>;
-		xlnx,pcore-pma-rsv = <0x1e7080>;
-		xlnx,pcore-qpll-cfg = "000011010000000000110000001";
-		xlnx,pcore-qpll-fbdiv = <0x9000>;
-		xlnx,pcore-qpll-fbdiv-ratio = <0x1>;
-		xlnx,pcore-qpll-refclk-div = <0x1>;
-		xlnx,pcore-rx-cdr-cfg = "0x0B000023FF10400020";
-		xlnx,pcore-rx-clk25-div = <0x14>;
-		xlnx,pcore-rx-out-div = <0x1>;
-		xlnx,pcore-tx-clk25-div = <0x14>;
-		xlnx,pcore-tx-out-div = <0x1>;
-		xlnx,s-axi-min-size = <0xffff>;
-	} ;
+&gpio0 {
+	sysref_enable {
+		gpio-hog;
+		gpios = <86 0>;
+		output-high;
+		line-name = "sysref-enable";
+	};
 };
 
 &spi0 {

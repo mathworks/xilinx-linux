@@ -1,7 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices AD-FMCOMMS2-EBZ/AD-FMCOMMS3-EBZ
+ * https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms2-ebz
+ * https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms3-ebz
+ *
+ * hdl_project: <fmcomms2/zc706>
+ * board_revision: <>
+ *
+ * Copyright (C) 2014-2019 Analog Devices Inc.
+ */
 /dts-v1/;
 
-/include/ "zynq-zc706.dtsi"
-/include/ "zynq-zc706-adv7511.dtsi"
+#include "zynq-zc706.dtsi"
+#include "zynq-zc706-adv7511.dtsi"
 
 &i2c_mux {
 	fmc_i2c: i2c@6 {
@@ -16,12 +27,20 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c400000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <0>;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <64>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <0>;
+			};
 		};
 	};
 
@@ -29,13 +48,20 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 56 0>;
+		interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,buswidth = <64>;
-			adi,type = <1>;
-			adi,cyclic;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <64>;
+				adi,source-bus-type = <0>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <2>;
+			};
 		};
 	};
 
@@ -44,38 +70,20 @@
 		reg = <0x79020000 0x6000>;
 		dmas = <&rx_dma 0>;
 		dma-names = "rx";
+
 		spibus-connected = <&adc0_ad9361>;
-		xlnx,dphase-timeout = <0x8>;
-		xlnx,num-mem = <0x1>;
-		xlnx,num-reg = <0x1>;
-		xlnx,s-axi-min-size = <0x1ff>;
-		xlnx,slv-awidth = <0x20>;
-		xlnx,slv-dwidth = <0x20>;
-		xlnx,use-wstrb = <0x0>;
 	};
 
 	cf_ad9361_dac_core_0: cf-ad9361-dds-core-lpc@79024000 {
 		compatible = "adi,axi-ad9361-dds-6.00.a";
 		reg = <0x79024000 0x1000>;
-
-		adi,axi-dds-rate = <1>; /* use 1 for 1RX1TX mode */
-		adi,axi-dds-1-rf-channel;
-
 		clocks = <&adc0_ad9361 13>;
 		clock-names = "sampl_clk";
 		dmas = <&tx_dma 0>;
 		dma-names = "tx";
-		dac-sample-frequency = <491520000>;
-		xlnx,dphase-timeout = <0x8>;
-		xlnx,num-mem = <0x1>;
-		xlnx,num-reg = <0x1>;
-		xlnx,s-axi-min-size = <0x1ff>;
-		xlnx,slv-awidth = <0x20>;
-		xlnx,slv-dwidth = <0x20>;
-		xlnx,use-wstrb = <0x0>;
 	};
 
-	mwipcore@43C00000 {
+	mwipcore@43c00000 {
 		compatible = "mathworks,mwipcore-axi4lite-v1.00";
 		reg = <0x43C00000 0xffff>;
 	};

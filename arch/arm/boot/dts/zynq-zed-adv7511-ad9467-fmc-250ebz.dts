@@ -1,35 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Analog Devices AD9467
+ * https://wiki.analog.com/resources/tools-software/linux-drivers/iio-adc/axi-adc-hdl
+ * https://wiki.analog.com/resources/eval/ad9467-fmc-250ebz
+ * https://wiki.analog.com/resources/fpga/xilinx/fmc/ad9467
+ *
+ * hdl_project: <ad9467_fmc/zed>
+ * board_revision: <>
+ *
+ * Copyright (C) 2016-2019 Analog Devices Inc.
+ */
 /dts-v1/;
 
-/include/ "zynq-zed.dtsi"
-/include/ "zynq-zed-adv7511.dtsi"
+#include "zynq-zed.dtsi"
+#include "zynq-zed-adv7511.dtsi"
 
 &fpga_axi {
-	rx_dma: rx-dmac@44A30000 {
+	rx_dma: rx-dmac@44a30000 {
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x44A30000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
-		dma-channel {
-			adi,type = <0>;
+		adi,channels {
+			#size-cells = <0>;
+			#address-cells = <1>;
+
+			dma-channel@0 {
+				reg = <0>;
+				adi,source-bus-width = <16>;
+				adi,source-bus-type = <2>;
+				adi,destination-bus-width = <64>;
+				adi,destination-bus-type = <0>;
+			};
 		};
 	};
 
-	cf_ad9467_core_0: cf-ad9467-core-lpc@44A00000 {
-		compatible = "xlnx,cf-ad9467-core-1.00.a";
+	cf_ad9467_core_0: cf-ad9467-core-lpc@44a00000 {
+		compatible = "adi,axi-adc-10.0.a";
 		reg = <0x44A00000 0x10000>;
 		dmas = <&rx_dma 0>;
 		dma-names = "rx";
+
 		spibus-connected = <&adc_ad9467>;
-		xlnx,dphase-timeout = <0x8>;
-		xlnx,num-mem = <0x1>;
-		xlnx,num-reg = <0x1>;
-		xlnx,s-axi-min-size = <0x1ff>;
-		xlnx,slv-awidth = <0x20>;
-		xlnx,slv-dwidth = <0x20>;
-		xlnx,use-wstrb = <0x0>;
-	} ;
+	};
 };
 
 &spi0 {

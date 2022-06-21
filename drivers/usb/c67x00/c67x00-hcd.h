@@ -1,24 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * c67x00-hcd.h: Cypress C67X00 USB HCD
  *
  * Copyright (C) 2006-2008 Barco N.V.
  *    Derived from the Cypress cy7c67200/300 ezusb linux driver and
  *    based on multiple host controller drivers inside the linux kernel.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- * MA  02110-1301  USA.
  */
 
 #ifndef _USB_C67X00_HCD_H
@@ -52,9 +38,7 @@
  */
 
 #define TOTAL_FRAME_BW		12000
-#define DEFAULT_EOT		9600 /* This value fits MicroBlaze system.
-					it may requires a bigger value for
-					some USB device. */
+#define DEFAULT_EOT		2250
 
 #define MAX_FRAME_BW_STD	(TOTAL_FRAME_BW - DEFAULT_EOT)
 #define MAX_FRAME_BW_ISO	2400

@@ -113,10 +113,10 @@ struct xenvif_stats {
 	 * A subset of struct net_device_stats that contains only the
 	 * fields that are updated in netback.c for each queue.
 	 */
-	unsigned int rx_bytes;
-	unsigned int rx_packets;
-	unsigned int tx_bytes;
-	unsigned int tx_packets;
+	u64 rx_bytes;
+	u64 rx_packets;
+	u64 tx_bytes;
+	u64 tx_packets;
 
 	/* Additional stats used by xenvif */
 	unsigned long rx_gso_checksum_fixup;
@@ -139,6 +139,20 @@ struct xenvif_queue { /* Per-queue data for xenvif */
 	unsigned int id; /* Queue ID, 0-based */
 	char name[QUEUE_NAME_SIZE]; /* DEVNAME-qN */
 	struct xenvif *vif; /* Parent VIF */
+
+	/*
+	 * TX/RX common EOI handling.
+	 * When feature-split-event-channels = 0, interrupt handler sets
+	 * NETBK_COMMON_EOI, otherwise NETBK_RX_EOI and NETBK_TX_EOI are set
+	 * by the RX and TX interrupt handlers.
+	 * RX and TX handler threads will issue an EOI when either
+	 * NETBK_COMMON_EOI or their specific bits (NETBK_RX_EOI or
+	 * NETBK_TX_EOI) are set and they will reset those bits.
+	 */
+	atomic_t eoi_pending;
+#define NETBK_RX_EOI		0x01
+#define NETBK_TX_EOI		0x02
+#define NETBK_COMMON_EOI	0x04
 
 	/* Use NAPI for guest TX */
 	struct napi_struct napi;
@@ -199,6 +213,7 @@ struct xenvif_queue { /* Per-queue data for xenvif */
 	unsigned long   remaining_credit;
 	struct timer_list credit_timeout;
 	u64 credit_window_start;
+	bool rate_limited;
 
 	/* Statistics */
 	struct xenvif_stats stats;
@@ -240,10 +255,27 @@ struct xenvif_hash_cache {
 struct xenvif_hash {
 	unsigned int alg;
 	u32 flags;
+	bool mapping_sel;
 	u8 key[XEN_NETBK_MAX_HASH_KEY_SIZE];
-	u32 mapping[XEN_NETBK_MAX_HASH_MAPPING_SIZE];
+	u32 mapping[2][XEN_NETBK_MAX_HASH_MAPPING_SIZE];
 	unsigned int size;
 	struct xenvif_hash_cache cache;
+};
+
+struct backend_info {
+	struct xenbus_device *dev;
+	struct xenvif *vif;
+
+	/* This is the state that will be reflected in xenstore when any
+	 * active hotplug script completes.
+	 */
+	enum xenbus_state state;
+
+	enum xenbus_state frontend_state;
+	struct xenbus_watch hotplug_status_watch;
+	u8 have_hotplug_status_watch:1;
+
+	const char *hotplug_script;
 };
 
 struct xenvif {
@@ -263,6 +295,9 @@ struct xenvif {
 	u8 ipv6_csum:1;
 	u8 multicast_control:1;
 
+	/* headroom requested by xen-netfront */
+	u16 xdp_headroom;
+
 	/* Is this interface disabled? True when backend discovers
 	 * frontend is rogue.
 	 */
@@ -280,6 +315,8 @@ struct xenvif {
 
 	struct xenbus_watch credit_watch;
 	struct xenbus_watch mcast_ctrl_watch;
+
+	struct backend_info *be;
 
 	spinlock_t lock;
 
@@ -306,7 +343,7 @@ static inline struct xenbus_device *xenvif_to_xenbus_device(struct xenvif *vif)
 	return to_xenbus_device(vif->dev->dev.parent);
 }
 
-void xenvif_tx_credit_callback(unsigned long data);
+void xenvif_tx_credit_callback(struct timer_list *t);
 
 struct xenvif *xenvif_alloc(struct device *parent,
 			    domid_t domid,
@@ -355,6 +392,7 @@ int xenvif_dealloc_kthread(void *data);
 
 irqreturn_t xenvif_ctrl_irq_fn(int irq, void *data);
 
+bool xenvif_have_rx_work(struct xenvif_queue *queue, bool test_kthread);
 void xenvif_rx_action(struct xenvif_queue *queue);
 void xenvif_rx_queue_tail(struct xenvif_queue *queue, struct sk_buff *skb);
 
@@ -375,6 +413,7 @@ static inline pending_ring_idx_t nr_pending_reqs(struct xenvif_queue *queue)
 irqreturn_t xenvif_interrupt(int irq, void *dev_id);
 
 extern bool separate_tx_rx_irq;
+extern bool provides_xdp_headroom;
 
 extern unsigned int rx_drain_timeout_msecs;
 extern unsigned int rx_stall_timeout_msecs;

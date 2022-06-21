@@ -1,7 +1,8 @@
 /dts-v1/;
 
-/include/ "zynq-zc706.dtsi"
-/include/ "zynq-zc706-adv7511.dtsi"
+#include <dt-bindings/jesd204/adxcvr.h>
+#include "zynq-zc706.dtsi"
+#include "zynq-zc706-adv7511.dtsi"
 
 / {
 
@@ -38,7 +39,7 @@
 	adc0_ad9625: ad9625@0 {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		compatible = "ad9625";
+		compatible = "adi,ad9625";
 		reg = <0>;
 		spi-max-frequency = <10000000>;
 		clocks = <&axi_ad9625_jesd>, <&ad9625_clkin>;
@@ -47,7 +48,7 @@
 
 	ad9625_clkin: adf4355@1 {
 		#clock-cells = <0>;
-		compatible = "adf4355-2";
+		compatible = "adi,adf4355-2";
 		reg = <1>;
 		spi-max-frequency = <10000000>;
 		clocks = <&adf4351_clkin>;
@@ -79,11 +80,6 @@
 			compatible = "at24,24c02";
 			reg = <0x50>;
 		};
-
-		eeprom@54 {
-			compatible = "at24,24c02";
-			reg = <0x54>;
-		};
 	};
 
 	i2c@6 { /* LPC IIC */
@@ -94,11 +90,6 @@
 			compatible = "at24,24c02";
 			reg = <0x50>;
 		};
-
-		eeprom@54 {
-			compatible = "at24,24c02";
-			reg = <0x54>;
-		};
 	};
 };
 
@@ -107,7 +98,7 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 0>;
+		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clkc 16>;
 
 		dma-channel {
@@ -150,9 +141,7 @@
 		clock-names = "adc_clk";
 		clock-output-names = "adc_gt_clk";
 
-		adi,rx-sys-clk-select = <0>;
-		adi,rx-out-clk-select = <2>;
-		adi,use-cpll-enable;
-		adi,lanes = <8>;
+		adi,sys-clk-select = <XCVR_CPLL>;
+		adi,out-clk-select = <XCVR_OUTCLK_PMA>;
 	} ;
 };

@@ -6,6 +6,16 @@
  * Licensed under the GPL-2.
  */
 
+/**
+ * Note:
+ * This driver is an old copy from the cf_axi_adc/axi-adc driver.
+ * And some things were common with that driver. The cf_axi_adc/axi-adc
+ * driver is a more complete implementation, while this one is just caring
+ * about Motor Control.
+ * The code duplication [here] is intentional, as we try to cleanup the
+ * AXI ADC and decouple it from this driver.
+ */
+
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
@@ -26,9 +36,94 @@
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
 
-#include "cf_axi_adc.h"
+#include <linux/dma-direction.h>
+#include <linux/iio/buffer_impl.h>
+#include <linux/iio/buffer-dma.h>
+#include <linux/iio/buffer-dmaengine.h>
+
+#include <linux/fpga/adi-axi-common.h>
+
+/* ADC Common */
+#define ADI_REG_RSTN			0x0040
+#define ADI_RSTN			(1 << 0)
+
+#define ADI_REG_STATUS			0x005C
+#define ADI_REG_DMA_STATUS		0x0088
+
+/* ADC Channel */
+#define ADI_REG_CHAN_CNTRL(c)		(0x0400 + (c) * 0x40)
+#define ADI_ENABLE			(1 << 0)
 
 #define ID_AD_MC_SPEED   1
+
+struct axiadc_chip_info {
+	char				*name;
+	unsigned			num_channels;
+	const unsigned long		*scan_masks;
+	unsigned int			max_rate;
+	struct iio_chan_spec		channel[1];
+};
+
+struct axiadc_state {
+	struct iio_info			iio_info;
+	void __iomem			*regs;
+	unsigned int			pcore_version;
+};
+
+static inline void axiadc_write(struct axiadc_state *st, unsigned reg, unsigned val)
+{
+	iowrite32(val, st->regs + reg);
+}
+
+static inline unsigned int axiadc_read(struct axiadc_state *st, unsigned reg)
+{
+	return ioread32(st->regs + reg);
+}
+
+static int axiadc_hw_submit_block(struct iio_dma_buffer_queue *queue,
+	struct iio_dma_buffer_block *block)
+{
+	struct iio_dev *indio_dev = queue->driver_data;
+	struct axiadc_state *st = iio_priv(indio_dev);
+
+	block->block.bytes_used = block->block.size;
+
+	iio_dmaengine_buffer_submit_block(queue, block, DMA_FROM_DEVICE);
+
+	axiadc_write(st, ADI_REG_STATUS, ~0);
+	axiadc_write(st, ADI_REG_DMA_STATUS, ~0);
+
+	return 0;
+}
+
+static const struct iio_dma_buffer_ops axiadc_dma_buffer_ops = {
+	.submit = axiadc_hw_submit_block,
+	.abort = iio_dmaengine_buffer_abort,
+};
+
+static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
+	const char *dma_name)
+{
+	struct iio_buffer *buffer;
+
+	if (dma_name == NULL)
+		dma_name = "rx";
+
+	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
+			&axiadc_dma_buffer_ops, indio_dev);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	indio_dev->modes |= INDIO_BUFFER_HARDWARE;
+	iio_device_attach_buffer(indio_dev, buffer);
+
+	return 0;
+}
+
+static void axiadc_unconfigure_ring_stream(struct iio_dev *indio_dev)
+{
+	iio_dmaengine_buffer_free(indio_dev->buffer);
+}
 
 static int axiadc_reg_access(struct iio_dev *indio_dev,
 			     unsigned reg, unsigned writeval,
@@ -67,7 +162,6 @@ static int axiadc_update_scan_mode(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info axiadc_info = {
-	.driver_module = THIS_MODULE,
 	.debugfs_reg_access = &axiadc_reg_access,
 	.update_scan_mode = &axiadc_update_scan_mode,
 };
@@ -121,7 +215,7 @@ static int axiadc_probe(struct platform_device *pdev)
 	axiadc_write(st, ADI_REG_RSTN, 0);
 	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN);
 
-	st->pcore_version = axiadc_read(st, ADI_REG_VERSION);
+	st->pcore_version = axiadc_read(st, ADI_AXI_REG_VERSION);
 
 	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->name = pdev->dev.of_node->name;
@@ -141,11 +235,9 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unconfigure_ring;
 
-	*indio_dev->buffer->scan_mask = (1UL << chip_info->num_channels) - 1;
-
 	dev_info(&pdev->dev, "ADI AIM (0x%X) at 0x%08llX mapped to 0x%p, probed ADC %s as %s\n",
 		 st->pcore_version, (unsigned long long)mem->start, st->regs,
-		 chip_info->name, axiadc_read(st, ADI_REG_ID) ? "SLAVE" : "MASTER");
+		 chip_info->name, axiadc_read(st, ADI_AXI_REG_ID) ? "SLAVE" : "MASTER");
 
 	return 0;
 
@@ -160,7 +252,7 @@ static int axiadc_remove(struct platform_device *pdev)
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 
 	iio_device_unregister(indio_dev);
-	axiadc_unconfigure_ring(indio_dev);
+	axiadc_unconfigure_ring_stream(indio_dev);
 
 	return 0;
 }

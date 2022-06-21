@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Shared Transport driver
  *	HCI-LL module responsible for TI proprietary HCI_LL protocol
  *  Copyright (C) 2009-2010 Texas Instruments
  *  Author: Pavan Savoy <pavan_savoy@ti.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #define pr_fmt(fmt) "(stll) :" fmt
@@ -26,7 +13,6 @@
 #include <linux/ti_wilink_st.h>
 
 /**********************************************************************/
-
 /* internal functions */
 static void send_ll_cmd(struct st_data_s *st_data,
 	unsigned char cmd)
@@ -54,13 +40,7 @@ static void ll_device_want_to_sleep(struct st_data_s *st_data)
 
 	/* communicate to platform about chip asleep */
 	kim_data = st_data->kim_data;
-	if (kim_data->kim_pdev->dev.of_node) {
-		pr_debug("use device tree data");
-		pdata = dt_pdata;
-	} else {
-		pdata = kim_data->kim_pdev->dev.platform_data;
-	}
-
+	pdata = kim_data->kim_pdev->dev.platform_data;
 	if (pdata->chip_asleep)
 		pdata->chip_asleep(NULL);
 }
@@ -93,13 +73,7 @@ static void ll_device_want_to_wakeup(struct st_data_s *st_data)
 
 	/* communicate to platform about chip wakeup */
 	kim_data = st_data->kim_data;
-	if (kim_data->kim_pdev->dev.of_node) {
-		pr_debug("use device tree data");
-		pdata = dt_pdata;
-	} else {
-		pdata = kim_data->kim_pdev->dev.platform_data;
-	}
-
+	pdata = kim_data->kim_pdev->dev.platform_data;
 	if (pdata->chip_awake)
 		pdata->chip_awake(NULL);
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "dm.h"
 #include "persistent-data/dm-transaction-manager.h"
 #include "persistent-data/dm-bitset.h"
@@ -254,7 +255,6 @@ static struct dm_block_validator sb_validator = {
  * Low level metadata handling
  *--------------------------------------------------------------*/
 #define DM_ERA_METADATA_BLOCK_SIZE 4096
-#define DM_ERA_METADATA_CACHE_SIZE 64
 #define ERA_MAX_CONCURRENT_LOCKS 5
 
 struct era_metadata {
@@ -615,7 +615,6 @@ static int create_persistent_data_objects(struct era_metadata *md,
 	int r;
 
 	md->bm = dm_block_manager_create(md->bdev, DM_ERA_METADATA_BLOCK_SIZE,
-					 DM_ERA_METADATA_CACHE_SIZE,
 					 ERA_MAX_CONCURRENT_LOCKS);
 	if (IS_ERR(md->bm)) {
 		DMERR("could not create block manager");
@@ -961,15 +960,15 @@ static int metadata_commit(struct era_metadata *md)
 		}
 	}
 
-	r = save_sm_root(md);
-	if (r) {
-		DMERR("%s: save_sm_root failed", __func__);
-		return r;
-	}
-
 	r = dm_tm_pre_commit(md->tm);
 	if (r) {
 		DMERR("%s: pre commit failed", __func__);
+		return r;
+	}
+
+	r = save_sm_root(md);
+	if (r) {
+		DMERR("%s: save_sm_root failed", __func__);
 		return r;
 	}
 
@@ -1138,7 +1137,6 @@ static int metadata_get_stats(struct era_metadata *md, void *ptr)
 
 struct era {
 	struct dm_target *ti;
-	struct dm_target_callbacks callbacks;
 
 	struct dm_dev *metadata_dev;
 	struct dm_dev *origin_dev;
@@ -1194,7 +1192,7 @@ static dm_block_t get_block(struct era *era, struct bio *bio)
 
 static void remap_to_origin(struct era *era, struct bio *bio)
 {
-	bio->bi_bdev = era->origin_dev->bdev;
+	bio_set_dev(bio, era->origin_dev->bdev);
 }
 
 /*----------------------------------------------------------------
@@ -1266,7 +1264,7 @@ static void process_deferred_bios(struct era *era)
 			bio_io_error(bio);
 	else
 		while ((bio = bio_list_pop(&marked_bios)))
-			generic_make_request(bio);
+			submit_bio_noacct(bio);
 }
 
 static void process_rpc_calls(struct era *era)
@@ -1376,18 +1374,6 @@ static void stop_worker(struct era *era)
 /*----------------------------------------------------------------
  * Target methods
  *--------------------------------------------------------------*/
-static int dev_is_congested(struct dm_dev *dev, int bdi_bits)
-{
-	struct request_queue *q = bdev_get_queue(dev->bdev);
-	return bdi_congested(&q->backing_dev_info, bdi_bits);
-}
-
-static int era_is_congested(struct dm_target_callbacks *cb, int bdi_bits)
-{
-	struct era *era = container_of(cb, struct era, callbacks);
-	return dev_is_congested(era->origin_dev, bdi_bits);
-}
-
 static void era_destroy(struct era *era)
 {
 	if (era->md)
@@ -1515,9 +1501,6 @@ static int era_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	ti->flush_supported = true;
 
 	ti->num_discard_bios = 1;
-	ti->discards_supported = true;
-	era->callbacks.congested_fn = era_is_congested;
-	dm_table_add_target_callbacks(ti->table, &era->callbacks);
 
 	return 0;
 }
@@ -1638,7 +1621,8 @@ err:
 	DMEMIT("Error");
 }
 
-static int era_message(struct dm_target *ti, unsigned argc, char **argv)
+static int era_message(struct dm_target *ti, unsigned argc, char **argv,
+		       char *result, unsigned maxlen)
 {
 	struct era *era = ti->private;
 

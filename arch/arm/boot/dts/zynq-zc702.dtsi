@@ -1,4 +1,6 @@
-/include/ "zynq.dtsi"
+#include "zynq.dtsi"
+
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Xilinx Zynq ZC702";
@@ -11,7 +13,7 @@
 	chosen {
 //		bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x1100000,33M ip=:::::eth0:dhcp earlyprintk";
 		bootargs = "console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait";
-		linux,stdout-path = "/amba@0/uart@E0001000";
+		stdout-path = "/amba@0/uart@E0001000";
 	};
 
 	leds {
@@ -87,7 +89,7 @@
 
 		sw15_0 {
 			label = "SW15_0";
-			linux,code = <0>; // SW_LID
+			linux,code = <13>; // SW_LINEIN_INSERT
 			linux,input-type = <0x5>; // EV_SW
 			gpios = <&gpio0 56 0>;
 		};
@@ -113,7 +115,7 @@
 	};
 };
 
-&eth {
+&gem0 {
 	phy-handle = <&phy0>;
 	phy-mode = "rgmii-id";
 
@@ -138,23 +140,24 @@
 		reg = <0x0>;
 		spi-tx-bus-width = <1>;
 		spi-rx-bus-width = <4>;
-		partition@0x00000000 {
+		spi-max-frequency = <50000000>;
+		partition@0 {
 			label = "boot";
 			reg = <0x00000000 0x00500000>;
 		};
-		partition@0x00500000 {
+		partition@500000 {
 			label = "bootenv";
 			reg = <0x00500000 0x00020000>;
 		};
-		partition@0x00520000 {
+		partition@520000 {
 			label = "config";
 			reg = <0x00520000 0x00020000>;
 		};
-		partition@0x00540000 {
+		partition@540000 {
 			label = "image";
 			reg = <0x00540000 0x00a80000>;
 		};
-		partition@0x00fc0000 {
+		partition@fc0000 {
 			label = "spare";
 			reg = <0x00fc0000 0x00000000>;
 		};

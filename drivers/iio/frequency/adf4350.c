@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ADF4350/ADF4351 SPI Wideband Synthesizer driver
  *
- * Copyright 2012-2014 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
+ * Copyright 2012-2013 Analog Devices Inc.
  */
 
 #include <linux/device.h>
@@ -15,11 +14,9 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/gcd.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <asm/div64.h>
 #include <linux/clk.h>
-#include <linux/of.h>
-#include <linux/of_gpio.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -35,6 +32,7 @@ enum {
 struct adf4350_state {
 	struct spi_device		*spi;
 	struct regulator		*reg;
+	struct gpio_desc		*lock_detect_gpiod;
 	struct adf4350_platform_data	*pdata;
 	struct clk			*clk;
 	unsigned long			clkin;
@@ -49,6 +47,13 @@ struct adf4350_state {
 	unsigned long			regs_hw[6];
 	unsigned long long		freq_req;
 	/*
+	 * Lock to protect the state of the device from potential concurrent
+	 * writes. The device is configured via a sequence of SPI writes,
+	 * and this lock is meant to prevent the start of another sequence
+	 * before another one has finished.
+	 */
+	struct mutex			lock;
+	/*
 	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
 	 */
@@ -62,7 +67,6 @@ static struct adf4350_platform_data default_pdata = {
 	.r3_user_settings = ADF4350_REG3_12BIT_CLKDIV_MODE(0),
 	.r4_user_settings = ADF4350_REG4_OUTPUT_PWR(3) |
 			    ADF4350_REG4_MUTE_TILL_LOCK_EN,
-	.gpio_lock_detect = -1,
 };
 
 static int adf4350_sync_config(struct adf4350_state *st, bool sync_all)
@@ -102,7 +106,7 @@ static int adf4350_reg_access(struct iio_dev *indio_dev,
 	if (reg > ADF4350_REG5)
 		return -EINVAL;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	if (readval == NULL) {
 		st->regs[reg] = writeval & ~(BIT(0) | BIT(1) | BIT(2));
 		ret = adf4350_sync_config(st, true);
@@ -110,7 +114,7 @@ static int adf4350_reg_access(struct iio_dev *indio_dev,
 		*readval =  st->regs_hw[reg];
 		ret = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -235,7 +239,7 @@ static ssize_t adf4350_write(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	switch ((u32)private) {
 	case ADF4350_FREQ:
 		ret = adf4350_set_freq(st, readin);
@@ -276,7 +280,7 @@ static ssize_t adf4350_write(struct iio_dev *indio_dev,
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret ? ret : len;
 }
@@ -290,15 +294,15 @@ static ssize_t adf4350_read(struct iio_dev *indio_dev,
 	unsigned long long val;
 	int ret = 0;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	switch ((u32)private) {
 	case ADF4350_FREQ:
 		val = (u64)((st->r0_int * st->r1_mod) + st->r0_fract) *
 			(u64)st->fpfd;
 		do_div(val, st->r1_mod * (1 << st->r4_rf_div_sel));
 		/* PLL unlocked? return error */
-		if (gpio_is_valid(st->pdata->gpio_lock_detect))
-			if (!gpio_get_value(st->pdata->gpio_lock_detect)) {
+		if (st->lock_detect_gpiod)
+			if (!gpiod_get_value(st->lock_detect_gpiod)) {
 				dev_dbg(&st->spi->dev, "PLL un-locked\n");
 				ret = -EBUSY;
 			}
@@ -319,7 +323,7 @@ static ssize_t adf4350_read(struct iio_dev *indio_dev,
 		ret = -EINVAL;
 		val = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret < 0 ? ret : sprintf(buf, "%llu\n", val);
 }
@@ -353,122 +357,106 @@ static const struct iio_chan_spec adf4350_chan = {
 
 static const struct iio_info adf4350_info = {
 	.debugfs_reg_access = &adf4350_reg_access,
-	.driver_module = THIS_MODULE,
 };
 
-#ifdef CONFIG_OF
 static struct adf4350_platform_data *adf4350_parse_dt(struct device *dev)
 {
-	struct device_node *np = dev->of_node;
 	struct adf4350_platform_data *pdata;
 	unsigned int tmp;
-	int ret;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
-	strncpy(&pdata->name[0], np->name, SPI_NAME_SIZE - 1);
+	strncpy(&pdata->name[0], dev_name(dev), SPI_NAME_SIZE - 1);
 
-	tmp = 10000;
-	of_property_read_u32(np, "adi,channel-spacing", &tmp);
+	if (device_property_read_u32(dev, "adi,channel-spacing", &tmp))
+		tmp = 10000;
 	pdata->channel_spacing = tmp;
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,power-up-frequency", &tmp);
+	if (device_property_read_u32(dev, "adi,power-up-frequency", &tmp))
+		tmp = 0;
 	pdata->power_up_frequency = tmp;
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,reference-div-factor", &tmp);
+	if (device_property_read_u32(dev, "adi,reference-div-factor", &tmp))
+		tmp = 0;
 	pdata->ref_div_factor = tmp;
 
-	ret = of_get_gpio(np, 0);
-	if (ret < 0)
-		pdata->gpio_lock_detect = -1;
-	else
-		pdata->gpio_lock_detect = ret;
-
-	pdata->ref_doubler_en = of_property_read_bool(np,
+	pdata->ref_doubler_en = device_property_read_bool(dev,
 			"adi,reference-doubler-enable");
-	pdata->ref_div2_en = of_property_read_bool(np,
+	pdata->ref_div2_en = device_property_read_bool(dev,
 			"adi,reference-div2-enable");
 
 	/* r2_user_settings */
-	pdata->r2_user_settings = of_property_read_bool(np,
+	pdata->r2_user_settings = device_property_read_bool(dev,
 			"adi,phase-detector-polarity-positive-enable") ?
 			ADF4350_REG2_PD_POLARITY_POS : 0;
-	pdata->r2_user_settings |= of_property_read_bool(np,
+	pdata->r2_user_settings |= device_property_read_bool(dev,
 			"adi,lock-detect-precision-6ns-enable") ?
 			ADF4350_REG2_LDP_6ns : 0;
-	pdata->r2_user_settings |= of_property_read_bool(np,
+	pdata->r2_user_settings |= device_property_read_bool(dev,
 			"adi,lock-detect-function-integer-n-enable") ?
 			ADF4350_REG2_LDF_INT_N : 0;
 
-	tmp = 2500;
-	of_property_read_u32(np, "adi,charge-pump-current", &tmp);
+	if (device_property_read_u32(dev, "adi,charge-pump-current", &tmp))
+		tmp = 2500;
 	pdata->r2_user_settings |= ADF4350_REG2_CHARGE_PUMP_CURR_uA(tmp);
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,muxout-select", &tmp);
+	if (device_property_read_u32(dev, "adi,muxout-select", &tmp))
+		tmp = 0;
 	pdata->r2_user_settings |= ADF4350_REG2_MUXOUT(tmp);
 
-	pdata->r2_user_settings |= of_property_read_bool(np,
+	pdata->r2_user_settings |= device_property_read_bool(dev,
 			"adi,low-spur-mode-enable") ?
 			ADF4350_REG2_NOISE_MODE(0x3) : 0;
 
 	/* r3_user_settings */
 
-	pdata->r3_user_settings = of_property_read_bool(np,
+	pdata->r3_user_settings = device_property_read_bool(dev,
 			"adi,cycle-slip-reduction-enable") ?
 			ADF4350_REG3_12BIT_CSR_EN : 0;
-	pdata->r3_user_settings |= of_property_read_bool(np,
+	pdata->r3_user_settings |= device_property_read_bool(dev,
 			"adi,charge-cancellation-enable") ?
 			ADF4351_REG3_CHARGE_CANCELLATION_EN : 0;
 
-	pdata->r3_user_settings |= of_property_read_bool(np,
+	pdata->r3_user_settings |= device_property_read_bool(dev,
 			"adi,anti-backlash-3ns-enable") ?
 			ADF4351_REG3_ANTI_BACKLASH_3ns_EN : 0;
-	pdata->r3_user_settings |= of_property_read_bool(np,
+	pdata->r3_user_settings |= device_property_read_bool(dev,
 			"adi,band-select-clock-mode-high-enable") ?
 			ADF4351_REG3_BAND_SEL_CLOCK_MODE_HIGH : 0;
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,12bit-clk-divider", &tmp);
+	if (device_property_read_u32(dev, "adi,12bit-clk-divider", &tmp))
+		tmp = 0;
 	pdata->r3_user_settings |= ADF4350_REG3_12BIT_CLKDIV(tmp);
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,clk-divider-mode", &tmp);
+
+	if (device_property_read_u32(dev, "adi,clk-divider-mode", &tmp))
+		tmp = 0;
 	pdata->r3_user_settings |= ADF4350_REG3_12BIT_CLKDIV_MODE(tmp);
 
 	/* r4_user_settings */
 
-	pdata->r4_user_settings = of_property_read_bool(np,
+	pdata->r4_user_settings = device_property_read_bool(dev,
 			"adi,aux-output-enable") ?
 			ADF4350_REG4_AUX_OUTPUT_EN : 0;
-	pdata->r4_user_settings |= of_property_read_bool(np,
+	pdata->r4_user_settings |= device_property_read_bool(dev,
 			"adi,aux-output-fundamental-enable") ?
 			ADF4350_REG4_AUX_OUTPUT_FUND : 0;
-	pdata->r4_user_settings |= of_property_read_bool(np,
+	pdata->r4_user_settings |= device_property_read_bool(dev,
 			"adi,mute-till-lock-enable") ?
 			ADF4350_REG4_MUTE_TILL_LOCK_EN : 0;
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,output-power", &tmp);
+	if (device_property_read_u32(dev, "adi,output-power", &tmp))
+		tmp = 0;
 	pdata->r4_user_settings |= ADF4350_REG4_OUTPUT_PWR(tmp);
 
-	tmp = 0;
-	of_property_read_u32(np, "adi,aux-output-power", &tmp);
+	if (device_property_read_u32(dev, "adi,aux-output-power", &tmp))
+		tmp = 0;
 	pdata->r4_user_settings |= ADF4350_REG4_AUX_OUTPUT_PWR(tmp);
 
 	return pdata;
 }
-#else
-static
-struct adf4350_platform_data *adf4350_parse_dt(struct device *dev)
-{
-	return NULL;
-}
-#endif
 
 static int adf4350_probe(struct spi_device *spi)
 {
@@ -478,10 +466,10 @@ static int adf4350_probe(struct spi_device *spi)
 	struct clk *clk = NULL;
 	int ret;
 
-	if (spi->dev.of_node) {
+	if (dev_fwnode(&spi->dev)) {
 		pdata = adf4350_parse_dt(&spi->dev);
-		if (pdata == NULL)
-			return -EINVAL;
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
 	} else {
 		pdata = spi->dev.platform_data;
 	}
@@ -520,14 +508,20 @@ static int adf4350_probe(struct spi_device *spi)
 	st->spi = spi;
 	st->pdata = pdata;
 
-	indio_dev->dev.parent = &spi->dev;
-	indio_dev->name = (pdata->name[0] != 0) ? pdata->name :
-		spi_get_device_id(spi)->name;
+
+	if (spi->dev.of_node)
+		indio_dev->name = spi->dev.of_node->name;
+	else if (pdata->name[0] != 0)
+		indio_dev->name = pdata->name;
+	else
+		indio_dev->name = spi_get_device_id(spi)->name;
 
 	indio_dev->info = &adf4350_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = &adf4350_chan;
 	indio_dev->num_channels = 1;
+
+	mutex_init(&st->lock);
 
 	st->chspc = pdata->channel_spacing;
 	if (clk) {
@@ -542,23 +536,20 @@ static int adf4350_probe(struct spi_device *spi)
 
 	memset(st->regs_hw, 0xFF, sizeof(st->regs_hw));
 
-	if (gpio_is_valid(pdata->gpio_lock_detect)) {
+	st->lock_detect_gpiod = devm_gpiod_get_optional(&spi->dev, NULL,
+							GPIOD_IN);
+	if (IS_ERR(st->lock_detect_gpiod))
+		return PTR_ERR(st->lock_detect_gpiod);
+
+	if (st->lock_detect_gpiod) {
 		int i;
-		ret = devm_gpio_request(&spi->dev, pdata->gpio_lock_detect,
-					indio_dev->name);
-		if (ret) {
-			dev_err(&spi->dev, "fail to request lock detect GPIO-%d",
-				pdata->gpio_lock_detect);
-			goto error_disable_reg;
-		}
-		gpio_direction_input(pdata->gpio_lock_detect);
 
 		/* ADF4350/1 are write only devices, try to probe it this way */
 		for (i = 0; i < 4; i++) {
 			st->regs[ADF4350_REG2] = ADF4350_REG2_MUXOUT((i & 1) ?
 				ADF4350_MUXOUT_DVDD : ADF4350_MUXOUT_GND);
 			adf4350_sync_config(st, false);
-			ret = gpio_get_value(st->pdata->gpio_lock_detect);
+			ret = gpiod_get_value(st->lock_detect_gpiod);
 			if (ret != ((i & 1) ? 1 : 0)) {
 				ret = -ENODEV;
 				dev_err(&spi->dev, "Probe failed (muxout)");

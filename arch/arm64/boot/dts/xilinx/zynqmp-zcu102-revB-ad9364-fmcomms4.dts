@@ -7,9 +7,10 @@
  */
 
 #include "zynqmp-zcu102-revB.dts"
+#include <dt-bindings/interrupt-controller/irq.h>
 
 &i2c1 {
-	i2cswitch@75 {
+	i2c-mux@75{
 		i2c@0 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -33,42 +34,55 @@
 	fpga_axi: fpga-axi@0 {
 		interrupt-parent = <&gic>;
 		compatible = "simple-bus";
-		#address-cells = <0x2>;
+		#address-cells = <0x1>;
 		#size-cells = <0x1>;
-		ranges = <0 0 0 0 0xffffffff>;
+		ranges = <0 0 0 0xffffffff>;
 
 		rx_dma: dma@80010000 {
 			compatible = "adi,axi-dmac-1.00.a";
-			reg = <0x0 0x80010000 0x10000>;
+			reg = <0x80010000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 109 0>;
-			clocks = <&clk100>;
+			interrupts = <0 109 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&zynqmp_clk 71>;
 
-			dma-channel {
-				adi,source-bus-width = <64>;
-				adi,destination-bus-width = <64>;
-				adi,type = <0>;
+			adi,channels {
+				#size-cells = <0>;
+				#address-cells = <1>;
+
+				dma-channel@0 {
+					reg = <0>;
+					adi,source-bus-width = <64>;
+					adi,source-bus-type = <2>;
+					adi,destination-bus-width = <64>;
+					adi,destination-bus-type = <0>;
+				};
 			};
 		};
 
 		tx_dma: dma@80020000  {
 			compatible = "adi,axi-dmac-1.00.a";
-			reg = <0x0 0x80020000 0x10000>;
+			reg = <0x80020000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 108 0>;
-			clocks = <&clk100>;
+			interrupts = <0 108 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&zynqmp_clk 71>;
 
-			dma-channel {
-				adi,source-bus-width = <64>;
-				adi,destination-bus-width = <64>;
-				adi,type = <1>;
-				adi,cyclic;
+			adi,channels {
+				#size-cells = <0>;
+				#address-cells = <1>;
+
+				dma-channel@0 {
+					reg = <0>;
+					adi,source-bus-width = <64>;
+					adi,source-bus-type = <0>;
+					adi,destination-bus-width = <64>;
+					adi,destination-bus-type = <2>;
+				};
 			};
 		};
 
 		cf_ad9361_adc_core_0: cf-ad9361-lpc@80000000 {
 			compatible = "adi,axi-ad9361-6.00.a";
-			reg = <0x0 0x80000000 0x6000>;
+			reg = <0x80000000 0x6000>;
 			dmas = <&rx_dma 0>;
 			dma-names = "rx";
 			spibus-connected = <&adc0_ad9364>;
@@ -76,9 +90,7 @@
 
 		cf_ad9361_dac_core_0: cf-ad9361-dds-core-lpc@80004000 {
 			compatible = "adi,axi-ad9364-dds-6.00.a";
-			reg = <0x0 0x80004000 0x1000>;
-			adi,axi-dds-rate = <1>; /* use 1 for 1RX1TX mode */
-			adi,axi-dds-1-rf-channel;
+			reg = <0x80004000 0x1000>;
 			clocks = <&adc0_ad9364 13>;
 			clock-names = "sampl_clk";
 			dmas = <&tx_dma 0>;
