@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/phy/phy.h>
+#include <linux/reset.h>
 #include <linux/uaccess.h>
 
 #include "zynqmp_disp.h"
@@ -302,6 +303,7 @@ struct zynqmp_dp_config {
  * @dpsub: Display subsystem
  * @drm: DRM core
  * @iomem: device I/O memory for register access
+ * @reset: reset controller
  * @irq: irq
  * @config: IP core configuration from DTS
  * @aux: aux channel
@@ -325,6 +327,7 @@ struct zynqmp_dp {
 	struct zynqmp_dpsub *dpsub;
 	struct drm_device *drm;
 	void __iomem *iomem;
+	struct reset_control *reset;
 	int irq;
 
 	struct zynqmp_dp_config config;
@@ -375,6 +378,31 @@ static void zynqmp_dp_set(void __iomem *base, int offset, u32 set)
 /* -----------------------------------------------------------------------------
  * PHY Handling
  */
+#define RST_TIMEOUT_MS			1000
+
+static int zynqmp_dp_reset(struct zynqmp_dp *dp, bool assert)
+{
+	unsigned long timeout;
+
+	if (assert)
+		reset_control_assert(dp->reset);
+	else
+		reset_control_deassert(dp->reset);
+
+	/* Wait for the (de)assert to complete. */
+	timeout = jiffies + msecs_to_jiffies(RST_TIMEOUT_MS);
+	while (!time_after_eq(jiffies, timeout)) {
+		bool status = !!reset_control_status(dp->reset);
+
+		if (assert == status)
+			return 0;
+
+		cpu_relax();
+	}
+
+	dev_err(dp->dev, "reset %s timeout\n", assert ? "assert" : "deassert");
+	return -ETIMEDOUT;
+}
 
 /**
  * zynqmp_dp_phy_init - Initialize the phy
@@ -808,7 +836,7 @@ static int zynqmp_dp_link_train_cr(struct zynqmp_dp *dp)
 		if (ret)
 			return ret;
 
-		drm_dp_link_train_clock_recovery_delay(dp->dpcd);
+		drm_dp_link_train_clock_recovery_delay(&dp->aux, dp->dpcd);
 		ret = drm_dp_dpcd_read_link_status(&dp->aux, link_status);
 		if (ret < 0)
 			return ret;
@@ -873,7 +901,7 @@ static int zynqmp_dp_link_train_ce(struct zynqmp_dp *dp)
 		if (ret)
 			return ret;
 
-		drm_dp_link_train_channel_eq_delay(dp->dpcd);
+		drm_dp_link_train_channel_eq_delay(&dp->aux, dp->dpcd);
 		ret = drm_dp_dpcd_read_link_status(&dp->aux, link_status);
 		if (ret < 0)
 			return ret;
@@ -1761,6 +1789,7 @@ int zynqmp_dp_bind(struct device *dev, struct device *master, void *data)
 	connector->dpms = DRM_MODE_DPMS_OFF;
 
 	dp->drm = drm;
+	dp->aux.drm_dev = drm;
 	dp->sync_prop = drm_property_create_bool(drm, 0, "sync");
 	dp->bpc_prop = drm_property_create_enum(drm, 0, "bpc",
 						zynqmp_dp_bpc_enum,
@@ -1883,6 +1912,15 @@ int zynqmp_dp_probe(struct platform_device *pdev)
 	if (IS_ERR(dp->iomem))
 		return PTR_ERR(dp->iomem);
 
+	dp->reset = devm_reset_control_get(dp->dev, NULL);
+	if (IS_ERR(dp->reset))
+		return dev_err_probe(dp->dev, PTR_ERR(dp->reset),
+			"failed to get reset: %ld\n", PTR_ERR(dp->reset));
+
+	ret = zynqmp_dp_reset(dp, false);
+	if (ret < 0)
+		return ret;
+
 	zynqmp_dp_write(dp->iomem, ZYNQMP_DP_TX_PHY_POWER_DOWN,
 			ZYNQMP_DP_TX_PHY_POWER_DOWN_ALL);
 	zynqmp_dp_set(dp->iomem, ZYNQMP_DP_TX_PHY_CONFIG,
@@ -1892,7 +1930,7 @@ int zynqmp_dp_probe(struct platform_device *pdev)
 
 	ret = zynqmp_dp_phy_probe(dp);
 	if (ret)
-		return ret;
+		goto err_reset;
 
 	ret = zynqmp_dp_phy_init(dp);
 	if (ret)
@@ -1942,6 +1980,9 @@ error:
 	drm_dp_aux_unregister(&dp->aux);
 error_phy:
 	zynqmp_dp_phy_exit(dp);
+err_reset:
+	zynqmp_dp_reset(dp, true);
+
 	return ret;
 }
 
@@ -1953,6 +1994,7 @@ int zynqmp_dp_remove(struct platform_device *pdev)
 	zynqmp_dp_write(dp->iomem, ZYNQMP_DP_TX_ENABLE, 0);
 	drm_dp_aux_unregister(&dp->aux);
 	zynqmp_dp_phy_exit(dp);
+	zynqmp_dp_reset(dp, true);
 	dpsub->dp = NULL;
 
 	return 0;

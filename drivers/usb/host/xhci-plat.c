@@ -31,6 +31,8 @@ static struct hc_driver __read_mostly xhci_plat_hc_driver;
 static int xhci_plat_setup(struct usb_hcd *hcd);
 static int xhci_plat_start(struct usb_hcd *hcd);
 
+static host_wakeup_t host_wakeup_fn;
+
 static const struct xhci_driver_overrides xhci_plat_overrides __initconst = {
 	.extra_priv_size = sizeof(struct xhci_plat_priv),
 	.reset = xhci_plat_setup,
@@ -43,6 +45,16 @@ static void xhci_priv_plat_start(struct usb_hcd *hcd)
 
 	if (priv->plat_start)
 		priv->plat_start(hcd);
+}
+
+static int xhci_priv_plat_setup(struct usb_hcd *hcd)
+{
+	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+
+	if (!priv->plat_setup)
+		return 0;
+
+	return priv->plat_setup(hcd);
 }
 
 static int xhci_priv_init_quirk(struct usb_hcd *hcd)
@@ -87,6 +99,17 @@ static void xhci_plat_quirks(struct device *dev, struct xhci_hcd *xhci)
 	xhci->quirks |= XHCI_PLAT | priv->quirks;
 }
 
+static void host_wakeup_register(host_wakeup_t func)
+{
+	host_wakeup_fn = func;
+}
+
+static void host_wakeup_capable(struct device *dev, bool wakeup)
+{
+	if (host_wakeup_fn)
+		host_wakeup_fn(dev, wakeup);
+}
+
 /* called during probe() after chip reset completes */
 static int xhci_plat_setup(struct usb_hcd *hcd)
 {
@@ -112,6 +135,7 @@ static const struct xhci_plat_priv xhci_plat_marvell_armada = {
 };
 
 static const struct xhci_plat_priv xhci_plat_marvell_armada3700 = {
+	.plat_setup = xhci_mvebu_a3700_plat_setup,
 	.init_quirk = xhci_mvebu_a3700_init_quirk,
 };
 
@@ -321,6 +345,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	}
 
 	device_set_wakeup_capable(&pdev->dev, true);
+	host_wakeup_register(dwc3_host_wakeup_capable);
 
 	xhci->main_hcd = hcd;
 	xhci->shared_hcd = __usb_create_hcd(driver, sysdev, &pdev->dev,
@@ -363,8 +388,18 @@ static int xhci_plat_probe(struct platform_device *pdev)
 
 	hcd->tpl_support = of_usb_host_tpl_support(sysdev->of_node);
 	xhci->shared_hcd->tpl_support = hcd->tpl_support;
-	if (priv && (priv->quirks & XHCI_SKIP_PHY_INIT))
+
+	if (priv) {
+		ret = xhci_priv_plat_setup(hcd);
+		if (ret)
+			goto disable_usb_phy;
+	}
+
+	if ((xhci->quirks & XHCI_SKIP_PHY_INIT) || (priv && (priv->quirks & XHCI_SKIP_PHY_INIT)))
 		hcd->skip_phy_initialization = 1;
+
+	if (priv && (priv->quirks & XHCI_SG_TRB_CACHE_SIZE_QUIRK))
+		xhci->quirks |= XHCI_SG_TRB_CACHE_SIZE_QUIRK;
 
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)
@@ -433,6 +468,7 @@ static int xhci_plat_remove(struct platform_device *dev)
 	xhci->shared_hcd = NULL;
 	usb_phy_shutdown(hcd->usb_phy);
 
+	host_wakeup_register(NULL);
 	usb_otg_set_host(&dev->dev, hcd, false);
 
 	usb_remove_hcd(hcd);
@@ -458,6 +494,15 @@ static int __maybe_unused xhci_plat_suspend(struct device *dev)
 	ret = xhci_priv_suspend_quirk(hcd);
 	if (ret)
 		return ret;
+
+	/* Inform dwc3 driver about the device wakeup capability */
+	if (device_may_wakeup(&hcd->self.root_hub->dev)) {
+		host_wakeup_capable(dev, true);
+		enable_irq_wake(hcd->irq);
+	} else {
+		host_wakeup_capable(dev, false);
+	}
+
 	/*
 	 * xhci_suspend() needs `do_wakeup` to know whether host is allowed
 	 * to do wakeup during suspend.

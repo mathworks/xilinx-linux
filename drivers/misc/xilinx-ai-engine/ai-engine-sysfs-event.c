@@ -22,7 +22,8 @@ static ssize_t aie_tile_print_event(struct aie_tile *atile, char *buffer,
 	ssize_t len = 0, size = PAGE_SIZE;
 	u32 ttype;
 
-	ttype = atile->apart->adev->ops->get_tile_type(&atile->loc);
+	ttype = atile->apart->adev->ops->get_tile_type(atile->apart->adev,
+						       &atile->loc);
 	if (ttype == AIE_TILE_TYPE_TILE) {
 		len += scnprintf(&buffer[len], max(0L, size - len),
 				 "core: %s\n", core);
@@ -56,13 +57,21 @@ ssize_t aie_tile_show_event(struct device *dev, struct device_attribute *attr,
 	     pl_buf[AIE_SYSFS_EVENT_STS_SIZE];
 	bool is_delimit_req = false;
 
+	/*
+	 * Initialize local buffers to avoid garbage data being returned to the
+	 * export buffer.
+	 */
+	core_buf[0] = '\0';
+	mem_buf[0] = '\0';
+	pl_buf[0] = '\0';
+
 	if (mutex_lock_interruptible(&apart->mlock)) {
 		dev_err(&apart->dev,
 			"Failed to acquire lock. Process was interrupted by fatal signals\n");
 		return 0;
 	}
 
-	ttype = apart->adev->ops->get_tile_type(&atile->loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, &atile->loc);
 
 	if (!aie_part_check_clk_enable_loc(apart, &atile->loc)) {
 		mutex_unlock(&apart->mlock);

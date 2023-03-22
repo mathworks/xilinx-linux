@@ -29,7 +29,6 @@ enum pwm_polarity {
  * struct pwm_args - board-dependent PWM arguments
  * @period: reference period
  * @polarity: reference polarity
- * @offset: reference offset
  *
  * This structure describes board-dependent arguments attached to a PWM
  * device. These arguments are usually retrieved from the PWM lookup table or
@@ -41,7 +40,6 @@ enum pwm_polarity {
  */
 struct pwm_args {
 	u64 period;
-	unsigned int offset;
 	enum pwm_polarity polarity;
 };
 
@@ -54,16 +52,19 @@ enum {
  * struct pwm_state - state of a PWM channel
  * @period: PWM period (in nanoseconds)
  * @duty_cycle: PWM duty cycle (in nanoseconds)
- * @offset: PWM offset (in nanoseconds)
  * @polarity: PWM polarity
  * @enabled: PWM enabled status
+ * @usage_power: If set, the PWM driver is only required to maintain the power
+ *               output but has more freedom regarding signal form.
+ *               If supported, the signal can be optimized, for example to
+ *               improve EMI by phase shifting individual channels.
  */
 struct pwm_state {
 	u64 period;
 	u64 duty_cycle;
-	unsigned int offset;
 	enum pwm_polarity polarity;
 	bool enabled;
+	bool usage_power;
 };
 
 /**
@@ -95,6 +96,11 @@ struct pwm_device {
  * pwm_get_state() - retrieve the current PWM state
  * @pwm: PWM device
  * @state: state to fill with the current PWM state
+ *
+ * The returned PWM state represents the state that was applied by a previous call to
+ * pwm_apply_state(). Drivers may have to slightly tweak that state before programming it to
+ * hardware. If pwm_apply_state() was never called, this returns either the current hardware
+ * state (if supported) or the default settings.
  */
 static inline void pwm_get_state(const struct pwm_device *pwm,
 				 struct pwm_state *state)
@@ -139,21 +145,6 @@ static inline u64 pwm_get_duty_cycle(const struct pwm_device *pwm)
 	pwm_get_state(pwm, &state);
 
 	return state.duty_cycle;
-}
-
-static inline void pwm_set_offset(struct pwm_device *pwm, unsigned int offset)
-{
-	if (pwm)
-		pwm->state.offset = offset;
-}
-
-static inline unsigned int pwm_get_offset(const struct pwm_device *pwm)
-{
-	struct pwm_state state;
-
-	pwm_get_state(pwm, &state);
-
-	return state.offset;
 }
 
 static inline enum pwm_polarity pwm_get_polarity(const struct pwm_device *pwm)
@@ -202,7 +193,7 @@ static inline void pwm_init_state(const struct pwm_device *pwm,
 	state->period = args.period;
 	state->polarity = args.polarity;
 	state->duty_cycle = 0;
-	state->offset = 0;
+	state->usage_power = false;
 }
 
 /**
@@ -329,7 +320,6 @@ struct pwm_chip {
 struct pwm_capture {
 	unsigned int period;
 	unsigned int duty_cycle;
-	unsigned int offset;
 };
 
 #if IS_ENABLED(CONFIG_PWM)
@@ -413,10 +403,11 @@ int pwm_capture(struct pwm_device *pwm, struct pwm_capture *result,
 int pwm_set_chip_data(struct pwm_device *pwm, void *data);
 void *pwm_get_chip_data(struct pwm_device *pwm);
 
-int pwmchip_add_with_polarity(struct pwm_chip *chip,
-			      enum pwm_polarity polarity);
 int pwmchip_add(struct pwm_chip *chip);
-int pwmchip_remove(struct pwm_chip *chip);
+void pwmchip_remove(struct pwm_chip *chip);
+
+int devm_pwmchip_add(struct device *dev, struct pwm_chip *chip);
+
 struct pwm_device *pwm_request_from_chip(struct pwm_chip *chip,
 					 unsigned int index,
 					 const char *label);
@@ -435,7 +426,6 @@ struct pwm_device *devm_of_pwm_get(struct device *dev, struct device_node *np,
 struct pwm_device *devm_fwnode_pwm_get(struct device *dev,
 				       struct fwnode_handle *fwnode,
 				       const char *con_id);
-void devm_pwm_put(struct device *dev, struct pwm_device *pwm);
 #else
 static inline struct pwm_device *pwm_request(int pwm_id, const char *label)
 {
@@ -494,11 +484,6 @@ static inline int pwmchip_add(struct pwm_chip *chip)
 	return -EINVAL;
 }
 
-static inline int pwmchip_add_inversed(struct pwm_chip *chip)
-{
-	return -EINVAL;
-}
-
 static inline int pwmchip_remove(struct pwm_chip *chip)
 {
 	return -EINVAL;
@@ -547,10 +532,6 @@ devm_fwnode_pwm_get(struct device *dev, struct fwnode_handle *fwnode,
 {
 	return ERR_PTR(-ENODEV);
 }
-
-static inline void devm_pwm_put(struct device *dev, struct pwm_device *pwm)
-{
-}
 #endif
 
 static inline void pwm_apply_args(struct pwm_device *pwm)
@@ -581,6 +562,7 @@ static inline void pwm_apply_args(struct pwm_device *pwm)
 	state.enabled = false;
 	state.polarity = pwm->args.polarity;
 	state.period = pwm->args.period;
+	state.usage_power = false;
 
 	pwm_apply_state(pwm, &state);
 }

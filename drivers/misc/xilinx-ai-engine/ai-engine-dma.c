@@ -179,7 +179,7 @@ aie_part_get_dmabuf_da_from_off(struct aie_partition *apart, int dmabuf_fd,
  * aie_part_set_shimdma_bd() - Set the buffer descriptor to AI engine partition
  *			       hardware
  * @apart: AI engine partition
- * @loc: AI engine tile location
+ * @loc: AI engine tile location relative in partition
  * @bd_id: buffer descriptor ID
  * @bd: pointer buffer descriptor content
  * @return: 0 for success, negative value for failure
@@ -190,6 +190,7 @@ aie_part_get_dmabuf_da_from_off(struct aie_partition *apart, int dmabuf_fd,
 static int aie_part_set_shimdma_bd(struct aie_partition *apart,
 				   struct aie_location loc, u32 bd_id, u32 *bd)
 {
+	struct aie_aperture *aperture = apart->aperture;
 	const struct aie_dma_attr *shim_dma = apart->adev->shim_dma;
 	struct aie_location loc_adjust;
 	u32 i, regoff, intile_regoff;
@@ -197,11 +198,11 @@ static int aie_part_set_shimdma_bd(struct aie_partition *apart,
 	intile_regoff = shim_dma->bd_regoff + shim_dma->bd_len * bd_id;
 	loc_adjust.col = loc.col + apart->range.start.col;
 	loc_adjust.row = loc.row + apart->range.start.row;
-	regoff = aie_cal_regoff(apart->adev, loc_adjust, intile_regoff);
+	regoff = aie_aperture_cal_regoff(aperture, loc_adjust, intile_regoff);
 
 	for (i = 0; i < shim_dma->bd_len / (sizeof(*bd));
 	     i++, regoff += sizeof(*bd))
-		iowrite32(bd[i], apart->adev->base + regoff);
+		iowrite32(bd[i], aperture->base + regoff);
 	return 0;
 }
 
@@ -225,7 +226,7 @@ static int aie_part_validate_bdloc(struct aie_partition *apart,
 	loc_adjust.col = loc.col + apart->range.start.col;
 	loc_adjust.row = loc.row + apart->range.start.row;
 
-	if (aie_validate_location(apart, loc_adjust) < 0) {
+	if (aie_validate_location(apart, loc) < 0) {
 		dev_err(&apart->dev,
 			"invalid loc (%u,%u) in (%u,%u).\n",
 			loc.col, loc.row,
@@ -233,7 +234,7 @@ static int aie_part_validate_bdloc(struct aie_partition *apart,
 		return -EINVAL;
 	}
 
-	ttype = apart->adev->ops->get_tile_type(&loc_adjust);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, &loc_adjust);
 	if (ttype != AIE_TILE_TYPE_SHIMNOC) {
 		dev_err(&apart->dev,
 			"failed to set bd, (%u,%u) is not SHIM NOC\n",
@@ -298,7 +299,7 @@ static struct aie_dmabuf *aie_part_attach_dmabuf(struct aie_partition *apart,
 		}
 	}
 
-	adbuf = devm_kzalloc(&apart->dev, sizeof(*adbuf), GFP_KERNEL);
+	adbuf = kmem_cache_alloc(apart->dbufs_cache, GFP_KERNEL);
 	if (!adbuf) {
 		dma_buf_unmap_attachment(attach, sgt, attach->dir);
 		dma_buf_detach(dbuf, attach);
@@ -339,15 +340,18 @@ static void aie_part_dmabuf_attach_get(struct aie_dmabuf *adbuf)
 static void aie_part_dmabuf_attach_put(struct aie_dmabuf *adbuf)
 {
 	struct dma_buf *dbuf;
+	struct aie_partition *apart;
 
 	if (!refcount_dec_and_test(&adbuf->refs))
 		return;
 
+	apart = dev_to_aiepart(adbuf->attach->dev);
 	dbuf = adbuf->attach->dmabuf;
 	dma_buf_unmap_attachment(adbuf->attach, adbuf->sgt, adbuf->attach->dir);
 	dma_buf_detach(dbuf, adbuf->attach);
 	dma_buf_put(dbuf);
 	list_del(&adbuf->node);
+	kmem_cache_free(apart->dbufs_cache, adbuf);
 }
 
 /**
@@ -366,7 +370,7 @@ void aie_part_release_dmabufs(struct aie_partition *apart)
 		dma_buf_detach(dbuf, adbuf->attach);
 		dma_buf_put(dbuf);
 		list_del(&adbuf->node);
-		devm_kfree(&apart->dev, adbuf);
+		kmem_cache_free(apart->dbufs_cache, adbuf);
 	}
 }
 
@@ -634,4 +638,31 @@ long aie_part_set_dmabuf_bd(struct aie_partition *apart,
 
 	kfree(bd);
 	return ret;
+}
+
+/**
+ * aie_part_prealloc_dbufs_cache() - Preallocate dmabuf descriptors memory
+ *
+ * @apart: AI engine partition
+ *
+ * @return: 0 for success, negative value for failure
+ *
+ * This function preallocate memories to save dmabuf descriptors. When dmabuf
+ * is attached to the partition at runtime, it can get the descriptor memory
+ * from this preallocated memory pool.
+ */
+int aie_part_prealloc_dbufs_cache(struct aie_partition *apart)
+{
+	struct kmem_cache *dbufs_cache;
+	char name[64];
+
+	sprintf(name, "%s_dbufs", dev_name(&apart->dev));
+	dbufs_cache = kmem_cache_create(name, sizeof(struct aie_dmabuf),
+					0, 0, NULL);
+	if (!dbufs_cache)
+		return -ENOMEM;
+
+	apart->dbufs_cache = dbufs_cache;
+
+	return 0;
 }

@@ -19,16 +19,8 @@
 #define ZYNQMP_CLK_SET_RATE_PARENT	BIT(2)
 /* do not gate even if unused */
 #define ZYNQMP_CLK_IGNORE_UNUSED	BIT(3)
-/* do not use the cached clk rate */
-#define ZYNQMP_CLK_GET_RATE_NOCACHE	BIT(6)
 /* don't re-parent on rate change */
 #define ZYNQMP_CLK_SET_RATE_NO_REPARENT	BIT(7)
-/* do not use the cached clk accuracy */
-#define ZYNQMP_CLK_GET_ACCURACY_NOCACHE	BIT(8)
-/* recalc rates after notifications */
-#define ZYNQMP_CLK_RECALC_NEW_RATES	BIT(9)
-/* clock needs to run to set rate */
-#define ZYNQMP_CLK_SET_RATE_UNGATE	BIT(10)
 /* do not gate, ever */
 #define ZYNQMP_CLK_IS_CRITICAL		BIT(11)
 
@@ -64,7 +56,7 @@ enum topology_type {
  * @type:	Type of topology
  * @flag:	Topology flags
  * @type_flag:	Topology type specific flag
- * @custom_type_flag: Topology type specific custome flag
+ * @custom_type_flag: Topology type specific custom flag
  */
 struct clock_topology {
 	u32 type;
@@ -72,6 +64,8 @@ struct clock_topology {
 	u32 type_flag;
 	u8 custom_type_flag;
 };
+
+unsigned long zynqmp_clk_map_common_ccf_flags(const u32 zynqmp_flag);
 
 struct clk_hw *zynqmp_clk_register_pll(const char *name, u32 clk_id,
 				       const char * const *parents,

@@ -17,14 +17,14 @@ static u32 aie_get_dma_s2mm_status(struct aie_partition *apart,
 {
 	u32 stsoff, regoff, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE)
 		stsoff = apart->adev->shim_dma->s2mm_sts_regoff;
 	else
 		stsoff = apart->adev->tile_dma->s2mm_sts_regoff;
 
 	regoff = aie_cal_regoff(apart->adev, *loc, stsoff);
-	return ioread32(apart->adev->base + regoff);
+	return ioread32(apart->aperture->base + regoff);
 }
 
 /**
@@ -38,14 +38,14 @@ static u32 aie_get_dma_mm2s_status(struct aie_partition *apart,
 {
 	u32 stsoff, regoff, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE)
 		stsoff = apart->adev->shim_dma->mm2s_sts_regoff;
 	else
 		stsoff = apart->adev->tile_dma->mm2s_sts_regoff;
 
 	regoff = aie_cal_regoff(apart->adev, *loc, stsoff);
-	return ioread32(apart->adev->base + regoff);
+	return ioread32(apart->aperture->base + regoff);
 }
 
 /**
@@ -62,7 +62,7 @@ static u8 aie_get_chan_status(struct aie_partition *apart,
 	const struct aie_single_reg_field *sts, *stall;
 	u32 mask, chan_shift, shift, value, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE) {
 		sts = &apart->adev->shim_dma->sts;
 		stall = &apart->adev->shim_dma->stall;
@@ -97,7 +97,7 @@ static u8 aie_get_queue_size(struct aie_partition *apart,
 	const struct aie_single_reg_field *qsize;
 	u32 mask, chan_shift, shift, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE)
 		qsize = &apart->adev->shim_dma->qsize;
 	else
@@ -123,7 +123,7 @@ static u8 aie_get_queue_status(struct aie_partition *apart,
 	const struct aie_single_reg_field *qsts;
 	u32 mask, chan_shift, shift, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE)
 		qsts = &apart->adev->shim_dma->qsts;
 	else
@@ -150,7 +150,7 @@ static u8 aie_get_current_bd(struct aie_partition *apart,
 	const struct aie_single_reg_field *curbd;
 	u32 mask, chan_shift, shift, ttype;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype != AIE_TILE_TYPE_TILE)
 		curbd = &apart->adev->shim_dma->curbd;
 	else
@@ -160,6 +160,46 @@ static u8 aie_get_current_bd(struct aie_partition *apart,
 	mask = curbd->mask << (chan_shift * chanid);
 	shift = ffs(mask) - 1;
 	return (status & mask) >> shift;
+}
+
+/**
+ * aie_get_fifo_status() - reads the current value of DMA FIFO counters.
+ * @apart: AI engine partition.
+ * @loc: location of AI engine DMA.
+ * @return: concatenated value of counters for AIE tiles and 0 for shim tiles.
+ */
+static u32 aie_get_fifo_status(struct aie_partition *apart,
+			       struct aie_location *loc)
+{
+	u32 fifo_off, regoff, ttype;
+
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
+	if (ttype != AIE_TILE_TYPE_TILE)
+		return 0U;
+
+	fifo_off = apart->adev->tile_dma->fifo_cnt_regoff;
+
+	regoff = aie_cal_regoff(apart->adev, *loc, fifo_off);
+	return ioread32(apart->aperture->base + regoff);
+}
+
+/**
+ * aie_get_fifo_count() - returns the value of a DMA FIFO counter from its
+ *			  concatenated register value.
+ * @apart: AI engine partition.
+ * @status: register value of DMA FIFO counter.
+ * @counterid: counter ID.
+ * @return: DMA FIFO count.
+ */
+static u32 aie_get_fifo_count(struct aie_partition *apart, u32 status,
+			      u8 counterid)
+{
+	const struct aie_single_reg_field *fifo;
+
+	fifo = &apart->adev->tile_dma->fifo_cnt;
+
+	status >>= (fifo->regoff * counterid);
+	return (status & fifo->mask);
 }
 
 /**
@@ -183,7 +223,7 @@ ssize_t aie_sysfs_get_dma_status(struct aie_partition *apart,
 	bool is_delimit_req = false;
 	char **str = apart->adev->dma_status_str;
 
-	ttype = apart->adev->ops->get_tile_type(loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, loc);
 	if (ttype == AIE_TILE_TYPE_SHIMPL)
 		return len;
 
@@ -248,10 +288,10 @@ ssize_t aie_tile_show_dma(struct device *dev, struct device_attribute *attr,
 {
 	struct aie_tile *atile = container_of(dev, struct aie_tile, dev);
 	struct aie_partition *apart = atile->apart;
-	u32 ttype, i, num_s2mm_chan, num_mm2s_chan;
+	u32 ttype, i, num_s2mm_chan, num_mm2s_chan, fifo, fifo0_len, fifo1_len;
 	unsigned long status;
 	bool is_delimit_req = false;
-	ssize_t len = 0, size = PAGE_SIZE, l0 = 0, l1 = 0, l2 = 0;
+	ssize_t len = 0, size = PAGE_SIZE, l0 = 0, l1 = 0, l2 = 0, l3 = 0;
 	char **qsts_str = apart->adev->queue_status_str;
 	char ch_buf[AIE_SYSFS_CHAN_STS_SIZE],
 	     qsz_mm2s_buf[AIE_SYSFS_QUEUE_SIZE_SIZE],
@@ -259,7 +299,8 @@ ssize_t aie_tile_show_dma(struct device *dev, struct device_attribute *attr,
 	     qsts_mm2s_buf[AIE_SYSFS_QUEUE_STS_SIZE],
 	     qsts_s2mm_buf[AIE_SYSFS_QUEUE_STS_SIZE],
 	     bd_mm2s_buf[AIE_SYSFS_BD_SIZE],
-	     bd_s2mm_buf[AIE_SYSFS_BD_SIZE];
+	     bd_s2mm_buf[AIE_SYSFS_BD_SIZE],
+	     fifo_len_buf[AIE_SYSFS_FIFO_LEN_SIZE];
 
 	if (mutex_lock_interruptible(&apart->mlock)) {
 		dev_err(&apart->dev,
@@ -281,13 +322,14 @@ ssize_t aie_tile_show_dma(struct device *dev, struct device_attribute *attr,
 		scnprintf(qsts_s2mm_buf, AIE_SYSFS_QUEUE_STS_SIZE,
 			  "clock_gated");
 		scnprintf(bd_s2mm_buf, AIE_SYSFS_BD_SIZE, "clock_gated");
+		scnprintf(fifo_len_buf, AIE_SYSFS_BD_SIZE, "clock_gated");
 		goto print;
 	}
 
 	aie_sysfs_get_dma_status(apart, &atile->loc, ch_buf,
 				 AIE_SYSFS_CHAN_STS_SIZE);
 
-	ttype = apart->adev->ops->get_tile_type(&atile->loc);
+	ttype = apart->adev->ops->get_tile_type(apart->adev, &atile->loc);
 	if (ttype != AIE_TILE_TYPE_TILE) {
 		num_mm2s_chan = apart->adev->shim_dma->num_mm2s_chan;
 		num_s2mm_chan = apart->adev->shim_dma->num_s2mm_chan;
@@ -356,6 +398,14 @@ ssize_t aie_tile_show_dma(struct device *dev, struct device_attribute *attr,
 		is_delimit_req = true;
 	}
 
+	fifo = aie_get_fifo_status(apart,  &atile->loc);
+	fifo0_len = aie_get_fifo_count(apart, fifo, 0);
+	fifo1_len = aie_get_fifo_count(apart, fifo, 1);
+
+	l3 += scnprintf(&fifo_len_buf[l3],
+			max(0L, AIE_SYSFS_QUEUE_SIZE_SIZE - l3), "%d%s%d",
+			fifo0_len, DELIMITER_LEVEL0, fifo1_len);
+
 print:
 	mutex_unlock(&apart->mlock);
 	len += scnprintf(&buffer[len], max(0L, size - len),
@@ -369,6 +419,8 @@ print:
 	len += scnprintf(&buffer[len], max(0L, size - len),
 			 "current_bd: mm2s: %s%ss2mm: %s\n", bd_mm2s_buf,
 			 DELIMITER_LEVEL1, bd_s2mm_buf);
+	len += scnprintf(&buffer[len], max(0L, size - len),
+			 "fifo_len: %s\n", fifo_len_buf);
 	return len;
 }
 
@@ -396,7 +448,8 @@ ssize_t aie_part_read_cb_dma(struct kobject *kobj, char *buffer, ssize_t size)
 
 	for (index = 0; index < apart->range.size.col * apart->range.size.row;
 	     index++, atile++) {
-		u32 ttype = apart->adev->ops->get_tile_type(&atile->loc);
+		u32 ttype = apart->adev->ops->get_tile_type(apart->adev,
+							    &atile->loc);
 
 		if (ttype == AIE_TILE_TYPE_SHIMPL)
 			continue;

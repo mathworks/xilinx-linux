@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/module.h>
 #include <linux/err.h>
+#include <linux/iopoll.h>
 
 #define WZRD_NUM_OUTPUTS	7
 #define WZRD_ACLK_MAX_FREQ	250000000UL
@@ -25,38 +26,57 @@
 #define WZRD_CLKFBOUT_FRAC_EN	BIT(26)
 
 #define WZRD_CLKFBOUT_MULT_SHIFT	8
-#define WZRD_CLKFBOUT_MULT_MASK		(0xff << WZRD_CLKFBOUT_MULT_SHIFT)
+#define WZRD_CLKFBOUT_MULT_MASK		GENMASK(15, 8)
 #define WZRD_CLKFBOUT_FRAC_SHIFT	16
 #define WZRD_CLKFBOUT_FRAC_MASK		(0x3ff << WZRD_CLKFBOUT_FRAC_SHIFT)
 #define WZRD_DIVCLK_DIVIDE_SHIFT	0
-#define WZRD_DIVCLK_DIVIDE_MASK		(0xff << WZRD_DIVCLK_DIVIDE_SHIFT)
+#define WZRD_DIVCLK_DIVIDE_MASK		GENMASK(7, 0)
 #define WZRD_CLKOUT_DIVIDE_SHIFT	0
 #define WZRD_CLKOUT_DIVIDE_WIDTH	8
-#define WZRD_CLKOUT_DIVIDE_MASK		(0xff << WZRD_DIVCLK_DIVIDE_SHIFT)
+#define WZRD_CLKOUT_DIVIDE_MASK		GENMASK(7, 0)
 #define WZRD_CLKOUT_FRAC_SHIFT		8
 #define WZRD_CLKOUT_FRAC_MASK		0x3ff
+#define WZRD_CLKOUT0_FRAC_MASK		GENMASK(17, 8)
 
 #define WZRD_DR_MAX_INT_DIV_VALUE	255
-#define WZRD_DR_NUM_RETRIES		10000
 #define WZRD_DR_STATUS_REG_OFFSET	0x04
 #define WZRD_DR_LOCK_BIT_MASK		0x00000001
 #define WZRD_DR_INIT_REG_OFFSET		0x25C
 #define WZRD_DR_DIV_TO_PHASE_OFFSET	4
 #define WZRD_DR_BEGIN_DYNA_RECONF	0x03
+#define WZRD_DR_BEGIN_DYNA_RECONF_5_2	0x07
+#define WZRD_DR_BEGIN_DYNA_RECONF1_5_2	0x02
 
-/* Multiplier limits, from UG572 Table 3-4 for Ultrascale+ */
-#define CLKFBOUT_MULT_F_MIN		2000U
-#define CLKFBOUT_MULT_F_MAX		128000U
+#define WZRD_USEC_POLL		10
+#define WZRD_TIMEOUT_POLL		1000
 
 /* Divider limits, from UG572 Table 3-4 for Ultrascale+ */
-#define DIVCLK_DIVIDE_MIN		1U
-#define DIVCLK_DIVIDE_MAX		106U
+#define DIV_O				0x01
+#define DIV_ALL				0x03
+
+#define WZRD_M_MIN			2
+#define WZRD_M_MAX			128
+#define WZRD_D_MIN			1
+#define WZRD_D_MAX			106
+#define WZRD_VCO_MIN			800000000
+#define WZRD_VCO_MAX			1600000000
+#define WZRD_O_MIN			1
+#define WZRD_O_MAX			128
+#define WZRD_MIN_ERR			20000
+#define WZRD_FRAC_POINTS		1000
 
 /* Get the mask from width */
 #define div_mask(width)			((1 << (width)) - 1)
 
 /* Extract divider instance from clock hardware instance */
 #define to_clk_wzrd_divider(_hw) container_of(_hw, struct clk_wzrd_divider, hw)
+
+enum clk_wzrd_int_clks {
+	wzrd_clk_mul = 0,
+	wzrd_clk_mul_div = 1,
+	wzrd_clk_mul_frac = 2,
+	wzrd_clk_int_max = 3,
+};
 
 /*
  *         MMCM Block Diagram
@@ -84,7 +104,9 @@
  *      +->| clkout[1]      |-> output6 rate
  *         | (int divide)   |
  *         +----------------+
- *
+ */
+
+/**
  * struct clk_wzrd - Clock wizard private data structure
  *
  * @clk_data:		Clock data
@@ -92,11 +114,10 @@
  * @base:		Memory base
  * @clk_in1:		Handle to input clock 'clk_in1'
  * @axi_clk:		Handle to input clock 's_axi_aclk'
+ * @clks_internal:	Internal clocks
  * @clkout:		Output clocks
  * @speed_grade:	Speed grade of the device
  * @suspended:		Flag indicating power state of the device
- * @lock		lock pointer
- * @vco_clk:		hw Voltage Controlled Oscilator clock
  */
 struct clk_wzrd {
 	struct clk_onecell_data clk_data;
@@ -104,12 +125,10 @@ struct clk_wzrd {
 	void __iomem *base;
 	struct clk *clk_in1;
 	struct clk *axi_clk;
+	struct clk *clks_internal[wzrd_clk_int_max];
 	struct clk *clkout[WZRD_NUM_OUTPUTS];
 	unsigned int speed_grade;
 	bool suspended;
-	spinlock_t *lock;
-	struct clk_hw vco_clk_div_hw;
-	struct clk_hw vco_clk_mul_hw;
 };
 
 /**
@@ -121,6 +140,9 @@ struct clk_wzrd {
  * @shift:	shift to the divider bit field
  * @width:	width of the divider bit field
  * @flags:	clk_wzrd divider flags
+ * @valuem:	value of the multiplier
+ * @valued:	value of the common divider
+ * @valueo:	value of the leaf divider
  * @table:	array of value/divider pairs, last entry should have div = 0
  * @lock:	register lock
  */
@@ -132,6 +154,9 @@ struct clk_wzrd_divider {
 	u8 width;
 	u8 flags;
 	const struct clk_div_table *table;
+	u32 valuem;
+	u32 valued;
+	u32 valueo;
 	spinlock_t *lock;  /* divider lock */
 };
 
@@ -151,8 +176,7 @@ static unsigned long clk_wzrd_recalc_rate(struct clk_hw *hw,
 					  unsigned long parent_rate)
 {
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)(divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
 	unsigned int val;
 
 	val = readl(div_addr) >> divider->shift;
@@ -166,12 +190,10 @@ static int clk_wzrd_dynamic_reconfig(struct clk_hw *hw, unsigned long rate,
 				     unsigned long parent_rate)
 {
 	int err = 0;
-	u16 retries;
 	u32 value;
 	unsigned long flags = 0;
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)(divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
 
 	if (divider->lock)
 		spin_lock_irqsave(divider->lock, flags);
@@ -181,41 +203,29 @@ static int clk_wzrd_dynamic_reconfig(struct clk_hw *hw, unsigned long rate,
 	value = DIV_ROUND_CLOSEST(parent_rate, rate);
 
 	/* Cap the value to max */
-	if (value > WZRD_DR_MAX_INT_DIV_VALUE)
-		value = WZRD_DR_MAX_INT_DIV_VALUE;
+	min_t(u32, value, WZRD_DR_MAX_INT_DIV_VALUE);
 
 	/* Set divisor and clear phase offset */
 	writel(value, div_addr);
 	writel(0x00, div_addr + WZRD_DR_DIV_TO_PHASE_OFFSET);
 
 	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(divider->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (retries == 0) {
-		err = -ETIMEDOUT;
+	err = readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET,
+				 value, value & WZRD_DR_LOCK_BIT_MASK,
+				 WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
+	if (err)
 		goto err_reconfig;
-	}
 
 	/* Initiate reconfiguration */
-	writel(WZRD_DR_BEGIN_DYNA_RECONF,
+	writel(WZRD_DR_BEGIN_DYNA_RECONF_5_2,
+	       divider->base + WZRD_DR_INIT_REG_OFFSET);
+	writel(WZRD_DR_BEGIN_DYNA_RECONF1_5_2,
 	       divider->base + WZRD_DR_INIT_REG_OFFSET);
 
 	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(divider->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (retries == 0)
-		err = -ETIMEDOUT;
-
+	err = readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET,
+				 value, value & WZRD_DR_LOCK_BIT_MASK,
+				 WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
 err_reconfig:
 	if (divider->lock)
 		spin_unlock_irqrestore(divider->lock, flags);
@@ -239,10 +249,151 @@ static long clk_wzrd_round_rate(struct clk_hw *hw, unsigned long rate,
 	return (*prate / div);
 }
 
+static u64 clk_wzrd_get_divisors(struct clk_hw *hw, unsigned long rate,
+				 unsigned long parent_rate)
+{
+	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
+	u64 vco_freq, freq, diff;
+	u32 m, d, o;
+	u64 diff2 = U64_MAX;
+
+	for (m = WZRD_M_MIN; m <= WZRD_M_MAX; m++) {
+		for (d = WZRD_D_MIN; d <= WZRD_D_MAX; d++) {
+			vco_freq = DIV_ROUND_CLOSEST((parent_rate * m), d);
+			if (vco_freq >= WZRD_VCO_MIN && vco_freq <= WZRD_VCO_MAX) {
+				for (o = WZRD_O_MIN; o <= WZRD_O_MAX; o++) {
+					freq = DIV_ROUND_CLOSEST(vco_freq, o);
+					diff = abs(freq - rate);
+
+					if (diff < WZRD_MIN_ERR) {
+						divider->valuem = m;
+						divider->valued = d;
+						divider->valueo = o;
+						diff2 = diff;
+						return 0;
+					}
+					if (diff < diff2) {
+						divider->valuem = m;
+						divider->valued = d;
+						divider->valueo = o;
+						diff2 = diff;
+					}
+				}
+			}
+		}
+	}
+	return -EBUSY;
+}
+
+static int clk_wzrd_dynamic_all_nolock(struct clk_hw *hw, unsigned long rate,
+				       unsigned long parent_rate)
+{
+	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
+	u32 reg, pre;
+	u32 value;
+	int err;
+	u64 vco_freq, rate_div, f, clockout0_div;
+
+	err = clk_wzrd_get_divisors(hw, rate, parent_rate);
+	if (err)
+		pr_err("failed to get divisors\n");
+
+	vco_freq = DIV_ROUND_CLOSEST((parent_rate * divider->valuem), divider->valued);
+	rate_div = DIV_ROUND_CLOSEST((vco_freq * WZRD_FRAC_POINTS), rate);
+
+	clockout0_div = rate_div / WZRD_FRAC_POINTS;
+
+	pre = DIV_ROUND_CLOSEST((vco_freq * WZRD_FRAC_POINTS), rate);
+	f = (u32)(pre - (clockout0_div * WZRD_FRAC_POINTS));
+	f = f & WZRD_CLKOUT_FRAC_MASK;
+
+	reg = FIELD_PREP(WZRD_CLKOUT_DIVIDE_MASK, clockout0_div) |
+	      FIELD_PREP(WZRD_CLKOUT0_FRAC_MASK, f);
+
+	writel(reg, divider->base + WZRD_CLK_CFG_REG(2));
+	/* Set divisor and clear phase offset */
+	reg = FIELD_PREP(WZRD_CLKFBOUT_MULT_MASK, divider->valuem) |
+	      FIELD_PREP(WZRD_DIVCLK_DIVIDE_MASK, divider->valued);
+	writel(reg, divider->base + WZRD_CLK_CFG_REG(0));
+	writel(divider->valueo, divider->base + WZRD_CLK_CFG_REG(2));
+	writel(0, divider->base + WZRD_CLK_CFG_REG(3));
+	/* Check status register */
+	err = readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET, value,
+				 value & WZRD_DR_LOCK_BIT_MASK,
+				 WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
+	if (err)
+		return -ETIMEDOUT;
+
+	/* Initiate reconfiguration */
+	writel(WZRD_DR_BEGIN_DYNA_RECONF,
+	       divider->base + WZRD_DR_INIT_REG_OFFSET);
+
+	/* Check status register */
+	err = readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET, value,
+				 value & WZRD_DR_LOCK_BIT_MASK,
+				 WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
+	if (err)
+		return -ETIMEDOUT;
+
+	return 0;
+}
+
+static int clk_wzrd_dynamic_all(struct clk_hw *hw, unsigned long rate,
+				unsigned long parent_rate)
+{
+	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
+	unsigned long flags = 0;
+	int ret;
+
+	if (divider->lock)
+		spin_lock_irqsave(divider->lock, flags);
+	else
+		__acquire(divider->lock);
+
+	ret = clk_wzrd_dynamic_all_nolock(hw, rate, parent_rate);
+
+	if (divider->lock)
+		spin_unlock_irqrestore(divider->lock, flags);
+	else
+		__release(divider->lock);
+
+	return ret;
+}
+
+static unsigned long clk_wzrd_recalc_rate_all(struct clk_hw *hw,
+					      unsigned long parent_rate)
+{
+	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
+	u32 m, d, o, div, reg, f;
+
+	reg = readl(divider->base + WZRD_CLK_CFG_REG(0));
+	d = FIELD_GET(WZRD_DIVCLK_DIVIDE_MASK, reg);
+	m = FIELD_GET(WZRD_CLKFBOUT_MULT_MASK, reg);
+	reg = readl(divider->base + WZRD_CLK_CFG_REG(2));
+	o = FIELD_GET(WZRD_DIVCLK_DIVIDE_MASK, reg);
+	f = FIELD_GET(WZRD_CLKOUT0_FRAC_MASK, reg);
+
+	div = DIV_ROUND_CLOSEST(d * (WZRD_FRAC_POINTS * o + f), WZRD_FRAC_POINTS);
+	return divider_recalc_rate(hw, parent_rate * m, div, divider->table,
+			divider->flags, divider->width);
+}
+
+static long clk_wzrd_round_rate_all(struct clk_hw *hw, unsigned long rate,
+				    unsigned long *prate)
+{
+	return rate;
+}
+
 static const struct clk_ops clk_wzrd_clk_divider_ops = {
 	.round_rate = clk_wzrd_round_rate,
 	.set_rate = clk_wzrd_dynamic_reconfig,
 	.recalc_rate = clk_wzrd_recalc_rate,
+};
+
+static const struct clk_ops clk_wzrd_clk_div_all_ops = {
+	.round_rate = clk_wzrd_round_rate_all,
+	.set_rate = clk_wzrd_dynamic_all,
+	.recalc_rate = clk_wzrd_recalc_rate_all,
 };
 
 static unsigned long clk_wzrd_recalc_ratef(struct clk_hw *hw,
@@ -251,82 +402,55 @@ static unsigned long clk_wzrd_recalc_ratef(struct clk_hw *hw,
 	unsigned int val;
 	u32 div, frac;
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)((u64)divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
 
 	val = readl(div_addr);
 	div = val & div_mask(divider->width);
 	frac = (val >> WZRD_CLKOUT_FRAC_SHIFT) & WZRD_CLKOUT_FRAC_MASK;
 
-	return ((parent_rate * 1000) / ((div * 1000) + frac));
+	return mult_frac(parent_rate, 1000, (div * 1000) + frac);
 }
 
 static int clk_wzrd_dynamic_reconfig_f(struct clk_hw *hw, unsigned long rate,
 				       unsigned long parent_rate)
 {
 	int err = 0;
-	u16 retries;
 	u32 value, pre;
-	unsigned long flags = 0;
 	unsigned long rate_div, f, clockout0_div;
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)((u64)divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
 
-	if (divider->lock)
-		spin_lock_irqsave(divider->lock, flags);
-	else
-		__acquire(divider->lock);
-
-	rate_div = ((parent_rate * 1000) / rate);
+	rate_div = DIV_ROUND_DOWN_ULL(parent_rate * 1000, rate);
 	clockout0_div = rate_div / 1000;
 
 	pre = DIV_ROUND_CLOSEST((parent_rate * 1000), rate);
 	f = (u32)(pre - (clockout0_div * 1000));
 	f = f & WZRD_CLKOUT_FRAC_MASK;
+	f = f << WZRD_CLKOUT_DIVIDE_WIDTH;
 
-	value = ((f << WZRD_CLKOUT_DIVIDE_WIDTH) | (clockout0_div &
-			WZRD_CLKOUT_DIVIDE_MASK));
+	value = (f  | (clockout0_div & WZRD_CLKOUT_DIVIDE_MASK));
 
 	/* Set divisor and clear phase offset */
 	writel(value, div_addr);
 	writel(0x0, div_addr + WZRD_DR_DIV_TO_PHASE_OFFSET);
 
 	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(divider->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries) {
-		err = -ETIMEDOUT;
-		goto err_reconfig;
-	}
+	err = readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET, value,
+				 value & WZRD_DR_LOCK_BIT_MASK,
+				 WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
+	if (err)
+		return err;
 
 	/* Initiate reconfiguration */
-	writel(WZRD_DR_BEGIN_DYNA_RECONF,
+	writel(WZRD_DR_BEGIN_DYNA_RECONF_5_2,
+	       divider->base + WZRD_DR_INIT_REG_OFFSET);
+	writel(WZRD_DR_BEGIN_DYNA_RECONF1_5_2,
 	       divider->base + WZRD_DR_INIT_REG_OFFSET);
 
 	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(divider->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries)
-		err = -ETIMEDOUT;
-
-err_reconfig:
-	if (divider->lock)
-		spin_unlock_irqrestore(divider->lock, flags);
-	else
-		__release(divider->lock);
-
-	return err;
+	return readl_poll_timeout(divider->base + WZRD_DR_STATUS_REG_OFFSET, value,
+				  value & WZRD_DR_LOCK_BIT_MASK,
+				  WZRD_USEC_POLL, WZRD_TIMEOUT_POLL);
 }
 
 static long clk_wzrd_round_rate_f(struct clk_hw *hw, unsigned long rate,
@@ -341,229 +465,6 @@ static const struct clk_ops clk_wzrd_clk_divider_ops_f = {
 	.recalc_rate = clk_wzrd_recalc_ratef,
 };
 
-static unsigned long clk_wzrd_vco_mul_recalc_rate_f(struct clk_hw *hw,
-					       unsigned long parent_rate)
-{
-	u32 clk_cfg_reg0;
-	u32 clkfbout_mult, clkfbout_frac;
-	u64 rate;
-
-	struct clk_wzrd *clk_wzrd = container_of(hw,
-						 struct clk_wzrd,
-						 vco_clk_mul_hw);
-
-	clk_cfg_reg0 = readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-	clkfbout_mult = (clk_cfg_reg0 & WZRD_CLKFBOUT_MULT_MASK) >>
-			 WZRD_CLKFBOUT_MULT_SHIFT;
-	clkfbout_frac = (clk_cfg_reg0 & WZRD_CLKFBOUT_FRAC_MASK) >>
-			 WZRD_CLKFBOUT_FRAC_SHIFT;
-
-	rate = parent_rate *
-	       (clkfbout_mult * 1000 + clkfbout_frac) / /* multiplier x1000 */
-	       1000;
-
-	return (unsigned long)rate;
-}
-
-static int clk_wzrd_vco_mul_dynamic_reconfig_f(struct clk_hw *hw,
-					   unsigned long rate,
-					   unsigned long parent_rate)
-{
-	int err = 0;
-	u16 retries;
-	unsigned long flags = 0;
-	u32 clk_cfg_reg0, value;
-	u32 divclk_divide, clkfbout_mult, clkfbout_frac;
-	unsigned int new_mult;
-
-	struct clk_wzrd *clk_wzrd = container_of(hw,
-						 struct clk_wzrd,
-						 vco_clk_mul_hw);
-
-	/* The 8*125 give the x1000 that is needed */
-	new_mult = (rate * 8 / parent_rate) * 125;
-	new_mult = clamp(new_mult, CLKFBOUT_MULT_F_MIN, CLKFBOUT_MULT_F_MAX);
-
-	clkfbout_mult = new_mult / 1000;
-	clkfbout_frac = new_mult % 1000;
-
-	/* Read divclk_divide so it can be left unchanged */
-	clk_cfg_reg0 = readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-	divclk_divide = (clk_cfg_reg0 & WZRD_DIVCLK_DIVIDE_MASK) >>
-			 WZRD_DIVCLK_DIVIDE_SHIFT;
-
-	value = clkfbout_frac << WZRD_CLKFBOUT_FRAC_SHIFT |
-		 clkfbout_mult << WZRD_CLKFBOUT_MULT_SHIFT |
-		 divclk_divide << WZRD_DIVCLK_DIVIDE_SHIFT;
-
-	if (clk_wzrd->lock)
-		spin_lock_irqsave(clk_wzrd->lock, flags);
-	else
-		__acquire(clk_wzrd->lock);
-
-	/* Write the configuration out */
-	writel(value, clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-
-	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(clk_wzrd->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries) {
-		err = -ETIMEDOUT;
-		goto err_reconfig;
-	}
-
-	/* Initiate reconfiguration */
-	writel(WZRD_DR_BEGIN_DYNA_RECONF,
-	       clk_wzrd->base + WZRD_DR_INIT_REG_OFFSET);
-
-	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(clk_wzrd->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries)
-		err = -ETIMEDOUT;
-
-err_reconfig:
-	if (clk_wzrd->lock)
-		spin_unlock_irqrestore(clk_wzrd->lock, flags);
-	else
-		__release(clk_wzrd->lock);
-
-	return err;
-}
-
-static long clk_wzrd_vco_mul_round_rate_f(struct clk_hw *hw, unsigned long rate,
-				      unsigned long *prate)
-{
-	return rate;
-}
-
-static const struct clk_ops clk_wzrd_vco_mul_ops_f = {
-	.round_rate = clk_wzrd_vco_mul_round_rate_f,
-	.set_rate = clk_wzrd_vco_mul_dynamic_reconfig_f,
-	.recalc_rate = clk_wzrd_vco_mul_recalc_rate_f,
-};
-
-static unsigned long clk_wzrd_vco_div_recalc_rate(struct clk_hw *hw,
-					       unsigned long parent_rate)
-{
-	u32 clk_cfg_reg0;
-	u32 divclk_divide;
-	u64 rate;
-
-	struct clk_wzrd *clk_wzrd = container_of(hw,
-						 struct clk_wzrd,
-						 vco_clk_div_hw);
-
-	clk_cfg_reg0 = readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-	divclk_divide = (clk_cfg_reg0 & WZRD_DIVCLK_DIVIDE_MASK) >>
-			 WZRD_DIVCLK_DIVIDE_SHIFT;
-
-	rate = parent_rate / divclk_divide;
-
-	return (unsigned long)rate;
-}
-
-static int clk_wzrd_vco_div_dynamic_reconfig(struct clk_hw *hw,
-					   unsigned long rate,
-					   unsigned long parent_rate)
-{
-	int err = 0;
-	u16 retries;
-	unsigned long flags = 0;
-	u32 clk_cfg_reg0, value;
-	u32 divclk_divide, clkfbout_mult, clkfbout_frac;
-
-	struct clk_wzrd *clk_wzrd = container_of(hw,
-						 struct clk_wzrd,
-						 vco_clk_div_hw);
-
-	divclk_divide = DIV_ROUND_CLOSEST(parent_rate, rate);
-
-	divclk_divide = clamp(divclk_divide,
-			      DIVCLK_DIVIDE_MIN,
-			      DIVCLK_DIVIDE_MAX);
-
-	/*
-	 * Read clkfbout_mult and clkfbout_frac
-	 * so they can be left unchanged
-	 */
-	clk_cfg_reg0 = readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-	clkfbout_mult = (clk_cfg_reg0 & WZRD_CLKFBOUT_MULT_MASK) >>
-			 WZRD_CLKFBOUT_MULT_SHIFT;
-	clkfbout_frac = (clk_cfg_reg0 & WZRD_CLKFBOUT_FRAC_MASK) >>
-			 WZRD_CLKFBOUT_FRAC_SHIFT;
-
-	value = clkfbout_frac << WZRD_CLKFBOUT_FRAC_SHIFT |
-		 clkfbout_mult << WZRD_CLKFBOUT_MULT_SHIFT |
-		 divclk_divide << WZRD_DIVCLK_DIVIDE_SHIFT;
-
-	if (clk_wzrd->lock)
-		spin_lock_irqsave(clk_wzrd->lock, flags);
-	else
-		__acquire(clk_wzrd->lock);
-
-	/* Write the configuration out */
-	writel(value, clk_wzrd->base + WZRD_CLK_CFG_REG(0));
-
-	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(clk_wzrd->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries) {
-		err = -ETIMEDOUT;
-		goto err_reconfig;
-	}
-
-	/* Initiate reconfiguration */
-	writel(WZRD_DR_BEGIN_DYNA_RECONF,
-	       clk_wzrd->base + WZRD_DR_INIT_REG_OFFSET);
-
-	/* Check status register */
-	retries = WZRD_DR_NUM_RETRIES;
-	while (retries--) {
-		if (readl(clk_wzrd->base + WZRD_DR_STATUS_REG_OFFSET) &
-							WZRD_DR_LOCK_BIT_MASK)
-			break;
-	}
-
-	if (!retries)
-		err = -ETIMEDOUT;
-
-err_reconfig:
-	if (clk_wzrd->lock)
-		spin_unlock_irqrestore(clk_wzrd->lock, flags);
-	else
-		__release(clk_wzrd->lock);
-
-	return err;
-}
-
-static long clk_wzrd_vco_div_round_rate(struct clk_hw *hw, unsigned long rate,
-				      unsigned long *prate)
-{
-	return rate;
-}
-
-static const struct clk_ops clk_wzrd_vco_div_ops = {
-	.round_rate = clk_wzrd_vco_div_round_rate,
-	.set_rate = clk_wzrd_vco_div_dynamic_reconfig,
-	.recalc_rate = clk_wzrd_vco_div_recalc_rate,
-};
-
 static struct clk *clk_wzrd_register_divf(struct device *dev,
 					  const char *name,
 					  const char *parent_name,
@@ -571,7 +472,7 @@ static struct clk *clk_wzrd_register_divf(struct device *dev,
 					  void __iomem *base, u16 offset,
 					  u8 shift, u8 width,
 					  u8 clk_divider_flags,
-					  const struct clk_div_table *table,
+					  u32 div_type,
 					  spinlock_t *lock)
 {
 	struct clk_wzrd_divider *div;
@@ -579,30 +480,18 @@ static struct clk *clk_wzrd_register_divf(struct device *dev,
 	struct clk_init_data init;
 	int ret;
 
-	if (clk_divider_flags & CLK_DIVIDER_HIWORD_MASK) {
-		if (width + shift > 16) {
-			pr_warn("divider value exceeds LOWORD field\n");
-			return ERR_PTR(-EINVAL);
-		}
-	}
-
-	/* allocate the divider */
-	div = kzalloc(sizeof(*div), GFP_KERNEL);
+	div = devm_kzalloc(dev, sizeof(*div), GFP_KERNEL);
 	if (!div)
 		return ERR_PTR(-ENOMEM);
 
 	init.name = name;
 
-	if (clk_divider_flags & CLK_DIVIDER_READ_ONLY)
-		init.ops = &clk_divider_ro_ops;
-	else
-		init.ops = &clk_wzrd_clk_divider_ops_f;
+	init.ops = &clk_wzrd_clk_divider_ops_f;
 
 	init.flags = flags;
-	init.parent_names = (parent_name ? &parent_name : NULL);
-	init.num_parents = (parent_name ? 1 : 0);
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
 
-	/* struct clk_divider assignments */
 	div->base = base;
 	div->offset = offset;
 	div->shift = shift;
@@ -610,15 +499,12 @@ static struct clk *clk_wzrd_register_divf(struct device *dev,
 	div->flags = clk_divider_flags;
 	div->lock = lock;
 	div->hw.init = &init;
-	div->table = table;
+	div->table = NULL;
 
-	/* register the clock */
 	hw = &div->hw;
-	ret = clk_hw_register(dev, hw);
-	if (ret) {
-		kfree(div);
+	ret = devm_clk_hw_register(dev, hw);
+	if (ret)
 		return ERR_PTR(ret);
-	}
 
 	return hw->clk;
 }
@@ -630,7 +516,7 @@ static struct clk *clk_wzrd_register_divider(struct device *dev,
 					     void __iomem *base, u16 offset,
 					     u8 shift, u8 width,
 					     u8 clk_divider_flags,
-					     const struct clk_div_table *table,
+					     u32 div_type,
 					     spinlock_t *lock)
 {
 	struct clk_wzrd_divider *div;
@@ -638,28 +524,21 @@ static struct clk *clk_wzrd_register_divider(struct device *dev,
 	struct clk_init_data init;
 	int ret;
 
-	if (clk_divider_flags & CLK_DIVIDER_HIWORD_MASK) {
-		if (width + shift > 16) {
-			pr_warn("divider value exceeds LOWORD field\n");
-			return ERR_PTR(-EINVAL);
-		}
-	}
-
-	/* allocate the divider */
-	div = kzalloc(sizeof(*div), GFP_KERNEL);
+	div = devm_kzalloc(dev, sizeof(*div), GFP_KERNEL);
 	if (!div)
 		return ERR_PTR(-ENOMEM);
 
 	init.name = name;
 	if (clk_divider_flags & CLK_DIVIDER_READ_ONLY)
 		init.ops = &clk_divider_ro_ops;
-	else
+	else if (div_type == DIV_O)
 		init.ops = &clk_wzrd_clk_divider_ops;
+	else
+		init.ops = &clk_wzrd_clk_div_all_ops;
 	init.flags = flags;
-	init.parent_names = (parent_name ? &parent_name : NULL);
-	init.num_parents = (parent_name ? 1 : 0);
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
 
-	/* struct clk_divider assignments */
 	div->base = base;
 	div->offset = offset;
 	div->shift = shift;
@@ -667,15 +546,12 @@ static struct clk *clk_wzrd_register_divider(struct device *dev,
 	div->flags = clk_divider_flags;
 	div->lock = lock;
 	div->hw.init = &init;
-	div->table = table;
+	div->table = NULL;
 
-	/* register the clock */
 	hw = &div->hw;
-	ret = clk_hw_register(dev, hw);
-	if (ret) {
-		kfree(div);
+	ret = devm_clk_hw_register(dev, hw);
+	if (ret)
 		hw = ERR_PTR(ret);
-	}
 
 	return hw->clk;
 }
@@ -741,30 +617,26 @@ static SIMPLE_DEV_PM_OPS(clk_wzrd_dev_pm_ops, clk_wzrd_suspend,
 static int clk_wzrd_probe(struct platform_device *pdev)
 {
 	int i, ret;
+	u32 reg, reg_f, mult;
 	unsigned long rate;
+	const char *clk_name;
+	void __iomem *ctrl_reg;
 	struct clk_wzrd *clk_wzrd;
-	struct resource *mem;
 	int outputs;
 	unsigned long flags = 0;
+	const char *clkout_name;
 	struct device_node *np = pdev->dev.of_node;
-
-	const char *clk_in_name = NULL;
-	const char *clk_vco_div_name = NULL, *clk_vco_mul_name = NULL;
-	struct clk_init_data init;
 
 	clk_wzrd = devm_kzalloc(&pdev->dev, sizeof(*clk_wzrd), GFP_KERNEL);
 	if (!clk_wzrd)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, clk_wzrd);
 
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	clk_wzrd->base = devm_ioremap_resource(&pdev->dev, mem);
+	clk_wzrd->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(clk_wzrd->base))
 		return PTR_ERR(clk_wzrd->base);
 
-	clk_wzrd->lock = &clkwzrd_lock;
-
-	ret = of_property_read_u32(np, "speed-grade", &clk_wzrd->speed_grade);
+	ret = of_property_read_u32(np, "xlnx,speed-grade", &clk_wzrd->speed_grade);
 	if (!ret) {
 		if (clk_wzrd->speed_grade < 1 || clk_wzrd->speed_grade > 3) {
 			dev_warn(&pdev->dev, "invalid speed grade '%d'\n",
@@ -799,91 +671,103 @@ static int clk_wzrd_probe(struct platform_device *pdev)
 		goto err_disable_clk;
 	}
 
-	ret = clk_prepare_enable(clk_wzrd->clk_in1);
-	if (ret) {
-		dev_err(&pdev->dev, "enabling clk_in1 failed\n");
-		return ret;
-	}
-
-	/* Only allow the parent rate to be set if there is a single output */
 	outputs = of_property_count_strings(np, "clock-output-names");
-	if (outputs == 1)
-		flags = CLK_SET_RATE_PARENT;
+	clk_name = kasprintf(GFP_KERNEL, "%s_mul_div", dev_name(&pdev->dev));
+	if (!clk_name) {
+		ret = -ENOMEM;
+		goto err_rm_int_clk;
+	}
 
-	/* Write the divider clock name */
-	clk_vco_div_name = kasprintf(GFP_KERNEL, "%s_div",
-				     dev_name(&pdev->dev));
+	if (outputs == 1) {
+		if (of_property_read_string_index(np, "clock-output-names", 0,
+						  &clkout_name)) {
+			dev_err(&pdev->dev,
+				"clock output name not specified\n");
+			ret = -EINVAL;
+			goto err_rm_int_clks;
+		}
 
-	if (!clk_vco_div_name) {
+		clk_wzrd->clkout[0] = clk_wzrd_register_divider
+				(&pdev->dev, clkout_name,
+				__clk_get_name(clk_wzrd->clk_in1), 0,
+				clk_wzrd->base, WZRD_CLK_CFG_REG(3),
+				WZRD_CLKOUT_DIVIDE_SHIFT,
+				WZRD_CLKOUT_DIVIDE_WIDTH,
+				CLK_DIVIDER_ONE_BASED | CLK_DIVIDER_ALLOW_ZERO,
+				DIV_ALL, &clkwzrd_lock);
+
+		goto out;
+	}
+
+	/* register multiplier */
+	reg = (readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0)) &
+		     WZRD_CLKFBOUT_MULT_MASK) >> WZRD_CLKFBOUT_MULT_SHIFT;
+	reg_f = (readl(clk_wzrd->base + WZRD_CLK_CFG_REG(0)) &
+		     WZRD_CLKFBOUT_FRAC_MASK) >> WZRD_CLKFBOUT_FRAC_SHIFT;
+
+	mult = ((reg * 1000) + reg_f);
+	clk_name = kasprintf(GFP_KERNEL, "%s_mul", dev_name(&pdev->dev));
+	if (!clk_name) {
 		ret = -ENOMEM;
 		goto err_disable_clk;
 	}
-
-	/* Write the multiplier clock name */
-	clk_vco_mul_name = kasprintf(GFP_KERNEL, "%s_mul",
-				     dev_name(&pdev->dev));
-	if (!clk_vco_mul_name) {
-		ret = -ENOMEM;
-		kfree(clk_vco_div_name);
+	clk_wzrd->clks_internal[wzrd_clk_mul] = clk_register_fixed_factor
+			(&pdev->dev, clk_name,
+			 __clk_get_name(clk_wzrd->clk_in1),
+			0, mult, 1000);
+	kfree(clk_name);
+	if (IS_ERR(clk_wzrd->clks_internal[wzrd_clk_mul])) {
+		dev_err(&pdev->dev, "unable to register fixed-factor clock\n");
+		ret = PTR_ERR(clk_wzrd->clks_internal[wzrd_clk_mul]);
 		goto err_disable_clk;
 	}
 
-	/* setup and register the VCO divider clock */
-	init.name = clk_vco_div_name;
-	init.ops = &clk_wzrd_vco_div_ops;
-	clk_in_name = __clk_get_name(clk_wzrd->clk_in1);
-	dev_info(&pdev->dev, "clk_in_name: %s\n", clk_in_name);
-	init.parent_names = &clk_in_name;
-	init.num_parents = 1;
-	init.flags = 0;
+	clk_name = kasprintf(GFP_KERNEL, "%s_mul_div", dev_name(&pdev->dev));
+	if (!clk_name) {
+		ret = -ENOMEM;
+		goto err_rm_int_clk;
+	}
 
-	clk_wzrd->vco_clk_div_hw.init = &init;
-	ret = clk_hw_register(&pdev->dev, &clk_wzrd->vco_clk_div_hw);
-	if (ret)
-		goto err_disable_clk_free_names;
-
-	/* setup and register the VCO multiplier clock */
-	init.name = clk_vco_mul_name;
-	init.ops = &clk_wzrd_vco_mul_ops_f;
-	init.parent_names = &clk_vco_div_name;
-	init.num_parents = 1;
-	/* needs CLK_SET_RATE_PARENT if set above */
-	init.flags = flags;
-
-	clk_wzrd->vco_clk_mul_hw.init = &init;
-	ret = clk_hw_register(&pdev->dev, &clk_wzrd->vco_clk_mul_hw);
-	if (ret)
-		goto err_rm_hw_div_clk;
+	ctrl_reg = clk_wzrd->base + WZRD_CLK_CFG_REG(0);
+	/* register div */
+	clk_wzrd->clks_internal[wzrd_clk_mul_div] = clk_register_divider
+			(&pdev->dev, clk_name,
+			 __clk_get_name(clk_wzrd->clks_internal[wzrd_clk_mul]),
+			flags, ctrl_reg, 0, 8, CLK_DIVIDER_ONE_BASED |
+			CLK_DIVIDER_ALLOW_ZERO, &clkwzrd_lock);
+	if (IS_ERR(clk_wzrd->clks_internal[wzrd_clk_mul_div])) {
+		dev_err(&pdev->dev, "unable to register divider clock\n");
+		ret = PTR_ERR(clk_wzrd->clks_internal[wzrd_clk_mul_div]);
+		goto out;
+	}
 
 	/* register div per output */
 	for (i = outputs - 1; i >= 0 ; i--) {
-		const char *clkout_name;
-
 		if (of_property_read_string_index(np, "clock-output-names", i,
 						  &clkout_name)) {
 			dev_err(&pdev->dev,
 				"clock output name not specified\n");
 			ret = -EINVAL;
-			goto err_rm_hw_clks;
+			goto err_rm_int_clks;
 		}
 		if (!i)
 			clk_wzrd->clkout[i] = clk_wzrd_register_divf
 				(&pdev->dev, clkout_name,
-				clk_vco_mul_name, flags,
+				clk_name, flags,
 				clk_wzrd->base, (WZRD_CLK_CFG_REG(2) + i * 12),
 				WZRD_CLKOUT_DIVIDE_SHIFT,
 				WZRD_CLKOUT_DIVIDE_WIDTH,
 				CLK_DIVIDER_ONE_BASED | CLK_DIVIDER_ALLOW_ZERO,
-				NULL, &clkwzrd_lock);
+				DIV_O, &clkwzrd_lock);
 		else
 			clk_wzrd->clkout[i] = clk_wzrd_register_divider
 				(&pdev->dev, clkout_name,
-				clk_vco_mul_name, 0,
+				clk_name, 0,
 				clk_wzrd->base, (WZRD_CLK_CFG_REG(2) + i * 12),
 				WZRD_CLKOUT_DIVIDE_SHIFT,
 				WZRD_CLKOUT_DIVIDE_WIDTH,
 				CLK_DIVIDER_ONE_BASED | CLK_DIVIDER_ALLOW_ZERO,
-				NULL, &clkwzrd_lock);
+				DIV_O, &clkwzrd_lock);
 		if (IS_ERR(clk_wzrd->clkout[i])) {
 			int j;
 
@@ -892,13 +776,12 @@ static int clk_wzrd_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev,
 				"unable to register divider clock\n");
 			ret = PTR_ERR(clk_wzrd->clkout[i]);
-			goto err_rm_hw_clks;
+			goto err_rm_int_clks;
 		}
 	}
 
-	kfree(clk_vco_div_name);
-	kfree(clk_vco_mul_name);
-
+	kfree(clk_name);
+out:
 	clk_wzrd->clk_data.clks = clk_wzrd->clkout;
 	clk_wzrd->clk_data.clk_num = ARRAY_SIZE(clk_wzrd->clkout);
 	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_wzrd->clk_data);
@@ -920,13 +803,11 @@ static int clk_wzrd_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_rm_hw_clks:
-	clk_unregister(clk_wzrd->vco_clk_mul_hw.clk);
-err_rm_hw_div_clk:
-	clk_unregister(clk_wzrd->vco_clk_div_hw.clk);
-err_disable_clk_free_names:
-	kfree(clk_vco_div_name);
-	kfree(clk_vco_mul_name);
+err_rm_int_clks:
+	clk_unregister(clk_wzrd->clks_internal[1]);
+err_rm_int_clk:
+	kfree(clk_name);
+	clk_unregister(clk_wzrd->clks_internal[0]);
 err_disable_clk:
 	clk_disable_unprepare(clk_wzrd->axi_clk);
 
@@ -942,9 +823,8 @@ static int clk_wzrd_remove(struct platform_device *pdev)
 
 	for (i = 0; i < WZRD_NUM_OUTPUTS; i++)
 		clk_unregister(clk_wzrd->clkout[i]);
-
-	clk_unregister(clk_wzrd->vco_clk_div_hw.clk);
-	clk_unregister(clk_wzrd->vco_clk_mul_hw.clk);
+	for (i = 0; i < wzrd_clk_int_max; i++)
+		clk_unregister(clk_wzrd->clks_internal[i]);
 
 	if (clk_wzrd->speed_grade) {
 		clk_notifier_unregister(clk_wzrd->axi_clk, &clk_wzrd->nb);
@@ -958,6 +838,8 @@ static int clk_wzrd_remove(struct platform_device *pdev)
 
 static const struct of_device_id clk_wzrd_ids[] = {
 	{ .compatible = "xlnx,clocking-wizard" },
+	{ .compatible = "xlnx,clocking-wizard-v5.2" },
+	{ .compatible = "xlnx,clocking-wizard-v6.0" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, clk_wzrd_ids);

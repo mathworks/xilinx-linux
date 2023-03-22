@@ -48,6 +48,9 @@ no-header-test += linux/v4l2-mediabus.h
 no-header-test += linux/v4l2-subdev.h
 no-header-test += linux/videodev2.h
 no-header-test += linux/vm_sockets.h
+no-header-test += linux/xilinx-sdirxss.h
+no-header-test += linux/xilinx-hls.h
+no-header-test += linux/xilinx-v4l2-events.h
 no-header-test += sound/asequencer.h
 no-header-test += sound/asoc.h
 no-header-test += sound/asound.h
@@ -67,8 +70,6 @@ endif
 ifeq ($(SRCARCH),ia64)
 no-header-test += asm/setup.h
 no-header-test += asm/sigcontext.h
-no-header-test += asm/perfmon.h
-no-header-test += asm/perfmon_default_smpl.h
 no-header-test += linux/if_bonding.h
 endif
 

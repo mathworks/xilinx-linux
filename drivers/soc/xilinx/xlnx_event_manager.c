@@ -8,6 +8,7 @@
  */
 
 #include <linux/cpuhotplug.h>
+#include <linux/firmware/xlnx-error-events.h>
 #include <linux/firmware/xlnx-event-manager.h>
 #include <linux/firmware/xlnx-zynqmp.h>
 #include <linux/hashtable.h>
@@ -35,7 +36,6 @@ static int event_manager_availability = -EACCES;
 
 #define MAX_BITS	(32U) /* Number of bits available for error mask */
 
-#define FIRMWARE_VERSION_MASK			(0xFFFFU)
 #define REGISTER_NOTIFIER_FIRMWARE_VERSION	(2U)
 
 static DEFINE_HASHTABLE(reg_driver_map, REGISTERED_DRIVER_MAX_ORDER);
@@ -65,10 +65,11 @@ struct registered_event_data {
 
 static bool xlnx_is_error_event(const u32 node_id)
 {
-	if (node_id == EVENT_ERROR_PMC_ERR1 ||
-	    node_id == EVENT_ERROR_PMC_ERR2 ||
-	    node_id == EVENT_ERROR_PSM_ERR1 ||
-	    node_id == EVENT_ERROR_PSM_ERR2)
+	if (node_id == XPM_NODETYPE_EVENT_ERROR_PMC_ERR1 ||
+	    node_id == XPM_NODETYPE_EVENT_ERROR_PMC_ERR2 ||
+	    node_id == XPM_NODETYPE_EVENT_ERROR_PSM_ERR1 ||
+	    node_id == XPM_NODETYPE_EVENT_ERROR_PSM_ERR2 ||
+	    node_id == XPM_NODETYPE_EVENT_ERROR_SW_ERR)
 		return true;
 
 	return false;
@@ -363,7 +364,7 @@ static void xlnx_call_notify_cb_handler(const u32 *payload)
 			eve_data->eve_cb(&payload[0], eve_data->agent_data);
 			is_callback_found = true;
 
-			/* re regisfer with firmware to get future events */
+			/* re register with firmware to get future events */
 			ret = zynqmp_pm_register_notifier(payload[1], payload[2],
 							  eve_data->wake, true);
 			if (ret) {
@@ -382,7 +383,7 @@ static void xlnx_call_notify_cb_handler(const u32 *payload)
 
 static void xlnx_get_event_callback_data(u32 *buf)
 {
-	zynqmp_pm_invoke_fn(GET_CALLBACK_DATA, 0, 0, 0, 0, buf);
+	zynqmp_pm_invoke_fn(GET_CALLBACK_DATA, 0, 0, 0, 0, 0, buf);
 }
 
 static irqreturn_t xlnx_event_handler(int irq, void *dev_id)
@@ -533,7 +534,7 @@ static int xlnx_event_manager_probe(struct platform_device *pdev)
 
 	if ((ret & FIRMWARE_VERSION_MASK) <
 	    REGISTER_NOTIFIER_FIRMWARE_VERSION) {
-		dev_err(&pdev->dev, "Register notifier firmware version error. Expected: v%d - Found: v%d\n",
+		dev_err(&pdev->dev, "Register notifier version error. Expected Firmware: v%d - Found: v%d\n",
 			REGISTER_NOTIFIER_FIRMWARE_VERSION,
 			ret & FIRMWARE_VERSION_MASK);
 		return -EOPNOTSUPP;
@@ -550,16 +551,21 @@ static int xlnx_event_manager_probe(struct platform_device *pdev)
 	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "soc/event:starting",
 			  xlnx_event_cpuhp_start, xlnx_event_cpuhp_down);
 
-	ret = zynqmp_pm_invoke_fn(PM_IOCTL, 0, IOCTL_REGISTER_SGI, sgi_num,
-				  0, NULL);
+	ret = zynqmp_pm_register_sgi(sgi_num, 0);
 	if (ret) {
-		dev_err(&pdev->dev, "SGI Registration over ATF failed with %d\n", ret);
+		if (ret == -ENOTSUPP)
+			dev_info(&pdev->dev, "PM firmware event notification not supported\n");
+		else
+			dev_err(&pdev->dev, "SGI %d registration failed, err %d\n",
+				sgi_num, ret);
+
 		xlnx_event_cleanup_sgi(pdev);
 		return ret;
 	}
 
 	event_manager_availability = 0;
 
+	dev_info(&pdev->dev, "SGI %d Registered over ATF\n", sgi_num);
 	dev_info(&pdev->dev, "Xilinx Event Management driver probed\n");
 
 	return ret;
@@ -577,7 +583,7 @@ static int xlnx_event_manager_remove(struct platform_device *pdev)
 		kfree(eve_data);
 	}
 
-	ret = zynqmp_pm_invoke_fn(PM_IOCTL, 0, IOCTL_REGISTER_SGI, 0, 1, NULL);
+	ret = zynqmp_pm_register_sgi(0, 1);
 	if (ret)
 		dev_err(&pdev->dev, "SGI unregistration over ATF failed with %d\n", ret);
 
@@ -595,4 +601,5 @@ static struct platform_driver xlnx_event_manager_driver = {
 		.name = "xlnx_event_manager",
 	},
 };
+module_param(sgi_num, uint, 0);
 module_platform_driver(xlnx_event_manager_driver);

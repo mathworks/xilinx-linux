@@ -36,6 +36,8 @@
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <video/videomode.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 
 #include "xlnx_bridge.h"
 #include "xlnx_crtc.h"
@@ -98,6 +100,15 @@ static const u32 zynqmp_disp_gfx_init_fmts[] = {
 /* 44 bit addressing. This is actually DPDMA limitation */
 #define ZYNQMP_DISP_MAX_DMA_BIT				44
 
+static struct regmap_config dpaud_regmap_config = {
+	.name = "regmap",
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+	.max_register = 0xfff,
+	.cache_type = REGCACHE_NONE,
+};
+
 /**
  * enum zynqmp_disp_layer_type - Layer type (can be used for hw ID)
  * @ZYNQMP_DISP_LAYER_VID: Video layer
@@ -136,7 +147,6 @@ struct zynqmp_disp_layer_dma {
  * struct zynqmp_disp_layer - Display subsystem layer
  * @plane: DRM plane
  * @bridge: Xlnx bridge
- * @of_node: device node
  * @dma: struct for DMA engine
  * @num_chan: Number of DMA channel
  * @id: Layer ID
@@ -156,7 +166,6 @@ struct zynqmp_disp_layer_dma {
 struct zynqmp_disp_layer {
 	struct drm_plane plane;
 	struct xlnx_bridge bridge;
-	struct device_node *of_node;
 	struct zynqmp_disp_layer_dma dma[ZYNQMP_DISP_MAX_NUM_SUB_PLANES];
 	unsigned int num_chan;
 	enum zynqmp_disp_layer_type id;
@@ -195,7 +204,7 @@ struct zynqmp_disp_av_buf {
  * @base: Base address offset
  */
 struct zynqmp_disp_aud {
-	void __iomem *base;
+	struct regmap *base;
 };
 
 /**
@@ -454,6 +463,7 @@ static void zynqmp_disp_blend_layer_coeff(struct zynqmp_disp_blend *blend,
 	u32 sdtv_offsets_yonly[] = { 0x1800, 0x1800, 0x0 };
 	u32 null_offsets[] = { 0x0, 0x0, 0x0 };
 	u32 *offsets;
+	struct zynqmp_disp *display = layer->disp;
 
 	if (layer->id == ZYNQMP_DISP_LAYER_VID)
 		offset = ZYNQMP_DISP_V_BLEND_IN1CSC_COEFF0;
@@ -464,7 +474,7 @@ static void zynqmp_disp_blend_layer_coeff(struct zynqmp_disp_blend *blend,
 		coeffs = null_coeffs;
 		offsets = null_offsets;
 	} else {
-		if (!layer->fmt->rgb) {
+		if ((!layer->fmt->rgb) && (!display->tpg_on)) {
 			/*
 			 * In case of Y_ONLY formats, pixels are unpacked
 			 * differently compared to YCbCr
@@ -840,6 +850,15 @@ static const struct zynqmp_disp_fmt av_buf_vid_fmts[] = {
 		.rgb		= false,
 		.swap		= false,
 		.chroma_sub	= true,
+		.sf[0]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
+		.sf[1]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
+		.sf[2]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
+	}, {
+		.drm_fmt	= DRM_FORMAT_X403,
+		.disp_fmt	= ZYNQMP_DISP_AV_BUF_FMT_NL_VID_YV24_10,
+		.rgb		= false,
+		.swap		= false,
+		.chroma_sub	= false,
 		.sf[0]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
 		.sf[1]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
 		.sf[2]		= ZYNQMP_DISP_AV_BUF_10BIT_SF,
@@ -1416,9 +1435,9 @@ static void zynqmp_disp_av_buf_init_live_sf(struct zynqmp_disp_av_buf *av_buf,
 static void zynqmp_disp_aud_init(struct zynqmp_disp_aud *aud)
 {
 	/* Clear the audio soft reset register as it's an non-reset flop */
-	zynqmp_disp_write(aud->base, ZYNQMP_DISP_AUD_SOFT_RESET, 0);
-	zynqmp_disp_write(aud->base, ZYNQMP_DISP_AUD_MIXER_VOLUME,
-			  ZYNQMP_DISP_AUD_MIXER_VOLUME_NO_SCALE);
+	regmap_write(aud->base, ZYNQMP_DISP_AUD_SOFT_RESET, 0);
+	regmap_write(aud->base, ZYNQMP_DISP_AUD_MIXER_VOLUME,
+		     ZYNQMP_DISP_AUD_MIXER_VOLUME_NO_SCALE);
 }
 
 /**
@@ -1429,8 +1448,9 @@ static void zynqmp_disp_aud_init(struct zynqmp_disp_aud *aud)
  */
 static void zynqmp_disp_aud_deinit(struct zynqmp_disp_aud *aud)
 {
-	zynqmp_disp_set(aud->base, ZYNQMP_DISP_AUD_SOFT_RESET,
-			ZYNQMP_DISP_AUD_SOFT_RESET_AUD_SRST);
+	regmap_write_bits(aud->base, ZYNQMP_DISP_AUD_SOFT_RESET,
+			  ZYNQMP_DISP_AUD_SOFT_RESET_AUD_SRST,
+			  ZYNQMP_DISP_AUD_SOFT_RESET_AUD_SRST);
 }
 
 /*
@@ -1619,9 +1639,8 @@ static int zynqmp_disp_layer_set_tpg(struct zynqmp_disp *disp,
 		return -EIO;
 	}
 
-	zynqmp_disp_blend_layer_coeff(&disp->blend, layer, tpg_on);
-	zynqmp_disp_av_buf_set_tpg(&disp->av_buf, tpg_on);
 	disp->tpg_on = tpg_on;
+	zynqmp_disp_av_buf_set_tpg(&disp->av_buf, tpg_on);
 
 	return 0;
 }
@@ -1768,7 +1787,7 @@ zynqmp_disp_layer_request_dma(struct zynqmp_disp *disp,
 
 		dma = &layer->dma[i];
 		snprintf(temp, sizeof(temp), "%s%d", name, i);
-		dma->chan = of_dma_request_slave_channel(layer->of_node,
+		dma->chan = of_dma_request_slave_channel(disp->dev->of_node,
 							 temp);
 		if (IS_ERR(dma->chan)) {
 			dev_err(disp->dev, "failed to request dma channel\n");
@@ -1848,11 +1867,8 @@ static void zynqmp_disp_layer_destroy(struct zynqmp_disp *disp)
 {
 	unsigned int i;
 
-	for (i = 0; i < ZYNQMP_DISP_NUM_LAYERS; i++) {
+	for (i = 0; i < ZYNQMP_DISP_NUM_LAYERS; i++)
 		zynqmp_disp_layer_release_dma(disp, &disp->layers[i]);
-		if (disp->layers[i].of_node)
-			of_node_put(disp->layers[i].of_node);
-	}
 }
 
 /**
@@ -1877,7 +1893,6 @@ static int zynqmp_disp_layer_create(struct zynqmp_disp *disp)
 		layer->offset = i * 4;
 		layer->other = &disp->layers[!i];
 		layer->num_chan = num_chans[i];
-		layer->of_node = disp->dev->of_node;
 		ret = zynqmp_disp_layer_request_dma(disp, layer, dma_name[i]);
 		if (ret)
 			goto err;
@@ -2342,9 +2357,10 @@ static struct drm_plane_funcs zynqmp_disp_plane_funcs = {
 
 static void
 zynqmp_disp_plane_atomic_update(struct drm_plane *plane,
-				struct drm_plane_state *old_state)
+				struct drm_atomic_state *state)
 {
 	int ret;
+	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(state, plane);
 
 	if (!plane->state->crtc || !plane->state->fb)
 		return;
@@ -2370,22 +2386,23 @@ zynqmp_disp_plane_atomic_update(struct drm_plane *plane,
 
 static void
 zynqmp_disp_plane_atomic_disable(struct drm_plane *plane,
-				 struct drm_plane_state *old_state)
+				 struct drm_atomic_state *state)
 {
 	zynqmp_disp_plane_disable(plane);
 }
 
 static int zynqmp_disp_plane_atomic_async_check(struct drm_plane *plane,
-						struct drm_plane_state *state)
+						struct drm_atomic_state *state)
 {
 	return 0;
 }
 
 static void
 zynqmp_disp_plane_atomic_async_update(struct drm_plane *plane,
-				      struct drm_plane_state *new_state)
+				      struct drm_atomic_state *state)
 {
 	int ret;
+	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state, plane);
 
 	if (plane->state->fb == new_state->fb)
 		return;
@@ -2568,7 +2585,7 @@ static int zynqmp_disp_crtc_mode_set(struct drm_crtc *crtc,
 
 static void
 zynqmp_disp_crtc_atomic_enable(struct drm_crtc *crtc,
-			       struct drm_crtc_state *old_crtc_state)
+			       struct drm_atomic_state *state)
 {
 	struct zynqmp_disp *disp = crtc_to_disp(crtc);
 	struct drm_display_mode *adjusted_mode = &crtc->state->adjusted_mode;
@@ -2599,7 +2616,7 @@ zynqmp_disp_crtc_atomic_enable(struct drm_crtc *crtc,
 
 static void
 zynqmp_disp_crtc_atomic_disable(struct drm_crtc *crtc,
-				struct drm_crtc_state *old_crtc_state)
+				struct drm_atomic_state *state)
 {
 	struct zynqmp_disp *disp = crtc_to_disp(crtc);
 
@@ -2612,14 +2629,14 @@ zynqmp_disp_crtc_atomic_disable(struct drm_crtc *crtc,
 }
 
 static int zynqmp_disp_crtc_atomic_check(struct drm_crtc *crtc,
-					 struct drm_crtc_state *state)
+					 struct drm_atomic_state *state)
 {
-	return drm_atomic_add_affected_planes(state->state, crtc);
+	return drm_atomic_add_affected_planes(state, crtc);
 }
 
 static void
 zynqmp_disp_crtc_atomic_begin(struct drm_crtc *crtc,
-			      struct drm_crtc_state *old_crtc_state)
+			      struct drm_atomic_state *state)
 {
 	drm_crtc_vblank_on(crtc);
 	/* Don't rely on vblank when disabling crtc */
@@ -3020,6 +3037,7 @@ int zynqmp_disp_probe(struct platform_device *pdev)
 	struct zynqmp_dpsub *dpsub;
 	struct zynqmp_disp *disp;
 	struct resource *res;
+	void __iomem *regs;
 	int ret;
 	struct zynqmp_disp_layer *layer;
 	unsigned int i, j;
@@ -3040,10 +3058,24 @@ int zynqmp_disp_probe(struct platform_device *pdev)
 	if (IS_ERR(disp->av_buf.base))
 		return PTR_ERR(disp->av_buf.base);
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "aud");
-	disp->aud.base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(disp->aud.base))
-		return PTR_ERR(disp->aud.base);
+	disp->aud.base = syscon_regmap_lookup_by_phandle(disp->dev->of_node,
+							 "xlnx,dpaud-reg");
+	if (IS_ERR(disp->aud.base)) {
+		dev_info(&pdev->dev, "could not find xlnx,dpaud-reg, trying direct register access. DisplayPort audio will not work\n");
+
+		regs = devm_platform_ioremap_resource_byname(pdev, "aud");
+		if (IS_ERR(regs)) {
+			dev_err(&pdev->dev, "get aud memory resource failed.\n");
+			return PTR_ERR(regs);
+		}
+		disp->aud.base =
+			devm_regmap_init_mmio(&pdev->dev, regs,
+					      &dpaud_regmap_config);
+		if (IS_ERR(disp->aud.base)) {
+			dev_err(&pdev->dev, "failed to init regmap\n");
+			return PTR_ERR(disp->aud.base);
+		}
+	}
 
 	dpsub = platform_get_drvdata(pdev);
 	dpsub->disp = disp;
@@ -3147,7 +3179,7 @@ int zynqmp_disp_probe(struct platform_device *pdev)
 		layer->bridge.get_input_fmts =
 			&zynqmp_disp_bridge_get_input_fmts;
 		layer->bridge.set_timing = &zynqmp_disp_bridge_set_timing;
-		layer->bridge.of_node = layer->of_node;
+		layer->bridge.of_node = disp->dev->of_node;
 		layer->bridge.extra_name = ((i == 0) ? ".vid" : ".gfx");
 		ret = xlnx_bridge_register(&layer->bridge);
 		if (ret) {

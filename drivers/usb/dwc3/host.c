@@ -13,6 +13,21 @@
 
 #include "core.h"
 
+static dwc3_wakeup_t dwc3_wakeup_fn;
+
+ /* dwc3 host wakeup registration */
+void dwc3_host_wakeup_register(dwc3_wakeup_t func)
+{
+	dwc3_wakeup_fn = func;
+}
+
+/* callback function */
+void dwc3_host_wakeup_capable(struct device *dev, bool wakeup)
+{
+	if (dwc3_wakeup_fn)
+		dwc3_wakeup_fn(dev, wakeup);
+}
+
 static int dwc3_host_get_irq(struct dwc3 *dwc)
 {
 	struct platform_device	*dwc3_pdev = to_platform_device(dwc->dev);
@@ -113,7 +128,7 @@ int dwc3_host_init(struct dwc3 *dwc)
 		props[prop_idx++] = PROPERTY_ENTRY_BOOL("quirk-broken-port-ped");
 
 	if (prop_idx) {
-		ret = platform_device_add_properties(xhci, props);
+		ret = device_create_managed_software_node(&xhci->dev, props, NULL);
 		if (ret) {
 			dev_err(dwc->dev, "failed to add properties to xHCI\n");
 			goto err;

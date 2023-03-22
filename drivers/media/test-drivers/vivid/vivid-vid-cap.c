@@ -1107,11 +1107,9 @@ int vidioc_g_fmt_vid_overlay(struct file *file, void *priv,
 		    ((compose->width + 7) / 8) * compose->height))
 			return -EFAULT;
 	}
-	if (clipcount && win->clips) {
-		if (copy_to_user(win->clips, dev->clips_cap,
-				 clipcount * sizeof(dev->clips_cap[0])))
-			return -EFAULT;
-	}
+	if (clipcount && win->clips)
+		memcpy(win->clips, dev->clips_cap,
+		       clipcount * sizeof(dev->clips_cap[0]));
 	return 0;
 }
 
@@ -1141,9 +1139,8 @@ int vidioc_try_fmt_vid_overlay(struct file *file, void *priv,
 	if (win->clipcount > MAX_CLIPS)
 		win->clipcount = MAX_CLIPS;
 	if (win->clipcount) {
-		if (copy_from_user(dev->try_clips_cap, win->clips,
-				   win->clipcount * sizeof(dev->clips_cap[0])))
-			return -EFAULT;
+		memcpy(dev->try_clips_cap, win->clips,
+		       win->clipcount * sizeof(dev->clips_cap[0]));
 		for (i = 0; i < win->clipcount; i++) {
 			struct v4l2_rect *r = &dev->try_clips_cap[i].c;
 
@@ -1166,9 +1163,8 @@ int vidioc_try_fmt_vid_overlay(struct file *file, void *priv,
 					return -EINVAL;
 			}
 		}
-		if (copy_to_user(win->clips, dev->try_clips_cap,
-				 win->clipcount * sizeof(dev->clips_cap[0])))
-			return -EFAULT;
+		memcpy(win->clips, dev->try_clips_cap,
+		       win->clipcount * sizeof(dev->clips_cap[0]));
 	}
 	return 0;
 }
@@ -1884,7 +1880,7 @@ int vidioc_enum_frameintervals(struct file *file, void *priv,
 			break;
 	if (i == ARRAY_SIZE(webcam_sizes))
 		return -EINVAL;
-	if (fival->index >= 2 * (VIVID_WEBCAM_SIZES - i))
+	if (fival->index >= 2 * VIVID_WEBCAM_SIZES)
 		return -EINVAL;
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
 	fival->discrete = webcam_intervals[fival->index];
@@ -1911,7 +1907,7 @@ int vivid_vid_cap_s_parm(struct file *file, void *priv,
 			  struct v4l2_streamparm *parm)
 {
 	struct vivid_dev *dev = video_drvdata(file);
-	unsigned ival_sz = 2 * (VIVID_WEBCAM_SIZES - dev->webcam_size_idx);
+	unsigned ival_sz = 2 * VIVID_WEBCAM_SIZES;
 	struct v4l2_fract tpf;
 	unsigned i;
 
