@@ -618,7 +618,8 @@ static int xgpio_probe(struct platform_device *pdev)
 	if (width[1] > 32)
 		return -EINVAL;
 
-	platform_set_drvdata(pdev, chip);
+	/* Setup software pin mapping */
+	bitmap_set(chip->sw_map, 0, width[0] + width[1]);
 
 	/* Setup hardware pin mapping */
 	bitmap_set(chip->hw_map,  0, width[0]);
@@ -703,6 +704,12 @@ skip_irq:
 
 	pm_runtime_put(&pdev->dev);
 	return 0;
+
+err_pm_put:
+	pm_runtime_disable(&pdev->dev);
+	pm_runtime_put_noidle(&pdev->dev);
+	clk_disable_unprepare(chip->clk);
+	return status;
 }
 
 static const struct of_device_id xgpio_of_match[] = {

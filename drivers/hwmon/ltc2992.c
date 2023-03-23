@@ -905,7 +905,8 @@ static int ltc2992_parse_dt(struct ltc2992_state *st)
 			return ret;
 		}
 
-		if (addr > 1)
+		if (addr > 1) {
+			fwnode_handle_put(child);
 			return -EINVAL;
 		}
 
