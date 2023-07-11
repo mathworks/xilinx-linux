@@ -447,7 +447,7 @@ struct mathworks_ip_info *devm_mathworks_ip_of_init(
 	ipDev->dev = &pdev->dev;
 	ipDev->name = pdev->dev.of_node->name;
 	/* Check for IRQ first, we may have to defer */
-	ipDev->irq = platform_get_irq(pdev, 0);
+	ipDev->irq = platform_get_irq_optional(pdev, 0);
 	if (ipDev->irq < 0) {
 		switch (ipDev->irq){
 			case -EPROBE_DEFER:
