@@ -635,7 +635,7 @@ static int tiadc_probe(struct platform_device *pdev)
 		&tiadc_buffer_setup_ops);
 
 	if (err)
-		goto err_free_channels;
+		return err;
 
 	err = iio_device_register(indio_dev);
 	if (err)

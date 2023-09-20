@@ -237,7 +237,7 @@ static int mx25_gcq_setup_cfgs(struct platform_device *pdev,
 				dev_err(dev, "Error, trying to use external voltage reference without a vref-%s regulator.",
 					mx25_gcq_refp_names[refp]);
 				of_node_put(child);
-				return PTR_ERR(priv->vref[refp]);
+				return ret;
 			}
 			priv->channel_vref_mv[reg] =
 				regulator_get_voltage(priv->vref[refp]);

@@ -47,7 +47,7 @@ xvip_dma_remote_subdev(struct media_pad *local, u32 *pad)
 {
 	struct media_pad *remote;
 
-	remote = media_entity_remote_pad(local);
+	remote = media_pad_remote_pad_first(local);
 	if (!remote || !is_media_entity_v4l2_subdev(remote->entity))
 		return NULL;
 
@@ -271,7 +271,7 @@ static void xvip_dma_complete(void *param)
 	struct xvip_dma_buffer *buf = param;
 	struct xvip_dma *dma = buf->dma;
 	int i, sizeimage;
-	u32 fid;
+	u32 fid = 0;
 	int status;
 
 	spin_lock(&dma->queued_lock);
@@ -537,10 +537,9 @@ static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 	 * streaming.
 	 */
 	mutex_lock(&dma->xdev->lock);
-	pipe = dma->video.entity.pipe
-	     ? to_xvip_pipeline(&dma->video.entity) : &dma->pipe;
+	pipe = to_xvip_pipeline(&dma->video) ? : &dma->pipe;
 
-	ret = media_pipeline_start(&dma->video.entity, &pipe->pipe);
+	ret = video_device_pipeline_start(&dma->video, &pipe->pipe);
 	mutex_unlock(&dma->xdev->lock);
 	if (ret < 0)
 		goto error;
@@ -563,6 +562,11 @@ static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 	 */
 	if (!dma->low_latency_cap) {
 		dma_async_issue_pending(dma->dma);
+
+		/* Start the pipeline. */
+		ret = xvip_pipeline_set_stream(pipe, true);
+		if (ret < 0)
+			goto error_stop;
 	} else {
 		/* For low latency capture, return the first buffer early
 		 * so that consumer can initialize until we start DMA.
@@ -573,15 +577,10 @@ static int xvip_dma_start_streaming(struct vb2_queue *vq, unsigned int count)
 		buf->desc->callback = NULL;
 	}
 
-	/* Start the pipeline. */
-	ret = xvip_pipeline_set_stream(pipe, true);
-	if (ret < 0)
-		goto error_stop;
-
 	return 0;
 
 error_stop:
-	media_pipeline_stop(&dma->video.entity);
+	video_device_pipeline_stop(&dma->video);
 
 error:
 	dmaengine_terminate_all(dma->dma);
@@ -599,7 +598,7 @@ error:
 static void xvip_dma_stop_streaming(struct vb2_queue *vq)
 {
 	struct xvip_dma *dma = vb2_get_drv_priv(vq);
-	struct xvip_pipeline *pipe = to_xvip_pipeline(&dma->video.entity);
+	struct xvip_pipeline *pipe = to_xvip_pipeline(&dma->video);
 	struct xvip_dma_buffer *buf, *nbuf;
 
 	/* Stop the pipeline. */
@@ -610,7 +609,7 @@ static void xvip_dma_stop_streaming(struct vb2_queue *vq)
 
 	/* Cleanup the pipeline and mark it as being stopped. */
 	xvip_pipeline_cleanup(pipe);
-	media_pipeline_stop(&dma->video.entity);
+	video_device_pipeline_stop(&dma->video);
 
 	/* Give back all queued buffers to videobuf2. */
 	spin_lock_irq(&dma->queued_lock);
@@ -657,7 +656,7 @@ static int xvip_xdma_enum_fmt(struct xvip_dma *dma, struct v4l2_fmtdesc *f,
 {
 	const struct xvip_video_format *fmt;
 	int ret;
-	u32 i, fmt_cnt, *fmts;
+	u32 i, fmt_cnt = 0, *fmts = NULL;
 
 	ret = xilinx_xdma_get_v4l2_vid_fmts(dma->dma, &fmt_cnt, &fmts);
 	if (ret)
@@ -982,7 +981,7 @@ xvip_dma_set_format(struct file *file, void *fh, struct v4l2_format *format)
 {
 	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
-	const struct xvip_video_format *info;
+	const struct xvip_video_format *info = NULL;
 
 	__xvip_dma_try_format(dma, format, &info);
 
@@ -1149,6 +1148,9 @@ static int xvip_dma_s_ctrl(struct v4l2_ctrl *ctl)
 	struct xvip_dma *dma = container_of(ctl->handler, struct xvip_dma,
 					    ctrl_handler);
 	int ret = 0;
+	struct xvip_pipeline *pipe = media_entity_pipeline(&dma->video.entity) ?
+		to_xvip_pipeline(&dma->video) : &dma->pipe;
+	struct xvip_dma_buffer *buf, *nbuf;
 
 	switch (ctl->id)  {
 	case V4L2_CID_XILINX_LOW_LATENCY:
@@ -1170,16 +1172,35 @@ static int xvip_dma_s_ctrl(struct v4l2_ctrl *ctl)
 			dma->low_latency_cap = false;
 			xilinx_xdma_set_mode(dma->dma, AUTO_RESTART);
 		} else if (ctl->val == XVIP_START_DMA) {
-			/*
-			 * In low latency capture, the driver allows application
-			 * to start dma when queue has buffers. That's why we
-			 * don't check for vb2_is_busy().
-			 */
 			if (dma->low_latency_cap &&
-			    vb2_is_streaming(&dma->queue))
+			    vb2_is_streaming(&dma->queue)) {
+				/*
+				 * In low latency capture, the driver allows application
+				 * to start dma when queue has buffers. That's why we
+				 * don't check for vb2_is_busy().
+				 */
 				dma_async_issue_pending(dma->dma);
-			else
+
+				/* Start the pipeline. */
+				ret = xvip_pipeline_set_stream(pipe, true);
+				if (ret < 0) {
+					dev_err(dma->xdev->dev, "Failed to set stream\n");
+					media_pipeline_stop(dma->video.entity.pads);
+					dmaengine_terminate_all(dma->dma);
+
+					/* Give back all queued buffers to videobuf2. */
+					spin_lock_irq(&dma->queued_lock);
+					list_for_each_entry_safe(buf, nbuf,
+								 &dma->queued_bufs, queue) {
+						vb2_buffer_done(&buf->buf.vb2_buf,
+								VB2_BUF_STATE_QUEUED);
+						list_del(&buf->queue);
+					}
+					spin_unlock_irq(&dma->queued_lock);
+				}
+			} else {
 				ret = -EINVAL;
+			}
 		} else {
 			ret = -EINVAL;
 		}

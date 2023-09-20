@@ -234,7 +234,16 @@ static int ad7949_spi_init(struct ad7949_adc_chip *ad7949_adc)
 
 	/* Sequencer disabled, CFG readback disabled, IN0 as default channel */
 	ad7949_adc->current_channel = 0;
-	ret = ad7949_spi_write_cfg(ad7949_adc, 0x3C79, AD7949_MASK_TOTAL);
+
+	cfg = FIELD_PREP(AD7949_CFG_MASK_OVERWRITE, 1) |
+		FIELD_PREP(AD7949_CFG_MASK_INCC, AD7949_CFG_VAL_INCC_UNIPOLAR_GND) |
+		FIELD_PREP(AD7949_CFG_MASK_INX, ad7949_adc->current_channel) |
+		FIELD_PREP(AD7949_CFG_MASK_BW_FULL, 1) |
+		FIELD_PREP(AD7949_CFG_MASK_REF, ad7949_adc->refsel) |
+		FIELD_PREP(AD7949_CFG_MASK_SEQ, 0x0) |
+		FIELD_PREP(AD7949_CFG_MASK_RBN, 1);
+
+	ret = ad7949_spi_write_cfg(ad7949_adc, cfg, AD7949_CFG_MASK_TOTAL);
 
 	/*
 	 * Do two dummy conversions to apply the first configuration setting.

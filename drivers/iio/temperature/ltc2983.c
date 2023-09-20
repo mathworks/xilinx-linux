@@ -449,10 +449,6 @@ static struct ltc2983_custom_sensor *__ltc2983_custom_sensor_new(
 			of_property_read_u32_index(np, propname, index, &t32);
 			temp = t32;
 		}
-
-		for (j = 0; j < n_size; j++)
-			new_custom->table[tbl++] =
-				temp >> (8 * (n_size - j - 1));
 	}
 
 	new_custom->is_steinhart = is_steinhart;
@@ -1264,6 +1260,7 @@ static int ltc2983_parse_dt(struct ltc2983_data *st)
 {
 	struct device_node *child;
 	struct device *dev = &st->spi->dev;
+	struct fwnode_handle *child;
 	int ret = 0, chan = 0, channel_avail_mask = 0;
 
 	of_property_read_u32(dev->of_node, "adi,mux-delay-config-us",

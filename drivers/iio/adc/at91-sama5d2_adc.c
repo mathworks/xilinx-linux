@@ -140,11 +140,9 @@
 #define AT91_SAMA5D2_CGR	0x48
 
 /* Channel Offset Register */
-#define AT91_SAMA5D2_COR	0x4c
-#define AT91_SAMA5D2_COR_DIFF_OFFSET	16
-
-/* Channel Data Register 0 */
-#define AT91_SAMA5D2_CDR0	0x50
+	u16				COR;
+/* Channel Offset Register differential offset - constant, not a register */
+	u16				COR_diff_offset;
 /* Analog Control Register */
 #define AT91_SAMA5D2_ACR	0x94
 /* Analog Control Register - Pen detect sensitivity mask */
@@ -510,8 +508,7 @@ static void at91_adc_config_emr(struct at91_adc_state *st)
 	/* configure the extended mode register */
 	unsigned int emr = at91_adc_readl(st, AT91_SAMA5D2_EMR);
 
-	/* select oversampling per single trigger event */
-	emr |= AT91_SAMA5D2_EMR_ASTE(1);
+	cor = BIT(chan->channel) | BIT(chan->channel2);
 
 	/* delete leftover content if it's the case */
 	emr &= ~AT91_SAMA5D2_EMR_OSR_MASK;
@@ -1197,7 +1194,11 @@ static void at91_adc_setup_samp_freq(struct iio_dev *indio_dev, unsigned freq)
 	startup = at91_adc_startup_time(st->soc_info.startup_time,
 					freq / 1000);
 
-	mr = at91_adc_readl(st, AT91_SAMA5D2_MR);
+	ret = pm_runtime_resume_and_get(st->dev);
+	if (ret < 0)
+		return;
+
+	mr = at91_adc_readl(st, MR);
 	mr &= ~(AT91_SAMA5D2_MR_STARTUP_MASK | AT91_SAMA5D2_MR_PRESCAL_MASK);
 	mr |= AT91_SAMA5D2_MR_STARTUP(startup);
 	mr |= AT91_SAMA5D2_MR_PRESCAL(prescal);
@@ -1459,7 +1460,11 @@ static int at91_adc_write_raw(struct iio_dev *indio_dev,
 		/* if no change, optimize out */
 		if (val == st->oversampling_ratio)
 			return 0;
-		st->oversampling_ratio = val;
+
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
+		mutex_lock(&st->lock);
 		/* update ratio */
 		at91_adc_config_emr(st);
 		return 0;
@@ -1479,6 +1484,21 @@ static void at91_adc_dma_init(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct at91_adc_state *st = iio_priv(indio_dev);
+
+	switch (mask) {
+	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
+		*vals = (int *)st->soc_info.platform->oversampling_avail;
+		*type = IIO_VAL_INT;
+		*length = st->soc_info.platform->oversampling_avail_no;
+		return IIO_AVAIL_LIST;
+	default:
+		return -EINVAL;
+	}
+}
+
+static void at91_adc_dma_init(struct at91_adc_state *st)
+{
+	struct device *dev = &st->indio_dev->dev;
 	struct dma_slave_config config = {0};
 	/*
 	 * We make the buffer double the size of the fifo,

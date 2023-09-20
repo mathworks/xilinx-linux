@@ -1221,13 +1221,12 @@ out:
 	return ret;
 }
 
-static int ad6676_remove(struct spi_device *spi)
+static void ad6676_remove(struct spi_device *spi)
 {
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 
 	clk_disable_unprepare(conv->clk);
 
-	return 0;
 }
 
 static const struct spi_device_id ad6676_id[] = {

@@ -340,7 +340,7 @@ err_disable_vdd_reg:
 	return ret;
 }
 
-static int ad7303_remove(struct spi_device *spi)
+static void ad7303_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad7303_state *st = iio_priv(indio_dev);
@@ -351,8 +351,6 @@ static int ad7303_remove(struct spi_device *spi)
 	if (st->vref_reg)
 		regulator_disable(st->vref_reg);
 	regulator_disable(st->vdd_reg);
-
-	return 0;
 }
 
 static const struct of_device_id ad7303_spi_of_match[] = {

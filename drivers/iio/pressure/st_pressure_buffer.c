@@ -7,7 +7,6 @@
  * Denis Ciocca <denis.ciocca@st.com>
  */
 
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
@@ -54,7 +53,3 @@ void st_press_deallocate_ring(struct iio_dev *indio_dev)
 {
 	iio_triggered_buffer_cleanup(indio_dev);
 }
-
-MODULE_AUTHOR("Denis Ciocca <denis.ciocca@st.com>");
-MODULE_DESCRIPTION("STMicroelectronics pressures buffer");
-MODULE_LICENSE("GPL v2");

@@ -85,7 +85,7 @@ static ssize_t ad5380_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5380_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", st->pwr_down);
+	return sysfs_emit(buf, "%d\n", st->pwr_down);
 }
 
 static ssize_t ad5380_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -491,9 +491,9 @@ static int ad5380_spi_probe(struct spi_device *spi)
 	return ad5380_probe(&spi->dev, regmap, id->driver_data, id->name);
 }
 
-static int ad5380_spi_remove(struct spi_device *spi)
+static void ad5380_spi_remove(struct spi_device *spi)
 {
-	return ad5380_remove(&spi->dev);
+	ad5380_remove(&spi->dev);
 }
 
 static const struct spi_device_id ad5380_spi_ids[] = {

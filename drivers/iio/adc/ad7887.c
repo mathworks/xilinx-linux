@@ -331,7 +331,7 @@ error_disable_reg:
 	return ret;
 }
 
-static int ad7887_remove(struct spi_device *spi)
+static void ad7887_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad7887_state *st = iio_priv(indio_dev);
@@ -340,8 +340,6 @@ static int ad7887_remove(struct spi_device *spi)
 	iio_triggered_buffer_cleanup(indio_dev);
 	if (st->reg)
 		regulator_disable(st->reg);
-
-	return 0;
 }
 
 static const struct spi_device_id ad7887_id[] = {

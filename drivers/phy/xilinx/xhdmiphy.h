@@ -73,13 +73,50 @@
 					XHDMIPHY_INTR_TXTMRTIMEOUT_MASK | \
 					XHDMIPHY_INTR_RXTMRTIMEOUT_MASK)
 
+#define XHDMIPHY_INTR_GTALL_MASK	(XHDMIPHY_INTR_TXRESETDONE_MASK | \
+					 XHDMIPHY_INTR_RXRESETDONE_MASK | \
+					 XHDMIPHY_INTR_LCPLL_LOCK_MASK | \
+					 XHDMIPHY_INTR_RPLL_LOCK_MASK | \
+					 XHDMIPHY_INTR_TXFREQCHANGE_MASK | \
+					 XHDMIPHY_INTR_RXFREQCHANGE_MASK | \
+					 XHDMIPHY_INTR_TXMMCMUSRCLK_LOCK_MASK | \
+					 XHDMIPHY_INTR_RXMMCMUSRCLK_LOCK_MASK | \
+					 XHDMIPHY_INTR_TXGPO_RE_MASK | \
+					 XHDMIPHY_INTR_RXGPO_RE_MASK | \
+					 XHDMIPHY_INTR_TXTMRTIMEOUT_MASK)
+
+#define XHDMIPHY_GTYE5_TX_ALL_MASK	(XHDMIPHY_INTR_TXRESETDONE_MASK | \
+					 XHDMIPHY_INTR_LCPLL_LOCK_MASK | \
+					 XHDMIPHY_INTR_TXFREQCHANGE_MASK | \
+					 XHDMIPHY_INTR_TXMMCMUSRCLK_LOCK_MASK | \
+					 XHDMIPHY_INTR_TXGPO_RE_MASK | \
+					 XHDMIPHY_INTR_TXTMRTIMEOUT_MASK)
+
+#define XHDMIPHY_GTYE5_RX_ALL_MASK	(XHDMIPHY_INTR_RXRESETDONE_MASK | \
+					 XHDMIPHY_INTR_RPLL_LOCK_MASK | \
+					 XHDMIPHY_INTR_RXFREQCHANGE_MASK | \
+					 XHDMIPHY_INTR_RXMMCMUSRCLK_LOCK_MASK |\
+					 XHDMIPHY_INTR_RXGPO_RE_MASK | \
+					 XHDMIPHY_INTR_RXTMRTIMEOUT_MASK)
+
+#define XHDMIPHY_GTYE5_TX_MASK		(XHDMIPHY_INTR_LCPLL_LOCK_MASK |\
+					 XHDMIPHY_INTR_TXGPO_RE_MASK |\
+					 XHDMIPHY_INTR_TXRESETDONE_MASK |\
+					 XHDMIPHY_INTR_TXMMCMUSRCLK_LOCK_MASK)
+
+#define XHDMIPHY_GTYE5_RX_MASK		(XHDMIPHY_INTR_RPLL_LOCK_MASK |\
+					 XHDMIPHY_INTR_RXGPO_RE_MASK |\
+					 XHDMIPHY_INTR_RXRESETDONE_MASK |\
+					 XHDMIPHY_INTR_RXMMCMUSRCLK_LOCK_MASK)
+
 #define XHDMIPHY_DRU_REF_CLK_HZ		100000000
-#define XHDMIPHY_MAX_LANES		4
+#define XHDMIPHY_MAX_LANES		8
 #define VPHY_DEVICE_ID_BASE		256
 
 #define XHDMIPHY_GTHE4				5
 #define XHDMIPHY_GTYE4				6
 #define XHDMIPHY_GTYE5				7
+#define XHDMIPHY_GTYP				8
 #define XHDMIPHY_REFCLKSEL_MAX			5
 
 /* linerate ranges */
@@ -685,6 +722,13 @@ enum gt_type {
 	XHDMIPHY_GTTYPE_GTHE4 = 5,
 	XHDMIPHY_GTTYPE_GTYE4 = 6,
 	XHDMIPHY_GTTYPE_GTYE5 = 7,
+	XHDMIPHY_GTTYPE_GTYP = 8,
+};
+
+enum gt_direction {
+	XHDMIPHY_SIMPLE_TX = 1,
+	XHDMIPHY_SIMPLE_RX = 2,
+	XHDMIPHY_DUPLEX = 3,
 };
 
 enum prot_type {
@@ -953,6 +997,7 @@ struct xhdmiphy_conf {
 	u8 tx_channels;
 	u8 rx_channels;
 	enum gt_type gt_type;
+	enum gt_direction gt_direction;
 	enum prot_type tx_protocol;
 	enum prot_type rx_protocol;
 	enum refclk_sel tx_refclk_sel;		/* tx refclk selection. */
@@ -981,7 +1026,7 @@ struct xhdmiphy_dev {
 	struct hdmiphy_callback phycb[TX_READY_CB];
 	int irq;
 	struct mutex hdmiphy_mutex;	/* protecting phy operations */
-	struct xhdmiphy_lane *lanes[4];
+	struct xhdmiphy_lane *lanes[XHDMIPHY_MAX_LANES];
 	struct clk_config *data;
 	struct clk *axi_lite_clk;
 	struct clk *dru_clk;
@@ -1000,6 +1045,7 @@ struct xhdmiphy_dev {
 	u8 tx_samplerate;
 	u8 rx_dru_enabled;
 	u8 qpll_present;
+	u8 phy_ready;
 };
 
 void xhdmiphy_set_clr(struct xhdmiphy_dev *inst, u32 addr, u32 reg_val,

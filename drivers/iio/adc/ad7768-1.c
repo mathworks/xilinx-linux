@@ -688,6 +688,7 @@ static irqreturn_t ad7768_trigger_handler(int irq, void *p)
 
 	iio_trigger_notify_done(indio_dev->trig);
 err_unlock:
+	iio_trigger_notify_done(indio_dev->trig);
 	mutex_unlock(&st->lock);
 
 	return IRQ_HANDLED;

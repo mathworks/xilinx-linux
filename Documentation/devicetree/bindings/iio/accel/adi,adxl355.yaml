@@ -45,13 +45,23 @@ properties:
   vddio-supply:
     description: Regulator that provides power to the bus
 
+<<<<<<< HEAD
   spi-max-frequency: true
 
+=======
+>>>>>>> 3c185529f08b8b1ea3ca213d9e83a1d0da8f7f2e
 required:
   - compatible
   - reg
 
+<<<<<<< HEAD
 additionalProperties: false
+=======
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+unevaluatedProperties: false
+>>>>>>> 3c185529f08b8b1ea3ca213d9e83a1d0da8f7f2e
 
 examples:
   - |

@@ -1431,6 +1431,15 @@ xm2msc_cal_imagesize(struct xm2msc_chan_ctx *chan_ctx,
 		q_data->sizeimage[0] +=
 				q_data->stride * (height / 2);
 		break;
+	case V4L2_PIX_FMT_NV16:
+	case V4L2_PIX_FMT_XV20:
+		/*
+		 * Adding chroma plane size as NV16
+		 * have a contiguous buffer for luma and chrome
+		 */
+		q_data->sizeimage[0] +=
+				q_data->stride * height;
+		break;
 	case V4L2_PIX_FMT_NV12M:
 	case V4L2_PIX_FMT_XV15M:
 		q_data->sizeimage[1] =
@@ -2285,6 +2294,13 @@ static int xm2msc_parse_of(struct platform_device *pdev,
 	dev_dbg(dev, "taps Supported = %d\n", xm2msc->taps);
 	/* read supported video formats and update internal table */
 	hw_vid_fmt_cnt = of_property_count_strings(node, "xlnx,vid-formats");
+
+	/* Validate the number of strings returned */
+	if (hw_vid_fmt_cnt < 0)
+		return hw_vid_fmt_cnt;
+
+	if (hw_vid_fmt_cnt > ARRAY_SIZE(formats))
+		return -EINVAL;
 
 	ret = of_property_read_string_array(node, "xlnx,vid-formats",
 					    vid_fmts, hw_vid_fmt_cnt);

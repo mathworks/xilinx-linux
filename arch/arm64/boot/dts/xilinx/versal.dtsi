@@ -198,7 +198,6 @@
 			reg = <0 0xffa80000 0 0x1000>;
 			interrupts = <0 60 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x210>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -210,7 +209,6 @@
 			reg = <0 0xffa90000 0 0x1000>;
 			interrupts = <0 61 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x212>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -222,7 +220,6 @@
 			reg = <0 0xffaa0000 0 0x1000>;
 			interrupts = <0 62 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x214>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -234,7 +231,6 @@
 			reg = <0 0xffab0000 0 0x1000>;
 			interrupts = <0 63 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x216>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -246,7 +242,6 @@
 			reg = <0 0xffac0000 0 0x1000>;
 			interrupts = <0 64 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x218>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -258,7 +253,6 @@
 			reg = <0 0xffad0000 0 0x1000>;
 			interrupts = <0 65 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x21a>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -270,7 +264,6 @@
 			reg = <0 0xffae0000 0 0x1000>;
 			interrupts = <0 66 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x21c>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
@@ -282,19 +275,17 @@
 			reg = <0 0xffaf0000 0 0x1000>;
 			interrupts = <0 67 4>;
 			clock-names = "clk_main", "clk_apb";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x21e>; */
 			xlnx,bus-width = <64>;
 			/* dma-coherent; */
 		};
 
 		gem0: ethernet@ff0c0000 {
-			compatible = "cdns,versal-gem", "cdns,gem";
+			compatible = "xlnx,versal-gem", "cdns,gem";
 			status = "disabled";
 			reg = <0 0xff0c0000 0 0x1000>;
 			interrupts = <0 56 4>, <0 56 4>;
 			clock-names = "pclk", "hclk", "tx_clk", "rx_clk", "tsu_clk";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x234>; */
 			/* dma-coherent; */
 			#address-cells = <1>;
@@ -302,12 +293,11 @@
 		};
 
 		gem1: ethernet@ff0d0000 {
-			compatible = "cdns,versal-gem", "cdns,gem";
+			compatible = "xlnx,versal-gem", "cdns,gem";
 			status = "disabled";
 			reg = <0 0xff0d0000 0 0x1000>;
 			interrupts = <0 58 4>, <0 58 4>;
 			clock-names = "pclk", "hclk", "tx_clk", "rx_clk", "tsu_clk";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x235>; */
 			/* dma-coherent; */
 			#address-cells = <1>;
@@ -341,7 +331,7 @@
 			status = "disabled";
 			reg = <0 0xff020000 0 0x1000>;
 			interrupts = <0 14 4>;
-			clock-frequency = <400000>;
+			clock-frequency = <100000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
@@ -351,7 +341,7 @@
 			status = "disabled";
 			reg = <0 0xff030000 0 0x1000>;
 			interrupts = <0 15 4>;
-			clock-frequency = <400000>;
+			clock-frequency = <100000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
@@ -361,7 +351,7 @@
 			status = "disabled";
 			reg = <0 0xf1000000 0 0x1000>;
 			interrupts = <0 123 4>;
-			clock-frequency = <400000>;
+			clock-frequency = <100000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
@@ -402,6 +392,12 @@
 			xlnx,mc-id = <3>;
 		};
 
+		ocm: memory-controller@ff960000 {
+			compatible = "xlnx,zynqmp-ocmc-1.0";
+			reg = <0x0 0xff960000 0x0 0x1000>;
+			interrupts = <0 10 4>;
+		};
+
 		rtc: rtc@f12a0000 {
 			compatible = "xlnx,zynqmp-rtc";
 			status = "disabled";
@@ -416,9 +412,7 @@
 			status = "disabled";
 			reg = <0 0xf1040000 0 0x10000>;
 			interrupts = <0 126 4>;
-			clock-names = "clk_xin", "clk_ahb";
-			xlnx,device_id = <0>;
-			#stream-id-cells = <1>;
+			clock-names = "clk_xin", "clk_ahb", "gate";
 			#clock-cells = <1>;
 			clock-output-names = "clk_out_sd0", "clk_in_sd0";
 			/* iommus = <&smmu 0x242>; */
@@ -430,9 +424,7 @@
 			status = "disabled";
 			reg = <0 0xf1050000 0 0x10000>;
 			interrupts = <0 128 4>;
-			clock-names = "clk_xin", "clk_ahb";
-			xlnx,device_id = <1>;
-			#stream-id-cells = <1>;
+			clock-names = "clk_xin", "clk_ahb", "gate";
 			#clock-cells = <1>;
 			clock-output-names = "clk_out_sd1", "clk_in_sd1";
 			/* iommus = <&smmu 0x243>; */
@@ -440,21 +432,23 @@
 		};
 
 		serial0: serial@ff000000 {
-			compatible = "arm,pl011", "arm,sbsa-uart";
+			compatible = "arm,pl011", "arm,primecell";
 			status = "disabled";
 			reg = <0 0xff000000 0 0x1000>;
 			interrupts = <0 18 4>;
-			clock-names = "uart_clk", "apb_clk";
+			reg-io-width = <4>;
+			clock-names = "uartclk", "apb_pclk";
 			current-speed = <115200>;
 			u-boot,dm-pre-reloc;
 		};
 
 		serial1: serial@ff010000 {
-			compatible = "arm,pl011", "arm,sbsa-uart";
+			compatible = "arm,pl011", "arm,primecell";
 			status = "disabled";
 			reg = <0 0xff010000 0 0x1000>;
 			interrupts = <0 19 4>;
-			clock-names = "uart_clk", "apb_clk";
+			reg-io-width = <4>;
+			clock-names = "uartclk", "apb_pclk";
 			current-speed = <115200>;
 			u-boot,dm-pre-reloc;
 		};
@@ -485,9 +479,7 @@
 			cdns,fifo-depth = <256>;
 			cdns,fifo-width = <4>;
 			cdns,is-dma = <1>;
-			cdns,is-stig-pgm = <1>;
 			cdns,trigger-address = <0xC0000000>;
-			#stream-id-cells = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 		};
@@ -498,7 +490,6 @@
 			reg = <0 0xf1030000 0 0x1000>;
 			interrupts = <0 125 4>, <0 125 4>;
 			clock-names = "ref_clk", "pclk";
-			#stream-id-cells = <1>;
 			/* iommus = <&smmu 0x244>; */
 			/* dma-coherent; */
 			#address-cells = <1>;
@@ -531,6 +522,7 @@
 			interrupts = <0 144 4>;
 			xlnx,numchannels = /bits/8 <0>;
 		};
+
 		sysmon1: sysmon@109270000 {
 			compatible = "xlnx,versal-sysmon";
 			#address-cells = <2>;
@@ -548,6 +540,7 @@
 			reg = <0x1 0x11270000 0x0 0x4000>;
 			xlnx,numchannels = /bits/8 <0>;
 		};
+
 		sysmon3: sysmon@119270000 {
 			compatible = "xlnx,versal-sysmon";
 			status = "disabled";
@@ -604,13 +597,11 @@
 				reg = <0 0xfe200000 0 0x10000>;
 				interrupt-names = "dwc_usb3", "otg", "usb-wakeup";
 				interrupts = <0 0x16 4>, <0 0x1A 4>, <0x0 0x4a 0x4>;
-				#stream-id-cells = <1>;
 				/* iommus = <&smmu 0x230>; */
 				snps,dis_u2_susphy_quirk;
 				snps,dis_u3_susphy_quirk;
 				snps,quirk-frame-length-adjustment = <0x20>;
-				snps,refclk_fladj;
-				snps,mask_phy_reset;
+				clock-names = "ref";
 				/* dma-coherent; */
 			};
 		};
@@ -649,6 +640,12 @@
 			interrupts = <0 0x64 1>, <0 0x6D 1>;
 			timeout-sec = <30>;
 			pretimeout-sec = <25>;
+		};
+
+		xilsem_edac: edac@f2014050 {
+			compatible = "xlnx,versal-xilsem-edac";
+			status = "disabled";
+			reg = <0x0 0xf2014050 0x0 0xc4>;
 		};
 	};
 };

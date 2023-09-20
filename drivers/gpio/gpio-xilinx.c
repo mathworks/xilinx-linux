@@ -99,7 +99,7 @@ static inline void xgpio_set_value32(unsigned long *map, int bit, u32 v)
 	const unsigned long offset = (bit % BITS_PER_LONG) & BIT(5);
 
 	map[index] &= ~(0xFFFFFFFFul << offset);
-	map[index] |= v << offset;
+	map[index] |= (unsigned long)v << offset;
 }
 
 static inline int xgpio_regoffset(struct xgpio_instance *chip, int ch)
@@ -373,8 +373,7 @@ static int __maybe_unused xgpio_resume(struct device *dev)
 
 static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
+	struct xgpio_instance *gpio = dev_get_drvdata(dev);
 
 	clk_disable(gpio->clk);
 
@@ -383,8 +382,7 @@ static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
 
 static int __maybe_unused xgpio_runtime_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
+	struct xgpio_instance *gpio = dev_get_drvdata(dev);
 
 	return clk_enable(gpio->clk);
 }

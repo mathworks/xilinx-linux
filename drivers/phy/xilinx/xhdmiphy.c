@@ -36,7 +36,7 @@ static int xhdmiphy_init(struct phy *phy)
 
 	count++;
 
-	if (count < XHDMIPHY_MAX_LANES)
+	if (count < (XHDMIPHY_MAX_LANES - 4))
 		return 0;
 
 	/* initialize HDMI phy */
@@ -88,12 +88,12 @@ static int xhdmiphy_configure(struct phy *phy, union phy_configure_opts *opts)
 	struct xhdmiphy_dev *phy_dev = phy_lane->data;
 	struct phy_configure_opts_hdmi *cfg = &opts->hdmi;
 	struct hdmiphy_callback *cb_ptr = &cfg->hdmiphycb;
-	unsigned int ret = 0;
+	unsigned int ret = 0, chid;
 	static int count_tx, count_rx;
 
 	if (!phy_lane->direction) {
 		count_rx++;
-		if (count_rx < XHDMIPHY_MAX_LANES) {
+		if (count_rx < phy_dev->conf.rx_channels) {
 			return 0;
 		} else if (cfg->ibufds) {
 			xhdmiphy_ibufds_en(phy_dev, XHDMIPHY_DIR_RX,
@@ -174,12 +174,14 @@ static int xhdmiphy_configure(struct phy *phy, union phy_configure_opts *opts)
 	if (phy_lane->direction) {
 		count_tx++;
 
-		if (count_tx < XHDMIPHY_MAX_LANES) {
+		if (count_tx < phy_dev->conf.tx_channels) {
 			return 0;
 		} else if (cfg->ibufds) {
 			xhdmiphy_ibufds_en(phy_dev, XHDMIPHY_DIR_TX,
 					   cfg->ibufds_en);
 			cfg->ibufds = 0;
+		} else if (cfg->get_samplerate) {
+			cfg->samplerate = phy_dev->tx_samplerate;
 		} else if (cfg->clkout1_obuftds) {
 			xhdmiphy_clkout1_obuftds_en(phy_dev, XHDMIPHY_DIR_TX,
 						    cfg->clkout1_obuftds_en);
@@ -190,15 +192,20 @@ static int xhdmiphy_configure(struct phy *phy, union phy_configure_opts *opts)
 			usleep_range(1000, 1100);
 			phy_dev->tx_refclk_hz = cfg->tx_tmdsclk;
 
-			clk_set_rate(phy_dev->tmds_clk, phy_dev->tx_refclk_hz);
-			ret = xhdmiphy_set_tx_param(phy_dev,
-						    XHDMIPHY_CHID_CHA,
-						    cfg->ppc, cfg->bpc,
-						    cfg->fmt);
+			if (phy_dev->conf.gt_type == XHDMIPHY_GTYE5 ||
+			    phy_dev->conf.gt_type == XHDMIPHY_GTYP) {
+				chid = XHDMIPHY_CHID_CMNA;
+			} else {
+				chid = XHDMIPHY_CHID_CHA;
+			}
+
+			ret = xhdmiphy_set_tx_param(phy_dev, chid, cfg->ppc,
+						    cfg->bpc, cfg->fmt);
 			if (ret)
 				dev_err(phy_dev->dev,
 					"unable to set requested tx resolutions\n\r");
 			cfg->tx_params = 0;
+			clk_set_rate(phy_dev->tmds_clk, phy_dev->tx_refclk_hz);
 			dev_info(phy_dev->dev,
 				 "tx_tmdsclk %lld\n", cfg->tx_tmdsclk);
 			xhdmiphy_set_lrate(phy_dev, phy_lane->direction, 0,
@@ -276,7 +283,13 @@ static irqreturn_t xhdmiphy_irq_handler(int irq, void *dev_id)
 	 * disable interrupts in the HDMI PHY, they are re-enabled once
 	 * serviced
 	 */
-	xhdmiphy_intr_dis(priv, XHDMIPHY_INTR_ALL_MASK);
+	if (priv->conf.gt_type == XHDMIPHY_GTYE5 ||
+	    priv->conf.gt_type == XHDMIPHY_GTYP) {
+		xhdmiphy_intr_dis(priv, XHDMIPHY_GTYE5_TX_ALL_MASK |
+				  XHDMIPHY_GTYE5_RX_ALL_MASK);
+	} else {
+		xhdmiphy_intr_dis(priv, XHDMIPHY_INTR_ALL_MASK);
+	}
 
 	return IRQ_WAKE_THREAD;
 }
@@ -298,7 +311,8 @@ static irqreturn_t xhdmiphy_irq_thread(int irq, void *dev_id)
 	status = xhdmiphy_read(priv, XHDMIPHY_INTR_STS_REG);
 	dev_dbg(priv->dev, "xhdmiphy status = %x\n", status);
 
-	if (priv->conf.gt_type != XHDMIPHY_GTYE5) {
+	if (priv->conf.gt_type != XHDMIPHY_GTYE5 &&
+	    priv->conf.gt_type != XHDMIPHY_GTYP) {
 		event_mask = XHDMIPHY_INTR_QPLL0_LOCK_MASK |
 			     XHDMIPHY_INTR_CPLL_LOCK_MASK |
 			     XHDMIPHY_INTR_QPLL1_LOCK_MASK |
@@ -308,24 +322,39 @@ static irqreturn_t xhdmiphy_irq_thread(int irq, void *dev_id)
 			     XHDMIPHY_INTR_TXMMCMUSRCLK_LOCK_MASK |
 			     XHDMIPHY_INTR_RXMMCMUSRCLK_LOCK_MASK;
 	} else {
-		event_mask = XHDMIPHY_INTR_LCPLL_LOCK_MASK |
-			     XHDMIPHY_INTR_RPLL_LOCK_MASK |
-			     XHDMIPHY_INTR_TXGPO_RE_MASK |
-			     XHDMIPHY_INTR_RXGPO_RE_MASK |
-			     XHDMIPHY_INTR_TXRESETDONE_MASK |
-			     XHDMIPHY_INTR_RXRESETDONE_MASK |
-			     XHDMIPHY_INTR_TXMMCMUSRCLK_LOCK_MASK |
-			     XHDMIPHY_INTR_RXMMCMUSRCLK_LOCK_MASK;
+		if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_TX)
+			event_mask = XHDMIPHY_GTYE5_TX_MASK;
+		else if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_RX)
+			event_mask = XHDMIPHY_GTYE5_RX_MASK;
+		else
+			event_mask = (XHDMIPHY_GTYE5_TX_MASK |
+				      XHDMIPHY_GTYE5_RX_MASK);
 	}
 
 	event_ack = event_mask & status;
 	if (event_ack)
 		xhdmiphy_gt_handler(priv, event_ack, status);
 
-	event_mask = XHDMIPHY_INTR_TXFREQCHANGE_MASK |
-		     XHDMIPHY_INTR_RXFREQCHANGE_MASK |
-		     XHDMIPHY_INTR_TXTMRTIMEOUT_MASK |
-		     XHDMIPHY_INTR_RXTMRTIMEOUT_MASK;
+	if ((priv->conf.gt_type != XHDMIPHY_GTYE5 &&
+	     priv->conf.gt_type != XHDMIPHY_GTYP) ||
+	    priv->conf.gt_direction == XHDMIPHY_DUPLEX) {
+		event_mask =	XHDMIPHY_INTR_TXFREQCHANGE_MASK |
+				XHDMIPHY_INTR_RXFREQCHANGE_MASK |
+				XHDMIPHY_INTR_TXTMRTIMEOUT_MASK |
+				XHDMIPHY_INTR_RXTMRTIMEOUT_MASK;
+	} else {
+		if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_TX)
+			event_mask =	XHDMIPHY_INTR_TXTMRTIMEOUT_MASK |
+					XHDMIPHY_INTR_TXFREQCHANGE_MASK;
+		else if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_RX)
+			event_mask =	XHDMIPHY_INTR_RXFREQCHANGE_MASK |
+					XHDMIPHY_INTR_RXTMRTIMEOUT_MASK;
+		else
+			event_mask =	XHDMIPHY_INTR_RXFREQCHANGE_MASK |
+					XHDMIPHY_INTR_RXTMRTIMEOUT_MASK |
+					XHDMIPHY_INTR_TXTMRTIMEOUT_MASK |
+					XHDMIPHY_INTR_TXFREQCHANGE_MASK;
+	}
 
 	event_ack = event_mask & status;
 	if (event_ack)
@@ -334,7 +363,18 @@ static irqreturn_t xhdmiphy_irq_thread(int irq, void *dev_id)
 	mutex_unlock(&priv->hdmiphy_mutex);
 
 	/* enable interrupt requesting in the PHY */
-	xhdmiphy_intr_en(priv, XHDMIPHY_INTR_ALL_MASK);
+	if (priv->conf.gt_type == XHDMIPHY_GTYE5 ||
+	    priv->conf.gt_type == XHDMIPHY_GTYP) {
+		if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_TX)
+			xhdmiphy_intr_en(priv, XHDMIPHY_GTYE5_TX_ALL_MASK);
+		else if (priv->conf.gt_direction == XHDMIPHY_SIMPLE_RX)
+			xhdmiphy_intr_en(priv, XHDMIPHY_GTYE5_RX_ALL_MASK);
+		else
+			xhdmiphy_intr_en(priv, XHDMIPHY_GTYE5_TX_ALL_MASK |
+					 XHDMIPHY_GTYE5_RX_ALL_MASK);
+	} else {
+		xhdmiphy_intr_en(priv, XHDMIPHY_INTR_ALL_MASK);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -354,7 +394,7 @@ static int xhdmiphy_parse_of(struct xhdmiphy_dev *priv)
 	}
 
 	if (val != XHDMIPHY_GTHE4 && val != XHDMIPHY_GTYE4 &&
-	    val != XHDMIPHY_GTYE5) {
+	    val != XHDMIPHY_GTYE5 && val != XHDMIPHY_GTYP) {
 		dev_err(priv->dev, "dt transceiver-type %d is invalid\n", val);
 		return -EINVAL;
 	}
@@ -604,13 +644,32 @@ static int xhdmiphy_parse_of(struct xhdmiphy_dev *priv)
 	}
 	xgtphycfg->tx_frl_refclk_sel = val;
 
-	priv->rxch4_gpio = devm_gpiod_get(priv->dev,
-					  "rxch4-sel", GPIOD_OUT_LOW);
+	priv->rxch4_gpio = devm_gpiod_get_optional(priv->dev,
+						   "rxch4-sel", GPIOD_OUT_LOW);
 
 	if (IS_ERR(priv->rxch4_gpio)) {
 		if (PTR_ERR(priv->rxch4_gpio) != -EPROBE_DEFER)
 			dev_err(priv->dev, "rxch4-sel not setup in DT\n");
 		return PTR_ERR(priv->rxch4_gpio);
+	}
+
+	if (xgtphycfg->gt_type == XHDMIPHY_GTYE5 ||
+	    xgtphycfg->gt_type == XHDMIPHY_GTYP) {
+		/* GTYE5 & GTYP supports SIMPLE_TX, SIMPLE_RX and DUPLEX mode */
+		rc = of_property_read_u32(node, "xlnx,gt-direction", &val);
+		if (rc < 0) {
+			dev_err(priv->dev, "unable to parse %s property\n",
+				"xlnx,gt-direction");
+			return rc;
+		}
+
+		if (val != XHDMIPHY_SIMPLE_TX &&
+		    val != XHDMIPHY_SIMPLE_RX &&
+		    val != XHDMIPHY_DUPLEX) {
+			dev_err(priv->dev, "Invalid gt-direction %d\n", val);
+			return -EINVAL;
+		}
+		xgtphycfg->gt_direction = val;
 	}
 
 	return rc;
@@ -693,6 +752,7 @@ err_disable_axiclk:
 
 static const struct of_device_id xhdmiphy_of_match[] = {
 	{ .compatible = "xlnx,v-hdmi-phy1-1.0" },
+	{ .compatible = "xlnx,v-hdmi-gt-controller-1.0" },
 	{},
 };
 
@@ -750,9 +810,10 @@ static int xhdmiphy_probe(struct platform_device *pdev)
 	mutex_init(&priv->hdmiphy_mutex);
 
 	for_each_child_of_node(np, child) {
-		if (index >= XHDMIPHY_MAX_LANES) {
+		if (index >= priv->conf.rx_channels + priv->conf.tx_channels) {
 			dev_err(&pdev->dev,
-				"MAX 4 PHY Lanes are supported\n");
+				"MAX %d PHY Lanes are supported\n",
+				(priv->conf.rx_channels + priv->conf.tx_channels));
 			return -E2BIG;
 		}
 

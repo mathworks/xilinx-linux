@@ -11,7 +11,6 @@
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
-#include <linux/firmware/xlnx-zynqmp.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
@@ -27,8 +26,6 @@
 
 #include "ai-engine-internal.h"
 
-#define VERSAL_SILICON_REV_MASK		GENMASK(31, 28)
-
 /**
  * xilinx_ai_engine_probe_v1() - probe device tree v1.0 AI engine device
  * @pdev: AI engine platform device
@@ -39,10 +36,9 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	struct aie_device *adev;
 	struct aie_aperture *aperture;
 	struct aie_range *range;
-	struct device *dev;
 	struct device_node *nc;
 	struct resource *res;
-	u32 idcode, version, pm_reg[2], regs[4];
+	u32 pm_reg[2], regs[4];
 	int ret;
 
 	dev_info(&pdev->dev, "probing xlnx,ai-engine-v1.0 device.\n");
@@ -74,13 +70,6 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	}
 	adev->pm_node_id = pm_reg[1];
 
-	ret = zynqmp_pm_get_chipid(&idcode, &version);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Failed to get chip ID\n");
-		return ret;
-	}
-	adev->version = FIELD_GET(VERSAL_SILICON_REV_MASK, idcode);
-
 	adev->clk = devm_clk_get(&pdev->dev, NULL);
 	if (!adev->clk) {
 		dev_err(&pdev->dev, "Failed to get device clock.\n");
@@ -98,13 +87,13 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	if (!nc) {
 		dev_err(&pdev->dev,
 			"device tree node v1.0, no child node.\n");
-		put_device(dev);
+		put_device(&pdev->dev);
 		return -EINVAL;
 	}
 
 	aperture = kzalloc(sizeof(*aperture), GFP_KERNEL);
 	if (!aperture) {
-		put_device(dev);
+		put_device(&pdev->dev);
 		return -ENOMEM;
 	}
 
@@ -119,7 +108,7 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 			"probe %pOF failed, no tiles range information.\n",
 			nc);
 		kfree(aperture);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 	range = &aperture->range;
@@ -135,7 +124,7 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"failed to add AI engine aperture device\n");
 		kfree(aperture);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 
@@ -146,8 +135,8 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	ret = aie_resource_initialize(&aperture->cols_res,
 				      aperture->range.size.col);
 	if (ret) {
-		dev_err(dev, "failed to initialize columns resource.\n");
-		put_device(dev);
+		dev_err(&pdev->dev, "failed to initialize columns resource.\n");
+		put_device(&pdev->dev);
 		return ret;
 	}
 
@@ -155,7 +144,7 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	if (!res) {
 		dev_err(&pdev->dev, "No memory resource.\n");
 		put_device(&aperture->dev);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return -EINVAL;
 	}
 	/* resource information will be used by ready only register mmap */
@@ -165,7 +154,7 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 		dev_err(&pdev->dev, "no io memory resource.\n");
 		ret = PTR_ERR(aperture->base);
 		put_device(&aperture->dev);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 
@@ -177,19 +166,19 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 		dev_warn(&aperture->dev, "Failed to configure DMA.\n");
 
 	INIT_WORK(&aperture->backtrack, aie_aperture_backtrack);
-	ret = aie_aperture_create_l2_bitmap(aperture);
+	ret = aie_aperture_create_l2_mask(aperture);
 	if (ret) {
 		dev_err(&aperture->dev,
 			"failed to initialize l2 mask resource.\n");
 		put_device(&aperture->dev);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 
 	ret = platform_get_irq_byname(pdev, "interrupt1");
 	if (ret < 0) {
 		put_device(&aperture->dev);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 	aperture->irq = ret;
@@ -200,7 +189,7 @@ int xilinx_ai_engine_probe_v1(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to request AIE IRQ.\n");
 		put_device(&aperture->dev);
-		put_device(dev);
+		put_device(&pdev->dev);
 		return ret;
 	}
 

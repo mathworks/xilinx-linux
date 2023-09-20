@@ -247,7 +247,6 @@ static int tmp006_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int tmp006_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -261,9 +260,8 @@ static int tmp006_resume(struct device *dev)
 	return i2c_smbus_write_word_swapped(data->client, TMP006_CONFIG,
 		data->config | TMP006_CONFIG_MOD_MASK);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(tmp006_pm_ops, tmp006_suspend, tmp006_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tmp006_pm_ops, tmp006_suspend, tmp006_resume);
 
 static const struct i2c_device_id tmp006_id[] = {
 	{ "tmp006", 0 },
@@ -274,7 +272,7 @@ MODULE_DEVICE_TABLE(i2c, tmp006_id);
 static struct i2c_driver tmp006_driver = {
 	.driver = {
 		.name	= "tmp006",
-		.pm	= &tmp006_pm_ops,
+		.pm	= pm_sleep_ptr(&tmp006_pm_ops),
 	},
 	.probe = tmp006_probe,
 	.remove = tmp006_remove,

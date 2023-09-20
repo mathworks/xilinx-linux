@@ -98,9 +98,8 @@ config NVMEM_MXS_OCOTP
 	depends on ARCH_MXS || COMPILE_TEST
 	depends on HAS_IOMEM
 	help
-	  If you say Y here, you will get readonly access to the
-	  One Time Programmable memory pages that are stored
-	  on the Freescale i.MX23/i.MX28 processor.
+	  This is a driver to retrieve specific values from the eFuse found on
+	  the Amlogic Meson GX SoCs.
 
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem-mxs-ocotp.
@@ -175,8 +174,8 @@ config NVMEM_BCM_OCOTP
 	depends on HAS_IOMEM
 	default ARCH_BCM_IPROC
 	help
-	  Say y here to enable read/write access to the Broadcom OTP
-	  controller.
+	  This is a simple driver to dump specified values of Spreadtrum
+	  SC27XX PMICs from eFuse.
 
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem-bcm-ocotp.

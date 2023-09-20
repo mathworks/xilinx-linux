@@ -13,9 +13,10 @@
 #include <drm/drm_connector.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
-#include <drm/drm_dp_helper.h>
+#include <drm/display/drm_dp_helper.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_edid.h>
 
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -1621,8 +1622,6 @@ static void zynqmp_dp_encoder_enable(struct drm_encoder *encoder)
 	dp->enabled = true;
 	zynqmp_dp_init_aux(dp);
 	zynqmp_dp_update_misc(dp);
-	if (zynqmp_disp_aud_enabled(dp->dpsub->disp))
-		zynqmp_dp_write(iomem, ZYNQMP_DP_TX_AUDIO_CONTROL, 1);
 	zynqmp_dp_write(iomem, ZYNQMP_DP_TX_PHY_POWER_DOWN, 0);
 	if (dp->status == connector_status_connected) {
 		for (i = 0; i < 3; i++) {
@@ -1649,20 +1648,23 @@ static void zynqmp_dp_encoder_disable(struct drm_encoder *encoder)
 	struct zynqmp_dp *dp = encoder_to_dp(encoder);
 	void __iomem *iomem = dp->iomem;
 	int ret;
+	u8 pwr;
 
 	dp->enabled = false;
 	cancel_delayed_work(&dp->hpd_work);
 	zynqmp_dp_write(iomem, ZYNQMP_DP_TX_ENABLE_MAIN_STREAM, 0);
-	ret = drm_dp_dpcd_writeb(&dp->aux, DP_SET_POWER, DP_SET_POWER_D3);
-	if (ret < 0) {
-		dev_err(dp->dev, "failed to write a byte to the DPCD: %d\n",
-			ret);
-		return;
+	ret = drm_dp_dpcd_readb(&dp->aux, DP_SET_POWER, &pwr);
+	/* Do write only if read succeeds */
+	if (ret >= 0) {
+		ret = drm_dp_dpcd_writeb(&dp->aux, DP_SET_POWER, DP_SET_POWER_D3);
+		if (ret < 0) {
+			dev_err(dp->dev, "failed to write a byte to the DPCD: %d\n",
+				ret);
+			return;
+		}
 	}
 	zynqmp_dp_write(iomem, ZYNQMP_DP_TX_PHY_POWER_DOWN,
 			ZYNQMP_DP_TX_PHY_POWER_DOWN_ALL);
-	if (zynqmp_disp_aud_enabled(dp->dpsub->disp))
-		zynqmp_dp_write(iomem, ZYNQMP_DP_TX_AUDIO_CONTROL, 0);
 	pm_runtime_put_sync(dp->dev);
 }
 
@@ -1961,6 +1963,7 @@ int zynqmp_dp_probe(struct platform_device *pdev)
 	dpsub = platform_get_drvdata(pdev);
 	dpsub->dp = dp;
 	dp->dpsub = dpsub;
+	pdev->dev.platform_data = dp->iomem;
 
 	for_each_child_of_node(pdev->dev.of_node, port) {
 		if (!port->name || of_node_cmp(port->name, "port"))

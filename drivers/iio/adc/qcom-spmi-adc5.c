@@ -715,7 +715,7 @@ static int adc5_get_dt_channel_data(struct adc5_chip *adc,
 	}
 	prop->datasheet_name = channel_name;
 
-	ret = of_property_read_u32(node, "qcom,decimation", &value);
+	ret = fwnode_property_read_u32(fwnode, "qcom,decimation", &value);
 	if (!ret) {
 		ret = adc5_decimation_from_dt(value, data->decimation);
 		if (ret < 0) {

@@ -369,7 +369,8 @@ static int palmas_gpadc_get_calibrated_code(struct palmas_gpadc *adc,
 					adc->adc_info[adc_chan].gain_error;
 
 	if (val < 0) {
-		dev_err(adc->dev, "Mismatch with calibration\n");
+		if (val < -10)
+			dev_err(adc->dev, "Mismatch with calibration var = %d\n", val);
 		return 0;
 	}
 
@@ -643,7 +644,6 @@ static int palmas_gpadc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int palmas_adc_wakeup_configure(struct palmas_gpadc *adc)
 {
 	int adc_period, conv;
@@ -812,12 +812,9 @@ static int palmas_gpadc_resume(struct device *dev)
 
 	return 0;
 };
-#endif
 
-static const struct dev_pm_ops palmas_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(palmas_gpadc_suspend,
-				palmas_gpadc_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(palmas_pm_ops, palmas_gpadc_suspend,
+				palmas_gpadc_resume);
 
 static const struct of_device_id of_palmas_gpadc_match_tbl[] = {
 	{ .compatible = "ti,palmas-gpadc", },
@@ -830,7 +827,7 @@ static struct platform_driver palmas_gpadc_driver = {
 	.remove = palmas_gpadc_remove,
 	.driver = {
 		.name = MOD_NAME,
-		.pm = &palmas_pm_ops,
+		.pm = pm_sleep_ptr(&palmas_pm_ops),
 		.of_match_table = of_palmas_gpadc_match_tbl,
 	},
 };

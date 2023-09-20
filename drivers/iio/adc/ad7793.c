@@ -909,7 +909,7 @@ error_disable_reg:
 	return ret;
 }
 
-static int ad7793_remove(struct spi_device *spi)
+static void ad7793_remove(struct spi_device *spi)
 {
 	const struct ad7793_platform_data *pdata = spi->dev.platform_data;
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
@@ -920,8 +920,6 @@ static int ad7793_remove(struct spi_device *spi)
 
 	if (pdata->refsel != AD7793_REFSEL_INTERNAL)
 		regulator_disable(st->reg);
-
-	return 0;
 }
 
 static const struct spi_device_id ad7793_id[] = {
@@ -951,3 +949,4 @@ module_spi_driver(ad7793_driver);
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD7793 and similar ADCs");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_AD_SIGMA_DELTA);

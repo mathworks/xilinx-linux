@@ -213,10 +213,9 @@ static int adis16080_probe(struct spi_device *spi)
 	return iio_device_register(indio_dev);
 }
 
-static int adis16080_remove(struct spi_device *spi)
+static void adis16080_remove(struct spi_device *spi)
 {
 	iio_device_unregister(spi_get_drvdata(spi));
-	return 0;
 }
 
 static const struct spi_device_id adis16080_ids[] = {

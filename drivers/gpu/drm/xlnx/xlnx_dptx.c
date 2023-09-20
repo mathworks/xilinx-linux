@@ -22,18 +22,30 @@
 #include <linux/phy/phy-dp.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <media/hdr-ctrls.h>
+#include <uapi/linux/videodev2.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
-#include <drm/drm_dp_helper.h>
+#include <drm/display/drm_dp_helper.h>
+#include <drm/display/drm_hdmi_helper.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
+
 #include <linux/hdmi.h>
 #include <sound/soc.h>
 #include <sound/pcm_drm_eld.h>
+
+#include "hdcp/xlnx_hdcp_tx.h"
+
+#define XDPTX_HDCP2X_OFFSET		0x4000
+#define XDPTX_HDCP_TIMER_OFFSET		0x6000
+#define XDPTX_HDCP2X_DPCD_OFFSET	0x69000
 
 /* Link configuration registers */
 #define XDPTX_LINKBW_SET_REG			0x0
@@ -274,6 +286,8 @@
 #define XDPTX_AUDIO_INFO_DATA_REG			0x308
 #define XDPTX_AUDIO_MAUD_REG				0x328
 #define XDPTX_AUDIO_NAUD_REG				0x32C
+#define XDP_TX_HDCP2x_ENABLE				0x404
+#define XDP_TX_HDCP2x_ENABLE_BYPASS_DISABLE_MASK	BIT(0)
 #define XDPTX_AUDIO_INFO_BUFF_STATUS			0x6A0
 #define XDPTX_AUDIO_INFO_BUFF_FULL			BIT(0)
 #define XDPTX_AUDIO_INFO_BUFF_OVERFLOW			BIT(1)
@@ -282,6 +296,15 @@
 #define DP_INFOFRAME_FIFO_SIZE		(DP_INFOFRAME_FIFO_SIZE_WORDS * 4)
 #define DP_INFOFRAME_HEADER_SIZE	4
 #define DP_AUDIO_INFOFRAME_SIZE		10
+/* infoframe SDP header byte. Please refer section 2.2.5.1.2 in DP1.4 spec */
+#define NON_AUDIOIF_PKT_ID		0x00
+#define NON_AUDIOIF_TYPE		0x07
+#define NON_AUDIOIF_LDATA_BYTECOUNT	0x1d
+#define NON_AUDIOIF_SDP_VERSION		0x4c
+#define NON_AUDIOIF_DRM_TYPE		(0x80 + NON_AUDIOIF_TYPE)
+/* DRM infoframe. Please refer section 6.9 in CTA-861G */
+#define CTA_DRMIF_VERSION_NUMBER	0x01
+#define CTA_DRMIF_LENGHT		0x1a
 
 #define DP_INFOFRAME_SIZE(type)	\
 	(DP_INFOFRAME_HEADER_SIZE + DP_ ## type ## _INFOFRAME_SIZE)
@@ -308,6 +331,10 @@
 #define XDPTX_LANE2_CRDONE_MASK				0x2
 #define XDPTX_LANE3_CRDONE_MASK				0x3
 
+#define XDPTX_HDCP_DPCD_READ				0x00
+#define XDPTX_HDCP_DPCD_WRITE				BIT(0)
+#define XDPTX_HDCP_STATUS				BIT(1)
+
 #define I2S_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE |\
 			 SNDRV_PCM_FMTBIT_S20_3LE | SNDRV_PCM_FMTBIT_S20_3BE |\
 			 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_3BE |\
@@ -318,6 +345,10 @@
 			 SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_88200 |\
 			 SNDRV_PCM_RATE_96000 | SNDRV_PCM_RATE_176400 |\
 			 SNDRV_PCM_RATE_192000)
+
+/* Flag to get VTC offset from device tree */
+#define XDPTX_VTC_OFFSET_CHANGE		BIT(0)
+
 /*
  * CEA speaker placement
  *
@@ -356,6 +387,21 @@ struct dp_codec_cea_spk_alloc {
  */
 struct xlnx_dptx_audio_data {
 	u32 buffer[DP_INFOFRAME_FIFO_SIZE_WORDS];
+};
+
+union xlnx_dp_iframe_header {
+	u32 data;
+	u8 byte[4];
+};
+
+union xlnx_dp_iframe_payload {
+	u32 data[8];
+	u8 byte[32];
+};
+
+struct xlnx_dp_infoframe {
+	union xlnx_dp_iframe_header header;
+	union xlnx_dp_iframe_payload payload;
 };
 
 /**
@@ -424,6 +470,8 @@ struct xlnx_dp_mode {
  * @fmt: Color format
  * @audio_enabled: flag to indicate audio is enabled in device tree
  * @versal_gt_present: flag to indicate versal-gt property in device tree
+ * @hdcp2x_enable: flag to indicate hdcp22-enable property in device tree
+ * @hdcp1x_enable: flag to indicate hdcp-enable property in device tree
  */
 struct xlnx_dp_config {
 	u32 max_lanes;
@@ -436,6 +484,8 @@ struct xlnx_dp_config {
 	u8 fmt;
 	bool audio_enabled;
 	bool versal_gt_present;
+	bool hdcp2x_enable;
+	bool hdcp1x_enable;
 };
 
 enum xlnx_dp_train_state {
@@ -457,6 +507,7 @@ enum xlnx_dp_train_state {
  * @aux: aux channel
  * @config: IP core configuration from DTS
  * @tx_link_config: source configuration
+ * @tx_hdcp: HDCP configuration
  * @rx_config: sink configuration
  * @link_config: common link configuration between IP core and sink device
  * @drm: DRM core
@@ -467,12 +518,17 @@ enum xlnx_dp_train_state {
  * @reset_gpio: reset gpio
  * @hpd_work: hot plug detection worker
  * @hpd_pulse_work: hot plug pulse detection worker
+ * @hdcp_cp_irq_work: HDCP content protection message indication worker
  * @tx_audio_data: audio data
+ * @infoframe : IP infoframe data
  * @vscpkt: VSC extended packet data
+ * @cfg: Pointer to DP Feature config struct
  * @phy_opts: Opaque generic phy configuration
  * @status: connection status
  * @dp_base: Base address of DisplayPort Tx subsystem
  * @dpms: current dpms state
+ * @hdcp2x_timer_irq: HDCP 2X timer interrupt
+ * @vtc_off: VTC sub-core offset address
  * @dpcd: DP configuration data from currently connected sink device
  * @train_set: set of training data
  * @num_lanes: number of enabled phy lanes
@@ -491,6 +547,7 @@ struct xlnx_dp {
 	struct drm_dp_aux aux;
 	struct xlnx_dp_config config;
 	struct xlnx_dp_tx_link_config tx_link_config;
+	struct xlnx_hdcptx tx_hdcp;
 	struct xlnx_dp_link_config link_config;
 	struct drm_device *drm;
 	struct xlnx_dp_mode mode;
@@ -500,12 +557,17 @@ struct xlnx_dp {
 	struct gpio_desc *reset_gpio;
 	struct delayed_work hpd_work;
 	struct delayed_work hpd_pulse_work;
+	struct delayed_work hdcp_cp_irq_work;
 	struct xlnx_dptx_audio_data *tx_audio_data;
+	struct xlnx_dp_infoframe infoframe;
 	struct xlnx_dp_vscpkt vscpkt;
+	const struct xlnx_dp_feature *cfg;
 	union phy_configure_opts phy_opts;
 	enum drm_connector_status status;
 	void __iomem *dp_base;
 	int dpms;
+	int hdcp2x_timer_irq;
+	u32 vtc_off;
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
 	u8 train_set[XDPTX_MAX_LANES];
 	u8 num_lanes;
@@ -513,6 +575,30 @@ struct xlnx_dp {
 	bool audio_init;
 	bool have_edid;
 	unsigned int colorimetry_through_vsc : 1;
+};
+
+/**
+ * struct xlnx_dp_feature - dt or IP property structure
+ * @flags: Bitmask of properties enabled in IP or dt
+ */
+struct xlnx_dp_feature {
+	u32 flags;
+};
+
+static const struct xlnx_dp_feature xlnx_dp_cfg_v31 = {
+	.flags = XDPTX_VTC_OFFSET_CHANGE,
+};
+
+static const struct xlnx_dp_feature xlnx_dp_cfg_v30 = {
+	.flags = 0,
+};
+
+static const struct of_device_id xlnx_dp_of_match[] = {
+	{ .compatible = "xlnx,v-dp-txss-3.0",
+		.data = (void *)&xlnx_dp_cfg_v30},
+	{ .compatible = "xlnx,v-dp-txss-3.1",
+		.data = (void *)&xlnx_dp_cfg_v31},
+	{ /* end of table */ }
 };
 
 /*
@@ -669,50 +755,50 @@ static void xlnx_dp_vtc_set_timing(struct xlnx_dp *dp,
 	vbackporch_start = vsync_start + vsync_len;
 
 	reg = htotal & XDPTX_VTC_GHSIZE_FRAME_HSIZE;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GHSIZE, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GHSIZE, reg);
 
 	reg = vtotal & XDPTX_VTC_GVSIZE_FRAME_VSIZE;
 	reg |= reg << XDPTX_VTC_FIELD1_VSIZE_SHIFT;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSIZE, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GVSIZE, reg);
 
 	reg = hactive & XDPTX_VTC_ACTIVE_SIZE_MASK;
 	reg |= (vactive & XDPTX_VTC_ACTIVE_SIZE_MASK) <<
 		XDPTX_VTC_FIELD1_VSIZE_SHIFT;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GASIZE_F0, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GASIZE_F0, reg);
 
 	reg = hsync_start & XDPTX_VTC_GHSYNC_START_MASK;
 	reg |= (hbackporch_start << XDPTX_VTC_GH1BPSTART_SHIFT) &
 		XDPTX_VTC_GHSYNC_END_MASK;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GHSYNC, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GHSYNC, reg);
 
 	reg = vsync_start & XDPTX_VTC_F0_VSYNC_VSTART_MASK;
 	reg |= (vbackporch_start << XDPTX_VTC_FIELD1_VSIZE_SHIFT) &
 		XDPTX_VTC_F0_VSYNC_VEND_MASK;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSYNC, reg);
-	xlnx_dp_clr(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GFENC,
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GVSYNC, reg);
+	xlnx_dp_clr(dp->dp_base, dp->vtc_off + XDPTX_VTC_GFENC,
 		    XDPTX_VTC_GFENC_MASK);
 
 	/* Calculate and update Generator VBlank Hori field 0 */
 	reg = hactive & XDPTX_VTC_F0VBLANK_HSTART_MASK;
 	reg |= (hactive << XDPTX_VTC_F0VSYNC_HEND_SHIFT) &
 		XDPTX_VTC_F0VBLANK_HEND_MASK;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVBHOFF, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GVBHOFF, reg);
 
 	/* Calculate and update Generator VSync Hori field 0 */
 	reg = hsync_start & XDPTX_VTC_F0VBLANK_HSTART_MASK;
 	reg |= (hsync_start << XDPTX_VTC_F0VSYNC_HEND_SHIFT) &
 		XDPTX_VTC_F0VBLANK_HEND_MASK;
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GVSHOFF, reg);
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GVSHOFF, reg);
 
 	/* sets all polarities as active high */
-	xlnx_dp_write(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_GPOL,
+	xlnx_dp_write(dp->dp_base, dp->vtc_off + XDPTX_VTC_GPOL,
 		      XDPTX_VTC_GPOL_MASK);
 
 	/* configure timing source */
-	xlnx_dp_set(dp->dp_base,
-		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_MASK);
-	xlnx_dp_set(dp->dp_base,
-		    XDPTX_VTC_BASE + XDPTX_VTC_CTL, XDPTX_VTC_CTL_RU);
+	xlnx_dp_set(dp->dp_base, dp->vtc_off + XDPTX_VTC_CTL,
+		    XDPTX_VTC_CTL_MASK);
+	xlnx_dp_set(dp->dp_base, dp->vtc_off + XDPTX_VTC_CTL,
+		    XDPTX_VTC_CTL_RU);
 }
 
 /**
@@ -1865,57 +1951,75 @@ static void xlnx_dp_phy_reset(struct xlnx_dp *dp, u32 reset)
  * -ETIMEDOUT when receiving reply is timed out
  * -EIO when received bytes are less than requested
  */
-static int xlnx_dp_aux_cmd_submit(struct xlnx_dp *dp, u32 cmd, u16 addr,
-				  u8 *buf, u8 bytes, u8 *reply)
+static int xlnx_dp_aux_cmd_submit(struct xlnx_dp *dp, u32 cmd, u32 addr,
+				  u8 *buf, u32 bytes, u8 *reply)
 {
 	bool is_read = (cmd & XDPTX_AUX_READ_BIT) ? true : false;
 	void __iomem *dp_base = dp->dp_base;
-	u32 reg, i;
+	u32 reg, i, bytesleft, address;
+	u8 *data;
+	u8 no_of_bytes;
 
-	reg = xlnx_dp_read(dp_base, XDPTX_INTR_SIGSTATE_REG);
-	if (reg & XDPTX_INTR_SIGREQSTATE)
-		return -EBUSY;
+	bytesleft = bytes;
+	address = addr;
 
-	xlnx_dp_write(dp_base, XDPTX_AUX_ADDR_REG, addr);
-	if (!is_read) {
-		for (i = 0; i < bytes; i++) {
-			xlnx_dp_write(dp_base, XDPTX_AUX_WRITEFIFO_REG,
-				      buf[i]);
-		}
-	}
-
-	reg = cmd << XDPTX_AUXCMD_SHIFT;
-	if (!bytes)
-		reg |= XDPTX_AUXCMD_ADDRONLY_MASK;
-	else
-		reg |= (bytes - 1) << XDPTX_AUXCMD_BYTES_SHIFT;
-	xlnx_dp_write(dp_base, XDPTX_AUXCMD_REG, reg);
-
-	/* Wait for reply to be delivered upto 2ms */
-	for (i = 0; ; i++) {
+	while (bytesleft > 0) {
 		reg = xlnx_dp_read(dp_base, XDPTX_INTR_SIGSTATE_REG);
-		if (reg & XDPTX_INTR_SIGRPLYSTATE)
-			break;
+		if (reg & XDPTX_INTR_SIGREQSTATE)
+			return -EBUSY;
 
-		if (reg & XDPTX_INTR_RPLYTIMEOUT ||
-		    i == 2)
-			return -ETIMEDOUT;
+		address = addr + (bytes - bytesleft);
+		xlnx_dp_write(dp_base, XDPTX_AUX_ADDR_REG, address);
 
-		usleep_range(1000, 1100);
-	}
+		/* Increment the pointer to the supplied data buffer. */
+		data = &buf[bytes - bytesleft];
 
-	reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_CODE_REG);
-	if (reply)
-		*reply = reg;
+		if (bytesleft > 16)
+			no_of_bytes = 16;
+		else
+			no_of_bytes = bytesleft;
 
-	if (is_read && !reg) {
-		reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_DATACNT_REG);
-		if ((reg & XDPTX_AUXREPLY_DATACNT_MASK) != bytes)
-			return -EIO;
+		bytesleft -= no_of_bytes;
+		if (!is_read) {
+			for (i = 0; i < no_of_bytes; i++) {
+				xlnx_dp_write(dp_base, XDPTX_AUX_WRITEFIFO_REG,
+					      data[i]);
+			}
+		}
 
-		for (i = 0; i < bytes; i++) {
-			buf[i] = xlnx_dp_read(dp_base,
-					      XDPTX_AUXREPLY_DATA_REG);
+		reg = cmd << XDPTX_AUXCMD_SHIFT;
+		if (!bytes)
+			reg |= XDPTX_AUXCMD_ADDRONLY_MASK;
+		else
+			reg |= (no_of_bytes - 1) << XDPTX_AUXCMD_BYTES_SHIFT;
+		xlnx_dp_write(dp_base, XDPTX_AUXCMD_REG, reg);
+
+		/* Wait for reply to be delivered upto 2ms */
+		for (i = 0; ; i++) {
+			reg = xlnx_dp_read(dp_base, XDPTX_INTR_SIGSTATE_REG);
+			if (reg & XDPTX_INTR_SIGRPLYSTATE)
+				break;
+
+			if (reg & XDPTX_INTR_RPLYTIMEOUT ||
+			    i == 2)
+				return -ETIMEDOUT;
+
+			usleep_range(1000, 1100);
+		}
+
+		reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_CODE_REG);
+		if (reply)
+			*reply = reg;
+
+		if (is_read && !reg) {
+			reg = xlnx_dp_read(dp_base, XDPTX_AUXREPLY_DATACNT_REG);
+			if ((reg & XDPTX_AUXREPLY_DATACNT_MASK) != no_of_bytes)
+				return -EIO;
+
+			for (i = 0; i < no_of_bytes; i++) {
+				data[i] = xlnx_dp_read(dp_base,
+						       XDPTX_AUXREPLY_DATA_REG);
+			}
 		}
 	}
 
@@ -2311,6 +2415,7 @@ static int xlnx_dp_power_cycle(struct xlnx_dp *dp)
 static void xlnx_dp_start(struct xlnx_dp *dp)
 {
 	struct xlnx_dp_mode *mode = &dp->mode;
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
 	int link_rate = dp->link_config.link_rate;
 	int ret = 0;
 	u32 val, intr_mask;
@@ -2434,7 +2539,7 @@ static void xlnx_dp_start(struct xlnx_dp *dp)
 	xlnx_dp_write(dp->dp_base, XDPTX_SOFT_RST, 0x0);
 
 	/* Enable VTC and MainStream */
-	xlnx_dp_set(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_CTL,
+	xlnx_dp_set(dp->dp_base, dp->vtc_off + XDPTX_VTC_CTL,
 		    XDPTX_VTC_CTL_GE);
 	xlnx_dp_mainlink_en(dp, 0x1);
 
@@ -2443,6 +2548,16 @@ static void xlnx_dp_start(struct xlnx_dp *dp)
 		dev_err(dp->dev, "Link is DOWN after main link enabled!\n");
 		return;
 	}
+	if (dp->config.hdcp2x_enable) {
+		xlnx_dp_set(dp->dp_base, XDP_TX_HDCP2x_ENABLE,
+			    XDP_TX_HDCP2x_ENABLE_BYPASS_DISABLE_MASK);
+		ret = xlnx_start_hdcp_engine(dptxhdcp, mode->lane_cnt);
+		if (ret < 0) {
+			dev_err(dp->dev, "Failed to Start HDCP\n");
+			return;
+		}
+	}
+
 	if (dp->colorimetry_through_vsc) {
 		/* program the VSC extended packet */
 		xlnx_dp_vsc_pkt_handler(dp);
@@ -2454,6 +2569,31 @@ static void xlnx_dp_start(struct xlnx_dp *dp)
 	xlnx_dp_set(dp->dp_base, XDPTX_AUDIO_CTRL_REG, 0x1);
 	/* Enabling TX interrupts */
 	xlnx_dp_write(dp->dp_base, XDPTX_INTR_MASK_REG, 0);
+}
+
+/**
+ * xlnx_dp_hdcp_reset - Reset HDCP module
+ * @dp: DisplayPort IP core structure
+ *
+ * This function resets HDCP cipher engine,
+ * protocol state machine and its internal parameters.
+ *
+ * Return: 0 on success, or the error code returned
+ * from the callee functions.
+ */
+static int xlnx_dp_hdcp_reset(struct xlnx_dp *dp)
+{
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
+	int ret;
+
+	cancel_delayed_work(&dp->hdcp_cp_irq_work);
+	ret = xlnx_hdcp_tx_reset(dptxhdcp);
+	if (ret < 0) {
+		dev_dbg(dp->dev, "failed to reset HDCP Cipher Engine");
+		return ret;
+	}
+
+	return 0;
 }
 
 /**
@@ -2482,8 +2622,11 @@ static void xlnx_dp_stop(struct xlnx_dp *dp)
 		xlnx_dp_tx_pe_vs_adjust_handler(dp, &dp->phy_opts.dp);
 
 	/* Disable VTC */
-	xlnx_dp_clr(dp->dp_base, XDPTX_VTC_BASE + XDPTX_VTC_CTL,
+	xlnx_dp_clr(dp->dp_base, dp->vtc_off + XDPTX_VTC_CTL,
 		    XDPTX_VTC_CTL_GE);
+	/* Reset HDCP Engine. */
+	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable)
+		xlnx_dp_hdcp_reset(dp);
 }
 
 static int xlnx_dp_txconnected(struct xlnx_dp *dp)
@@ -3072,6 +3215,26 @@ static void xlnx_dp_hpd_work_func(struct work_struct *work)
 		drm_helper_hpd_irq_event(dp->drm);
 }
 
+/**
+ * xlnx_dp_hdcp_cp_irq_func - Checks for HDCP information
+ * whenever CP IRQ is detected. HDCP transmitters must process this interrupt when
+ * they are received from receivers/repeaters.
+ * @work: work structure
+ *
+ * This function checks for HDCP authentication information via rxstatus register
+ * as soon as interrupt triggers.
+ */
+static void xlnx_dp_hdcp_cp_irq_func(struct work_struct *work)
+{
+	struct xlnx_dp *dp;
+	struct xlnx_hdcptx *dptxhdcp;
+
+	dp = container_of(work, struct xlnx_dp, hdcp_cp_irq_work.work);
+	dptxhdcp = &dp->tx_hdcp;
+
+	xlnx_hdcp_tx_process_cp_irq(dptxhdcp);
+}
+
 static struct drm_prop_enum_list xlnx_dp_bpc_enum[] = {
 	{ 6, "6BPC" },
 	{ 8, "8BPC" },
@@ -3118,6 +3281,8 @@ static int xlnx_dp_bind(struct device *dev, struct device *master, void *data)
 				   ret ? ret : 8);
 	xlnx_dp_update_bpp(dp);
 
+	drm_object_attach_property(&connector->base,
+				   connector->dev->mode_config.gen_hdr_output_metadata_property, 0);
 	/* This enables interrupts, so should be called after DRM init */
 	ret = xlnx_dp_init_aux(dp);
 	if (ret) {
@@ -3195,6 +3360,9 @@ static void xlnx_dp_hpd_pulse_work_func(struct work_struct *work)
 	if (!ret)
 		goto retrain_link;
 
+	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable)
+		schedule_delayed_work(&dp->hdcp_cp_irq_work, 0);
+
 	return;
 
 retrain_link:
@@ -3202,8 +3370,65 @@ retrain_link:
 	xlnx_dp_start(dp);
 }
 
+static void xlnx_dp_gen_drmif_pkt(struct xlnx_dp *dp,
+				  struct hdmi_drm_infoframe drmif)
+{
+	struct xlnx_dp_infoframe *iframe = &dp->infoframe;
+
+	memset(iframe, 0, sizeof(struct xlnx_dp_infoframe));
+
+	iframe->header.byte[0] = NON_AUDIOIF_PKT_ID;
+	iframe->header.byte[1] = NON_AUDIOIF_DRM_TYPE;
+	iframe->header.byte[2] = NON_AUDIOIF_LDATA_BYTECOUNT;
+	iframe->header.byte[3] = NON_AUDIOIF_SDP_VERSION;
+	iframe->payload.byte[0] = CTA_DRMIF_VERSION_NUMBER;
+	iframe->payload.byte[1] = CTA_DRMIF_LENGHT;
+
+	iframe->payload.byte[2] = drmif.eotf & 0x7;
+	iframe->payload.byte[3] = drmif.metadata_type & 0x7;
+
+	iframe->payload.byte[4] = drmif.display_primaries[0].x & 0xFF;
+	iframe->payload.byte[5] = drmif.display_primaries[0].x >> 8;
+
+	iframe->payload.byte[6] = drmif.display_primaries[0].y & 0xFF;
+	iframe->payload.byte[7] = drmif.display_primaries[0].y >> 8;
+
+	iframe->payload.byte[8] = drmif.display_primaries[1].x & 0xFF;
+	iframe->payload.byte[9] = drmif.display_primaries[1].x >> 8;
+
+	iframe->payload.byte[10] = drmif.display_primaries[1].y & 0xFF;
+	iframe->payload.byte[11] = drmif.display_primaries[1].y >> 8;
+
+	iframe->payload.byte[12] = drmif.display_primaries[2].x & 0xFF;
+	iframe->payload.byte[13] = drmif.display_primaries[2].x >> 8;
+
+	iframe->payload.byte[14] = drmif.display_primaries[2].y & 0xFF;
+	iframe->payload.byte[15] = drmif.display_primaries[2].y >> 8;
+
+	iframe->payload.byte[16] = drmif.white_point.x & 0xFF;
+	iframe->payload.byte[17] = drmif.white_point.x >> 8;
+
+	iframe->payload.byte[18] = drmif.white_point.y & 0xFF;
+	iframe->payload.byte[19] = drmif.white_point.y >> 8;
+
+	iframe->payload.byte[20] = drmif.max_display_mastering_luminance & 0xFF;
+	iframe->payload.byte[21] = drmif.max_display_mastering_luminance >> 8;
+
+	iframe->payload.byte[22] = drmif.min_display_mastering_luminance & 0xFF;
+	iframe->payload.byte[23] = drmif.min_display_mastering_luminance >> 8;
+
+	iframe->payload.byte[24] = drmif.max_cll & 0xFF;
+	iframe->payload.byte[25] = drmif.max_cll >> 8;
+
+	iframe->payload.byte[26] = drmif.max_fall & 0xFF;
+	iframe->payload.byte[27] = drmif.max_fall >> 8;
+}
+
 static void xlnx_dp_vsync_handler(struct xlnx_dp *dp)
 {
+	struct drm_connector_state *state = dp->connector.state;
+	struct hdmi_drm_infoframe frame;
+	struct xlnx_dp_infoframe *iframe = &dp->infoframe;
 	int i;
 	u32 fifosts = xlnx_dp_read(dp->dp_base, XDPTX_AUDIO_INFO_BUFF_STATUS);
 
@@ -3214,6 +3439,20 @@ static void xlnx_dp_vsync_handler(struct xlnx_dp *dp)
 			xlnx_dp_write(dp->dp_base,
 				      XDPTX_AUDIO_INFO_DATA_REG,
 				      dp->tx_audio_data->buffer[i]);
+		}
+
+		if (state->gen_hdr_output_metadata) {
+			drm_hdmi_infoframe_set_gen_hdr_metadata(&frame, state);
+			xlnx_dp_gen_drmif_pkt(dp, frame);
+
+			xlnx_dp_write(dp->dp_base, XDPTX_AUDIO_INFO_DATA_REG,
+				      iframe->header.data);
+			/* Write new hdr info packet */
+			for (i = 0; i < (DP_INFOFRAME_FIFO_SIZE_WORDS - 1); i++) {
+				xlnx_dp_write(dp->dp_base,
+					      XDPTX_AUDIO_INFO_DATA_REG,
+					      iframe->payload.data[i]);
+			}
 		}
 	}
 }
@@ -3266,12 +3505,240 @@ static const struct component_ops xlnx_dp_component_ops = {
 	.unbind	= xlnx_dp_unbind,
 };
 
+/**
+ * xlnx_dp_hdcp_dpcd_write - HDCP message write through dpcd interface
+ * @ref: callback reference pointer
+ * @offset: register offset
+ * @buf: write buffer
+ * @buf_size: number of bytes to write
+ *
+ * Return: buffer size on successful write, or the error code returned
+ * from the callee functions.
+ */
+static int xlnx_dp_hdcp_dpcd_write(void *ref, u32 offset,
+				   void *buf, u32 buf_size)
+{
+	struct xlnx_dp *dp = (struct xlnx_dp *)ref;
+	u32 ret, address;
+
+	address = offset;
+	address += XDPTX_HDCP2X_DPCD_OFFSET;
+
+	ret = drm_dp_dpcd_write(&dp->aux, address, buf, buf_size);
+	if (ret < 0) {
+		dev_err(dp->dev, "dpcd write failed");
+		return ret;
+	}
+
+	return ret;
+}
+
+/**
+ * xlnx_dp_hdcp_dpcd_read - HDCP message read through dpcd interface
+ * @ref: callback reference pointer
+ * @offset: register offset
+ * @buf: read buffer
+ * @buf_size: number of bytes to read
+ *
+ * Return: buffer size on successful read, or the error code returned
+ * from the callee functions.
+ */
+static int xlnx_dp_hdcp_dpcd_read(void *ref, u32 offset,
+				  void *buf, u32 buf_size)
+{
+	struct xlnx_dp *dp = (struct xlnx_dp *)ref;
+	u32 ret, address;
+
+	address = offset;
+	address += XDPTX_HDCP2X_DPCD_OFFSET;
+
+	ret = drm_dp_dpcd_read(&dp->aux, address, buf, buf_size);
+	if (ret < 0) {
+		dev_err(dp->dev, "dpcd read failed");
+		return ret;
+	}
+
+	return ret;
+}
+
+/**
+ * xlnx_dp_hdcp_status_update - HDCP status notification
+ * @ref: callback reference pointer
+ * @notification: HDCP notification
+ */
+static void xlnx_dp_hdcp_status_update(void *ref, u32 notification)
+{
+	struct xlnx_dp *dp = (struct xlnx_dp *)ref;
+
+	switch (notification) {
+	case XHDCPTX_INCOMPATIBLE_RX:
+		dev_dbg(dp->dev, "HDCP TX compatible receiver is not found\n");
+		break;
+	case XHDCPTX_AUTHENTICATION_BUSY:
+		dev_dbg(dp->dev, "HDCP TX Authentication Busy\n");
+		break;
+	case XHDCPTX_AUTHENTICATED:
+		dev_dbg(dp->dev, "HDCP TX Authenticated\n");
+		break;
+	case XHDCPTX_REAUTHENTICATE_REQUESTED:
+		dev_dbg(dp->dev, "HDCP TX Re-authentication Request received\n");
+		break;
+	case XHDCPTX_DEVICE_IS_REVOKED:
+		dev_dbg(dp->dev, "HDCP TX , a device in the HDCP chain is revoked\n");
+		break;
+	case XHDCPTX_NO_SRM_LOADED:
+		dev_dbg(dp->dev, "HDCP TX , no valid srm is loaded\n");
+		break;
+	case XHDCPTX_UNAUTHENTICATED:
+		dev_dbg(dp->dev, "HDCP TX Unauthenticated\n");
+		break;
+	default:
+		dev_dbg(dp->dev, "Error, HDCP is not initialized\n");
+		break;
+	}
+}
+
+/**
+ * xlnx_dp_hdcp_exit - HDCP module de-initialization
+ * @dp: displayPort IP core structure
+ *
+ * Return: 0 on success, or the status from called functions
+ */
+static int xlnx_dp_hdcp_exit(struct xlnx_dp *dp)
+{
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
+	int ret;
+
+	if (!(dptxhdcp->hdcp1xenable || dptxhdcp->hdcp2xenable))
+		return
+
+	ret = xlnx_dp_hdcp_reset(dp);
+	if (ret < 0) {
+		dev_err(dp->dev, "failed to reset HDCP");
+		return ret;
+	}
+
+	xlnx_hdcp_tx_timer_exit(dptxhdcp);
+	xlnx_hdcp_tx_exit(dptxhdcp);
+
+	return 0;
+}
+
+/**
+ * xlnx_timer_irq_handler - HDCP timer interrupt handler
+ * @irq: IRQ number of the interrupt being handled
+ * @data: Pointer to device structure
+ *
+ * Return: irq handler status
+ */
+static irqreturn_t xlnx_timer_irq_handler(int irq, void *data)
+{
+	struct xlnx_dp *dp = (struct xlnx_dp *)data;
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
+
+	xlnx_hdcp_tmrcntr_interrupt_handler(dptxhdcp->xhdcptmr);
+
+	return IRQ_HANDLED;
+}
+
+/**
+ * xlnx_hdcp_init - HDCP module initialization
+ * @dp: displayPort IP core structure
+ * @pdev: platform structure
+ *
+ * Return: 0 on success, or return the error code from the called functions.
+ */
+static int xlnx_hdcp_init(struct xlnx_dp *dp,
+			  struct platform_device *pdev)
+{
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
+	int ret;
+
+	dptxhdcp->dev = dp->dev;
+	dptxhdcp->hdcp2xenable = dp->config.hdcp2x_enable;
+	dptxhdcp->hdcp1xenable = dp->config.hdcp1x_enable;
+
+	if (dp->config.hdcp2x_enable) {
+		xlnx_dp_set(dp->dp_base, XDP_TX_HDCP2x_ENABLE,
+			    XDP_TX_HDCP2x_ENABLE_BYPASS_DISABLE_MASK);
+
+		dptxhdcp->xhdcp2x = xlnx_hdcp_tx_init(&pdev->dev, dp, dptxhdcp,
+						      dp->dp_base + XDPTX_HDCP2X_OFFSET,
+						      0, XHDCPTX_HDCP_2X, dp->mode.lane_cnt);
+
+		if (IS_ERR(dptxhdcp->xhdcp2x)) {
+			dev_err(dp->dev, "failed to initialize HDCP2X module\n");
+			return PTR_ERR(dptxhdcp->xhdcp2x);
+		}
+		dp->hdcp2x_timer_irq =
+				 platform_get_irq_byname(pdev, "dptxss_timer_irq");
+		if (dp->hdcp2x_timer_irq < 0) {
+			dev_err(dp->dev, "failed to get HDCP timer irq ");
+			return -EINVAL;
+		}
+		ret = devm_request_threaded_irq(dp->dev, dp->hdcp2x_timer_irq, NULL,
+						xlnx_timer_irq_handler,
+						IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
+						"dptxss_timer_irq", dp);
+		if (ret < 0) {
+			dev_err(dp->dev, "failed to register HDCP timer irq");
+			return ret;
+		}
+	}
+	dptxhdcp->xhdcptmr =
+			xlnx_hdcp_timer_init(&pdev->dev, dp->dp_base + XDPTX_HDCP_TIMER_OFFSET);
+	if (IS_ERR(dptxhdcp->xhdcptmr)) {
+		dev_err(dp->dev, "failed to initialize HDCP timer\n");
+		return PTR_ERR(dptxhdcp->xhdcptmr);
+	}
+
+	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_WRITE,
+					   xlnx_dp_hdcp_dpcd_write);
+	if (ret < 0) {
+		dev_err(dp->dev, "failed to register HDCP DPCD Write Callback");
+		return ret;
+	}
+
+	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_READ,
+					   xlnx_dp_hdcp_dpcd_read);
+	if (ret < 0) {
+		dev_err(dp->dev, "failed to register HDCP DPCD Read Callback");
+		return ret;
+	}
+
+	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_STATUS,
+					   xlnx_dp_hdcp_status_update);
+	if (ret < 0) {
+		dev_err(dp->dev, "failed to register HDCP Status Update Callback");
+		return ret;
+	}
+
+	INIT_DELAYED_WORK(&dp->hdcp_cp_irq_work, xlnx_dp_hdcp_cp_irq_func);
+
+	return 0;
+}
+
 static int xlnx_dp_parse_of(struct xlnx_dp *dp)
 {
 	struct xlnx_dp_config *config = &dp->config;
 	struct device_node *node = dp->dev->of_node;
 	u32 bpc;
 	int ret;
+
+	if (dp->cfg->flags & XDPTX_VTC_OFFSET_CHANGE) {
+		ret = of_property_read_u32(node, "xlnx,vtc-offset",
+					   &dp->vtc_off);
+		if (ret < 0) {
+			dev_err(dp->dev, "No vct offset in DT\n");
+			return ret;
+		}
+	} else {
+		dp->vtc_off = XDPTX_VTC_BASE;
+	}
+
+	config->hdcp1x_enable = of_property_read_bool(node, "xlnx,hdcp-enable");
+	config->hdcp2x_enable =
+			of_property_read_bool(node, "xlnx,hdcp22-enable");
 
 	ret = of_property_read_u32(node, "xlnx,max-lanes", &config->max_lanes);
 	if (ret < 0) {
@@ -3343,6 +3810,7 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	struct platform_device *iface_pdev;
 	struct xlnx_dp *dp;
 	struct resource *res;
+	const struct of_device_id *match;
 	void *ptr;
 	unsigned int i;
 	int irq, ret;
@@ -3360,6 +3828,12 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	dp->dpms = DRM_MODE_DPMS_OFF;
 	dp->status = connector_status_disconnected;
 	dp->dev = &pdev->dev;
+
+	match = of_match_node(xlnx_dp_of_match, pnode);
+	if (!match)
+		return -ENODEV;
+
+	dp->cfg = match->data;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dp_base");
 	dp->dp_base = devm_ioremap_resource(dp->dev, res);
@@ -3481,6 +3955,11 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto error;
 
+	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable) {
+		ret = xlnx_hdcp_init(dp, pdev);
+		if (ret < 0)
+			goto error_hdcp;
+	}
 	if (dp->config.audio_enabled) {
 		if (dptx_register_aud_dev(dp->dev)) {
 			dp->audio_init = false;
@@ -3494,6 +3973,8 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 
 	return component_add(&pdev->dev, &xlnx_dp_component_ops);
 
+error_hdcp:
+	xlnx_dp_hdcp_exit(dp);
 tx_vid_clk_err:
 	clk_disable_unprepare(dp->axi_lite_clk);
 error:
@@ -3514,6 +3995,8 @@ static int xlnx_dp_remove(struct platform_device *pdev)
 	struct xlnx_dp *dp = platform_get_drvdata(pdev);
 
 	xlnx_dp_write(dp->dp_base, XDPTX_ENABLE_REG, 0);
+	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable)
+		xlnx_dp_hdcp_exit(dp);
 	drm_dp_aux_unregister(&dp->aux);
 	if (!dp->config.versal_gt_present)
 		xlnx_dp_exit_phy(dp);
@@ -3524,10 +4007,6 @@ static int xlnx_dp_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id xlnx_dp_of_match[] = {
-	{ .compatible = "xlnx,v-dp-txss-3.0", },
-	{ /* end of table */ }
-};
 MODULE_DEVICE_TABLE(of, xlnx_dp_of_match);
 
 static struct platform_driver dp_tx_driver = {

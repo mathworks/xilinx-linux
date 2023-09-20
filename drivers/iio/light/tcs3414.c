@@ -350,7 +350,6 @@ static int tcs3414_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int tcs3414_suspend(struct device *dev)
 {
 	struct tcs3414_data *data = iio_priv(i2c_get_clientdata(
@@ -365,9 +364,9 @@ static int tcs3414_resume(struct device *dev)
 	return i2c_smbus_write_byte_data(data->client, TCS3414_CONTROL,
 		data->control);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(tcs3414_pm_ops, tcs3414_suspend, tcs3414_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tcs3414_pm_ops, tcs3414_suspend,
+				tcs3414_resume);
 
 static const struct i2c_device_id tcs3414_id[] = {
 	{ "tcs3414", 0 },
@@ -378,7 +377,7 @@ MODULE_DEVICE_TABLE(i2c, tcs3414_id);
 static struct i2c_driver tcs3414_driver = {
 	.driver = {
 		.name	= TCS3414_DRV_NAME,
-		.pm	= &tcs3414_pm_ops,
+		.pm	= pm_sleep_ptr(&tcs3414_pm_ops),
 	},
 	.probe		= tcs3414_probe,
 	.remove		= tcs3414_remove,

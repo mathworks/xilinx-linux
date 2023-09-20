@@ -277,7 +277,7 @@ static ssize_t ad5064_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5064_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", st->pwr_down[chan->channel]);
+	return sysfs_emit(buf, "%d\n", st->pwr_down[chan->channel]);
 }
 
 static ssize_t ad5064_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -932,9 +932,9 @@ static int ad5064_spi_probe(struct spi_device *spi)
 				ad5064_spi_write);
 }
 
-static int ad5064_spi_remove(struct spi_device *spi)
+static void ad5064_spi_remove(struct spi_device *spi)
 {
-	return ad5064_remove(&spi->dev);
+	ad5064_remove(&spi->dev);
 }
 
 static const struct spi_device_id ad5064_spi_ids[] = {

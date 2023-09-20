@@ -30,15 +30,17 @@
 #define TX_BD_NUM_DEFAULT	64
 #define RX_BD_NUM_DEFAULT	1024
 
-static u8 st_pcp[8];
-static uint st_count;
+static u8 st_pcp[8] = {4};
+static uint st_count = 1;
 module_param_array(st_pcp, byte, &st_count, 0644);
 MODULE_PARM_DESC(st_pcp, "Array of pcp values mapped to ST class at the compile time");
 
-static u8 res_pcp[8];
-static uint res_count;
+static u8 res_pcp[8] = {2, 3};
+static uint res_count = 2;
 module_param_array(res_pcp, byte, &res_count, 0644);
 MODULE_PARM_DESC(res_pcp, "Array of pcp values mapped to RES class at the compile time");
+
+extern int axienet_phc_index;
 
 int tsn_data_path_open(struct net_device *ndev)
 {
@@ -277,7 +279,7 @@ static int tsn_ep_xmit(struct sk_buff *skb, struct net_device *ndev)
 static void tsn_ep_set_mac_address(struct net_device *ndev, const void *address)
 {
 	if (address)
-		ether_addr_copy(ndev->dev_addr, address);
+		eth_hw_addr_set(ndev, address);
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 }
@@ -301,6 +303,22 @@ static int netdev_set_mac_address(struct net_device *ndev, void *p)
 	return 0;
 }
 
+#if defined(CONFIG_XILINX_TSN_PTP)
+/**
+ * tsn_ethtools_get_ts_info - Get h/w timestamping capabilities.
+ * @ndev:       Pointer to net_device structure
+ * @info:       Pointer to ethtool_ts_info structure
+ *
+ * Return: 0
+ */
+static int tsn_ethtools_get_ts_info(struct net_device *ndev,
+				    struct ethtool_ts_info *info)
+{
+	info->phc_index = axienet_phc_index;
+	return 0;
+}
+#endif
+
 static const struct ethtool_ops ep_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_MAX_FRAMES,
 	.get_sset_count	 = axienet_sset_count_tsn,
@@ -308,6 +326,9 @@ static const struct ethtool_ops ep_ethtool_ops = {
 	.get_coalesce   = axienet_ethtools_get_coalesce,
 	.set_coalesce   = axienet_ethtools_set_coalesce,
 	.get_strings = axienet_strings_tsn,
+#if defined(CONFIG_XILINX_TSN_PTP)
+	.get_ts_info    = tsn_ethtools_get_ts_info,
+#endif
 };
 
 static const struct net_device_ops ep_netdev_ops = {
@@ -471,6 +492,7 @@ static int tsn_ep_probe(struct platform_device *pdev)
 	u16 num_queues = XAE_MAX_QUEUES;
 	u16 num_tc = 0;
 	struct device_node *np;
+	u8 mac_addr[ETH_ALEN];
 	char irq_name[32];
 
 	ndev = alloc_netdev_mq(sizeof(*lp), "ep",
@@ -531,14 +553,12 @@ static int tsn_ep_probe(struct platform_device *pdev)
 						 "xlnx,eth-hasnobuf");
 
 	/* Retrieve the MAC address */
-	ret = of_get_mac_address(pdev->dev.of_node, ndev->dev_addr);
+	ret = of_get_mac_address(pdev->dev.of_node, mac_addr);
 	if (ret) {
 		dev_err(&pdev->dev, "could not find MAC address\n");
 		goto free_netdev;
 	}
-	if (!is_valid_ether_addr(ndev->dev_addr))
-		eth_hw_addr_random(ndev);
-
+	tsn_ep_set_mac_address(ndev, mac_addr);
 	ret = tsn_mcdma_probe(pdev, lp, ndev);
 	if (ret) {
 		dev_err(&pdev->dev, "Getting MCDMA resource failed\n");

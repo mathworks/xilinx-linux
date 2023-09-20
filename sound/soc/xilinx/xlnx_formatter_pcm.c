@@ -73,22 +73,12 @@
 #define PERIOD_BYTES_MAX	(50 * 1024)
 #define XLNX_PARAM_UNKNOWN	0
 
-static const struct snd_pcm_hardware xlnx_pcm_hardware = {
-	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
-		SNDRV_PCM_INFO_BATCH | SNDRV_PCM_INFO_PAUSE |
-		SNDRV_PCM_INFO_RESUME,
-	.formats = SNDRV_PCM_FMTBIT_S8 | SNDRV_PCM_FMTBIT_S16_LE |
-		   SNDRV_PCM_FMTBIT_S24_LE,
-	.channels_min = 2,
-	.channels_max = 8,
-	.rates = SNDRV_PCM_RATE_8000_192000,
-	.rate_min = 8000,
-	.rate_max = 192000,
-	.buffer_bytes_max = PERIODS_MAX * PERIOD_BYTES_MAX,
-	.period_bytes_min = PERIOD_BYTES_MIN,
-	.period_bytes_max = PERIOD_BYTES_MAX,
-	.periods_min = PERIODS_MIN,
-	.periods_max = PERIODS_MAX,
+enum bit_depth {
+	BIT_DEPTH_8,
+	BIT_DEPTH_16,
+	BIT_DEPTH_20,
+	BIT_DEPTH_24,
+	BIT_DEPTH_32,
 };
 
 struct xlnx_pcm_drv_data {
@@ -105,6 +95,7 @@ struct xlnx_pcm_drv_data {
 	struct clk *mm2s_axis_clk;
 	struct clk *s2mm_axis_clk;
 	struct clk *aud_mclk;
+	unsigned int sysclk;
 };
 
 /*
@@ -123,12 +114,22 @@ struct xlnx_pcm_stream_param {
 	u64 buffer_size;
 };
 
-enum bit_depth {
-	BIT_DEPTH_8,
-	BIT_DEPTH_16,
-	BIT_DEPTH_20,
-	BIT_DEPTH_24,
-	BIT_DEPTH_32,
+static const struct snd_pcm_hardware xlnx_pcm_hardware = {
+	.info = SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
+		SNDRV_PCM_INFO_BATCH | SNDRV_PCM_INFO_PAUSE |
+		SNDRV_PCM_INFO_RESUME,
+	.formats = SNDRV_PCM_FMTBIT_S8 | SNDRV_PCM_FMTBIT_S16_LE |
+		   SNDRV_PCM_FMTBIT_S24_LE,
+	.channels_min = 2,
+	.channels_max = 8,
+	.rates = SNDRV_PCM_RATE_8000_192000,
+	.rate_min = 8000,
+	.rate_max = 192000,
+	.buffer_bytes_max = PERIODS_MAX * PERIOD_BYTES_MAX,
+	.period_bytes_min = PERIOD_BYTES_MIN,
+	.period_bytes_max = PERIOD_BYTES_MAX,
+	.periods_min = PERIODS_MIN,
+	.periods_max = PERIODS_MAX,
 };
 
 enum {
@@ -325,6 +326,15 @@ static irqreturn_t xlnx_s2mm_irq_handler(int irq, void *arg)
 	return IRQ_NONE;
 }
 
+static int xlnx_formatter_set_sysclk(struct snd_soc_component *component,
+				     int clk_id, int source, unsigned int freq, int dir)
+{
+	struct xlnx_pcm_drv_data *adata = dev_get_drvdata(component->dev);
+
+	adata->sysclk = freq;
+	return 0;
+}
+
 static int xlnx_formatter_pcm_open(struct snd_soc_component *component,
 				   struct snd_pcm_substream *substream)
 {
@@ -396,6 +406,7 @@ static int xlnx_formatter_pcm_open(struct snd_soc_component *component,
 			"Unable to set constraint on period bytes\n");
 		return err;
 	}
+
 	/* Resize the buffer bytes as divisible by 64 */
 	err = snd_pcm_hw_constraint_step(runtime, 0,
 					 SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
@@ -405,6 +416,7 @@ static int xlnx_formatter_pcm_open(struct snd_soc_component *component,
 			"Unable to set constraint on buffer bytes\n");
 		return err;
 	}
+
 	/* Set periods as integer multiple */
 	err = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
@@ -482,6 +494,19 @@ static int xlnx_formatter_pcm_hw_params(struct snd_soc_component *component,
 	active_ch = params_channels(params);
 	if (active_ch > stream_data->ch_limit)
 		return -EINVAL;
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    adata->sysclk) {
+		unsigned int mclk_fs = adata->sysclk / params_rate(params);
+
+		if (adata->sysclk % params_rate(params) != 0) {
+			dev_warn(component->dev, "sysclk %u not divisible by rate %u\n",
+				 adata->sysclk, params_rate(params));
+			return -EINVAL;
+		}
+
+		writel(mclk_fs, stream_data->mmio + XLNX_AUD_FS_MULTIPLIER);
+	}
 
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE &&
 	    stream_data->xfer_mode == AES_TO_PCM &&
@@ -604,14 +629,15 @@ static int xlnx_formatter_pcm_new(struct snd_soc_component *component,
 }
 
 static const struct snd_soc_component_driver xlnx_asoc_component = {
-	.name = DRV_NAME,
-	.open = xlnx_formatter_pcm_open,
-	.close = xlnx_formatter_pcm_close,
-	.hw_params = xlnx_formatter_pcm_hw_params,
-	.hw_free = xlnx_formatter_pcm_hw_free,
-	.trigger = xlnx_formatter_pcm_trigger,
-	.pointer = xlnx_formatter_pcm_pointer,
-	.pcm_construct = xlnx_formatter_pcm_new,
+	.name		= DRV_NAME,
+	.set_sysclk	= xlnx_formatter_set_sysclk,
+	.open		= xlnx_formatter_pcm_open,
+	.close		= xlnx_formatter_pcm_close,
+	.hw_params	= xlnx_formatter_pcm_hw_params,
+	.hw_free	= xlnx_formatter_pcm_hw_free,
+	.trigger	= xlnx_formatter_pcm_trigger,
+	.pointer	= xlnx_formatter_pcm_pointer,
+	.pcm_construct	= xlnx_formatter_pcm_new,
 };
 
 static int configure_mm2s(struct xlnx_pcm_drv_data *aud_drv_data,
@@ -652,8 +678,7 @@ static int configure_mm2s(struct xlnx_pcm_drv_data *aud_drv_data,
 	}
 	ret = devm_request_irq(dev, aud_drv_data->mm2s_irq,
 			       xlnx_mm2s_irq_handler, 0,
-			       "xlnx_formatter_pcm_mm2s_irq",
-			       dev);
+			       "xlnx_formatter_pcm_mm2s_irq", dev);
 	if (ret) {
 		dev_err(dev, "xlnx audio mm2s irq request failed\n");
 		goto mm2s_err;
@@ -707,7 +732,8 @@ static int configure_s2mm(struct xlnx_pcm_drv_data *aud_drv_data,
 		return ret;
 	}
 
-	aud_drv_data->s2mm_irq = platform_get_irq_byname(pdev, "irq_s2mm");
+	aud_drv_data->s2mm_irq = platform_get_irq_byname(pdev,
+							 "irq_s2mm");
 	if (aud_drv_data->s2mm_irq < 0) {
 		ret = aud_drv_data->s2mm_irq;
 		goto s2mm_err;
@@ -863,5 +889,5 @@ static struct platform_driver xlnx_formatter_pcm_driver = {
 };
 
 module_platform_driver(xlnx_formatter_pcm_driver);
-MODULE_AUTHOR("Maruthi Srinivas Bayyavarapu");
+MODULE_AUTHOR("Maruthi Srinivas Bayyavarapu <maruthis@xilinx.com>");
 MODULE_LICENSE("GPL v2");

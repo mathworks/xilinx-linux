@@ -2,13 +2,15 @@
 /*
  * dts file for Xilinx Versal with PM
  *
- * (C) Copyright 2017 - 2021, Xilinx, Inc.
+ * (C) Copyright 2017 - 2022, Xilinx, Inc.
  *
  * Michal Simek <michal.simek@xilinx.com>
  */
 
 #include <dt-bindings/power/xlnx-versal-power.h>
+#include <dt-bindings/power/xlnx-versal-regnode.h>
 #include <dt-bindings/clock/xlnx-versal-clk.h>
+#include <dt-bindings/reset/xlnx-versal-resets.h>
 
 / {
 	pl_alt_ref_clk: pl_alt_ref_clk {
@@ -64,6 +66,15 @@
 				mboxes = <&ipi_mailbox_pmu1 0>,
 					 <&ipi_mailbox_pmu1 1>;
 				mbox-names = "tx", "rx";
+			};
+
+			versal_reset: reset-controller {
+				compatible = "xlnx,versal-reset";
+				#reset-cells = <1>;
+			};
+
+			pinctrl0: pinctrl {
+				compatible = "xlnx,versal-pinctrl";
 			};
 
 			versal_sec_cfg: versal-sec-cfg {
@@ -245,6 +256,8 @@
 &ospi {
 	clocks = <&versal_clk OSPI_REF>;
 	power-domains = <&versal_firmware PM_DEV_OSPI>;
+	reset-names = "qspi";
+	resets = <&versal_reset VERSAL_RST_OSPI>;
 };
 
 &rtc {
@@ -262,12 +275,14 @@
 };
 
 &sdhci0 {
-	clocks = <&versal_clk SDIO0_REF>, <&versal_clk LPD_LSBUS>;
+	clocks = <&versal_clk SDIO0_REF>, <&versal_clk LPD_LSBUS>,
+		<&versal_clk SD_DLL_REF>;
 	power-domains = <&versal_firmware PM_DEV_SDIO_0>;
 };
 
 &sdhci1 {
-	clocks = <&versal_clk SDIO1_REF>, <&versal_clk LPD_LSBUS>;
+	clocks = <&versal_clk SDIO1_REF>, <&versal_clk LPD_LSBUS>,
+		<&versal_clk SD_DLL_REF>;
 	power-domains = <&versal_firmware PM_DEV_SDIO_1>;
 };
 
@@ -304,9 +319,30 @@
 &usb0 {
 	clocks = <&versal_clk USB0_BUS_REF>, <&versal_clk USB3_DUAL_REF>;
 	power-domains = <&versal_firmware PM_DEV_USB_0>;
+	resets = <&versal_reset VERSAL_RST_USB_0>;
+};
+
+&dwc3_0 {
+	clocks = <&versal_clk USB0_BUS_REF>;
 };
 
 &watchdog {
 	clocks = <&versal_clk LPD_LSBUS>;
 	power-domains = <&versal_firmware PM_DEV_SWDT_FPD>;
+};
+
+&sysmon0 {
+	xlnx,nodeid = <PM_REGNODE_SYSMON_ROOT_0>;
+};
+
+&sysmon1 {
+	xlnx,nodeid = <PM_REGNODE_SYSMON_ROOT_1>;
+};
+
+&sysmon2 {
+	xlnx,nodeid = <PM_REGNODE_SYSMON_ROOT_2>;
+};
+
+&sysmon3 {
+	xlnx,nodeid = <PM_REGNODE_SYSMON_ROOT_3>;
 };

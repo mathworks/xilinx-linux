@@ -26,7 +26,7 @@ struct max1241 {
 	struct regulator *vref;
 	struct gpio_desc *shutdown;
 
-	__be16 data ____cacheline_aligned;
+	__be16 data __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct iio_chan_spec max1241_channels[] = {
@@ -150,10 +150,9 @@ static int max1241_probe(struct spi_device *spi)
 	spi_set_drvdata(spi, indio_dev);
 
 	adc->vdd = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(adc->vdd)) {
-		dev_err(dev, "failed to get vdd regulator\n");
-		return PTR_ERR(adc->vdd);
-	}
+	if (IS_ERR(adc->vdd))
+		return dev_err_probe(dev, PTR_ERR(adc->vdd),
+				     "failed to get vdd regulator\n");
 
 	ret = regulator_enable(adc->vdd);
 	if (ret)
@@ -166,10 +165,9 @@ static int max1241_probe(struct spi_device *spi)
 	}
 
 	adc->vref = devm_regulator_get(dev, "vref");
-	if (IS_ERR(adc->vref)) {
-		dev_err(dev, "failed to get vref regulator\n");
-		return PTR_ERR(adc->vref);
-	}
+	if (IS_ERR(adc->vref))
+		return dev_err_probe(dev, PTR_ERR(adc->vref),
+				     "failed to get vref regulator\n");
 
 	ret = regulator_enable(adc->vref);
 	if (ret)
@@ -184,7 +182,8 @@ static int max1241_probe(struct spi_device *spi)
 	adc->shutdown = devm_gpiod_get_optional(dev, "shutdown",
 						GPIOD_OUT_HIGH);
 	if (IS_ERR(adc->shutdown))
-		return PTR_ERR(adc->shutdown);
+		return dev_err_probe(dev, PTR_ERR(adc->shutdown),
+				     "cannot get shutdown gpio\n");
 
 	if (adc->shutdown)
 		dev_dbg(dev, "shutdown pin passed, low-power mode enabled");

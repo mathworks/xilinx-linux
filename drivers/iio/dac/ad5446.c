@@ -100,7 +100,7 @@ static ssize_t ad5446_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5446_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", st->pwr_down);
+	return sysfs_emit(buf, "%d\n", st->pwr_down);
 }
 
 static ssize_t ad5446_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -495,9 +495,9 @@ static int ad5446_spi_probe(struct spi_device *spi)
 		&ad5446_spi_chip_info[id->driver_data]);
 }
 
-static int ad5446_spi_remove(struct spi_device *spi)
+static void ad5446_spi_remove(struct spi_device *spi)
 {
-	return ad5446_remove(&spi->dev);
+	ad5446_remove(&spi->dev);
 }
 
 static struct spi_driver ad5446_spi_driver = {

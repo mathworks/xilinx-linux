@@ -250,8 +250,20 @@ int hid_sensor_setup_trigger(struct iio_dev *indio_dev, const char *name,
 	int ret;
 	struct iio_trigger *trig;
 
+<<<<<<< HEAD
 	ret = iio_triggered_buffer_setup(indio_dev, &iio_pollfunc_store_time,
 					 NULL, NULL);
+=======
+	if (hid_sensor_batch_mode_supported(attrb))
+		fifo_attrs = hid_sensor_fifo_attributes;
+	else
+		fifo_attrs = NULL;
+
+	ret = iio_triggered_buffer_setup_ext(indio_dev,
+					     &iio_pollfunc_store_time, NULL,
+					     IIO_BUFFER_DIRECTION_IN,
+					     NULL, fifo_attrs);
+>>>>>>> 3c185529f08b8b1ea3ca213d9e83a1d0da8f7f2e
 	if (ret) {
 		dev_err(&indio_dev->dev, "Triggered Buffer Setup Failed\n");
 		return ret;

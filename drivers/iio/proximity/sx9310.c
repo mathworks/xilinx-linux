@@ -32,7 +32,7 @@
 #include <linux/iio/trigger_consumer.h>
 
 /* Register definitions. */
-#define SX9310_REG_IRQ_SRC				0x00
+#define SX9310_REG_IRQ_SRC				SX_COMMON_REG_IRQ_SRC
 #define SX9310_REG_STAT0				0x01
 #define SX9310_REG_STAT1				0x02
 #define SX9310_REG_STAT1_COMPSTAT_MASK			GENMASK(3, 0)

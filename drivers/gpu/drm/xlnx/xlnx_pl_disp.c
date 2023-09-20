@@ -12,9 +12,10 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
-#include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_vblank.h>
 #include <linux/component.h>
 #include <linux/delay.h>
@@ -30,6 +31,7 @@
 #include "xlnx_drv.h"
 
 #define XLNX_PL_DISP_MAX_NUM_PLANES	3
+#define XLNX_PL_DISP_VFMT_SIZE		4
 /*
  * Overview
  * --------
@@ -256,7 +258,7 @@ static int xlnx_pl_disp_plane_mode_set(struct drm_plane *plane,
 		dev_err(xlnx_pl_disp->dev, "Color format not supported\n");
 		return -EINVAL;
 	}
-	luma_paddr = drm_fb_cma_get_gem_addr(fb, plane->state, 0);
+	luma_paddr = drm_fb_dma_get_gem_addr(fb, plane->state, 0);
 	if (!luma_paddr) {
 		dev_err(xlnx_pl_disp->dev, "failed to get luma paddr\n");
 		return -EINVAL;
@@ -278,7 +280,7 @@ static int xlnx_pl_disp_plane_mode_set(struct drm_plane *plane,
 	 * we have a multi-plane format but only one dma channel
 	 */
 	if (info->num_planes > 1) {
-		chroma_paddr = drm_fb_cma_get_gem_addr(fb, plane->state, 1);
+		chroma_paddr = drm_fb_dma_get_gem_addr(fb, plane->state, 1);
 		if (!chroma_paddr) {
 			dev_err(xlnx_pl_disp->dev,
 				"failed to get chroma paddr\n");
@@ -584,6 +586,7 @@ static int xlnx_pl_disp_probe(struct platform_device *pdev)
 	const char *vformat;
 	struct dma_chan *dma_chan;
 	struct xlnx_dma_chan *xlnx_dma_chan;
+	const struct drm_format_info *info;
 
 	xlnx_pl_disp = devm_kzalloc(dev, sizeof(*xlnx_pl_disp), GFP_KERNEL);
 	if (!xlnx_pl_disp)
@@ -607,7 +610,13 @@ static int xlnx_pl_disp_probe(struct platform_device *pdev)
 		goto err_dma;
 	}
 
-	strcpy((char *)&xlnx_pl_disp->fmt, vformat);
+	strncpy((char *)&xlnx_pl_disp->fmt, vformat, XLNX_PL_DISP_VFMT_SIZE);
+	info = drm_format_info(xlnx_pl_disp->fmt);
+	if (!info) {
+		dev_err(dev, "Invalid video format in dts\n");
+		ret = -EINVAL;
+		goto err_dma;
+	}
 
 	/* VTC Bridge support */
 	vtc_node = of_parse_phandle(dev->of_node, "xlnx,bridge", 0);

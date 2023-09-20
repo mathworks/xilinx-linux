@@ -7,12 +7,14 @@
  *  Shubhrajyoti Datta <shubhrajyoti.datta@xilinx.com>
  */
 
+#include <linux/bitfield.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/iopoll.h>
@@ -228,7 +230,7 @@ static int clk_wzrd_get_divisors(struct clk_hw *hw, unsigned long rate,
 			vco_freq = DIV_ROUND_CLOSEST((parent_rate * m), d);
 			if (vco_freq >= WZRD_VCO_MIN && vco_freq <= WZRD_VCO_MAX) {
 				for (o = WZRD_O_MIN; o <= WZRD_O_MAX; o++) {
-					freq = DIV_ROUND_CLOSEST(vco_freq, o);
+					freq = DIV_ROUND_CLOSEST_ULL(vco_freq, o);
 					diff = abs(freq - rate);
 
 					if (diff < WZRD_MIN_ERR) {
@@ -338,8 +340,7 @@ static unsigned long clk_wzrd_recalc_rate(struct clk_hw *hw,
 					  unsigned long parent_rate)
 {
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)((u64)divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
 	unsigned int vall, valh;
 	u32 div;
 	u32 p5en, edge, prediv2;
@@ -371,8 +372,8 @@ static int clk_wzrd_dynamic_reconfig(struct clk_hw *hw, unsigned long rate,
 	u32 p5en, p5fedge;
 	u32 regval, regval1;
 	struct clk_wzrd_divider *divider = to_clk_wzrd_divider(hw);
-	void __iomem *div_addr =
-			(void __iomem *)((u64)divider->base + divider->offset);
+	void __iomem *div_addr = divider->base + divider->offset;
+
 	if (divider->lock)
 		spin_lock_irqsave(divider->lock, flags);
 	else
@@ -542,7 +543,7 @@ static SIMPLE_DEV_PM_OPS(clk_wzrd_dev_pm_ops, clk_wzrd_suspend,
 
 static int clk_wzrd_probe(struct platform_device *pdev)
 {
-	int i, ret;
+	int i = 0, ret;
 	u32 regl, regh, edge, mult;
 	u32 regld, reghd, edged, div;
 	unsigned long rate;

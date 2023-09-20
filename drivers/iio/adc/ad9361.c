@@ -9594,7 +9594,7 @@ out_unregister_notifier:
 	return ret;
 }
 
-static int ad9361_remove(struct spi_device *spi)
+static void ad9361_remove(struct spi_device *spi)
 {
 	struct ad9361_rf_phy *phy = ad9361_spi_to_phy(spi);
 
@@ -9606,8 +9606,6 @@ static int ad9361_remove(struct spi_device *spi)
 	clk_notifier_unregister(phy->clks[RX_RFPLL], &phy->clk_nb_rx);
 	clk_notifier_unregister(phy->clks[TX_RFPLL], &phy->clk_nb_tx);
 	ad9361_clks_disable(phy);
-
-	return 0;
 }
 
 static const struct spi_device_id ad9361_id[] = {

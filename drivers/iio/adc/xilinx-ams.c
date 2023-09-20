@@ -178,7 +178,8 @@ static void ams_enable_channel_sequence(struct ams *ams)
 	/* Run calibration of PS & PL as part of the sequence */
 	scan_mask = 1 | (1 << PS_SEQ_MAX);
 	for (i = 0; i < indio_dev->num_channels; i++)
-		scan_mask |= BIT(indio_dev->channels[i].scan_index);
+		if (indio_dev->channels[i].scan_index < PL_SEQ_MAX)
+			scan_mask |= BIT(indio_dev->channels[i].scan_index);
 
 	if (ams->ps_base) {
 		/* put sysmon in a soft reset to change the sequence */
@@ -358,6 +359,11 @@ static int ams_read_raw(struct iio_dev *indio_dev,
 				else
 					*val = AMS_SUPPLY_SCALE_6VOLT;
 				break;
+			case AMS_VREFP:
+			case AMS_VREFN:
+					*val = AMS_SUPPLY_SCALE_3VOLT;
+				break;
+
 			default:
 				if (chan->scan_index >= (PS_SEQ_MAX * 3))
 					*val = AMS_SUPPLY_SCALE_3VOLT;
