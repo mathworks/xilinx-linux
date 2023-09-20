@@ -2,7 +2,8 @@
 /*
  * Xilinx SYSMON for Versal
  *
- * Copyright (C) 2019 - 2021 Xilinx, Inc.
+ * Copyright (C) 2019 - 2022, Xilinx, Inc.
+ * Copyright (C) 2022 - 2023, Advanced Micro Devices, Inc.
  *
  * Description:
  * This driver is developed for SYSMON on Versal. The driver supports INDIO Mode
@@ -10,7 +11,27 @@
  * in kernel event monitoring for some modules.
  */
 
+#include <linux/bits.h>
+#include <dt-bindings/power/xlnx-versal-regnode.h>
+#include <linux/firmware/xlnx-zynqmp.h>
+#include <linux/moduleparam.h>
 #include "versal-sysmon.h"
+
+#define SYSMON_EVENT_WORK_DELAY_MS	1000
+#define SYSMON_UNMASK_WORK_DELAY_MS	500
+
+#define SYSMON_FRACTIONAL_DENOM		128
+#define SYSMON_HBM_FRACTIONAL_DENOM	1
+
+#define SYSMON_HBM_TEMP_SHIFT	16U
+#define SYSMON_HBM_TEMP_MASK	GENMASK(6, 0)
+
+static bool secure_mode;
+module_param(secure_mode, bool, 0444);
+MODULE_PARM_DESC(secure_mode,
+		 "Allow sysmon to access register space using EEMI, when direct register access is restricted (default: Direct Access mode)");
+
+static LIST_HEAD(sysmon_list_head);
 
 /* This structure describes temperature events */
 static const struct iio_event_spec sysmon_temp_events[] = {
@@ -65,23 +86,75 @@ static const struct iio_chan_spec temp_events[] = {
 	SYSMON_CHAN_TEMP_EVENT(OT_EVENT, "ot", sysmon_temp_events),
 };
 
-static inline void sysmon_read_reg(struct sysmon *sysmon, u32 offset, u32 *data)
+/* HBM temperature channel attributes */
+static const struct iio_chan_spec temp_hbm_channels[] = {
+	SYSMON_CHAN_TEMP(TEMP_HBM, "temp_hbm"),
+};
+
+static inline void sysmon_direct_read_reg(struct sysmon *sysmon, u32 offset, u32 *data)
 {
 	*data = readl(sysmon->base + offset);
 }
 
-static inline void sysmon_write_reg(struct sysmon *sysmon, u32 offset, u32 data)
+static inline void sysmon_direct_write_reg(struct sysmon *sysmon, u32 offset, u32 data)
 {
 	writel(data, sysmon->base + offset);
 }
 
-static inline void sysmon_update_reg(struct sysmon *sysmon, u32 offset,
-				     u32 mask, u32 data)
+static inline void sysmon_direct_update_reg(struct sysmon *sysmon, u32 offset,
+					    u32 mask, u32 data)
 {
 	u32 val;
 
-	sysmon_read_reg(sysmon, offset, &val);
-	sysmon_write_reg(sysmon, offset, (val & ~mask) | (mask & data));
+	sysmon_direct_read_reg(sysmon, offset, &val);
+	sysmon_direct_write_reg(sysmon, offset, (val & ~mask) | (mask & data));
+}
+
+static struct sysmon_ops direct_access = {
+	.read_reg = sysmon_direct_read_reg,
+	.write_reg = sysmon_direct_write_reg,
+	.update_reg = sysmon_direct_update_reg,
+};
+
+static inline void sysmon_secure_read_reg(struct sysmon *sysmon, u32 offset, u32 *data)
+{
+	zynqmp_pm_sec_read_reg(sysmon->pm_info, offset, data);
+}
+
+static inline void sysmon_secure_write_reg(struct sysmon *sysmon, u32 offset, u32 data)
+{
+	zynqmp_pm_sec_mask_write_reg(sysmon->pm_info, offset, GENMASK(31, 0), data);
+}
+
+static inline void sysmon_secure_update_reg(struct sysmon *sysmon, u32 offset,
+					    u32 mask, u32 data)
+{
+	u32 val;
+
+	zynqmp_pm_sec_read_reg(sysmon->pm_info, offset, &val);
+	zynqmp_pm_sec_mask_write_reg(sysmon->pm_info, offset, GENMASK(31, 0),
+				     (val & ~mask) | (mask & data));
+}
+
+static struct sysmon_ops secure_access = {
+	.read_reg = sysmon_secure_read_reg,
+	.write_reg = sysmon_secure_write_reg,
+	.update_reg = sysmon_secure_update_reg,
+};
+
+static void sysmon_read_reg(struct sysmon *sysmon, u32 offset, u32 *data)
+{
+	sysmon->ops->read_reg(sysmon, offset, data);
+}
+
+static void sysmon_write_reg(struct sysmon *sysmon, u32 offset, u32 data)
+{
+	sysmon->ops->write_reg(sysmon, offset, data);
+}
+
+static void sysmon_update_reg(struct sysmon *sysmon, u32 offset, u32 mask, u32 data)
+{
+	sysmon->ops->update_reg(sysmon, offset, mask, data);
 }
 
 static u32 sysmon_temp_offset(int address)
@@ -95,6 +168,8 @@ static u32 sysmon_temp_offset(int address)
 		return SYSMON_TEMP_MAX_MAX;
 	case TEMP_MIN_MIN:
 		return SYSMON_TEMP_MIN_MIN;
+	case TEMP_HBM:
+		return SYSMON_TEMP_HBM;
 	default:
 		return -EINVAL;
 	}
@@ -133,6 +208,20 @@ static u32 sysmon_supply_thresh_offset(int address,
 }
 
 /**
+ * sysmon_hbm_to_celsius() - The raw register value to degrees C.
+ * @raw_data: Raw register value
+ * @val: The numerator of the fraction needed by IIO_VAL_PROCESSED
+ * @val2: Denominator of the fraction needed by IIO_VAL_PROCESSED
+ *
+ * The function returns a fraction which returns celsius
+ */
+static void sysmon_hbm_to_celsius(int raw_data, int *val, int *val2)
+{
+	*val = (raw_data >> SYSMON_HBM_TEMP_SHIFT) & SYSMON_HBM_TEMP_MASK;
+	*val2 = SYSMON_HBM_FRACTIONAL_DENOM;
+}
+
+/**
  * sysmon_q8p7_to_celsius() - converts fixed point Q8.7 format to a fraction.
  * @raw_data: Raw ADC value
  * @val: The numerator of the fraction needed by IIO_VAL_PROCESSED
@@ -143,7 +232,7 @@ static u32 sysmon_supply_thresh_offset(int address,
 static void sysmon_q8p7_to_celsius(int raw_data, int *val, int *val2)
 {
 	*val = (raw_data & 0x8000) ? -(twoscomp(raw_data)) : raw_data;
-	*val2 = 128;
+	*val2 = SYSMON_FRACTIONAL_DENOM;
 }
 
 /**
@@ -213,6 +302,54 @@ static void sysmon_supply_processedtoraw(int val, int val2, u32 reg_val,
 	*raw_data = tmp & 0xffff;
 }
 
+/**
+ * sysmon_find_extreme_temp() - Finds extreme temperature
+ * value read from each device.
+ * @offset: Register offset address of temperature channels
+ *
+ * The function takes offset address of temperature channels
+ * returns extreme value (highest/lowest) of that channel
+ *
+ * @return: - The highest/lowest temperature found from
+ * current or historic min/max temperature of all devices.
+ */
+static int sysmon_find_extreme_temp(int offset)
+{
+	struct sysmon *sysmon;
+	u32 regval;
+	u32 extreme_val = SYSMON_LOWER_SATURATION_SIGNED;
+	bool is_min_channel = false, skip_hbm = true;
+
+	if (offset == SYSMON_TEMP_MIN || offset == SYSMON_TEMP_MIN_MIN) {
+		is_min_channel = true;
+		extreme_val = SYSMON_UPPER_SATURATION_SIGNED;
+	} else if (offset == SYSMON_TEMP_HBM) {
+		skip_hbm = false;
+	}
+
+	list_for_each_entry(sysmon, &sysmon_list_head, list) {
+		if (skip_hbm && sysmon->hbm_slr)
+			continue;
+		if (!skip_hbm && !sysmon->hbm_slr)
+			continue;
+		sysmon_read_reg(sysmon, offset, &regval);
+		if (sysmon->hbm_slr)
+			return regval;
+
+		if (!is_min_channel) {
+			/* Find the highest value */
+			if (compare(regval, extreme_val))
+				extreme_val = regval;
+		} else {
+			/* Find the lowest value */
+			if (compare(extreme_val, regval))
+				extreme_val = regval;
+		}
+	}
+
+	return extreme_val;
+}
+
 static int sysmon_read_raw(struct iio_dev *indio_dev,
 			   struct iio_chan_spec const *chan, int *val,
 			   int *val2, long mask)
@@ -227,14 +364,15 @@ static int sysmon_read_raw(struct iio_dev *indio_dev,
 		switch (chan->type) {
 		case IIO_TEMP:
 			offset = sysmon_temp_offset(chan->address);
-			sysmon_read_reg(sysmon, offset, val);
+			*val = sysmon_find_extreme_temp(offset);
 			*val2 = 0;
 			ret = IIO_VAL_INT;
 			break;
 
 		case IIO_VOLTAGE:
 			offset = sysmon_supply_offset(chan->address);
-			sysmon_read_reg(sysmon, offset, val);
+			sysmon_read_reg(sysmon, offset, &regval);
+			*val = (int)regval;
 			*val2 = 0;
 			ret = IIO_VAL_INT;
 			break;
@@ -249,8 +387,12 @@ static int sysmon_read_raw(struct iio_dev *indio_dev,
 		case IIO_TEMP:
 			/* In Deg C */
 			offset = sysmon_temp_offset(chan->address);
-			sysmon_read_reg(sysmon, offset, &regval);
-			sysmon_q8p7_to_celsius(regval, val, val2);
+			regval = sysmon_find_extreme_temp(offset);
+			if (!sysmon->hbm_slr)
+				sysmon_q8p7_to_celsius(regval, val, val2);
+			else
+				sysmon_hbm_to_celsius(regval, val, val2);
+
 			ret = IIO_VAL_FRACTIONAL;
 			break;
 
@@ -340,6 +482,7 @@ static int sysmon_write_event_config(struct iio_dev *indio_dev,
 	struct sysmon *sysmon = iio_priv(indio_dev);
 	u32 alarm_reg_num = ALARM_REG(chan->address);
 	u32 offset = SYSMON_ALARM_REG + (4 * alarm_reg_num);
+	u32 shift = ALARM_SHIFT(chan->address);
 	u32 ier = sysmon_get_event_mask(chan->address);
 	u32 alarm_config;
 	unsigned long flags;
@@ -352,11 +495,11 @@ static int sysmon_write_event_config(struct iio_dev *indio_dev,
 
 		sysmon_read_reg(sysmon, offset, &alarm_config);
 
-		if (alarm_config)
+		if (alarm_config & BIT(shift))
 			sysmon_write_reg(sysmon, SYSMON_IER, ier);
 		else
 			sysmon_write_reg(sysmon, SYSMON_IDR, ier);
-	} else {
+	} else if (chan->type == IIO_TEMP) {
 		if (state) {
 			sysmon_write_reg(sysmon, SYSMON_IER, ier);
 			sysmon->temp_mask &= ~ier;
@@ -750,7 +893,7 @@ static void sysmon_unmask_worker(struct work_struct *work)
 	/* if still pending some alarm re-trigger the timer */
 	if (sysmon->masked_temp)
 		schedule_delayed_work(&sysmon->sysmon_unmask_work,
-				      msecs_to_jiffies(500));
+				      msecs_to_jiffies(SYSMON_UNMASK_WORK_DELAY_MS));
 	else
 		/*
 		 * Reset the temp_max_max and temp_min_min values to reset the
@@ -782,12 +925,40 @@ static irqreturn_t sysmon_iio_irq(int irq, void *data)
 		sysmon_handle_events(indio_dev, isr);
 
 		schedule_delayed_work(&sysmon->sysmon_unmask_work,
-				      msecs_to_jiffies(500));
+				      msecs_to_jiffies(SYSMON_UNMASK_WORK_DELAY_MS));
 	}
 
 	spin_unlock(&sysmon->lock);
 
 	return IRQ_HANDLED;
+}
+
+static void sysmon_events_worker(struct work_struct *work)
+{
+	u32 isr, imr;
+	struct sysmon *sysmon = container_of(work, struct sysmon,
+					     sysmon_events_work.work);
+
+	spin_lock(&sysmon->lock);
+
+	sysmon_read_reg(sysmon, SYSMON_ISR, &isr);
+	sysmon_read_reg(sysmon, SYSMON_IMR, &imr);
+
+	/* only process alarm that are not masked */
+	isr &= ~imr;
+
+	/* clear interrupt */
+	sysmon_write_reg(sysmon, SYSMON_ISR, isr);
+
+	if (isr) {
+		sysmon_handle_events(sysmon->indio_dev, isr);
+		schedule_delayed_work(&sysmon->sysmon_unmask_work,
+				      msecs_to_jiffies(SYSMON_UNMASK_WORK_DELAY_MS));
+	}
+	spin_unlock(&sysmon->lock);
+
+	schedule_delayed_work(&sysmon->sysmon_events_work,
+			      msecs_to_jiffies(SYSMON_EVENT_WORK_DELAY_MS));
 }
 
 static int get_hw_node_properties(struct platform_device *pdev,
@@ -821,7 +992,7 @@ static int get_hw_node_properties(struct platform_device *pdev,
 			if (!region)
 				return -ENOMEM;
 
-			region->id = id;
+			region->id = (enum sysmon_region)id;
 			INIT_LIST_HEAD(&region->node_list);
 			list_add(&region->list, region_list);
 		}
@@ -863,11 +1034,16 @@ static int sysmon_parse_dt(struct iio_dev *indio_dev,
 		get_hw_node_properties(pdev, &sysmon->region_list);
 
 	/* Initialize buffer for channel specification */
-	temp_chan_size = (sysmon->irq > 0) ? (sizeof(temp_channels) +
-					      sizeof(temp_events)) :
-		sizeof(temp_channels);
-
-	num_temp_chan = ARRAY_SIZE(temp_channels);
+	if (sysmon->master_slr) {
+		temp_chan_size = (sizeof(temp_channels) + sizeof(temp_events));
+		num_temp_chan = ARRAY_SIZE(temp_channels);
+	} else if (sysmon->hbm_slr) {
+		temp_chan_size = (sizeof(temp_hbm_channels));
+		num_temp_chan = ARRAY_SIZE(temp_hbm_channels);
+	} else {
+		temp_chan_size = sizeof(temp_events);
+		num_temp_chan = 0;
+	}
 
 	sysmon_channels = devm_kzalloc(&pdev->dev,
 				       (chan_size * num_supply_chan) +
@@ -875,12 +1051,16 @@ static int sysmon_parse_dt(struct iio_dev *indio_dev,
 
 	for_each_child_of_node(np, child_node) {
 		ret = of_property_read_u32(child_node, "reg", &reg);
-		if (ret < 0)
+		if (ret < 0) {
+			of_node_put(child_node);
 			return ret;
+		}
 
 		ret = of_property_read_string(child_node, "xlnx,name", &name);
-		if (ret < 0)
+		if (ret < 0) {
+			of_node_put(child_node);
 			return ret;
+		}
 
 		sysmon_channels[i].type = IIO_VOLTAGE;
 		sysmon_channels[i].indexed = 1;
@@ -889,11 +1069,8 @@ static int sysmon_parse_dt(struct iio_dev *indio_dev,
 		sysmon_channels[i].info_mask_separate =
 			BIT(IIO_CHAN_INFO_RAW) | BIT(IIO_CHAN_INFO_PROCESSED);
 
-		if (sysmon->irq > 0) {
-			sysmon_channels[i].event_spec = sysmon_supply_events;
-			sysmon_channels[i].num_event_specs =
-				ARRAY_SIZE(sysmon_supply_events);
-		}
+		sysmon_channels[i].event_spec = sysmon_supply_events;
+		sysmon_channels[i].num_event_specs = ARRAY_SIZE(sysmon_supply_events);
 
 		sysmon_channels[i].scan_index = i;
 		sysmon_channels[i].scan_type.realbits = 19;
@@ -911,11 +1088,19 @@ static int sysmon_parse_dt(struct iio_dev *indio_dev,
 	}
 
 	/* Append static temperature channels to the channel list */
-	memcpy(sysmon_channels + num_supply_chan, temp_channels,
-	       sizeof(temp_channels));
-	indio_dev->num_channels = num_supply_chan + ARRAY_SIZE(temp_channels);
+	indio_dev->num_channels = num_supply_chan;
 
-	if (sysmon->irq > 0) {
+	if (sysmon->master_slr) {
+		memcpy(sysmon_channels + num_supply_chan, temp_channels,
+		       sizeof(temp_channels));
+		indio_dev->num_channels += ARRAY_SIZE(temp_channels);
+	}
+
+	if (sysmon->hbm_slr) {
+		memcpy(sysmon_channels + num_supply_chan, temp_hbm_channels,
+		       sizeof(temp_hbm_channels));
+		indio_dev->num_channels += num_temp_chan;
+	} else {
 		memcpy(sysmon_channels + num_supply_chan + num_temp_chan,
 		       temp_events, sizeof(temp_events));
 		indio_dev->num_channels += ARRAY_SIZE(temp_events);
@@ -938,8 +1123,9 @@ static void sysmon_init_interrupt(struct sysmon *sysmon)
 static int sysmon_probe(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev;
-	struct sysmon *sysmon;
+	struct sysmon *sysmon, *temp_sysmon;
 	struct resource *mem;
+	bool exist = false;
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*sysmon));
@@ -949,6 +1135,7 @@ static int sysmon_probe(struct platform_device *pdev)
 	sysmon = iio_priv(indio_dev);
 
 	sysmon->dev = &pdev->dev;
+	sysmon->indio_dev = indio_dev;
 
 	mutex_init(&sysmon->mutex);
 	spin_lock_init(&sysmon->lock);
@@ -964,25 +1151,80 @@ static int sysmon_probe(struct platform_device *pdev)
 	if (IS_ERR(sysmon->base))
 		return PTR_ERR(sysmon->base);
 
-	sysmon_write_reg(sysmon, SYSMON_NPI_LOCK, NPI_UNLOCK);
+	if (secure_mode) {
+		ret = of_property_read_u32(pdev->dev.of_node,
+					   "xlnx,nodeid", &sysmon->pm_info);
+		if (ret < 0) {
+			dev_err(&pdev->dev, "Failed to read SLR node id\n");
+			return ret;
+		}
 
-	sysmon->irq = platform_get_irq_optional(pdev, 0);
+		ret = zynqmp_pm_feature(PM_IOCTL);
+		if (ret < 0) {
+			dev_err(&pdev->dev, "Feature check failed with %d\n", ret);
+			return ret;
+		}
+		if ((ret & FIRMWARE_VERSION_MASK) < PM_API_VERSION_2) {
+			dev_err(&pdev->dev, "IOCTL firmware version error. Expected: v%d - Found: v%d\n",
+				PM_API_VERSION_2, ret & FIRMWARE_VERSION_MASK);
+			return -EOPNOTSUPP;
+		}
+		sysmon->ops = &secure_access;
+	} else {
+		sysmon->ops = &direct_access;
+	}
+
+	INIT_LIST_HEAD(&sysmon->list);
+
+	mutex_lock(&sysmon->mutex);
+	if (list_empty(&sysmon_list_head)) {
+		sysmon->master_slr = true;
+	} else {
+		list_for_each_entry(temp_sysmon, &sysmon_list_head, list) {
+			if (temp_sysmon->master_slr)
+				exist = true;
+		}
+		if (exist)
+			sysmon->master_slr = false;
+		else
+			sysmon->master_slr = true;
+	}
+	mutex_unlock(&sysmon->mutex);
+
+	sysmon->hbm_slr = of_property_read_bool(pdev->dev.of_node, "xlnx,hbm");
+
+	if (!sysmon->hbm_slr) {
+		sysmon_write_reg(sysmon, SYSMON_NPI_LOCK, NPI_UNLOCK);
+		sysmon_write_reg(sysmon, SYSMON_IDR, 0xffffffff);
+		sysmon_write_reg(sysmon, SYSMON_ISR, 0xffffffff);
+
+		sysmon->irq = platform_get_irq_optional(pdev, 0);
+	}
 
 	ret = sysmon_parse_dt(indio_dev, pdev);
 	if (ret)
 		return ret;
 
-	if (sysmon->irq > 0) {
-		g_sysmon = sysmon;
-		INIT_DELAYED_WORK(&sysmon->sysmon_unmask_work,
-				  sysmon_unmask_worker);
+	INIT_DELAYED_WORK(&sysmon->sysmon_unmask_work,
+			  sysmon_unmask_worker);
+	if (!sysmon->hbm_slr) {
 		sysmon_init_interrupt(sysmon);
-		ret = devm_request_irq(&pdev->dev, sysmon->irq, &sysmon_iio_irq,
-				       0, "sysmon-irq", indio_dev);
-		if (ret < 0)
-			return ret;
-	} else if (sysmon->irq == -EPROBE_DEFER) {
-		return -EPROBE_DEFER;
+
+		if (sysmon->irq == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+
+		if (sysmon->irq > 0) {
+			g_sysmon = sysmon;
+			ret = devm_request_irq(&pdev->dev, sysmon->irq, &sysmon_iio_irq,
+					       0, "sysmon-irq", indio_dev);
+			if (ret < 0)
+				return ret;
+		} else {
+			INIT_DELAYED_WORK(&sysmon->sysmon_events_work,
+					  sysmon_events_worker);
+			schedule_delayed_work(&sysmon->sysmon_events_work,
+					      msecs_to_jiffies(SYSMON_EVENT_WORK_DELAY_MS));
+		}
 	}
 
 	platform_set_drvdata(pdev, indio_dev);
@@ -990,6 +1232,10 @@ static int sysmon_probe(struct platform_device *pdev)
 	ret = iio_device_register(indio_dev);
 	if (ret < 0)
 		return ret;
+
+	mutex_lock(&sysmon->mutex);
+	list_add(&sysmon->list, &sysmon_list_head);
+	mutex_unlock(&sysmon->mutex);
 
 	dev_info(&pdev->dev, "Successfully registered Versal Sysmon");
 
@@ -999,9 +1245,29 @@ static int sysmon_probe(struct platform_device *pdev)
 static int sysmon_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
+	struct sysmon *sysmon = iio_priv(indio_dev);
 
+	/* cancel SSIT based events */
+	if (sysmon->irq < 0)
+		cancel_delayed_work_sync(&sysmon->sysmon_events_work);
+
+	cancel_delayed_work_sync(&sysmon->sysmon_unmask_work);
+
+	mutex_lock(&sysmon->mutex);
+	list_del(&sysmon->list);
+	mutex_unlock(&sysmon->mutex);
 	/* Unregister the device */
 	iio_device_unregister(indio_dev);
+	return 0;
+}
+
+static int sysmon_resume(struct platform_device *pdev)
+{
+	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
+	struct sysmon *sysmon = iio_priv(indio_dev);
+
+	sysmon_write_reg(sysmon, SYSMON_NPI_LOCK, NPI_UNLOCK);
+
 	return 0;
 }
 
@@ -1014,6 +1280,7 @@ MODULE_DEVICE_TABLE(of, sysmon_of_match_table);
 static struct platform_driver sysmon_driver = {
 	.probe = sysmon_probe,
 	.remove = sysmon_remove,
+	.resume = sysmon_resume,
 	.driver = {
 		.name = "sysmon",
 		.of_match_table = sysmon_of_match_table,
