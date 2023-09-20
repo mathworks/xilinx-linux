@@ -6729,7 +6729,7 @@ out_unregister_notifier:
 	return ret;
 }
 
-static int adrv9009_remove(struct spi_device *spi)
+static void adrv9009_remove(struct spi_device *spi)
 {
 	struct adrv9009_rf_phy *phy = adrv9009_spi_to_phy(spi);
 
@@ -6745,7 +6745,6 @@ static int adrv9009_remove(struct spi_device *spi)
 
 	adrv9009_shutdown(phy);
 
-	return 0;
 }
 
 static const struct spi_device_id adrv9009_id[] = {

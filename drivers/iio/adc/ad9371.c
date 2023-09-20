@@ -5093,7 +5093,7 @@ out_unregister_notifier:
 	return ret;
 }
 
-static int ad9371_remove(struct spi_device *spi)
+static void ad9371_remove(struct spi_device *spi)
 {
 	struct ad9371_rf_phy *phy = ad9371_spi_to_phy(spi);
 
@@ -5105,7 +5105,6 @@ static int ad9371_remove(struct spi_device *spi)
 	iio_device_unregister(phy->indio_dev);
  	of_clk_del_provider(spi->dev.of_node);
 
-	return 0;
 }
 
 static const struct spi_device_id ad9371_id[] = {

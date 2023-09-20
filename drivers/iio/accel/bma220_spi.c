@@ -278,14 +278,14 @@ err_suspend:
 	return bma220_deinit(spi);
 }
 
-static int bma220_remove(struct spi_device *spi)
+static void bma220_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 
-	return bma220_deinit(spi);
+	bma220_deinit(spi);
 }
 
 static __maybe_unused int bma220_suspend(struct device *dev)

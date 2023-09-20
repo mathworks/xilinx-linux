@@ -564,9 +564,9 @@ static int ad5380_i2c_probe(struct i2c_client *i2c,
 	return ad5380_probe(&i2c->dev, regmap, id->driver_data, id->name);
 }
 
-static int ad5380_i2c_remove(struct i2c_client *i2c)
+static void ad5380_i2c_remove(struct i2c_client *i2c)
 {
-	return ad5380_remove(&i2c->dev);
+	ad5380_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5380_i2c_ids[] = {

@@ -130,11 +130,10 @@ static int st_accel_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int st_accel_spi_remove(struct spi_device *spi)
+static void st_accel_spi_remove(struct spi_device *spi)
 {
 	st_accel_common_remove(spi_get_drvdata(spi));
 
-	return 0;
 }
 
 static const struct spi_device_id st_accel_id_table[] = {

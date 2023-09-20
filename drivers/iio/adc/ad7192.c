@@ -1027,7 +1027,7 @@ error_disable_avdd:
 	return ret;
 }
 
-static int ad7192_remove(struct spi_device *spi)
+static void ad7192_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad7192_state *st = iio_priv(indio_dev);
@@ -1038,8 +1038,6 @@ static int ad7192_remove(struct spi_device *spi)
 
 	regulator_disable(st->dvdd);
 	regulator_disable(st->avdd);
-
-	return 0;
 }
 
 static const struct of_device_id ad7192_of_match[] = {

@@ -161,7 +161,7 @@ static int max5481_probe(struct spi_device *spi)
 	return iio_device_register(indio_dev);
 }
 
-static int max5481_remove(struct spi_device *spi)
+static void max5481_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(&spi->dev);
 	struct max5481_data *data = iio_priv(indio_dev);
@@ -169,7 +169,7 @@ static int max5481_remove(struct spi_device *spi)
 	iio_device_unregister(indio_dev);
 
 	/* save wiper reg to NV reg */
-	return max5481_write_cmd(data, MAX5481_COPY_AB_TO_NV, 0);
+	max5481_write_cmd(data, MAX5481_COPY_AB_TO_NV, 0);
 }
 
 static const struct spi_device_id max5481_id_table[] = {

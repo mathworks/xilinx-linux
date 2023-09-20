@@ -572,9 +572,9 @@ static int ad5446_i2c_probe(struct i2c_client *i2c,
 		&ad5446_i2c_chip_info[id->driver_data]);
 }
 
-static int ad5446_i2c_remove(struct i2c_client *i2c)
+static void ad5446_i2c_remove(struct i2c_client *i2c)
 {
-	return ad5446_remove(&i2c->dev);
+	ad5446_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5446_i2c_ids[] = {

@@ -138,13 +138,12 @@ static int spi_ad9250_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int spi_ad9250_remove(struct spi_device *spi)
+static void spi_ad9250_remove(struct spi_device *spi)
 {
 	struct spi_master *master = spi_get_drvdata(spi);
 
 	spi_unregister_master(master);
 
-	return 0;
 }
 
 static const struct spi_device_id spi_ad9250_ids[] = {

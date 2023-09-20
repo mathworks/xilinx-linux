@@ -262,7 +262,7 @@ err_reg_disable:
 	return ret;
 }
 
-static int max1118_remove(struct spi_device *spi)
+static void max1118_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct max1118 *adc = iio_priv(indio_dev);
@@ -273,7 +273,6 @@ static int max1118_remove(struct spi_device *spi)
 	if (id->driver_data == max1118)
 		return regulator_disable(adc->reg);
 
-	return 0;
 }
 
 static const struct spi_device_id max1118_id[] = {

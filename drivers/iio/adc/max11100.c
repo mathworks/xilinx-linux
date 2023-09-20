@@ -142,7 +142,7 @@ disable_regulator:
 	return ret;
 }
 
-static int max11100_remove(struct spi_device *spi)
+static void max11100_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct max11100_state *state = iio_priv(indio_dev);
@@ -150,7 +150,6 @@ static int max11100_remove(struct spi_device *spi)
 	iio_device_unregister(indio_dev);
 	regulator_disable(state->vref_reg);
 
-	return 0;
 }
 
 static const struct of_device_id max11100_ids[] = {

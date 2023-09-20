@@ -1553,7 +1553,7 @@ static int ad9680_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int ad9680_remove(struct spi_device *spi)
+static void ad9680_remove(struct spi_device *spi)
 {
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 
@@ -1565,7 +1565,6 @@ static int ad9680_remove(struct spi_device *spi)
 		conv->running = false;
 	}
 
-	return 0;
 }
 
 static const struct spi_device_id ad9680_id[] = {

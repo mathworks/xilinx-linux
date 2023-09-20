@@ -395,7 +395,7 @@ error:
 	return ret;
 }
 
-static int ad400x_remove(struct spi_device *spi)
+static void ad400x_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad400x_state *st = iio_priv(indio_dev);
@@ -403,7 +403,6 @@ static int ad400x_remove(struct spi_device *spi)
 	iio_dmaengine_buffer_free(indio_dev->buffer);
 	regulator_disable(st->vref);
 
-	return 0;
 }
 
 static const struct of_device_id ad400x_of_match[] = {

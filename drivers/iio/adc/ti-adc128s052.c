@@ -175,7 +175,7 @@ static int adc128_probe(struct spi_device *spi)
 	return ret;
 }
 
-static int adc128_remove(struct spi_device *spi)
+static void adc128_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct adc128 *adc = iio_priv(indio_dev);
@@ -183,7 +183,6 @@ static int adc128_remove(struct spi_device *spi)
 	iio_device_unregister(indio_dev);
 	regulator_disable(adc->reg);
 
-	return 0;
 }
 
 static const struct of_device_id adc128_of_match[] = {

@@ -229,7 +229,7 @@ error_regulator_disable:
 	return ret;
 }
 
-static int ti_adc_remove(struct spi_device *spi)
+static void ti_adc_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ti_adc_data *data = iio_priv(indio_dev);
@@ -238,7 +238,6 @@ static int ti_adc_remove(struct spi_device *spi)
 	iio_triggered_buffer_cleanup(indio_dev);
 	regulator_disable(data->ref);
 
-	return 0;
 }
 
 static const struct of_device_id ti_adc_dt_ids[] = {

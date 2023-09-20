@@ -331,7 +331,7 @@ err:
 	return ret;
 }
 
-static int ad7949_spi_remove(struct spi_device *spi)
+static void ad7949_spi_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad7949_adc_chip *ad7949_adc = iio_priv(indio_dev);
@@ -340,7 +340,6 @@ static int ad7949_spi_remove(struct spi_device *spi)
 	mutex_destroy(&ad7949_adc->lock);
 	regulator_disable(ad7949_adc->vref);
 
-	return 0;
 }
 
 static const struct of_device_id ad7949_spi_of_id[] = {

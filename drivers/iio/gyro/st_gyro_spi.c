@@ -97,11 +97,9 @@ static int st_gyro_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int st_gyro_spi_remove(struct spi_device *spi)
+static void st_gyro_spi_remove(struct spi_device *spi)
 {
 	st_gyro_common_remove(spi_get_drvdata(spi));
-
-	return 0;
 }
 
 static const struct spi_device_id st_gyro_id_table[] = {

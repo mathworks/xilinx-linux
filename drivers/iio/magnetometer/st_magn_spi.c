@@ -79,12 +79,11 @@ static int st_magn_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int st_magn_spi_remove(struct spi_device *spi)
+static void st_magn_spi_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	st_magn_common_remove(indio_dev);
 
-	return 0;
 }
 
 static const struct spi_device_id st_magn_id_table[] = {

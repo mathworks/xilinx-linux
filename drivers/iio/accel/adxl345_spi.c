@@ -36,9 +36,9 @@ static int adxl345_spi_probe(struct spi_device *spi)
 	return adxl345_core_probe(&spi->dev, regmap);
 }
 
-static int adxl345_spi_remove(struct spi_device *spi)
+static void adxl345_spi_remove(struct spi_device *spi)
 {
-	return adxl345_core_remove(&spi->dev);
+	adxl345_core_remove(&spi->dev);
 }
 
 static const struct spi_device_id adxl345_spi_id[] = {

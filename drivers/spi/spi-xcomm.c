@@ -309,14 +309,12 @@ static int spi_xcomm_probe(struct i2c_client *i2c,
 	return spi_xcomm_gpio_add(spi_xcomm);
 }
 
-static int spi_xcomm_remove(struct i2c_client *i2c)
+static void spi_xcomm_remove(struct i2c_client *i2c)
 {
 	struct spi_master *master = i2c_get_clientdata(i2c);
 	struct spi_xcomm *spi_xcomm = spi_master_get_devdata(master);
 
 	spi_xcomm_gpio_remove(spi_xcomm);
-
-	return 0;
 }
 
 static const struct i2c_device_id spi_xcomm_ids[] = {

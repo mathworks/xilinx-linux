@@ -1624,7 +1624,7 @@ static int ad9208_probe(struct spi_device *spi)
 	return jesd204_fsm_start(jdev, JESD204_LINKS_ALL);
 }
 
-static int ad9208_remove(struct spi_device *spi)
+static void ad9208_remove(struct spi_device *spi)
 {
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 	struct ad9208_phy *phy = conv->phy;
@@ -1641,7 +1641,6 @@ static int ad9208_remove(struct spi_device *spi)
 
 	ad9208_deinit(&phy->ad9208);
 
-	return 0;
 }
 
 static const struct spi_device_id ad9208_id[] = {

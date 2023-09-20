@@ -5110,7 +5110,7 @@ out_clk_del_provider:
 	return ret;
 }
 
-static int ad9081_remove(struct spi_device *spi)
+static void ad9081_remove(struct spi_device *spi)
 {
 	struct axiadc_converter *conv = spi_get_drvdata(spi);
 	struct ad9081_phy *phy = conv->phy;
@@ -5124,7 +5124,6 @@ static int ad9081_remove(struct spi_device *spi)
 	of_clk_del_provider(spi->dev.of_node);
 	adi_ad9081_device_deinit(&phy->ad9081);
 
-	return 0;
 }
 
 static const struct spi_device_id ad9081_id[] = {
