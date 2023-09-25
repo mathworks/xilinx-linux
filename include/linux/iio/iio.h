@@ -24,6 +24,11 @@ enum iio_shared_by {
 	IIO_SHARED_BY_ALL
 };
 
+
+enum iio_device_direction {
+	IIO_DEVICE_DIRECTION_IN,
+	IIO_DEVICE_DIRECTION_OUT
+};
 enum iio_endian {
 	IIO_CPU,
 	IIO_BE,
@@ -517,6 +522,7 @@ struct iio_dev {
 	int				modes;
 	int				currentmode;
 	struct device			dev;
+	enum iio_device_direction	direction;
 
 	struct iio_buffer		*buffer;
 	int				scan_bytes;
