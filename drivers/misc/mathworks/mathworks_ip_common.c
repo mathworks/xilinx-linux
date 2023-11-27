@@ -52,8 +52,9 @@ static irqreturn_t mathworks_ip_intr_handler(int irq, void * theIpcore)
 	/* thisIpcore->irq is starting Linux INT number for that DUT */
 	/* Difference irq - thisIpcore->irq is relattive INT number as described above */
 	/*relativeIntIndex = irq - thisIpcore->irq; currently supporting one Interrupt per DUT */
-	sysfs_notify_dirent(thisIpcore->irq_kn[0]);
-
+        if (thisIpcore->irq_kn[0]) {
+               sysfs_notify_dirent(thisIpcore->irq_kn[0]);
+        }
 	return IRQ_HANDLED;
 
 }
