@@ -482,6 +482,9 @@ static int __init ttc_timer_init(struct device_node *timer)
 	if (of_property_read_bool(timer, "#pwm-cells"))
 		return -ENODEV;
 
+	if (of_property_read_bool(timer, "#pwm-cells"))
+		return -ENODEV;
+
 	if (initialized)
 		return 0;
 

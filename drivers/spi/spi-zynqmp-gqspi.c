@@ -1021,8 +1021,8 @@ static int zynqmp_qspi_read_op(struct zynqmp_qspi *xqspi, u8 rx_nbits,
  */
 static int __maybe_unused zynqmp_qspi_suspend(struct device *dev)
 {
-	struct zynqmp_qspi *xqspi = dev_get_drvdata(dev);
-	struct spi_controller *ctlr = xqspi->ctlr;
+	struct spi_controller *ctlr = dev_get_drvdata(dev);
+	struct zynqmp_qspi *xqspi = spi_controller_get_devdata(ctlr);
 	int ret;
 
 	ret = spi_controller_suspend(ctlr);
@@ -1450,7 +1450,9 @@ static int zynqmp_qspi_probe(struct platform_device *pdev)
 	else
 		ctlr->num_chipselect = num_cs;
 
-	dma_set_mask(&pdev->dev, DMA_BIT_MASK(44));
+	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(44));
+	if (ret)
+		goto clk_dis_all;
 
 	ctlr->bits_per_word_mask = SPI_BPW_MASK(8);
 	ctlr->mem_ops = &zynqmp_qspi_mem_ops;

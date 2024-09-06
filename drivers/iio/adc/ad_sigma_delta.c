@@ -58,7 +58,7 @@ EXPORT_SYMBOL_GPL(ad_sd_set_comm);
 int ad_sd_write_reg(struct ad_sigma_delta *sigma_delta, unsigned int reg,
 	unsigned int size, unsigned int val)
 {
-	uint8_t *data = sigma_delta->data;
+	uint8_t *data = sigma_delta->tx_buf;
 	struct spi_transfer t = {
 		.tx_buf		= data,
 		.len		= size + 1,
@@ -127,7 +127,7 @@ static int ad_sd_read_reg_raw(struct ad_sigma_delta *sigma_delta,
 	int ret;
 
 	ad_sd_prepare_read_reg(sigma_delta, &m, t, reg, size,
-		sigma_delta->data, val, sigma_delta->keep_cs_asserted);
+		sigma_delta->tx_buf, val, sigma_delta->keep_cs_asserted);
 
 	if (sigma_delta->bus_locked)
 		ret = spi_sync_locked(sigma_delta->spi, &m);
@@ -152,22 +152,22 @@ int ad_sd_read_reg(struct ad_sigma_delta *sigma_delta,
 {
 	int ret;
 
-	ret = ad_sd_read_reg_raw(sigma_delta, reg, size, sigma_delta->data);
+	ret = ad_sd_read_reg_raw(sigma_delta, reg, size, sigma_delta->rx_buf);
 	if (ret < 0)
 		goto out;
 
 	switch (size) {
 	case 4:
-		*val = get_unaligned_be32(sigma_delta->data);
+		*val = get_unaligned_be32(sigma_delta->rx_buf);
 		break;
 	case 3:
-		*val = get_unaligned_be24(&sigma_delta->data[0]);
+		*val = get_unaligned_be24(sigma_delta->rx_buf);
 		break;
 	case 2:
-		*val = get_unaligned_be16(sigma_delta->data);
+		*val = get_unaligned_be16(sigma_delta->rx_buf);
 		break;
 	case 1:
-		*val = sigma_delta->data[0];
+		*val = sigma_delta->rx_buf[0];
 		break;
 	default:
 		ret = -EINVAL;
@@ -383,6 +383,10 @@ static void ad_sd_prepare_transfer_msg(struct iio_dev *indio_dev)
 	else
 		data_reg = AD_SD_REG_DATA;
 
+	/* Status word will be appended to the sample during transfer */
+	if (sigma_delta->status_appended)
+		reg_size++;
+
 	BUG_ON(reg_size > 4);
 	/* We store reg_size bytes samples in a 32 bit word. Keep the upper
 	 * reg_size bytes set to zero.
@@ -411,6 +415,7 @@ static int ad_sd_buffer_postenable(struct iio_dev *indio_dev)
 			indio_dev->channels[i].address);
 		if (ret)
 			goto err_predisable;
+		sigma_delta->slots[slot] = indio_dev->channels[i].address;
 		slot++;
 	}
 
@@ -419,8 +424,20 @@ static int ad_sd_buffer_postenable(struct iio_dev *indio_dev)
 	if (!sigma_delta->buf_data)
 		return -ENOMEM;
 
+	sigma_delta->active_slots = slot;
 	ad_sigma_delta_set_active_slots(sigma_delta, slot);
 	sigma_delta->current_slot = 0;
+
+	/*
+	 * Activation of append_status will cause incrementation of the reg_size
+	 * in ad_sd_prepare_transfer_msg() and the transfer size will include
+	 * the status byte.
+	 */
+	if (sigma_delta->active_slots > 1) {
+		ret = ad_sigma_delta_append_status(sigma_delta, true);
+		if (ret)
+			return ret;
+	}
 
 	spi_bus_lock(sigma_delta->spi->master);
 	sigma_delta->bus_locked = true;
@@ -472,6 +489,8 @@ static int ad_sd_buffer_postdisable(struct iio_dev *indio_dev)
 
 	sigma_delta->keep_cs_asserted = false;
 	ad_sigma_delta_set_mode(sigma_delta, AD_SD_MODE_IDLE);
+	if (sigma_delta->status_appended)
+		ad_sigma_delta_append_status(sigma_delta, false);
 
 	sigma_delta->bus_locked = false;
 	return spi_bus_unlock(sigma_delta->spi->master);
@@ -482,24 +501,58 @@ static irqreturn_t ad_sd_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct ad_sigma_delta *sigma_delta = iio_device_get_drvdata(indio_dev);
+	unsigned int status_pos;
 	unsigned int reg_size;
 	int ret;
 
-	sigma_delta->current_slot++;
-
 	ret = spi_sync_locked(sigma_delta->spi, &sigma_delta->spi_msg);
+
+	reg_size = sigma_delta->spi_transfer[1].len;
+	if (sigma_delta->status_appended) {
+		u8 converted_channel;
+		/*
+		 * If status_appended is active, reg_size was incremented in
+		 * ad_sd_prepare_transfer_msg().
+		 *
+		 * The status byte will be the byte following the last
+		 * sample byte.
+		 */
+		status_pos = reg_size - 1;
+		converted_channel = ((u8 *)sigma_delta->spi_transfer[1].rx_buf)[status_pos] &
+				    sigma_delta->info->status_ch_mask;
+		if (converted_channel != sigma_delta->slots[sigma_delta->current_slot]) {
+			/*
+			 * Desync occurred during continuous sampling of multiple channels.
+			 * Drop this incomplete sample and start from first channel again.
+			 */
+			sigma_delta->current_slot = 0;
+			sigma_delta->spi_transfer[1].rx_buf = sigma_delta->buf_data;
+			sigma_delta->spi_transfer[1].rx_buf += 4 - reg_size;
+			goto irq_handled;
+		}
+
+		/*
+		 * Get rid of the status byte and move samples to the right to
+		 * comply with "Keep the upper reg_size bytes set to zero".
+		 */
+		memmove(sigma_delta->spi_transfer[1].rx_buf + 1, sigma_delta->spi_transfer[1].rx_buf,
+			reg_size - 1);
+		((u8 *)sigma_delta->spi_transfer[1].rx_buf)[0] = 0;
+	}
+
+	sigma_delta->current_slot++;
 	if (ret == 0 && sigma_delta->current_slot == sigma_delta->active_slots) {
 		iio_push_to_buffers_with_timestamp(indio_dev,
 			sigma_delta->buf_data, pf->timestamp);
 		sigma_delta->current_slot = 0;
 		sigma_delta->spi_transfer[1].rx_buf = sigma_delta->buf_data;
-		reg_size = sigma_delta->spi_transfer[1].len;
 		sigma_delta->spi_transfer[1].rx_buf += 4 - reg_size;
 	} else {
 		sigma_delta->spi_transfer[1].rx_buf +=
 			indio_dev->channels[0].scan_type.storagebits / 8;
 	}
 
+irq_handled:
 	iio_trigger_notify_done(indio_dev->trig);
 	sigma_delta->irq_dis = false;
 	enable_irq(sigma_delta->spi->irq);
@@ -556,66 +609,52 @@ EXPORT_SYMBOL_GPL(ad_sd_validate_trigger);
 static const struct iio_trigger_ops ad_sd_trigger_ops = {
 };
 
-static int ad_sd_probe_trigger(struct iio_dev *indio_dev)
+static int devm_ad_sd_probe_trigger(struct device *dev, struct iio_dev *indio_dev)
 {
 	struct ad_sigma_delta *sigma_delta = iio_device_get_drvdata(indio_dev);
 	int ret;
 
-	sigma_delta->trig = iio_trigger_alloc("%s-dev%d", indio_dev->name,
-						indio_dev->id);
-	if (sigma_delta->trig == NULL) {
-		ret = -ENOMEM;
-		goto error_ret;
+	if (dev != &sigma_delta->spi->dev) {
+		dev_err(dev, "Trigger parent should be '%s', got '%s'\n",
+			dev_name(dev), dev_name(&sigma_delta->spi->dev));
+		return -EFAULT;
 	}
+
+	sigma_delta->trig = devm_iio_trigger_alloc(dev, "%s-dev%d", indio_dev->name,
+						   iio_device_id(indio_dev));
+	if (sigma_delta->trig == NULL)
+		return -ENOMEM;
+
 	sigma_delta->trig->ops = &ad_sd_trigger_ops;
 	init_completion(&sigma_delta->completion);
 
-	ret = request_irq(sigma_delta->spi->irq,
-			  ad_sd_data_rdy_trig_poll,
-			  sigma_delta->info->irq_flags,
-			  indio_dev->name,
-			  sigma_delta);
+	sigma_delta->irq_dis = true;
+	ret = devm_request_irq(dev, sigma_delta->spi->irq,
+			       ad_sd_data_rdy_trig_poll,
+			       sigma_delta->info->irq_flags | IRQF_NO_AUTOEN,
+			       indio_dev->name,
+			       sigma_delta);
 	if (ret)
-		goto error_free_trig;
+		return ret;
 
-	if (!sigma_delta->irq_dis) {
-		sigma_delta->irq_dis = true;
-		disable_irq_nosync(sigma_delta->spi->irq);
-	}
-	sigma_delta->trig->dev.parent = &sigma_delta->spi->dev;
 	iio_trigger_set_drvdata(sigma_delta->trig, sigma_delta);
 
-	ret = iio_trigger_register(sigma_delta->trig);
+	ret = devm_iio_trigger_register(dev, sigma_delta->trig);
 	if (ret)
-		goto error_free_irq;
+		return ret;
 
 	/* select default trigger */
 	indio_dev->trig = iio_trigger_get(sigma_delta->trig);
 
 	return 0;
-
-error_free_irq:
-	free_irq(sigma_delta->spi->irq, sigma_delta);
-error_free_trig:
-	iio_trigger_free(sigma_delta->trig);
-error_ret:
-	return ret;
-}
-
-static void ad_sd_remove_trigger(struct iio_dev *indio_dev)
-{
-	struct ad_sigma_delta *sigma_delta = iio_device_get_drvdata(indio_dev);
-
-	iio_trigger_unregister(sigma_delta->trig);
-	free_irq(sigma_delta->spi->irq, sigma_delta);
-	iio_trigger_free(sigma_delta->trig);
 }
 
 /**
- * ad_sd_setup_buffer_and_trigger() -
+ * devm_ad_sd_setup_buffer_and_trigger() - Device-managed buffer & trigger setup
+ * @dev: Device object to which to bind the life-time of the resources attached
  * @indio_dev: The IIO device
  */
-int ad_sd_setup_buffer_and_trigger(struct iio_dev *indio_dev)
+int devm_ad_sd_setup_buffer_and_trigger(struct device *dev, struct iio_dev *indio_dev)
 {
 	struct ad_sigma_delta *sigma_delta = iio_device_get_drvdata(indio_dev);
 	int ret;
@@ -623,34 +662,21 @@ int ad_sd_setup_buffer_and_trigger(struct iio_dev *indio_dev)
 	if (spi_engine_offload_supported(sigma_delta->spi))
 		indio_dev->modes |= INDIO_BUFFER_HARDWARE;
 
-	ret = iio_triggered_buffer_setup(indio_dev, &iio_pollfunc_store_time,
-			&ad_sd_trigger_handler, &ad_sd_buffer_setup_ops);
+	sigma_delta->slots = devm_kcalloc(dev, sigma_delta->num_slots,
+					  sizeof(*sigma_delta->slots), GFP_KERNEL);
+	if (!sigma_delta->slots)
+		return -ENOMEM;
+
+	ret = devm_iio_triggered_buffer_setup(dev, indio_dev,
+					      &iio_pollfunc_store_time,
+					      &ad_sd_trigger_handler,
+					      &ad_sd_buffer_setup_ops);
 	if (ret)
 		return ret;
 
-	ret = ad_sd_probe_trigger(indio_dev);
-	if (ret) {
-		iio_triggered_buffer_cleanup(indio_dev);
-		return ret;
-	}
-
-	return 0;
+	return devm_ad_sd_probe_trigger(dev, indio_dev);
 }
-EXPORT_SYMBOL_GPL(ad_sd_setup_buffer_and_trigger);
-
-/**
- * ad_sd_cleanup_buffer_and_trigger() -
- * @indio_dev: The IIO device
- */
-void ad_sd_cleanup_buffer_and_trigger(struct iio_dev *indio_dev)
-{
-	struct ad_sigma_delta *sigma_delta = iio_device_get_drvdata(indio_dev);
-
-	kfree(sigma_delta->buf_data);
-	ad_sd_remove_trigger(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-}
-EXPORT_SYMBOL_GPL(ad_sd_cleanup_buffer_and_trigger);
+EXPORT_SYMBOL_GPL(devm_ad_sd_setup_buffer_and_trigger);
 
 /**
  * ad_sd_init() - Initializes a ad_sigma_delta struct
@@ -667,8 +693,11 @@ int ad_sd_init(struct ad_sigma_delta *sigma_delta, struct iio_dev *indio_dev,
 {
 	sigma_delta->spi = spi;
 	sigma_delta->info = info;
-	sigma_delta->num_slots = 1;
 	sigma_delta->active_slots = 1;
+
+	/* If the field is unset, asume there can only be 1 slot. */
+	if (!sigma_delta->num_slots)
+		sigma_delta->num_slots = 1;
 
 	iio_device_set_drvdata(indio_dev, sigma_delta);
 

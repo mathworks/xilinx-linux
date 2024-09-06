@@ -30,6 +30,7 @@ static const struct ci_hdrc_platform_data ci_default_pdata = {
 
 static const struct ci_hdrc_platform_data ci_zynq_pdata = {
 	.capoffset	= DEF_CAPOFFSET,
+	.flags          = CI_HDRC_PHY_VBUS_CONTROL,
 };
 
 static const struct ci_hdrc_platform_data ci_zevio_pdata = {
@@ -66,13 +67,8 @@ static int ci_hdrc_usb2_probe(struct platform_device *pdev)
 		*ci_pdata = *(struct ci_hdrc_platform_data *)match->data;
 		ci_pdata->usb_phy = devm_usb_get_phy_by_phandle(dev, "usb-phy",
 					 0);
-		if (IS_ERR(ci_pdata->usb_phy)) {
-			if (PTR_ERR(ci_pdata->usb_phy) != -ENXIO &&
-			    PTR_ERR(ci_pdata->usb_phy) != -ENODEV)
-				return PTR_ERR(ci_pdata->usb_phy);
-			else
-				ci_pdata->usb_phy = NULL;
-		}
+		if (IS_ERR(ci_pdata->usb_phy))
+			return PTR_ERR(ci_pdata->usb_phy);
 	}
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);

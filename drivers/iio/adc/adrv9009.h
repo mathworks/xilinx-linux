@@ -26,6 +26,7 @@
 #include "talise/talise_gpio.h"
 
 #include <linux/jesd204/jesd204.h>
+#include <linux/mutex.h>
 
 #define MIN_GAIN_mdB		0
 #define MAX_RX_GAIN_mdB		30000
@@ -218,6 +219,8 @@ struct adrv9009_rf_phy {
 	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
 	struct jesd204_dev	*jdev;
+	/* protect against device accesses */
+	struct mutex		lock;
 
 	struct gpio_desc	*sysref_req_gpio;
 	struct gain_table_info  gt_info[NUM_GT];
@@ -239,7 +242,6 @@ struct adrv9009_rf_phy {
 	u32 			orx_channel_enabled;
 };
 
-int adrv9009_hdl_loopback(struct adrv9009_rf_phy *phy, bool enable);
 int adrv9009_register_axi_converter(struct adrv9009_rf_phy *phy);
 struct adrv9009_rf_phy *adrv9009_spi_to_phy(struct spi_device *spi);
 int adrv9009_spi_read(struct spi_device *spi, u32 reg);
@@ -256,9 +258,14 @@ static inline bool has_tx_and_en(struct adrv9009_rf_phy *phy)
 		(!IS_ERR_OR_NULL(phy->jesd_tx_clk) || phy->jdev);
 }
 
+static inline bool has_obs(struct adrv9009_rf_phy *phy)
+{
+	return has_tx(phy);
+}
+
 static inline bool has_obs_and_en(struct adrv9009_rf_phy *phy)
 {
-	return has_tx(phy) &&
+	return has_obs(phy) &&
 		(phy->talInit.obsRx.obsRxChannelsEnable != TAL_ORXOFF) &&
 		!IS_ERR_OR_NULL(phy->jesd_rx_os_clk);
 }

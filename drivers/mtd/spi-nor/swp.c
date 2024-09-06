@@ -244,6 +244,26 @@ static int spi_nor_sr_lock(struct spi_nor *nor, loff_t ofs, uint64_t len)
 	return spi_nor_write_sr_and_check(nor, status_new);
 }
 
+static bool spi_nor_is_lower_area(struct spi_nor *nor, loff_t ofs, uint64_t len)
+{
+	struct mtd_info *mtd = &nor->mtd;
+
+	if (nor->flags & SNOR_F_HAS_SR_TB)
+		return ((ofs + len) <= (mtd->size >> 1));
+	else
+		return false;
+}
+
+static bool spi_nor_is_upper_area(struct spi_nor *nor, loff_t ofs, uint64_t len)
+{
+	struct mtd_info *mtd = &nor->mtd;
+
+	if ((nor->flags & SNOR_F_HAS_SR_TB))
+		return (ofs >= (mtd->size >> 1));
+	else
+		return true;
+}
+
 /*
  * Unlock a region of the flash. See spi_nor_sr_lock() for more info
  *
@@ -272,12 +292,13 @@ static int spi_nor_sr_unlock(struct spi_nor *nor, loff_t ofs, uint64_t len)
 		return 0;
 
 	/* If anything below us is locked, we can't use 'top' protection */
-	if (!spi_nor_is_unlocked_sr(nor, 0, ofs, status_old))
+	if ((!spi_nor_is_unlocked_sr(nor, 0, ofs, status_old)) ||
+	    spi_nor_is_lower_area(nor, ofs, len))
 		can_be_top = false;
 
 	/* If anything above us is locked, we can't use 'bottom' protection */
 	if (!spi_nor_is_unlocked_sr(nor, ofs + len, mtd->size - (ofs + len),
-				    status_old))
+				    status_old) || spi_nor_is_upper_area(nor, ofs, len))
 		can_be_bottom = false;
 
 	if (!can_be_bottom && !can_be_top)
@@ -385,6 +406,14 @@ static int write_sr_modify_protection(struct spi_nor *nor, u8 status,
 
 		if (lock_bits > 7)
 			bp_mask |= SR_BP3_BIT5;
+	/* ISSI */
+	/* Macronix */
+	} else if (nor->jedec_id == CFI_MFR_PMC ||
+		   nor->jedec_id == CFI_MFR_MACRONIX) {
+		status_new &= ~SR_BP3_BIT5;
+
+		if (lock_bits > 7)
+			bp_mask |= SR_BP3_BIT5;
 	}
 
 	if (nor->is_lock)
@@ -393,7 +422,7 @@ static int write_sr_modify_protection(struct spi_nor *nor, u8 status,
 	/* For spansion flashes */
 	if (nor->jedec_id == CFI_MFR_AMD) {
 		spi_nor_read_cr(nor, &nor->bouncebuf[1]);
-		nor->bouncebuf[0] |= status_new;
+		nor->bouncebuf[0] = status_new;
 		if (spi_nor_write_sr(nor, nor->bouncebuf, 2) < 0)
 			return 1;
 	} else {
@@ -414,6 +443,9 @@ static u8 bp_bits_from_sr(struct spi_nor *nor, u8 status)
 	else if ((nor->jedec_id == CFI_MFR_WINBND) &&
 		 (nor->flags & SNOR_F_HAS_4BIT_BP))
 		ret |= ((status & SR_BP3_BIT5) >> SR_BP_BIT_OFFSET);
+	else if (nor->jedec_id == CFI_MFR_PMC ||	/* ISSI */
+		 nor->jedec_id == CFI_MFR_MACRONIX)	/* Macronix */
+		ret |= ((status & SR_BP3_BIT5) >> SR_BP_BIT_OFFSET);
 
 	return ret;
 }
@@ -428,7 +460,9 @@ static inline u16 min_lockable_sectors(struct spi_nor *nor,
 	 * protected area table is similar to that of spansion.
 	 */
 	lock_granularity = max(1, n_sectors / M25P_MAX_LOCKABLE_SECTORS);
-	if (nor->jedec_id == CFI_MFR_ST)	/* Micron */
+	if (nor->jedec_id == CFI_MFR_ST ||	/* Micron */
+	    nor->jedec_id == CFI_MFR_PMC ||	/* ISSI */
+	    nor->jedec_id == CFI_MFR_MACRONIX)	/* Macronix */
 		lock_granularity = 1;
 
 	return lock_granularity;
@@ -470,7 +504,9 @@ static u8 min_protected_area_including_offset(struct spi_nor *nor,
 	 * Mircon has 4 block protect bits.
 	 */
 	lockbits_limit = 7;
-	if (nor->jedec_id == CFI_MFR_ST)	/* Micron */
+	if (nor->jedec_id == CFI_MFR_ST ||	/* Micron */
+	    nor->jedec_id == CFI_MFR_PMC ||	/* ISSI */
+	    nor->jedec_id == CFI_MFR_MACRONIX)	/* Macronix */
 		lockbits_limit = 15;
 
 	for (lock_bits = 1; lock_bits < lockbits_limit; lock_bits++) {

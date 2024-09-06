@@ -33,6 +33,7 @@
 #define ADI_MMCM_RSTN 			(1 << 1)
 
 #define ADI_REG_CNTRL			0x0044
+#define ADI_NUM_LANES(x)                (((x) & 0x1F) << 8)
 #define ADI_SYNC			(1 << 3)
 #define ADI_R1_MODE			(1 << 2)
 #define ADI_DDR_EDGESEL			(1 << 1)
@@ -42,6 +43,9 @@
 #define ADI_EXT_SYNC_ARM		(1 << 1)
 #define ADI_EXT_SYNC_DISARM		(1 << 2)
 #define ADI_MANUAL_SYNC_REQUEST		(1 << 8)
+
+#define ADI_REG_CNTRL_3			0x004c
+#define ADI_CRC_EN			(1 << 8)
 
 #define ADI_REG_CLK_FREQ			0x0054
 #define ADI_CLK_FREQ(x)			(((x) & 0xFFFFFFFF) << 0)
@@ -116,7 +120,9 @@
 #define ADI_FORMAT_TYPE			(1 << 5)
 #define ADI_FORMAT_ENABLE		(1 << 4)
 #define ADI_PN23_TYPE			(1 << 1) /* !v8.0 */
+#ifndef ADI_ENABLE
 #define ADI_ENABLE			(1 << 0)
+#endif
 
 #define ADI_REG_CHAN_STATUS(c)		(0x0404 + (c) * 0x40)
 #define ADI_PN_ERR			(1 << 2)
@@ -184,6 +190,7 @@ enum adc_data_sel {
 
 #define AXIADC_MAX_CHANNEL		128
 
+#include <linux/mutex.h>
 #include <linux/spi/spi.h>
 #include <linux/clk/clkscale.h>
 
@@ -230,6 +237,12 @@ struct axiadc_converter {
 	int				num_channels;
 	const struct attribute_group	*attrs;
 	struct iio_dev 	*indio_dev;
+	/*
+	 * shared lock between the converter and axi_adc to sync
+	 * accesses/configurations to/with the IP core. The axi_adc driver is
+	 * responsible to initialize this lock.
+	 */
+	struct mutex lock;
 	int (*read_raw)(struct iio_dev *indio_dev,
 			struct iio_chan_spec const *chan,
 			int *val,

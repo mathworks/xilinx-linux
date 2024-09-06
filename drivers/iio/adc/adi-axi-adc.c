@@ -10,6 +10,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/delay.h>
+#include <linux/dmaengine.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -18,12 +19,13 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 
 #include <linux/fpga/adi-axi-common.h>
 #include <linux/iio/adc/adi-axi-adc.h>
 
-/**
+/*
  * Register definitions:
  *   https://wiki.analog.com/resources/fpga/docs/axi_adc_ip#register_map
  */
@@ -101,6 +103,17 @@ static unsigned int adi_axi_adc_read(struct adi_axi_adc_state *st,
 	return ioread32(st->regs + reg);
 }
 
+static int adi_axi_adc_buffer_submit_block(struct iio_dma_buffer_queue *queue,
+					   struct iio_dma_buffer_block *block)
+{
+	return iio_dmaengine_buffer_submit_block(queue, block, DMA_MEM_TO_DEV);
+}
+
+static const struct iio_dma_buffer_ops adi_axi_adc_dma_buffer_ops = {
+	.submit = adi_axi_adc_buffer_submit_block,
+	.abort = iio_dmaengine_buffer_abort,
+};
+
 static int adi_axi_adc_config_dma_buffer(struct device *dev,
 					 struct iio_dev *indio_dev)
 {
@@ -114,7 +127,7 @@ static int adi_axi_adc_config_dma_buffer(struct device *dev,
 		dma_name = "rx";
 
 	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent,
-						 dma_name);
+						 dma_name, &adi_axi_adc_dma_buffer_ops, NULL);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -210,29 +223,25 @@ static void adi_axi_adc_conv_unregister(struct adi_axi_adc_conv *conv)
 	kfree(cl);
 }
 
-static void devm_adi_axi_adc_conv_release(struct device *dev, void *res)
+static void devm_adi_axi_adc_conv_release(void *conv)
 {
-	adi_axi_adc_conv_unregister(*(struct adi_axi_adc_conv **)res);
+	adi_axi_adc_conv_unregister(conv);
 }
 
 struct adi_axi_adc_conv *devm_adi_axi_adc_conv_register(struct device *dev,
 							size_t sizeof_priv)
 {
-	struct adi_axi_adc_conv **ptr, *conv;
-
-	ptr = devres_alloc(devm_adi_axi_adc_conv_release, sizeof(*ptr),
-			   GFP_KERNEL);
-	if (!ptr)
-		return ERR_PTR(-ENOMEM);
+	struct adi_axi_adc_conv *conv;
+	int ret;
 
 	conv = adi_axi_adc_conv_register(dev, sizeof_priv);
-	if (IS_ERR(conv)) {
-		devres_free(ptr);
-		return ERR_CAST(conv);
-	}
+	if (IS_ERR(conv))
+		return conv;
 
-	*ptr = conv;
-	devres_add(dev, ptr);
+	ret = devm_add_action_or_reset(dev, devm_adi_axi_adc_conv_release,
+				       conv);
+	if (ret)
+		return ERR_PTR(ret);
 
 	return conv;
 }

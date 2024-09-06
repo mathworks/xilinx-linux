@@ -778,7 +778,7 @@ static int axienet_recv(struct net_device *ndev, int budget,
 					   DMA_FROM_DEVICE);
 		if (unlikely(dma_mapping_error(ndev->dev.parent, cur_p->phys))) {
 			cur_p->phys = 0;
-			dev_kfree_skb(skb);
+			dev_kfree_skb(new_skb);
 			dev_err(lp->dev, "RX buffer map failed\n");
 			break;
 		}
@@ -1120,50 +1120,61 @@ static int axienet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	case SIOCGHWTSTAMP:
 		return axienet_get_ts_config(lp, rq);
 #endif
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int axienet_ioctl_siocdevprivate(struct net_device *dev,
+					struct ifreq *rq, void __user *data, int cmd)
+{
+	struct axienet_local *lp = netdev_priv(dev);
+
+	switch (cmd) {
 #ifdef CONFIG_XILINX_TSN_QBV
 	case SIOCCHIOCTL:
 		if (lp->qbv_regs)
-			return axienet_set_schedule(dev, rq->ifr_data);
+			return axienet_set_schedule(dev, data);
 		return -EINVAL;
 	case SIOC_GET_SCHED:
 		if (lp->qbv_regs)
-			return axienet_get_schedule(dev, rq->ifr_data);
+			return axienet_get_schedule(dev, data);
 		return -EINVAL;
 #endif
 #ifdef CONFIG_AXIENET_HAS_TADMA
 	case SIOC_TADMA_OFF:
 		if (!(lp->abl_reg & TSN_BRIDGEEP_EPONLY))
 			return -ENOENT;
-		return axienet_tadma_off(dev, rq->ifr_data);
+		return axienet_tadma_off(dev, data);
 	case SIOC_TADMA_STR_ADD:
 		if (!(lp->abl_reg & TSN_BRIDGEEP_EPONLY))
 			return -ENOENT;
-		return axienet_tadma_add_stream(dev, rq->ifr_data);
+		return axienet_tadma_add_stream(dev, data);
 	case SIOC_TADMA_PROG_ALL:
 		if (!(lp->abl_reg & TSN_BRIDGEEP_EPONLY))
 			return -ENOENT;
-		return axienet_tadma_program(dev, rq->ifr_data);
+		return axienet_tadma_program(dev, data);
 	case SIOC_TADMA_STR_FLUSH:
 		if (!(lp->abl_reg & TSN_BRIDGEEP_EPONLY))
 			return -ENOENT;
-		return axienet_tadma_flush_stream(dev, rq->ifr_data);
+		return axienet_tadma_flush_stream(dev, data);
 #endif
 #ifdef CONFIG_XILINX_TSN_QBR
 	case SIOC_PREEMPTION_CFG:
-		return axienet_preemption(dev, rq->ifr_data);
+		return axienet_preemption(dev, data);
 	case SIOC_PREEMPTION_CTRL:
-		return axienet_preemption_ctrl(dev, rq->ifr_data);
+		return axienet_preemption_ctrl(dev, data);
 	case SIOC_PREEMPTION_STS:
-		return axienet_preemption_sts(dev, rq->ifr_data);
+		return axienet_preemption_sts(dev, data);
 	case SIOC_PREEMPTION_RECEIVE:
 		return axienet_preemption_receive(dev);
 	case SIOC_PREEMPTION_COUNTER:
-		return axienet_preemption_cnt(dev, rq->ifr_data);
+		return axienet_preemption_cnt(dev, data);
 #ifdef CONFIG_XILINX_TSN_QBV
 	case SIOC_QBU_USER_OVERRIDE:
-		return axienet_qbu_user_override(dev, rq->ifr_data);
+		return axienet_qbu_user_override(dev, data);
 	case SIOC_QBU_STS:
-		return axienet_qbu_sts(dev, rq->ifr_data);
+		return axienet_qbu_sts(dev, data);
 #endif
 #endif
 
@@ -1180,6 +1191,7 @@ static const struct net_device_ops axienet_netdev_ops = {
 	.ndo_set_mac_address = netdev_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_eth_ioctl = axienet_ioctl,
+	.ndo_siocdevprivate = axienet_ioctl_siocdevprivate,
 	.ndo_set_rx_mode = axienet_set_multicast_list_tsn,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = axienet_poll_controller,
@@ -1718,7 +1730,6 @@ static int axienet_probe(struct platform_device *pdev)
 	struct resource *ethres;
 	u32 value;
 	u16 num_queues = XAE_MAX_QUEUES;
-	bool slave = false;
 
 	ret = of_property_read_u16(pdev->dev.of_node, "xlnx,num-queues",
 				   &num_queues);
@@ -1732,11 +1743,6 @@ static int axienet_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, ndev);
-	slave = of_property_read_bool(pdev->dev.of_node, "xlnx,tsn-slave");
-	if (slave)
-		snprintf(ndev->name, sizeof(ndev->name), "eth2");
-	else
-		snprintf(ndev->name, sizeof(ndev->name), "eth1");
 
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 	ndev->flags &= ~IFF_MULTICAST;  /* clear multicast */
@@ -1924,7 +1930,7 @@ static int axienet_probe(struct platform_device *pdev)
 
 	lp->phy_node = of_parse_phandle(pdev->dev.of_node, "phy-handle", 0);
 	if (lp->phy_node) {
-		ret = axienet_mdio_setup(lp);
+		ret = axienet_mdio_setup_tsn(lp);
 		if (ret)
 			dev_warn(&pdev->dev,
 				 "error registering MDIO bus: %d\n", ret);
@@ -1940,7 +1946,7 @@ static int axienet_probe(struct platform_device *pdev)
 	ret = register_netdev(lp->ndev);
 	if (ret) {
 		dev_err(lp->dev, "register_netdev() error (%i)\n", ret);
-		axienet_mdio_teardown(lp);
+		axienet_mdio_teardown_tsn(lp);
 		goto cleanup_clk;
 	}
 
@@ -1965,6 +1971,7 @@ static int axienet_remove(struct platform_device *pdev)
 	struct axienet_local *lp = netdev_priv(ndev);
 
 #ifdef CONFIG_XILINX_TSN_PTP
+	if (lp->timer_priv)
 		axienet_ptp_timer_remove(lp->timer_priv);
 #ifdef CONFIG_XILINX_TSN_QBV
 		axienet_qbv_remove(ndev);
@@ -1974,7 +1981,7 @@ static int axienet_remove(struct platform_device *pdev)
 	axienet_clk_disable(pdev);
 
 	if (lp->mii_bus)
-		axienet_mdio_teardown(lp);
+		axienet_mdio_teardown_tsn(lp);
 
 	clk_bulk_disable_unprepare(XAE_NUM_MISC_CLOCKS, lp->misc_clks);
 	clk_disable_unprepare(lp->axi_clk);

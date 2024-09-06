@@ -188,7 +188,7 @@ int ad9208_jesd_set_if_config(ad9208_handle_t *h,
 		return API_ERROR_INVALID_PARAM;
 	}
 	/*Calculate Lane Rate */
-	slr = (((jesd_param.jesd_M * jesd_param.jesd_N) * (10)) * fout);
+	slr = (((jesd_param.jesd_M * jesd_param.jesd_NP) * (10)) * fout);
 	slr = DIV_U64(DIV_U64(slr, 8), jesd_param.jesd_L);
 	slr_mbps = DIV_U64(slr, 1000000);
 
@@ -205,6 +205,14 @@ int ad9208_jesd_set_if_config(ad9208_handle_t *h,
 			err = ad9208_register_write(h, 0x56e, 0x00);
 	} else {
 		err = get_jesd_serdes_vco_cfg(slr_mbps, &vco_cfg);
+		if (err != API_ERROR_OK)
+			return err;
+		err = ad9208_register_read(h, AD9208_JESD_SERDES_PLL_CFG_REG, &tmp_reg);
+		if (err != API_ERROR_OK)
+			return err;
+		tmp_reg &= AD9208_JESD_SLR_CTRL(ALL);
+		tmp_reg |= AD9208_JESD_SLR_CTRL(vco_cfg);
+		err = ad9208_register_write(h, AD9208_JESD_SERDES_PLL_CFG_REG, tmp_reg);
 	}
 	if (err != API_ERROR_OK)
 		return err;

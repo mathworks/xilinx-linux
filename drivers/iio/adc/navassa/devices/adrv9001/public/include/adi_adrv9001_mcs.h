@@ -20,7 +20,7 @@ extern "C" {
 
 #include "adi_adrv9001_mcs_types.h"
 #include "adi_common_macros.h"
-#include "adi_adrv9001_user.h"
+#include <adi_adrv9001_user.h>
 #include "adi_adrv9001_types.h"
 #include "adi_adrv9001_radio_types.h"
 
@@ -31,7 +31,9 @@ extern "C" {
  *  transceiver. 
  *  After issuing one or all of the MCS pulses, this function can be used to 
  *  check the synchronization status of the analog and digital subsystems.
- * 
+ *
+ * \note Triggering a new calibration is disruptive, value immediately after MCS will be returned. 
+ *
  * \note Message type: \ref timing_direct "Direct register access"
  *
  * \pre The device must be in CALIBRATED state before using the MCS functions.

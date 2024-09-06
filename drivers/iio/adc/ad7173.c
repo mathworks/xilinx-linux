@@ -6,6 +6,7 @@
  * Licensed under the GPL-2.
  */
 
+#include "linux/bitfield.h"
 #include <linux/interrupt.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
@@ -77,6 +78,10 @@
 #define AD7173_GPIO_GP_DATA1		BIT(1)
 #define AD7173_GPIO_GP_DATA0		BIT(0)
 
+#define AD7173_INTERFACE_DATA_STAT	BIT(6)
+#define AD7173_INTERFACE_DATA_STAT_EN(x) \
+	FIELD_PREP(AD7173_INTERFACE_DATA_STAT, x)
+
 #define AD7173_SETUP_BIPOLAR		BIT(12)
 #define AD7173_SETUP_AREF_BUF		(0x3 << 10)
 #define AD7173_SETUP_AIN_BUF		(0x3 << 8)
@@ -110,12 +115,15 @@ struct ad7173_device_info {
 
 struct ad7173_state {
 	struct regulator *reg;
+	/* protect against device accesses */
+	struct mutex lock;
 	unsigned int adc_mode;
 	unsigned int interface_mode;
 
 	struct ad_sigma_delta sd;
 
 	const struct ad7173_device_info *info;
+	unsigned int *channel_ains;
 
 #ifdef CONFIG_GPIOLIB
 	struct gpio_chip gpiochip;
@@ -436,11 +444,12 @@ static int ad7173_set_channel(struct ad_sigma_delta *sd, unsigned int slot,
 	unsigned int val;
 
 	if (channel == AD_SD_SLOT_DISABLE)
-	    val = 0;
+		val = 0;
 	else
-	    val = AD7173_CH_ENABLE | channel;
+		val = AD7173_CH_ENABLE | AD7173_CH_SETUP_SEL(slot) |
+		      st->channel_ains[channel];
 
-	return ad_sd_write_reg(&st->sd, AD7173_REG_CH(slot), 2, val);
+	return ad_sd_write_reg(&st->sd, AD7173_REG_CH(channel), 2, val);
 }
 
 static int ad7173_set_mode(struct ad_sigma_delta *sd,
@@ -454,14 +463,33 @@ static int ad7173_set_mode(struct ad_sigma_delta *sd,
 	return ad_sd_write_reg(&st->sd, AD7173_REG_ADC_MODE, 2, st->adc_mode);
 }
 
+static int ad7173_append_status(struct ad_sigma_delta *sd, bool append)
+{
+	struct ad7173_state *st = ad_sigma_delta_to_ad7173(sd);
+	unsigned int interface_mode = st->interface_mode;
+	int ret;
+
+	interface_mode &= ~AD7173_INTERFACE_DATA_STAT;
+	interface_mode |= AD7173_INTERFACE_DATA_STAT_EN(append);
+	ret = ad_sd_write_reg(&st->sd, AD7173_REG_INTERFACE_MODE, 2, interface_mode);
+	if (ret)
+		return ret;
+
+	st->interface_mode = interface_mode;
+
+	return 0;
+}
+
 static const struct ad_sigma_delta_info ad7173_sigma_delta_info = {
 	.set_channel = ad7173_set_channel,
+	.append_status = ad7173_append_status,
 	.prepare_channel = ad7173_prepare_channel,
 	.set_mode = ad7173_set_mode,
 	.has_registers = true,
 	.data_reg = AD7173_REG_DATA,
 	.addr_shift = 0,
 	.read_mask = BIT(6),
+	.status_ch_mask = GENMASK(3, 0),
 	.irq_flags = IRQF_TRIGGER_FALLING
 };
 
@@ -565,9 +593,9 @@ static int ad7173_write_raw(struct iio_dev *indio_dev,
 	unsigned int i;
 	int ret = 0;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	if (iio_buffer_enabled(indio_dev)) {
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&st->lock);
 		return -EBUSY;
 	}
 
@@ -592,7 +620,7 @@ static int ad7173_write_raw(struct iio_dev *indio_dev,
 		break;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 	return ret;
 }
 
@@ -631,7 +659,6 @@ static const struct iio_chan_spec ad7173_temp_channel_template = {
 	.type = IIO_TEMP,
 	.indexed = 1,
 	.channel = 0,
-	.address = AD7173_CH_ADDRESS(17, 18),
 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
 		BIT(IIO_CHAN_INFO_SCALE) | BIT(IIO_CHAN_INFO_OFFSET),
 	.info_mask_shared_by_all = BIT(IIO_CHAN_INFO_SAMP_FREQ),
@@ -652,6 +679,7 @@ static int ad7173_of_parse_channel_config(struct iio_dev *indio_dev,
 	struct device_node *chan_node, *child;
 	struct iio_chan_spec *chan;
 	unsigned int num_ext_channels = 0;
+	unsigned int *channel_ains;
 	unsigned int num_channels = 0;
 	unsigned int scan_index = 0;
 	unsigned int chan_index = 0;
@@ -667,16 +695,29 @@ static int ad7173_of_parse_channel_config(struct iio_dev *indio_dev,
 	if (num_channels == 0)
 		return 0;
 
+	if (num_channels > st->info->num_channels) {
+		dev_err(indio_dev->dev.parent,
+			"Number of defined channels exceeds the maximum number of supported channels.\n");
+		return -EINVAL;
+	}
+
 	chan = devm_kcalloc(indio_dev->dev.parent, sizeof(*chan), num_channels,
 		GFP_KERNEL);
 	if (!chan)
 		return -ENOMEM;
 
+	channel_ains =  devm_kcalloc(indio_dev->dev.parent, sizeof(*channel_ains),
+				     num_channels, GFP_KERNEL);
+	if (!channel_ains)
+		return -ENOMEM;
+
+	st->channel_ains = channel_ains;
 	indio_dev->channels = chan;
 	indio_dev->num_channels = num_channels;
 
 	if (st->info->has_temp) {
 		*chan = ad7173_temp_channel_template;
+		channel_ains[scan_index] = AD7173_CH_ADDRESS(17, 18);
 		chan++;
 		scan_index++;
 	}
@@ -706,7 +747,8 @@ static int ad7173_of_parse_channel_config(struct iio_dev *indio_dev,
 
 
 		*chan = ad7173_channel_template;
-		chan->address = AD7173_CH_ADDRESS(ain[0], ain[1]);
+		chan->address = scan_index;
+		channel_ains[scan_index] = AD7173_CH_ADDRESS(ain[0], ain[1]);
 		chan->scan_index = scan_index;
 		chan->channel = ain[0];
 		chan->channel2 = ain[1];
@@ -741,12 +783,12 @@ static int ad7173_probe(struct spi_device *spi)
 
 	st = iio_priv(indio_dev);
 
+	mutex_init(&st->lock);
 	id = spi_get_device_id(spi);
 	st->info = &ad7173_device_info[id->driver_data];
 
-	ad_sd_init(&st->sd, indio_dev, spi, &ad7173_sigma_delta_info);
-
 	st->sd.num_slots = st->info->num_configs;
+	ad_sd_init(&st->sd, indio_dev, spi, &ad7173_sigma_delta_info);
 
 	spi_set_drvdata(spi, indio_dev);
 
@@ -759,24 +801,19 @@ static int ad7173_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	ret = ad_sd_setup_buffer_and_trigger(indio_dev);
+	ret = devm_ad_sd_setup_buffer_and_trigger(&spi->dev, indio_dev);
 	if (ret)
-		goto error_disable_reg;
+		return ret;
 
 	ret = ad7173_setup(indio_dev);
 	if (ret)
-		goto error_remove_trigger;
+		return ret;
 
 	ret = iio_device_register(indio_dev);
 	if (ret)
-		goto error_remove_trigger;
+		return ret;
 
 	return ad7173_gpio_init(st);
-
-error_remove_trigger:
-	ad_sd_cleanup_buffer_and_trigger(indio_dev);
-error_disable_reg:
-	return ret;
 }
 
 static int ad7173_remove(struct spi_device *spi)
@@ -787,7 +824,6 @@ static int ad7173_remove(struct spi_device *spi)
 	ad7173_gpio_cleanup(st);
 
 	iio_device_unregister(indio_dev);
-	ad_sd_cleanup_buffer_and_trigger(indio_dev);
 
 	return 0;
 }

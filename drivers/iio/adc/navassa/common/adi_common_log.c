@@ -12,7 +12,9 @@
 * see the "LICENSE.txt" file in this zip file.
 */
 
+#ifndef __KERNEL__
 #include <stdarg.h>
+#endif
 #include "adi_common_error.h"
 #include "adi_common_types.h"
 #include "adi_common_hal.h"

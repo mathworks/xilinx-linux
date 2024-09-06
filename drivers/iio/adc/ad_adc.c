@@ -17,10 +17,12 @@
  */
 
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/io.h>
 #include <linux/dmaengine.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/units.h>
 
 #include <linux/clk.h>
 
@@ -90,11 +92,15 @@ struct axiadc_state {
 	void __iomem			*slave_regs;
 	struct iio_hw_consumer		*frontend;
 	struct clk 			*clk;
+	/* protect against device accesses */
+	struct mutex			lock;
 	unsigned int                    oversampling_ratio;
 	unsigned int			adc_def_output_mode;
 	unsigned int			max_usr_channel;
 	struct iio_chan_spec		channels[ADI_MAX_CHANNEL];
 	unsigned int			adc_calibbias[2];
+	unsigned int			adc_calibscale[2][2];
+	bool				calibrate;
 };
 
 #define CN0363_CHANNEL(_address, _type, _ch, _mod, _rb) { \
@@ -156,9 +162,40 @@ static const struct iio_enum m2k_samp_freq_available_enum = {
 	.num_items = ARRAY_SIZE(m2k_samp_freq_available),
 };
 
+static int m2k_get_calibrate(struct iio_dev *indio_dev,
+			     const struct iio_chan_spec *chan)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+
+	return st->calibrate;
+}
+
+static int m2k_set_calibrate(struct iio_dev *indio_dev,
+			     const struct iio_chan_spec *chan, unsigned int val)
+{
+	struct axiadc_state *st = iio_priv(indio_dev);
+
+	st->calibrate = val;
+	return 0;
+}
+
+static const char * const m2k_calibrate_items[] = {
+	"false",
+	"true"
+};
+
+static const struct iio_enum m2k_calibrate_enum = {
+	.items = m2k_calibrate_items,
+	.num_items = ARRAY_SIZE(m2k_calibrate_items),
+	.set = m2k_set_calibrate,
+	.get = m2k_get_calibrate,
+};
+
 static const struct iio_chan_spec_ext_info m2k_chan_ext_info[] = {
 	IIO_ENUM_AVAILABLE_SHARED("sampling_frequency", IIO_SHARED_BY_ALL,
-		&m2k_samp_freq_available_enum),
+			&m2k_samp_freq_available_enum),
+	IIO_ENUM_AVAILABLE_SHARED("calibrate", IIO_SHARED_BY_ALL, &m2k_calibrate_enum),
+	IIO_ENUM("calibrate", IIO_SHARED_BY_ALL, &m2k_calibrate_enum),
 	{ },
 };
 
@@ -335,8 +372,8 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	if (dma_name == NULL)
 		dma_name = "rx";
 
-	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
-			&axiadc_dma_buffer_ops, indio_dev);
+	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
+						 &axiadc_dma_buffer_ops, indio_dev);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -344,11 +381,6 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	iio_device_attach_buffer(indio_dev, buffer);
 
 	return 0;
-}
-
-static void axiadc_unconfigure_ring_stream(struct iio_dev *indio_dev)
-{
-	iio_dmaengine_buffer_free(indio_dev->buffer);
 }
 
 static int axiadc_hw_consumer_predisable(struct iio_dev *indio_dev)
@@ -475,6 +507,12 @@ static int axiadc_read_raw(struct iio_dev *indio_dev,
 		*val = st->oversampling_ratio;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_CALIBSCALE:
+		if (st->calibrate) {
+			*val = st->adc_calibscale[chan->channel][0];
+			*val2 = st->adc_calibscale[chan->channel][1];
+			return IIO_VAL_INT_PLUS_MICRO;
+		}
+
 		if (!st->slave_regs)
 			return -EINVAL;
 		reg = axiadc_slave_read(st,
@@ -508,6 +546,11 @@ static int axiadc_m2k_special_probe(struct platform_device *pdev)
 		val = cf_axi_dds_to_signed_mag_fmt(1, 0);
 		axiadc_slave_write(st, ADI_REG_CORRECTION_COEFFICIENT(0), val);
 		axiadc_slave_write(st, ADI_REG_CORRECTION_COEFFICIENT(1), val);
+
+		st->adc_calibscale[0][0] = 1;
+		st->adc_calibscale[1][0] = 1;
+		st->adc_calibscale[0][1] = 0;
+		st->adc_calibscale[1][1] = 0;
 	}
 
 	for (i = 0; i < indio_dev->num_channels; i++) {
@@ -551,6 +594,12 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 		axiadc_slave_write(st, 0x40, val - 1);
 		return 0;
 	case IIO_CHAN_INFO_CALIBSCALE:
+		if (st->calibrate) {
+			st->adc_calibscale[chan->channel][0] = val;
+			st->adc_calibscale[chan->channel][1] = val2;
+			return 0;
+		}
+
 		if (!st->slave_regs)
 			return -EINVAL;
 
@@ -585,7 +634,7 @@ static int adc_reg_access(struct iio_dev *indio_dev,
 {
 	struct axiadc_state *st = iio_priv(indio_dev);
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	if (st->slave_regs && (reg & 0x80000000)) {
 		if (readval == NULL)
 			axiadc_slave_write(st, (reg & 0xffff), writeval);
@@ -597,7 +646,7 @@ static int adc_reg_access(struct iio_dev *indio_dev,
 		else
 			*readval = axiadc_read(st, reg & 0xFFFF);
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return 0;
 }
@@ -673,6 +722,11 @@ static void adc_fill_channel_data(struct iio_dev *indio_dev)
 	indio_dev->num_channels = st->max_usr_channel;
 }
 
+static void adc_clk_disable(void *clk)
+{
+	clk_disable_unprepare(clk);
+}
+
 static int adc_probe(struct platform_device *pdev)
 {
 	const struct adc_chip_info *info;
@@ -693,6 +747,7 @@ static int adc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
+	mutex_init(&st->lock);
 
 	st->clk = devm_clk_get(&pdev->dev, "sampl_clk");
 	if (IS_ERR(st->clk)) {
@@ -700,6 +755,10 @@ static int adc_probe(struct platform_device *pdev)
 			return PTR_ERR(st->clk);
 	} else {
 		ret = clk_prepare_enable(st->clk);
+		if (ret)
+			return ret;
+
+		ret = devm_add_action_or_reset(&pdev->dev, adc_clk_disable, st->clk);
 		if (ret)
 			return ret;
 	}
@@ -721,7 +780,7 @@ static int adc_probe(struct platform_device *pdev)
 	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN);
 
 	if (info->has_frontend) {
-		st->frontend = iio_hw_consumer_alloc(&pdev->dev);
+		st->frontend = devm_iio_hw_consumer_alloc(&pdev->dev);
 		if (IS_ERR(st->frontend))
 			return PTR_ERR(st->frontend);
 		indio_dev->setup_ops = &axiadc_hw_consumer_setup_ops;
@@ -738,44 +797,16 @@ static int adc_probe(struct platform_device *pdev)
 
 	ret = axiadc_configure_ring_stream(indio_dev, "rx");
 	if (ret)
-		goto err_free_frontend;
+		return ret;
 
 	/* handle special probe */
 	if (info->special_probe) {
 		ret = info->special_probe(pdev);
 		if (ret)
-			goto err_unconfigure_ring;
+			return ret;
 	}
 
-	ret = iio_device_register(indio_dev);
-	if (ret)
-		goto err_unconfigure_ring;
-
-	return 0;
-
-err_unconfigure_ring:
-	axiadc_unconfigure_ring_stream(indio_dev);
-err_free_frontend:
-	if (st->frontend)
-		iio_hw_consumer_free(st->frontend);
-
-	return ret;
-}
-
-static int adc_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-	struct axiadc_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	axiadc_unconfigure_ring_stream(indio_dev);
-	if (st->frontend)
-		iio_hw_consumer_free(st->frontend);
-
-	if (!IS_ERR(st->clk))
-		clk_disable_unprepare(st->clk);
-
-	return 0;
+	return devm_iio_device_register(&pdev->dev, indio_dev);
 }
 
 static struct platform_driver adc_driver = {
@@ -784,7 +815,6 @@ static struct platform_driver adc_driver = {
 		.of_match_table = adc_of_match,
 	},
 	.probe	  = adc_probe,
-	.remove	 = adc_remove,
 };
 
 module_platform_driver(adc_driver);

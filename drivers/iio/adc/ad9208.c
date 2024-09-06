@@ -234,14 +234,14 @@ static int ad9208_read_thresh(struct iio_dev *indio_dev,
 	u16 low, high;
 	u8 val_h, val_l;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	ad9208_register_read(&phy->ad9208, AD9208_FD_LT_MSB_REG, &val_h);
 	ad9208_register_read(&phy->ad9208, AD9208_FD_LT_LSB_REG, &val_l);
 	low = (val_h << 8) | val_l;
 	ad9208_register_read(&phy->ad9208, AD9208_FD_UT_MSB_REG, &val_h);
 	ad9208_register_read(&phy->ad9208, AD9208_FD_UT_LSB_REG, &val_l);
 	high = (val_h << 8) | val_l;
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	switch (info) {
 	case IIO_EV_INFO_HYSTERESIS:
@@ -284,7 +284,7 @@ static int ad9208_write_thresh(struct iio_dev *indio_dev,
 	int low, high;
 	u8 val_h, val_l;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	ad9208_register_read(&phy->ad9208, AD9208_FD_UT_MSB_REG, &val_h);
 	ad9208_register_read(&phy->ad9208, AD9208_FD_UT_LSB_REG, &val_l);
 	high = (val_h << 8) | val_l;
@@ -327,7 +327,7 @@ static int ad9208_write_thresh(struct iio_dev *indio_dev,
 	ad9208_register_write(&phy->ad9208, AD9208_FD_LT_LSB_REG, low & 0xFF);
 
 unlock:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 	return ret;
 }
 
@@ -340,7 +340,7 @@ static int ad9208_write_thresh_en(struct iio_dev *indio_dev,
 	int ret;
 	u8 val;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	ret = ad9208_register_read(&phy->ad9208, AD9208_CHIP_PIN_CTRL1_REG, &val);
 	if (ret < 0)
@@ -353,7 +353,7 @@ static int ad9208_write_thresh_en(struct iio_dev *indio_dev,
 
 	ret = ad9208_register_write(&phy->ad9208, AD9208_CHIP_PIN_CTRL1_REG, val);
 err_unlock:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 	return ret;
 }
 
@@ -465,11 +465,12 @@ static int ad9208_testmode_read(struct iio_dev *indio_dev,
 static int ad9208_testmode_write(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, unsigned int item)
 {
+	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
 	int ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	ret = ad9208_testmode_set(indio_dev, chan->channel, item);
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret;
 }
@@ -502,7 +503,7 @@ static ssize_t ad9208_ext_info_read(struct iio_dev *indio_dev,
 	struct ad9208_phy *phy = conv->phy;
 	int val, ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	switch (private) {
 	case DC_FILT:
@@ -514,7 +515,7 @@ static ssize_t ad9208_ext_info_read(struct iio_dev *indio_dev,
 
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	if (ret == 0)
 		ret = sprintf(buf, "%d\n", val);
@@ -536,7 +537,7 @@ static ssize_t ad9208_ext_info_write(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	switch (private) {
 	case DC_FILT:
@@ -549,7 +550,7 @@ static ssize_t ad9208_ext_info_write(struct iio_dev *indio_dev,
 
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret ? ret : len;
 }
@@ -1452,7 +1453,7 @@ static int ad9680_sfdr_fixup(struct spi_device *spi)
 		0x16, 0x18, 0x19, 0x1A, 0x30, 0x11A, 0x934, 0x935
 	};
 	u32 sfdr_optim_vals[ARRAY_SIZE(sfdr_optim_regs)];
-	int ret, tmp;
+	int ret = 0, tmp;
 
 	tmp = of_property_read_u32_array(spi->dev.of_node,
 		"adi,sfdr-optimization-config",
@@ -1548,11 +1549,20 @@ static int ad9208_probe(struct spi_device *spi)
 	case CHIPID_AD9208:
 	case CHIPID_AD6684:
 	case CHIPID_AD9689:
-	case CHIPID_AD9694:
 		phy->ad9208.model = 0x9208;
 		phy->ad9208.input_clk_min_hz = 2500000000ULL;
 		phy->ad9208.input_clk_max_hz = 6000000000ULL;
 		phy->ad9208.adc_clk_min_hz = 2500000000ULL;
+		phy->ad9208.adc_clk_max_hz = 3100000000ULL;
+		phy->ad9208.slr_max_mbps = 16000;
+		phy->ad9208.slr_min_mbps = 390;
+		chan_id = (spi_id & ID_DUAL) ? ID_AD9208_X2 : ID_AD9208;
+		break;
+	case CHIPID_AD9694:
+		phy->ad9208.model = 0x9208;
+		phy->ad9208.input_clk_min_hz = 500000000ULL;
+		phy->ad9208.input_clk_max_hz = 600000000ULL;
+		phy->ad9208.adc_clk_min_hz = 500000000ULL;
 		phy->ad9208.adc_clk_max_hz = 3100000000ULL;
 		phy->ad9208.slr_max_mbps = 16000;
 		phy->ad9208.slr_min_mbps = 390;

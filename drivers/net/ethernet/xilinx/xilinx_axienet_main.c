@@ -800,6 +800,12 @@ void axienet_tx_hwtstamp(struct axienet_local *lp,
 	if (unlikely(!(val & XAXIFIFO_TXTS_INT_RC_MASK)))
 		dev_info(lp->dev, "Did't get FIFO tx interrupt %d\n", val);
 
+	/* Ensure to read Occupany register before accessing Length register */
+	if (!axienet_txts_ior(lp, XAXIFIFO_TXTS_RFO)) {
+		netdev_err(lp->ndev, "%s: TX Timestamp FIFO is empty", __func__);
+		goto skb_exit;
+	}
+
 	/* If FIFO is configured in cut through Mode we will get Rx complete
 	 * interrupt even one byte is there in the fifo wait for the full packet
 	 */
@@ -1600,7 +1606,7 @@ static int axienet_recv(struct net_device *ndev, int budget,
 					   DMA_FROM_DEVICE);
 		if (unlikely(dma_mapping_error(ndev->dev.parent, cur_p->phys))) {
 			cur_p->phys = 0;
-			dev_kfree_skb(skb);
+			dev_kfree_skb(new_skb);
 			dev_err(lp->dev, "RX buffer map failed\n");
 			break;
 		}
@@ -3155,12 +3161,15 @@ static int axienet_probe(struct platform_device *pdev)
 	struct resource *ethres;
 	u32 value;
 	u16 num_queues = XAE_MAX_QUEUES;
+#ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
+	struct resource txtsres, rxtsres;
+#endif
 
 	ret = of_property_read_u16(pdev->dev.of_node, "xlnx,num-queues",
 				   &num_queues);
 	if (ret) {
 #ifndef CONFIG_AXIENET_HAS_MCDMA
-			num_queues = 1;
+		num_queues = 1;
 #endif
 	}
 
@@ -3393,8 +3402,6 @@ static int axienet_probe(struct platform_device *pdev)
 	}
 
 #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
-		struct resource txtsres, rxtsres;
-
 		/* Find AXI Stream FIFO */
 		np = of_parse_phandle(pdev->dev.of_node, "axififo-connected",
 				      0);

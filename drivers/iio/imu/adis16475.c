@@ -14,10 +14,10 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/imu/adis.h>
-#include <linux/iio/sysfs.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/irq.h>
 #include <linux/lcm.h>
+#include <linux/math.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/property.h>
@@ -1131,6 +1131,7 @@ static int adis16475_config_sync_mode(struct adis16475 *st)
 	struct device *dev = &st->adis.spi->dev;
 	const struct adis16475_sync *sync;
 	u32 sync_mode;
+	u16 val;
 
 	/* default to internal clk */
 	st->clk_freq = st->info->int_clk * 1000;
@@ -1200,8 +1201,9 @@ static int adis16475_config_sync_mode(struct adis16475 *st)
 	 * I'm keeping this for simplicity and avoiding extra variables
 	 * in chip_info.
 	 */
+	val = ADIS16475_SYNC_MODE(sync->sync_mode);
 	ret = __adis_update_bits(&st->adis, ADIS16475_REG_MSG_CTRL,
-				 ADIS16475_SYNC_MODE_MASK, sync->sync_mode);
+				 ADIS16475_SYNC_MODE_MASK, val);
 	if (ret)
 		return ret;
 
@@ -1240,6 +1242,9 @@ static int adis16475_config_irq_pin(struct adis16475 *st)
 			irq_type);
 		return -EINVAL;
 	}
+
+	/* We cannot mask the interrupt so ensure it's not enabled at request */
+	st->adis.irq_flag |= IRQF_NO_AUTOEN;
 
 	val = ADIS16475_MSG_CTRL_DR_POL(polarity);
 	ret = __adis_update_bits(&st->adis, ADIS16475_REG_MSG_CTRL,
@@ -1312,7 +1317,6 @@ static int adis16475_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
-	spi_set_drvdata(spi, indio_dev);
 
 	st->info = device_get_match_data(&spi->dev);
 	if (!st->info)
@@ -1344,15 +1348,6 @@ static int adis16475_probe(struct spi_device *spi)
 						 adis16475_trigger_handler);
 	if (ret)
 		return ret;
-
-	/*
-	 * Note that this is not needed in upstream but we still need to have
-	 * it in our tree because the 'IRQF_NO_AUTOEN' flag is still not
-	 * present. With it, the IRQ is automatically disabled when requesting
-	 * it. As soon as we move to a kernel supporting we can drop this call
-	 * and update @adis_validate_irq_flag() accordingly.
-	 */
-	adis_enable_irq(&st->adis, false);
 
 	ret = devm_iio_device_register(&spi->dev, indio_dev);
 	if (ret)

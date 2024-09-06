@@ -135,8 +135,8 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	if (dma_name == NULL)
 		dma_name = "rx";
 
-	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
-			&axiadc_dma_buffer_ops, indio_dev);
+	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
+						 &axiadc_dma_buffer_ops, indio_dev);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -144,11 +144,6 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	iio_device_attach_buffer(indio_dev, buffer);
 
 	return 0;
-}
-
-static void axiadc_unconfigure_ring_stream(struct iio_dev *indio_dev)
-{
-	iio_dmaengine_buffer_free(indio_dev->buffer);
 }
 
 static int axiadc_chan_to_regoffset(struct iio_chan_spec const *chan)
@@ -245,7 +240,7 @@ static ssize_t axiadc_debugfs_pncheck_write(struct file *file,
 	else
 		mode = ADC_PN_OFF;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	for (i = 0; i < axiadc_num_phys_channels(st); i++) {
 		if (conv->set_pnsel)
@@ -260,7 +255,7 @@ static ssize_t axiadc_debugfs_pncheck_write(struct file *file,
 	for (i = 0; i < axiadc_num_phys_channels(st); i++)
 		axiadc_write(st, ADI_REG_CHAN_STATUS(i), ~0);
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return count;
 }
@@ -276,6 +271,7 @@ static int axiadc_reg_access(struct iio_dev *indio_dev,
 			      unsigned *readval)
 {
 	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
 	int ret;
 
 	/* Check that the register is in range and aligned */
@@ -283,7 +279,7 @@ static int axiadc_reg_access(struct iio_dev *indio_dev,
 	    ((reg & 0xffff) >= st->regs_size || (reg & 0x3)))
 		return -EINVAL;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	if (!(reg & DEBUGFS_DRA_PCORE_REG_MAGIC)) {
 		struct axiadc_converter *conv = to_converter(st->dev_spi);
@@ -300,7 +296,7 @@ static int axiadc_reg_access(struct iio_dev *indio_dev,
 			*readval = axiadc_read(st, reg & 0xFFFF);
 		ret = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return 0;
 }
@@ -377,16 +373,17 @@ static ssize_t axiadc_sampling_frequency_available(struct device *dev,
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
 	unsigned long freq;
 	int i, ret;
 
 	if (!st->decimation_factor)
 		return -ENODEV;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	ret = axiadc_get_parent_sampling_frequency(st, &freq);
 	if (ret < 0) {
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&conv->lock);
 		return ret;
 	}
 
@@ -396,7 +393,7 @@ static ssize_t axiadc_sampling_frequency_available(struct device *dev,
 
 	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "\n");
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret;
 }
@@ -411,13 +408,14 @@ static ssize_t axiadc_sync_start_store(struct device *dev,
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct axiadc_state *st = iio_priv(indio_dev);
+	struct axiadc_converter *conv = to_converter(st->dev_spi);
 	int ret;
 
 	ret = sysfs_match_string(axiadc_sync_ctrls, buf);
 	if (ret < 0)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	if (st->ext_sync_avail) {
 		switch (ret) {
 		case 0:
@@ -438,7 +436,7 @@ static ssize_t axiadc_sync_start_store(struct device *dev,
 		reg = axiadc_read(st, ADI_REG_CNTRL);
 		axiadc_write(st, ADI_REG_CNTRL, reg | ADI_SYNC);
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret < 0 ? ret : len;
 }
@@ -513,7 +511,7 @@ static int axiadc_read_raw(struct iio_dev *indio_dev,
 	switch (m) {
 	case IIO_CHAN_INFO_CALIBPHASE:
 		phase = 1;
-		/* fall-through */
+		fallthrough;
 	case IIO_CHAN_INFO_CALIBSCALE:
 		tmp = axiadc_read(st, ADI_REG_CHAN_CNTRL_2(channel));
 		/*  format is 1.1.14 (sign, integer and fractional bits) */
@@ -616,7 +614,7 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 	switch (mask) {
 	case IIO_CHAN_INFO_CALIBPHASE:
 		phase = 1;
-		/* fall-through */
+		fallthrough;
 	case IIO_CHAN_INFO_CALIBSCALE:
 		/*  format is 1.1.14 (sign, integer and fractional bits) */
 		switch (val) {
@@ -696,20 +694,6 @@ static int axiadc_write_raw(struct iio_dev *indio_dev,
 	default:
 		return conv->write_raw(indio_dev, chan, val, val2, mask);
 	}
-}
-
-static int axiadc_read_label(struct iio_dev *indio_dev,
-			     const struct iio_chan_spec *chan, char *label)
-{
-	struct axiadc_state *st = iio_priv(indio_dev);
-	struct axiadc_converter *conv = to_converter(st->dev_spi);
-
-	if (conv && conv->read_label)
-		return conv->read_label(indio_dev, chan, label);
-	else if (chan->extend_name)
-		return sprintf(label, "%s\n", chan->extend_name);
-	else
-		return -ENOSYS;
 }
 
 static int axiadc_read_event_value(struct iio_dev *indio_dev,
@@ -840,12 +824,11 @@ static int axiadc_channel_setup(struct iio_dev *indio_dev,
 
 	indio_dev->channels = st->channels;
 	indio_dev->num_channels = cnt;
-	indio_dev->masklength = cnt;
 
 	return 0;
 }
 
-static const struct iio_info axiadc_info = {
+static struct iio_info axiadc_info = {
 	.read_raw = &axiadc_read_raw,
 	.write_raw = &axiadc_write_raw,
 	.read_event_value = &axiadc_read_event_value,
@@ -854,12 +837,12 @@ static const struct iio_info axiadc_info = {
 	.write_event_config = &axiadc_write_event_config,
 	.debugfs_reg_access = &axiadc_reg_access,
 	.update_scan_mode = &axiadc_update_scan_mode,
-	.read_label = &axiadc_read_label,
 };
 
 struct axiadc_spidev {
 	struct device_node *of_nspi;
 	struct device *dev_spi;
+	struct module *owner;
 };
 
 static int axiadc_attach_spi_client(struct device *dev, void *data)
@@ -870,6 +853,7 @@ static int axiadc_attach_spi_client(struct device *dev, void *data)
 	device_lock(dev);
 	if ((axiadc_spidev->of_nspi == dev->of_node) && dev->driver) {
 		axiadc_spidev->dev_spi = dev;
+		axiadc_spidev->owner = dev->driver->owner;
 		ret = 1;
 	}
 	device_unlock(dev);
@@ -1057,6 +1041,14 @@ int axiadc_append_attrs(struct iio_dev *indio_dev,
 	return 0;
 }
 
+static void axiadc_release_converter(void *conv)
+{
+	struct axiadc_spidev *axiadc_spidev = conv;
+
+	put_device(axiadc_spidev->dev_spi);
+	module_put(axiadc_spidev->owner);
+}
+
 /**
  * axiadc_of_probe - probe method for the AIM device.
  * @of_dev:	pointer to OF device structure
@@ -1074,7 +1066,7 @@ static int axiadc_probe(struct platform_device *pdev)
 	struct iio_dev *indio_dev;
 	struct axiadc_state *st;
 	struct resource *mem;
-	struct axiadc_spidev axiadc_spidev;
+	struct axiadc_spidev *axiadc_spidev;
 	struct axiadc_converter *conv;
 	unsigned int config, skip = 1;
 	int ret;
@@ -1088,39 +1080,44 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	info = id->data;
 
+	axiadc_spidev = devm_kzalloc(&pdev->dev, sizeof(*axiadc_spidev), GFP_KERNEL);
+	if (!axiadc_spidev)
+		return -ENOMEM;
+
 	/* Defer driver probe until matching spi
 	 * converter driver is registered
 	 */
-	axiadc_spidev.of_nspi = of_parse_phandle(pdev->dev.of_node,
-						 "spibus-connected", 0);
-	if (!axiadc_spidev.of_nspi) {
+	axiadc_spidev->of_nspi = of_parse_phandle(pdev->dev.of_node,
+						  "spibus-connected", 0);
+	if (!axiadc_spidev->of_nspi) {
 		dev_err(&pdev->dev, "could not find spi node\n");
 		return -ENODEV;
 	}
 
-	ret = bus_for_each_dev(&spi_bus_type, NULL, &axiadc_spidev,
+	ret = bus_for_each_dev(&spi_bus_type, NULL, axiadc_spidev,
 			       axiadc_attach_spi_client);
+	of_node_put(axiadc_spidev->of_nspi);
 	if (ret == 0)
 		return -EPROBE_DEFER;
 
-	if (!try_module_get(axiadc_spidev.dev_spi->driver->owner))
+	if (!try_module_get(axiadc_spidev->owner))
 		return -ENODEV;
 
-	get_device(axiadc_spidev.dev_spi);
+	get_device(axiadc_spidev->dev_spi);
+
+	ret = devm_add_action_or_reset(&pdev->dev, axiadc_release_converter, axiadc_spidev);
+	if (ret)
+		return ret;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*st));
-	if (indio_dev == NULL) {
-		ret = -ENOMEM;
-		goto err_put_converter;
-	}
+	if (!indio_dev)
+		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
 
 	st->jdev = devm_jesd204_dev_register(&pdev->dev, &jesd204_axiadc_init);
-	if (IS_ERR(st->jdev)) {
-		ret = PTR_ERR(st->jdev);
-		goto err_put_converter;
-	}
+	if (IS_ERR(st->jdev))
+		return PTR_ERR(st->jdev);
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	st->regs_size = resource_size(mem);
@@ -1128,7 +1125,7 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (IS_ERR(st->regs))
 		return PTR_ERR(st->regs);
 
-	st->dev_spi = axiadc_spidev.dev_spi;
+	st->dev_spi = axiadc_spidev->dev_spi;
 
 	platform_set_drvdata(pdev, indio_dev);
 
@@ -1145,6 +1142,7 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	iio_device_set_drvdata(indio_dev, conv);
 	conv->indio_dev = indio_dev;
+	mutex_init(&conv->lock);
 
 	if (conv->chip_info->num_shadow_slave_channels) {
 		u32 regs[2];
@@ -1180,8 +1178,7 @@ static int axiadc_probe(struct platform_device *pdev)
 			ADI_AXI_PCORE_VER_MAJOR(st->pcore_version),
 			ADI_AXI_PCORE_VER_MINOR(st->pcore_version),
 			ADI_AXI_PCORE_VER_PATCH(st->pcore_version));
-		ret = -ENODEV;
-		goto err_put_converter;
+		return -ENODEV;
 	}
 
 	indio_dev->dev.parent = &pdev->dev;
@@ -1192,6 +1189,8 @@ static int axiadc_probe(struct platform_device *pdev)
 	axiadc_channel_setup(indio_dev, conv->chip_info->channel,
 			     st->dp_disable ? 0 : conv->chip_info->num_channels);
 
+	/* only have labels if really supported */
+	axiadc_info.read_label = conv->read_label;
 	st->iio_info = axiadc_info;
 	st->iio_info.attrs = conv->attrs;
 	indio_dev->info = &st->iio_info;
@@ -1199,14 +1198,14 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (conv->post_setup) {
 		ret = conv->post_setup(indio_dev);
 		if (ret < 0)
-			goto err_put_converter;
+			return ret;
 	}
 
 	if (!st->dp_disable && !axiadc_read(st, ADI_AXI_REG_ID) &&
 		of_find_property(pdev->dev.of_node, "dmas", NULL)) {
 		ret = axiadc_configure_ring_stream(indio_dev, NULL);
 		if (ret < 0)
-			goto err_put_converter;
+			return ret;
 	}
 
 	if (!st->dp_disable && of_property_read_bool(pdev->dev.of_node,
@@ -1225,21 +1224,12 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Failed to add sysfs attributes (%d)\n", ret);
-		goto err_unconfigure_ring;
+		return ret;
 	}
 
-	ret = iio_device_register(indio_dev);
+	ret = devm_iio_device_register(&pdev->dev, indio_dev);
 	if (ret)
-		goto err_unconfigure_ring;
-
-	dev_info(&pdev->dev, "ADI AIM (%d.%.2d.%c) at 0x%08llX mapped to 0x%p,"
-		 " probed ADC %s as %s\n",
-		ADI_AXI_PCORE_VER_MAJOR(st->pcore_version),
-		ADI_AXI_PCORE_VER_MINOR(st->pcore_version),
-		ADI_AXI_PCORE_VER_PATCH(st->pcore_version),
-		 (unsigned long long)mem->start, st->regs,
-		 conv->chip_info->name,
-		 axiadc_read(st, ADI_AXI_REG_ID) ? "SLAVE" : "MASTER");
+		return ret;
 
 	if (iio_get_debugfs_dentry(indio_dev))
 		debugfs_create_file("pseudorandom_err_check", 0644,
@@ -1255,40 +1245,16 @@ static int axiadc_probe(struct platform_device *pdev)
 
 	ret = jesd204_fsm_start(st->jdev, JESD204_LINKS_ALL);
 	if (ret)
-		goto err_unconfigure_ring;
+		return ret;
 
-	return 0;
-
-err_unconfigure_ring:
-	if (!st->dp_disable)
-			axiadc_unconfigure_ring_stream(indio_dev);
-err_put_converter:
-	put_device(axiadc_spidev.dev_spi);
-	module_put(axiadc_spidev.dev_spi->driver->owner);
-
-	return ret;
-}
-
-/**
- * axiadc_remove - unbinds the driver from the AIM device.
- * @of_dev:	pointer to OF device structure
- *
- * This function is called if a device is physically removed from the system or
- * if the driver module is being unloaded. It frees any resources allocated to
- * the device.
- */
-static int axiadc_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-	struct axiadc_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	if (!st->dp_disable && !axiadc_read(st, ADI_AXI_REG_ID) &&
-		of_find_property(pdev->dev.of_node, "dmas", NULL))
-		axiadc_unconfigure_ring_stream(indio_dev);
-
-	put_device(st->dev_spi);
-	module_put(st->dev_spi->driver->owner);
+	dev_info(&pdev->dev,
+		 "ADI AIM (%d.%.2d.%c) at 0x%08llX mapped to 0x%p probed ADC %s as %s\n",
+		 ADI_AXI_PCORE_VER_MAJOR(st->pcore_version),
+		 ADI_AXI_PCORE_VER_MINOR(st->pcore_version),
+		 ADI_AXI_PCORE_VER_PATCH(st->pcore_version),
+		 (unsigned long long)mem->start, st->regs,
+		 conv->chip_info->name,
+		 axiadc_read(st, ADI_AXI_REG_ID) ? "SLAVE" : "MASTER");
 
 	return 0;
 }
@@ -1300,7 +1266,6 @@ static struct platform_driver axiadc_driver = {
 		.of_match_table = axiadc_of_match,
 	},
 	.probe		= axiadc_probe,
-	.remove		= axiadc_remove,
 };
 
 module_platform_driver(axiadc_driver);

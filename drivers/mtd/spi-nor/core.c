@@ -2541,7 +2541,7 @@ void spi_nor_set_erase_type(struct spi_nor_erase_type *erase, u32 size,
 	erase->size = size;
 	erase->opcode = opcode;
 	/* JEDEC JESD216B Standard imposes erase sizes to be power of 2. */
-	erase->size_shift = ffs(erase->size) - 1;
+	erase->size_shift = erase->size ? (ffs(erase->size) - 1) : 0;
 	erase->size_mask = (1 << erase->size_shift) - 1;
 }
 
@@ -3370,7 +3370,7 @@ static int spi_nor_set_addr_width(struct spi_nor *nor)
 		nor->addr_width = 3;
 	}
 
-	if (nor->addr_width == 3 && nor->mtd.size > 0x1000000) {
+	if (nor->addr_width == 3 && (nor->mtd.size >> nor->shift) > 0x1000000) {
 #ifdef CONFIG_OF
 		np_spi = of_get_next_parent(np);
 		if (of_property_match_string(np_spi, "compatible",

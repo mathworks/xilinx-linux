@@ -30,15 +30,17 @@
 #define TX_BD_NUM_DEFAULT	64
 #define RX_BD_NUM_DEFAULT	1024
 
-static u8 st_pcp[8];
-static uint st_count;
+static u8 st_pcp[8] = {4};
+static uint st_count = 1;
 module_param_array(st_pcp, byte, &st_count, 0644);
 MODULE_PARM_DESC(st_pcp, "Array of pcp values mapped to ST class at the compile time");
 
-static u8 res_pcp[8];
-static uint res_count;
+static u8 res_pcp[8] = {2, 3};
+static uint res_count = 2;
 module_param_array(res_pcp, byte, &res_count, 0644);
 MODULE_PARM_DESC(res_pcp, "Array of pcp values mapped to RES class at the compile time");
+
+extern int axienet_phc_index;
 
 int tsn_data_path_open(struct net_device *ndev)
 {
@@ -301,6 +303,22 @@ static int netdev_set_mac_address(struct net_device *ndev, void *p)
 	return 0;
 }
 
+#if defined(CONFIG_XILINX_TSN_PTP)
+/**
+ * tsn_ethtools_get_ts_info - Get h/w timestamping capabilities.
+ * @ndev:       Pointer to net_device structure
+ * @info:       Pointer to ethtool_ts_info structure
+ *
+ * Return: 0
+ */
+static int tsn_ethtools_get_ts_info(struct net_device *ndev,
+				    struct ethtool_ts_info *info)
+{
+	info->phc_index = axienet_phc_index;
+	return 0;
+}
+#endif
+
 static const struct ethtool_ops ep_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_MAX_FRAMES,
 	.get_sset_count	 = axienet_sset_count_tsn,
@@ -308,6 +326,9 @@ static const struct ethtool_ops ep_ethtool_ops = {
 	.get_coalesce   = axienet_ethtools_get_coalesce,
 	.set_coalesce   = axienet_ethtools_set_coalesce,
 	.get_strings = axienet_strings_tsn,
+#if defined(CONFIG_XILINX_TSN_PTP)
+	.get_ts_info    = tsn_ethtools_get_ts_info,
+#endif
 };
 
 static const struct net_device_ops ep_netdev_ops = {

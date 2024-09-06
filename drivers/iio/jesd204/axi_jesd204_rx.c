@@ -86,9 +86,11 @@ struct axi_jesd204_rx {
 	struct clk *device_clk;
 	struct clk *link_clk;
 	struct clk *conv2_clk;
+	struct clk *sysref_clk;
 
 	struct jesd204_dev *jdev;
 
+	unsigned long axi_clk_freq;
 	unsigned int irq;
 
 	unsigned int num_lanes;
@@ -164,8 +166,8 @@ static ssize_t axi_jesd204_rx_status_read(struct device *dev,
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: off\n");
 	} else {
-		clock_rate = DIV_ROUND_CLOSEST_ULL(100000ULL * clock_ratio,
-			1ULL << 16);
+		clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
+			1000) * clock_ratio, 1ULL << 16);
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: %d.%.3d MHz\n",
@@ -195,8 +197,8 @@ static ssize_t axi_jesd204_rx_status_read(struct device *dev,
 			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"Measured Device Clock: off\n");
 		} else {
-			clock_rate = DIV_ROUND_CLOSEST_ULL(100000ULL * clock_ratio,
-				1ULL << 16);
+			clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
+				1000) * clock_ratio, 1ULL << 16);
 
 			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"Measured Device Clock: %d.%.3d MHz\n",
@@ -928,12 +930,16 @@ static int axi_jesd204_rx_jesd204_clks_enable(struct jesd204_dev *jdev,
 	case JESD204_STATE_OP_REASON_INIT:
 		break;
 	case JESD204_STATE_OP_REASON_UNINIT:
-		if (__clk_is_enabled(jesd->device_clk))
-			clk_disable_unprepare(jesd->device_clk);
 		if (!IS_ERR_OR_NULL(jesd->link_clk)) {
 			if (__clk_is_enabled(jesd->link_clk))
 				clk_disable_unprepare(jesd->link_clk);
 		}
+		if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
+			if (__clk_is_enabled(jesd->sysref_clk))
+				clk_disable_unprepare(jesd->sysref_clk);
+		}
+		if (__clk_is_enabled(jesd->device_clk))
+			clk_disable_unprepare(jesd->device_clk);
 		return JESD204_STATE_CHANGE_DONE;
 	default:
 		return JESD204_STATE_CHANGE_DONE;
@@ -944,6 +950,15 @@ static int axi_jesd204_rx_jesd204_clks_enable(struct jesd204_dev *jdev,
 		dev_err(dev, "%s: Link%u enable device clock failed (%d)\n",
 			__func__, lnk->link_id, ret);
 		return ret;
+	}
+
+	if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
+		ret = clk_prepare_enable(jesd->sysref_clk);
+		if (ret) {
+			dev_err(dev, "%s: Link%u enable sysref clock failed (%d)\n",
+				__func__, lnk->link_id, ret);
+			return ret;
+		}
 	}
 
 	if (!IS_ERR_OR_NULL(jesd->link_clk)) {
@@ -1176,9 +1191,17 @@ static int axi_jesd204_rx_probe(struct platform_device *pdev)
 	if (IS_ERR(jesd->link_clk))
 		return PTR_ERR(jesd->link_clk);
 
+	jesd->sysref_clk = devm_clk_get_optional(&pdev->dev, "sysref_clk");
+	if (IS_ERR(jesd->sysref_clk))
+		return PTR_ERR(jesd->sysref_clk);
+
 	ret = clk_prepare_enable(jesd->axi_clk);
 	if (ret)
 		return ret;
+
+	jesd->axi_clk_freq = clk_get_rate(jesd->axi_clk);
+	if (!jesd->axi_clk_freq)
+		jesd->axi_clk_freq = 100000000; /* 100 MHz */
 
 	if (jesd->conv2_clk) {
 		ret = clk_prepare_enable(jesd->conv2_clk);

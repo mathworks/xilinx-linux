@@ -3,6 +3,7 @@
 adrv9002_drv-y = adrv9002.o
 adrv9002_drv-y += adrv9002_conv.o
 adrv9002_drv-$(CONFIG_DEBUG_FS) += adrv9002_debugfs.o
+adrv9002_drv-$(CONFIG_OF) += adrv9002_of.o
 adrv9002_drv-y += platforms/linux_platform.o
 adrv9002_drv-y += third_party/jsmn/jsmn.o
 adrv9002_drv-y += common/adi_common_log.o
@@ -15,6 +16,7 @@ adrv9002_drv-y += devices/adrv9001/private/src/adrv9001_arm.o
 adrv9002_drv-y += devices/adrv9001/private/src/adrv9001_bf_hal.o
 adrv9002_drv-y += devices/adrv9001/private/src/adrv9001_init.o
 adrv9002_drv-y += devices/adrv9001/private/src/adrv9001_gpio.o
+adrv9002_drv-y += devices/adrv9001/private/src/adrv9001_radio.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_common.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_tx.o
 adrv9002_drv-y += devices/adrv9001/public/src/adi_adrv9001_arm.o
