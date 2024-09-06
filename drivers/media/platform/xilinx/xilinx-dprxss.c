@@ -1480,20 +1480,12 @@ static irqreturn_t xdprxss_irq_handler(int irq, void *dev_id)
 		if (state->hdcp_enable && state->hdcp1x_key_available)
 			xhdcp1x_rx_enable(state->hdcp1x, lane_count);
 		dev_dbg(state->dev, "DP Link training is done !!\n");
-#endif
-=======
-	if (status & XDPRX_INTR_TRDONE_MASK) {
-		lane_count = xdprxss_read(state, XDPRX_LANE_COUNT_REG);
-		if (state->hdcp_enable && state->hdcp1x_key_available)
-			xhdcp1x_rx_enable(state->hdcp1x, lane_count);
-		dev_dbg(state->dev, "DP Link training is done !!\n");
 	}
 	if (status & XDPRX_INTR_HDCP1X_AKSV_WRITE_MASK)
 		xhdcp1x_rx_push_events(state->hdcp1x, XHDCP1X_RX_AKSV_RCVD);
 	if (status & XDPRX_INTR_HDCP1X_RO_READ_MASK)
 		xhdcp1x_rx_push_events(state->hdcp1x,
 				       XHDCP1X_RX_RO_PRIME_READ_DONE);
->>>>>>> 054489d81f9c8dde1a7ba99d9a8daed405a25153
 
 	return IRQ_HANDLED;
 }

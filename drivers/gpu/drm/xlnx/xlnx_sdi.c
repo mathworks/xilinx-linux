@@ -541,14 +541,6 @@ static void xlnx_sdi_set_mode(struct xlnx_sdi *sdi, u32 mode,
 		sdi->sdi_420_out_val, sdi->sdi_444_out_val);
 	if (sdi->sdi_420_out_val)
 		data |= XSDI_TX_CTRL_420_BIT;
-=======
-		(is_frac << XSDI_TX_CTRL_M_SHIFT) |
-		((mux_ptrn & XSDI_TX_CTRL_MUX) << XSDI_TX_CTRL_MUX_SHIFT));
-
-	dev_dbg(sdi->dev, "sdi_420_out_val = %d\n sdi_444_out_val = %d\n\r",
-		sdi->sdi_420_out_val, sdi->sdi_444_out_val);
-	if (sdi->sdi_420_out_val)
-		data |= XSDI_TX_CTRL_420_BIT;
 	else if (sdi->sdi_444_out_val)
 		data |= XSDI_TX_CTRL_444_BIT;
 
@@ -557,7 +549,6 @@ static void xlnx_sdi_set_mode(struct xlnx_sdi *sdi, u32 mode,
 		dev_dbg(sdi->dev, "HFR enabled\n\r");
 	}
 
->>>>>>> 054489d81f9c8dde1a7ba99d9a8daed405a25153
 	xlnx_sdi_writel(sdi->base, XSDI_TX_MDL_CTRL, data);
 }
 
