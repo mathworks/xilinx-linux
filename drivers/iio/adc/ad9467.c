@@ -6,6 +6,7 @@
  */
 
 #include <linux/module.h>
+#include "linux/mod_devicetable.h"
 #include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -516,6 +517,10 @@ static const int ad9467_scale_table[][2] = {
 	{2300, 8}, {2400, 9}, {2500, 10},
 };
 
+static const int ad9625_scale_table[][2] = {
+	{1000, 0},
+};
+
 static const int ad9643_scale_table[][2] = {
 	{2087, 0x0F}, {2065, 0x0E}, {2042, 0x0D}, {2020, 0x0C}, {1997, 0x0B},
 	{1975, 0x0A}, {1952, 0x09}, {1930, 0x08}, {1907, 0x07}, {1885, 0x06},
@@ -660,9 +665,9 @@ static ssize_t axiadc_testmode_write(struct iio_dev *indio_dev,
 		}
 	}
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	ret = ad9467_testmode_set(indio_dev, chan->channel, mode);
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret ? ret : len;
 }
@@ -782,8 +787,8 @@ static const struct axiadc_chip_info ad9467_chip_tbl[] = {
 		.name = "AD9625",
 		.id = CHIPID_AD9625,
 		.max_rate = 2500000000UL,
-		.scale_table = ad9643_scale_table,
-		.num_scales = ARRAY_SIZE(ad9643_scale_table),
+		.scale_table = ad9625_scale_table,
+		.num_scales = ARRAY_SIZE(ad9625_scale_table),
 		.max_testmode = AN877_ADC_TESTMODE_RAMP,
 		.num_channels = 1,
 		.channel[0] = AIM_CHAN_NOCALIB(0, 0, 12, 'S', 0),
@@ -983,19 +988,14 @@ static int ad9467_get_scale(struct axiadc_converter *conv, int *val, int *val2)
 	unsigned vref_val, vref_mask;
 	unsigned int i;
 
-	vref_val = ad9467_spi_read(conv->spi, AN877_ADC_REG_VREF);
-
 	switch (conv->chip_info->id) {
 	case CHIPID_AD9467:
 		vref_mask = AD9467_REG_VREF_MASK;
 		break;
 	case CHIPID_AD9643:
-		vref_mask = AD9643_REG_VREF_MASK;
-		break;
 	case CHIPID_AD9250:
 	case CHIPID_AD9683:
-	case CHIPID_AD9625:
-		vref_mask = AD9250_REG_VREF_MASK;
+		vref_mask = AD9643_REG_VREF_MASK;
 		break;
 	case CHIPID_AD9265:
 		vref_mask = AD9265_REG_VREF_MASK;
@@ -1003,10 +1003,16 @@ static int ad9467_get_scale(struct axiadc_converter *conv, int *val, int *val2)
 	case CHIPID_AD9652:
 		vref_mask = AD9652_REG_VREF_MASK;
 		break;
+	case CHIPID_AD9649:
+	case CHIPID_AD9625:
+		i = 0;
+		goto skip_reg_read;
 	default:
 		vref_mask = 0xFFFF;
 		break;
 	}
+
+	vref_val = ad9467_spi_read(conv->spi, AN877_ADC_REG_VREF);
 
 	vref_val &= vref_mask;
 
@@ -1015,6 +1021,7 @@ static int ad9467_get_scale(struct axiadc_converter *conv, int *val, int *val2)
 			break;
 	}
 
+skip_reg_read:
 	ad9467_scale(conv, i, val, val2);
 
 	return IIO_VAL_INT_PLUS_MICRO;
@@ -1024,6 +1031,14 @@ static int ad9467_set_scale(struct axiadc_converter *conv, int val, int val2)
 {
 	unsigned int scale_val[2];
 	unsigned int i;
+
+	switch (conv->chip_info->id) {
+	case CHIPID_AD9625:
+	case CHIPID_AD9649:
+		return -EINVAL;
+	default:
+		break;
+	}
 
 	if (val != 0)
 		return -EINVAL;
@@ -1224,7 +1239,7 @@ static int ad9467_probe(struct spi_device *spi)
 	if (IS_ERR(st->clk))
 		return PTR_ERR(st->clk);
 
-	if (info->id != CHIPID_AD9625) {
+	if (info->id != CHIPID_AD9625 && info->id != CHIPID_AD9250) {
 		ret = clk_prepare_enable(st->clk);
 		if (ret < 0)
 			return ret;
@@ -1293,15 +1308,32 @@ static const struct of_device_id ad9467_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ad9467_of_match);
 
+static const struct spi_device_id ad9467_ids[] = {
+	{ "ad9467", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9467], },
+	{ "ad9643", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9643], },
+	{ "ad9250", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9250], },
+	{ "ad9250_2", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9250_2], },
+	{ "ad9265", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9265], },
+	{ "ad9683", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9683], },
+	{ "ad9434", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9434], },
+	{ "ad9625", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9625], },
+	{ "ad9652", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9652], },
+	{ "ad9649", (kernel_ulong_t)&ad9467_chip_tbl[ID_AD9649], },
+	{}
+};
+MODULE_DEVICE_TABLE(spi, ad9467_ids);
+
 static struct spi_driver ad9467_driver = {
 	.driver = {
 		.name = "ad9467",
 		.of_match_table = ad9467_of_match,
 	},
 	.probe = ad9467_probe,
+	.id_table = ad9467_ids,
 };
 module_spi_driver(ad9467_driver);
 
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD9467 ADC driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_ADI_AXI);

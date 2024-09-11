@@ -21,16 +21,6 @@ void xhdmiphy_intr_dis(struct xhdmiphy_dev *inst, u32 intr)
 	xhdmiphy_write(inst, XHDMIPHY_INTR_DIS_REG, reg_val);
 }
 
-static void xhdmiphy_set(struct xhdmiphy_dev *inst, u32 addr, u32 set)
-{
-	xhdmiphy_write(inst, addr, xhdmiphy_read(inst, addr) | set);
-}
-
-inline void xhdmiphy_clr(struct xhdmiphy_dev *inst, u32 addr, u32 clr)
-{
-	xhdmiphy_write(inst, addr, xhdmiphy_read(inst, addr) & ~clr);
-}
-
 /**
  * xhdmiphy_outdiv_reconf - This function will set the current output divider
  * configuration over DRP.
@@ -875,7 +865,7 @@ static u32 xhdmiphy_rpll_param(struct xhdmiphy_dev *inst, enum chid chid,
 	/* Pre-calculation */
 	if (dir == XHDMIPHY_DIR_RX) {
 		refclk_ptr = &inst->rx_refclk_hz;
-		is_hdmi21 = inst->tx_hdmi21_cfg.is_en;
+		is_hdmi21 = inst->rx_hdmi21_cfg.is_en;
 		tmdsclk_ratio = inst->rx_tmdsclock_ratio;
 
 		/* calculate line rate */

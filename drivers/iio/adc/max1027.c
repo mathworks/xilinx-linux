@@ -106,7 +106,7 @@ MODULE_DEVICE_TABLE(of, max1027_adc_dt_ids);
 			.sign = 'u',					\
 			.realbits = depth,				\
 			.storagebits = 16,				\
-			.shift = 2,					\
+			.shift = (depth == 10) ? 2 : 0,			\
 			.endianness = IIO_BE,				\
 		},							\
 	}
@@ -145,7 +145,6 @@ MODULE_DEVICE_TABLE(of, max1027_adc_dt_ids);
 	MAX1027_V_CHAN(11, depth)
 
 #define MAX1X31_CHANNELS(depth)			\
-	MAX1X27_CHANNELS(depth),		\
 	MAX1X29_CHANNELS(depth),		\
 	MAX1027_V_CHAN(12, depth),		\
 	MAX1027_V_CHAN(13, depth),		\
@@ -551,8 +550,6 @@ static int max1027_probe(struct spi_device *spi)
 		return -ENOMEM;
 	}
 
-	spi_set_drvdata(spi, indio_dev);
-
 	st = iio_priv(indio_dev);
 	st->spi = spi;
 	st->info = &max1027_chip_info_tbl[spi_get_device_id(spi)->driver_data];
@@ -595,7 +592,6 @@ static int max1027_probe(struct spi_device *spi)
 		}
 
 		st->trig->ops = &max1027_trigger_ops;
-		st->trig->dev.parent = &spi->dev;
 		iio_trigger_set_drvdata(st->trig, indio_dev);
 		ret = devm_iio_trigger_register(&indio_dev->dev,
 						st->trig);

@@ -14,7 +14,7 @@
 
 / {
 	ref_clk: ref_clk {
-		u-boot,dm-pre-reloc;
+		bootph-all;
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
 		clock-frequency = <33333333>;
@@ -38,8 +38,8 @@
 
 	firmware {
 		versal_net_firmware: versal-net-firmware {
-			compatible = "xlnx,versal-net-firmware";
-			u-boot,dm-pre-reloc;
+			compatible = "xlnx,versal-net-firmware", "xlnx,versal-firmware";
+			bootph-all;
 			method = "smc";
 			#power-domain-cells = <1>;
 
@@ -49,9 +49,9 @@
 			};
 
 			versal_net_clk: clock-controller {
-				u-boot,dm-pre-reloc;
+				bootph-all;
 				#clock-cells = <1>;
-				compatible = "xlnx,versal-net-clk";
+				compatible = "xlnx,versal-net-clk", "xlnx,versal-clk";
 				clocks = <&ref_clk>, <&ref_clk>;
 				clock-names = "ref_clk", "pl_alt_ref_clk";
 			};
@@ -121,7 +121,7 @@
 		};
 	};
 
-	zynqmp_ipi {
+	zynqmp-ipi {
 		compatible = "xlnx,zynqmp-ipi-mailbox";
 		interrupt-parent = <&gic>;
 		interrupts = <0 57 4>;
@@ -406,4 +406,14 @@
 &wwdt3 {
 	clocks = <&versal_net_clk FPD_WWDT>;
 	power-domains = <&versal_net_firmware PM_DEV_FPD_SWDT_3>;
+};
+
+&lpd_wwdt0 {
+	clocks = <&versal_net_clk LPD_WWDT>;
+	power-domains = <&versal_net_firmware PM_DEV_LPD_SWDT_0>;
+};
+
+&lpd_wwdt1 {
+	clocks = <&versal_net_clk LPD_WWDT>;
+	power-domains = <&versal_net_firmware PM_DEV_LPD_SWDT_1>;
 };

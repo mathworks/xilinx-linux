@@ -36,11 +36,6 @@ static int adxl345_spi_probe(struct spi_device *spi)
 	return adxl345_core_probe(&spi->dev, regmap);
 }
 
-static void adxl345_spi_remove(struct spi_device *spi)
-{
-	adxl345_core_remove(&spi->dev);
-}
-
 static const struct spi_device_id adxl345_spi_id[] = {
 	{ "adxl345", ADXL345 },
 	{ "adxl375", ADXL375 },
@@ -68,7 +63,6 @@ static struct spi_driver adxl345_spi_driver = {
 		.acpi_match_table = adxl345_acpi_match,
 	},
 	.probe		= adxl345_spi_probe,
-	.remove		= adxl345_spi_remove,
 	.id_table	= adxl345_spi_id,
 };
 module_spi_driver(adxl345_spi_driver);

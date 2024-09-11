@@ -179,7 +179,7 @@ static unsigned int ad7291_threshold_reg(const struct iio_chan_spec *chan,
 		offset = AD7291_VOLTAGE_OFFSET;
 		break;
 	default:
-	    return 0;
+		return 0;
 	}
 
 	switch (info) {
@@ -465,9 +465,9 @@ static void ad7291_reg_disable(void *reg)
 	regulator_disable(reg);
 }
 
-static int ad7291_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ad7291_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct ad7291_chip_info *chip;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -506,11 +506,7 @@ static int ad7291_probe(struct i2c_client *client,
 		chip->command |= AD7291_EXT_REF;
 	}
 
-	if (client->dev.of_node)
-		indio_dev->name = client->dev.of_node->name;
-	else
-		indio_dev->name = id->name;
-
+	indio_dev->name = id->name;
 	indio_dev->channels = ad7291_channels;
 	indio_dev->num_channels = ARRAY_SIZE(ad7291_channels);
 

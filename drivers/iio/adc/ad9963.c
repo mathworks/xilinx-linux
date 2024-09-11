@@ -333,7 +333,6 @@ static void ad9963_remove(struct spi_device *spi)
 	struct ad9963 *ad9963 = iio_priv(indio_dev);
 
 	clk_disable_unprepare(ad9963->clk);
-
 }
 
 static const struct spi_device_id ad9963_id[] = {

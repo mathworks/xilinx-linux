@@ -85,7 +85,8 @@ struct vpu_dev {
 
 struct vpu_format {
 	u32 pixfmt;
-	unsigned int num_planes;
+	u32 mem_planes;
+	u32 comp_planes;
 	u32 type;
 	u32 flags;
 	u32 width;
@@ -93,6 +94,7 @@ struct vpu_format {
 	u32 sizeimage[VIDEO_MAX_PLANES];
 	u32 bytesperline[VIDEO_MAX_PLANES];
 	u32 field;
+	u32 sibling;
 };
 
 struct vpu_core_resources {
@@ -352,6 +354,9 @@ void vpu_inst_record_flow(struct vpu_inst *inst, u32 flow);
 
 int vpu_core_driver_init(void);
 void vpu_core_driver_exit(void);
+
+const char *vpu_id_name(u32 id);
+const char *vpu_codec_state_name(enum vpu_codec_state state);
 
 extern bool debug;
 #define vpu_trace(dev, fmt, arg...)					\

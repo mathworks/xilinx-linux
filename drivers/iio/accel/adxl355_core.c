@@ -18,8 +18,10 @@
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
-#include <linux/of_irq.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/units.h>
+
 #include <asm/unaligned.h>
 
 #include "adxl355.h"
@@ -58,10 +60,8 @@
 #define ADXL355_DEVID_AD_VAL		0xAD
 #define ADXL355_DEVID_MST_VAL		0x1D
 #define ADXL355_PARTID_VAL		0xED
+#define ADXL359_PARTID_VAL		0xE9
 #define ADXL355_RESET_CODE		0x52
-
-#define MEGA 1000000UL
-#define TERA 1000000000000ULL
 
 static const struct regmap_range adxl355_read_reg_range[] = {
 	regmap_reg_range(ADXL355_DEVID_AD_REG, ADXL355_FIFO_DATA_REG),
@@ -72,7 +72,7 @@ const struct regmap_access_table adxl355_readable_regs_tbl = {
 	.yes_ranges = adxl355_read_reg_range,
 	.n_yes_ranges = ARRAY_SIZE(adxl355_read_reg_range),
 };
-EXPORT_SYMBOL_GPL(adxl355_readable_regs_tbl);
+EXPORT_SYMBOL_NS_GPL(adxl355_readable_regs_tbl, IIO_ADXL355);
 
 static const struct regmap_range adxl355_write_reg_range[] = {
 	regmap_reg_range(ADXL355_OFFSET_X_H_REG, ADXL355_RESET_REG),
@@ -82,7 +82,61 @@ const struct regmap_access_table adxl355_writeable_regs_tbl = {
 	.yes_ranges = adxl355_write_reg_range,
 	.n_yes_ranges = ARRAY_SIZE(adxl355_write_reg_range),
 };
-EXPORT_SYMBOL_GPL(adxl355_writeable_regs_tbl);
+EXPORT_SYMBOL_NS_GPL(adxl355_writeable_regs_tbl, IIO_ADXL355);
+
+const struct adxl355_chip_info adxl35x_chip_info[] = {
+	[ADXL355] = {
+		.name = "adxl355",
+		.part_id = ADXL355_PARTID_VAL,
+		/*
+		 * At +/- 2g with 20-bit resolution, scale is given in datasheet
+		 * as 3.9ug/LSB = 0.0000039 * 9.80665 = 0.00003824593 m/s^2.
+		 */
+		.accel_scale = {
+			.integer = 0,
+			.decimal = 38245,
+		},
+		/*
+		 * The datasheet defines an intercept of 1885 LSB at 25 degC
+		 * and a slope of -9.05 LSB/C. The following formula can be used
+		 * to find the temperature:
+		 * Temp = ((RAW - 1885)/(-9.05)) + 25 but this doesn't follow
+		 * the format of the IIO which is Temp = (RAW + OFFSET) * SCALE.
+		 * Hence using some rearranging we get the scale as -110.497238
+		 * and offset as -2111.25.
+		 */
+		.temp_offset = {
+			.integer =  -2111,
+			.decimal = 250000,
+		},
+	},
+	[ADXL359] = {
+		.name = "adxl359",
+		.part_id = ADXL359_PARTID_VAL,
+		/*
+		 * At +/- 10g with 20-bit resolution, scale is given in datasheet
+		 * as 19.5ug/LSB = 0.0000195 * 9.80665 = 0.0.00019122967 m/s^2.
+		 */
+		.accel_scale = {
+			.integer = 0,
+			.decimal = 191229,
+		},
+		/*
+		 * The datasheet defines an intercept of 1852 LSB at 25 degC
+		 * and a slope of -9.05 LSB/C. The following formula can be used
+		 * to find the temperature:
+		 * Temp = ((RAW - 1852)/(-9.05)) + 25 but this doesn't follow
+		 * the format of the IIO which is Temp = (RAW + OFFSET) * SCALE.
+		 * Hence using some rearranging we get the scale as -110.497238
+		 * and offset as -2079.25.
+		 */
+		.temp_offset = {
+			.integer = -2079,
+			.decimal = 250000,
+		},
+	},
+};
+EXPORT_SYMBOL_NS_GPL(adxl35x_chip_info, IIO_ADXL355);
 
 enum adxl355_op_mode {
 	ADXL355_MEASUREMENT,
@@ -163,6 +217,7 @@ static const struct adxl355_chan_info adxl355_chans[] = {
 };
 
 struct adxl355_data {
+	const struct adxl355_chip_info *chip_info;
 	struct regmap *regmap;
 	struct device *dev;
 	struct mutex lock; /* lock to protect op_mode */
@@ -178,7 +233,7 @@ struct adxl355_data {
 			u8 buf[14];
 			s64 ts;
 		} buffer;
-	} ____cacheline_aligned;
+	} __aligned(IIO_DMA_MINALIGN);
 };
 
 static int adxl355_set_op_mode(struct adxl355_data *data,
@@ -263,10 +318,8 @@ static int adxl355_setup(struct adxl355_data *data)
 	if (ret)
 		return ret;
 
-	if (regval != ADXL355_PARTID_VAL) {
-		dev_err(data->dev, "Invalid DEV ID 0x%02x\n", regval);
-		return -ENODEV;
-	}
+	if (regval != ADXL355_PARTID_VAL)
+		dev_warn(data->dev, "Invalid DEV ID 0x%02x\n", regval);
 
 	/*
 	 * Perform a software reset to make sure the device is in a consistent
@@ -446,8 +499,8 @@ static int adxl355_read_raw(struct iio_dev *indio_dev,
 
 			return IIO_VAL_INT;
 		case IIO_ACCEL:
-			ret = adxl355_read_axis(data, adxl355_chans
-						[chan->address].data_reg);
+			ret = adxl355_read_axis(data, adxl355_chans[
+						chan->address].data_reg);
 			if (ret < 0)
 				return ret;
 			*val = sign_extend32(ret >> chan->scan_type.shift,
@@ -459,33 +512,25 @@ static int adxl355_read_raw(struct iio_dev *indio_dev,
 
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
-		/*
-		 * The datasheet defines an intercept of 1885 LSB at 25 degC
-		 * and a slope of -9.05 LSB/C. The following formula can be used
-		 * to find the temperature:
-		 * Temp = ((RAW - 1885)/(-9.05)) + 25 but this doesn't follow
-		 * the format of the IIO which is Temp = (RAW + OFFSET) * SCALE.
-		 * Hence using some rearranging we get the scale as -110.497238
-		 * and offset as -2111.25.
-		 */
 		case IIO_TEMP:
+			/*
+			 * Temperature scale is -110.497238.
+			 * See the detailed explanation in adxl35x_chip_info
+			 * definition above.
+			 */
 			*val = -110;
 			*val2 = 497238;
 			return IIO_VAL_INT_PLUS_MICRO;
-		/*
-		 * At +/- 2g with 20-bit resolution, scale is given in datasheet
-		 * as 3.9ug/LSB = 0.0000039 * 9.80665 = 0.00003824593 m/s^2.
-		 */
 		case IIO_ACCEL:
-			*val = 0;
-			*val2 = 38245;
+			*val = data->chip_info->accel_scale.integer;
+			*val2 = data->chip_info->accel_scale.decimal;
 			return IIO_VAL_INT_PLUS_NANO;
 		default:
 			return -EINVAL;
 		}
 	case IIO_CHAN_INFO_OFFSET:
-		*val = -2111;
-		*val2 = 250000;
+		*val = data->chip_info->temp_offset.integer;
+		*val2 = data->chip_info->temp_offset.decimal;
 		return IIO_VAL_INT_PLUS_MICRO;
 	case IIO_CHAN_INFO_CALIBBIAS:
 		*val = sign_extend32(data->calibbias[chan->address], 15);
@@ -521,7 +566,7 @@ static int adxl355_write_raw(struct iio_dev *indio_dev,
 		return adxl355_set_odr(data, odr_idx);
 	case IIO_CHAN_INFO_HIGH_PASS_FILTER_3DB_FREQUENCY:
 		hpf_idx = adxl355_find_match(data->adxl355_hpf_3db_table,
-					     ARRAY_SIZE(data->adxl355_hpf_3db_table),
+					ARRAY_SIZE(data->adxl355_hpf_3db_table),
 					     val, val2);
 		if (hpf_idx < 0)
 			return hpf_idx;
@@ -682,7 +727,7 @@ static int adxl355_probe_trigger(struct iio_dev *indio_dev, int irq)
 
 	data->dready_trig = devm_iio_trigger_alloc(data->dev, "%s-dev%d",
 						   indio_dev->name,
-						   indio_dev->id);
+						   iio_device_id(indio_dev));
 	if (!data->dready_trig)
 		return -ENOMEM;
 
@@ -708,7 +753,7 @@ static int adxl355_probe_trigger(struct iio_dev *indio_dev, int irq)
 }
 
 int adxl355_core_probe(struct device *dev, struct regmap *regmap,
-		       const char *name)
+		       const struct adxl355_chip_info *chip_info)
 {
 	struct adxl355_data *data;
 	struct iio_dev *indio_dev;
@@ -723,9 +768,10 @@ int adxl355_core_probe(struct device *dev, struct regmap *regmap,
 	data->regmap = regmap;
 	data->dev = dev;
 	data->op_mode = ADXL355_STANDBY;
+	data->chip_info = chip_info;
 	mutex_init(&data->lock);
 
-	indio_dev->name = name;
+	indio_dev->name = chip_info->name;
 	indio_dev->info = &adxl355_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = adxl355_channels;
@@ -746,10 +792,7 @@ int adxl355_core_probe(struct device *dev, struct regmap *regmap,
 		return ret;
 	}
 
-	/*
-	 * TODO: Would be good to move it to the generic version.
-	 */
-	irq = of_irq_get_byname(dev->of_node, "DRDY");
+	irq = fwnode_irq_get_byname(dev_fwnode(dev), "DRDY");
 	if (irq > 0) {
 		ret = adxl355_probe_trigger(indio_dev, irq);
 		if (ret)
@@ -758,7 +801,7 @@ int adxl355_core_probe(struct device *dev, struct regmap *regmap,
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_GPL(adxl355_core_probe);
+EXPORT_SYMBOL_NS_GPL(adxl355_core_probe, IIO_ADXL355);
 
 MODULE_AUTHOR("Puranjay Mohan <puranjay12@gmail.com>");
 MODULE_DESCRIPTION("ADXL355 3-Axis Digital Accelerometer core driver");

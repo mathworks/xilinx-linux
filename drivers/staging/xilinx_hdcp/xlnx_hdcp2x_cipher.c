@@ -12,6 +12,7 @@
  * and session key Ks before encryption is enabled.
  */
 
+#include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/xlnx/xlnx_hdcp2x_cipher.h>
 
@@ -42,6 +43,13 @@ void xlnx_hdcp2x_cipher_init(struct xlnx_hdcp2x_cipher_hw *cipher_cfg)
 	xlnx_hdcp2x_cipher_enable(cipher_cfg->cipher_coreaddress);
 	xlnx_hdcp2x_cipher_set_txmode(cipher_cfg->cipher_coreaddress);
 	xlnx_hdcp2x_tx_cipher_update_encryption(cipher_cfg, 0);
+	xlnx_hdcp2x_cipher_disable(cipher_cfg->cipher_coreaddress);
+}
+
+void xlnx_hdcp2x_rx_cipher_init(struct xlnx_hdcp2x_cipher_hw *cipher_cfg)
+{
+	xlnx_hdcp2x_cipher_enable(cipher_cfg->cipher_coreaddress);
+	xlnx_hdcp2x_cipher_set_rxmode(cipher_cfg->cipher_coreaddress);
 	xlnx_hdcp2x_cipher_disable(cipher_cfg->cipher_coreaddress);
 }
 

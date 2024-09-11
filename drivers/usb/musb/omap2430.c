@@ -334,7 +334,7 @@ static int omap2430_probe(struct platform_device *pdev)
 	 * Legacy SoCs using omap_device get confused if node is moved
 	 * because of interconnect properties mixed into the node.
 	 */
-	if (of_get_property(np, "ti,hwmods", NULL)) {
+	if (of_property_present(np, "ti,hwmods")) {
 		dev_warn(&pdev->dev, "please update to probe with ti-sysc\n");
 		populate_irqs = true;
 	} else {
@@ -411,8 +411,10 @@ static int omap2430_probe(struct platform_device *pdev)
 		memset(musb_res, 0, sizeof(*musb_res) * ARRAY_SIZE(musb_res));
 
 		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-		if (!res)
+		if (!res) {
+			ret = -EINVAL;
 			goto err2;
+		}
 
 		musb_res[i].start = res->start;
 		musb_res[i].end = res->end;
@@ -469,14 +471,12 @@ err0:
 	return ret;
 }
 
-static int omap2430_remove(struct platform_device *pdev)
+static void omap2430_remove(struct platform_device *pdev)
 {
 	struct omap2430_glue *glue = platform_get_drvdata(pdev);
 
 	platform_device_unregister(glue->musb);
 	pm_runtime_disable(glue->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -608,7 +608,7 @@ MODULE_DEVICE_TABLE(of, omap2430_id_table);
 
 static struct platform_driver omap2430_driver = {
 	.probe		= omap2430_probe,
-	.remove		= omap2430_remove,
+	.remove_new	= omap2430_remove,
 	.driver		= {
 		.name	= "musb-omap2430",
 		.pm	= DEV_PM_OPS,

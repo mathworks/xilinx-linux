@@ -221,6 +221,7 @@ enum adrv9009_iio_dev_attr {
 	ADRV9009_JESD204_FSM_STATE,
 	ADRV9009_JESD204_FSM_RESUME,
 	ADRV9009_JESD204_FSM_CTRL,
+	ADRV9009_RADIO_CTRL_PIN_MODE_EN,
 };
 
 int adrv9009_spi_read(struct spi_device *spi, unsigned reg)
@@ -301,9 +302,9 @@ static int adrv9009_set_jesd_lanerate(struct adrv9009_rf_phy *phy,
 				      taliseJesd204bDeframerConfig_t *deframer,
 				      u32 *lmfc)
 {
-	bool clk_enable = __clk_is_enabled(link_clk);
 	unsigned long lane_rate_kHz;
 	u32 m, l, k, f, lmfc_tmp;
+	bool clk_enable;
 	int ret;
 
 	if (!lmfc)
@@ -311,6 +312,8 @@ static int adrv9009_set_jesd_lanerate(struct adrv9009_rf_phy *phy,
 
 	if (IS_ERR_OR_NULL(link_clk))
 		return 0;
+
+	clk_enable = __clk_is_enabled(link_clk);
 
 	if (framer) {
 		m = framer->M;
@@ -503,6 +506,8 @@ static const char * const adrv9009_ilas_mismatch_table[] = {
 	"high density",
 	"checksum"
 };
+
+static int adrv9009_gt_fw_load(struct adrv9009_rf_phy *phy);
 
 static int adrv9009_do_setup(struct adrv9009_rf_phy *phy)
 {
@@ -917,8 +922,6 @@ static int adrv9009_do_setup(struct adrv9009_rf_phy *phy)
 	}
 
 	/*** < User Sends SYSREF Here > ***/
-
-
 	adrv9009_sysref_req(phy, SYSREF_CONT_ON);
 
 	if (has_rx_and_en(phy)) {
@@ -950,9 +953,8 @@ static int adrv9009_do_setup(struct adrv9009_rf_phy *phy)
 		adrv9009_spi_write(phy->spi, TALISE_ADDR_DES_PHY_GENERAL_CTL_1, phy_ctrl);
 	}
 
-	adrv9009_sysref_req(phy, SYSREF_CONT_OFF);
-
 	/*** < User Sends SYSREF Here > ***/
+	adrv9009_sysref_req(phy, SYSREF_CONT_OFF);
 
 	/*** < Insert User JESD204B Sync Verification Code Here > ***/
 
@@ -1031,6 +1033,11 @@ static int adrv9009_do_setup(struct adrv9009_rf_phy *phy)
 			ret = -EFAULT;
 			goto out_disable_tx_clk;
 		}
+		ret = adrv9009_gt_fw_load(phy);
+		if (ret < 0) {
+			dev_err(&phy->spi->dev, "%s:%d (ret %d)", __func__, __LINE__, ret);
+			goto out_disable_tx_clk;
+		}
 	}
 
 	if (has_tx_and_en(phy)) {
@@ -1070,7 +1077,8 @@ static int adrv9009_do_setup(struct adrv9009_rf_phy *phy)
 	}
 
 	ret = TALISE_setRxTxEnable(phy->talDevice,
-				   has_rx_and_en(phy) ? phy->talInit.rx.rxChannels : 0,
+				   has_rx_and_en(phy) ?
+					(taliseRxORxChannels_t)phy->talInit.rx.rxChannels : 0,
 				   has_tx_and_en(phy) ? phy->talInit.tx.txChannels : 0);
 	if (ret != TALACT_NO_ACTION) {
 		dev_err(&phy->spi->dev, "%s:%d (ret %d)", __func__, __LINE__, ret);
@@ -1465,12 +1473,12 @@ static ssize_t adrv9009_phy_store(struct device *dev,
 	int ret = 0;
 	u32 val;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	switch ((u32)this_attr->address & 0xFF) {
 	case ADRV9009_ENSM_MODE:
 		if (!phy->is_initialized) {
-			mutex_unlock(&indio_dev->mlock);
+			mutex_unlock(&phy->lock);
 			return -EBUSY;
 		}
 
@@ -1485,7 +1493,7 @@ static ssize_t adrv9009_phy_store(struct device *dev,
 		break;
 	case ADRV9009_INIT_CAL:
 		if (!phy->is_initialized) {
-			mutex_unlock(&indio_dev->mlock);
+			mutex_unlock(&phy->lock);
 			return -EBUSY;
 		}
 
@@ -1567,11 +1575,24 @@ static ssize_t adrv9009_phy_store(struct device *dev,
 		}
 
 		break;
+	case ADRV9009_RADIO_CTRL_PIN_MODE_EN:
+		if (!phy->is_initialized) {
+			mutex_unlock(&phy->lock);
+			return -EBUSY;
+		}
+
+		ret = strtobool(buf, &enable);
+		if (ret)
+			break;
+		ret = TALISE_setRadioCtlPinMode(phy->talDevice,
+						enable ? phy->pin_options_mask : 0,
+						enable ? phy->orx_en_gpio_pinsel : 0);
+		break;
 	default:
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret ? ret : len;
 }
@@ -1585,12 +1606,14 @@ static ssize_t adrv9009_phy_show(struct device *dev,
 	struct adrv9009_rf_phy *phy = iio_priv(indio_dev);
 	struct jesd204_dev *jdev = phy->jdev;
 	struct jesd204_link *links[3];
+	taliseRadioCtlCfg2_t orxEnGpioPinSel;
+	u8 pinOptionsMask;
 	int ret = 0;
 	int i, err, num_links;
 	bool paused;
 	u32 val;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	switch ((u32)this_attr->address & 0xFF) {
 	case ADRV9009_ENSM_MODE:
 		ret = sprintf(buf, "%s\n",
@@ -1602,9 +1625,7 @@ static ssize_t adrv9009_phy_show(struct device *dev,
 		break;
 	case ADRV9009_INIT_CAL:
 		val = (u32)this_attr->address >> 8;
-
-		if (val)
-			ret = sprintf(buf, "%d\n", !!(phy->cal_mask & val));
+		ret = sprintf(buf, "%d\n", !!(phy->cal_mask & val));
 		break;
 	case ADRV9009_JESD204_FSM_ERROR:
 		if (!phy->jdev) {
@@ -1688,10 +1709,18 @@ static ssize_t adrv9009_phy_show(struct device *dev,
 
 		ret = sprintf(buf, "%d\n", phy->is_initialized);
 		break;
+	case ADRV9009_RADIO_CTRL_PIN_MODE_EN:
+		ret = TALISE_getRadioCtlPinMode(phy->talDevice,
+						&pinOptionsMask,
+						&orxEnGpioPinSel);
+		if (ret)
+			break;
+		ret = sprintf(buf, "%d\n", !!pinOptionsMask);
+		break;
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 }
@@ -1746,6 +1775,11 @@ static IIO_DEVICE_ATTR(multichip_sync, S_IWUSR,
 		       adrv9009_phy_store,
 		       ADRV9009_MCS);
 
+static IIO_DEVICE_ATTR(radio_pinctrl_en, 0644,
+		       adrv9009_phy_show,
+		       adrv9009_phy_store,
+		       ADRV9009_RADIO_CTRL_PIN_MODE_EN);
+
 /**
  * FIXME: these work only if working with all JESD204 links at once,
  * so, if one link has an error, the first will be shown, and all
@@ -1792,6 +1826,7 @@ static struct attribute *adrv9009_phy_attributes[] = {
 	&iio_dev_attr_calibrate_tx_lol_ext_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_rx_phase_correction_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_fhm_en.dev_attr.attr,
+	&iio_dev_attr_radio_pinctrl_en.dev_attr.attr,
 	NULL,
 };
 
@@ -1807,6 +1842,7 @@ static struct attribute *adrv90081_phy_attributes[] = {
 	&iio_dev_attr_calibrate_rx_qec_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_rx_phase_correction_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_fhm_en.dev_attr.attr,
+	&iio_dev_attr_radio_pinctrl_en.dev_attr.attr,
 	NULL,
 };
 
@@ -1823,6 +1859,7 @@ static struct attribute *adrv90082_phy_attributes[] = {
 	&iio_dev_attr_calibrate_tx_lol_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_tx_lol_ext_en.dev_attr.attr,
 	&iio_dev_attr_calibrate_fhm_en.dev_attr.attr,
+	&iio_dev_attr_radio_pinctrl_en.dev_attr.attr,
 	NULL,
 };
 
@@ -1837,14 +1874,14 @@ static int adrv9009_phy_reg_access(struct iio_dev *indio_dev,
 	struct adrv9009_rf_phy *phy = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	if (readval == NULL)
 		ret = adrv9009_spi_write(phy->spi, reg, writeval);
 	else {
 		*readval = adrv9009_spi_read(phy->spi, reg);
 		ret = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 }
@@ -1877,7 +1914,7 @@ static ssize_t adrv9009_phy_lo_write(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&phy->lock);
 
 		adrv9009_set_radio_state(phy, RADIO_FORCE_OFF);
 
@@ -1911,7 +1948,7 @@ static ssize_t adrv9009_phy_lo_write(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&phy->lock);
 		adrv9009_set_radio_state(phy, RADIO_FORCE_OFF);
 
 		phy->fhm_mode.fhmEnable = enable;
@@ -1934,7 +1971,7 @@ static ssize_t adrv9009_phy_lo_write(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&phy->lock);
 
 		ret = TALISE_setFhmHop(phy->talDevice, readin);
 		break;
@@ -1944,7 +1981,7 @@ static ssize_t adrv9009_phy_lo_write(struct iio_dev *indio_dev,
 
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret ? ret : len;
 }
@@ -1962,7 +1999,7 @@ static ssize_t adrv9009_phy_lo_read(struct iio_dev *indio_dev,
 	if (!phy->is_initialized)
 		return -EBUSY;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	switch (private) {
 	case LOEXT_FREQ:
 		ret = TALISE_getRfPllFrequency(phy->talDevice, TAL_RF_PLL + chan->channel,
@@ -1978,7 +2015,7 @@ static ssize_t adrv9009_phy_lo_read(struct iio_dev *indio_dev,
 	default:
 		ret = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret ? ret : sprintf(buf, "%llu\n", val);
 }
@@ -2118,7 +2155,7 @@ static ssize_t adrv9009_phy_rx_write(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	switch (private) {
 		case RSSI:
@@ -2278,7 +2315,7 @@ static ssize_t adrv9009_phy_rx_write(struct iio_dev *indio_dev,
 	}
 
 out:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret ? ret : len;
 }
@@ -2303,7 +2340,7 @@ static ssize_t adrv9009_phy_rx_read(struct iio_dev *indio_dev,
 	if (!phy->is_initialized)
 		return -EBUSY;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	switch (private) {
 	case RSSI:
@@ -2459,7 +2496,7 @@ static ssize_t adrv9009_phy_rx_read(struct iio_dev *indio_dev,
 	}
 
 out:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 }
@@ -2494,7 +2531,7 @@ static ssize_t adrv9009_phy_tx_read(struct iio_dev *indio_dev,
 	if (chan->channel > CHAN_TX2)
 		return -EINVAL;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	switch (private) {
 	case TX_QEC:
 	case TX_LOL:
@@ -2553,7 +2590,7 @@ static ssize_t adrv9009_phy_tx_read(struct iio_dev *indio_dev,
 	if (ret == 0)
 		ret = sprintf(buf, "%d\n", val);
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 }
@@ -2580,7 +2617,7 @@ static ssize_t adrv9009_phy_tx_write(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	switch (private) {
 	case TX_QEC:
@@ -2650,7 +2687,7 @@ static ssize_t adrv9009_phy_tx_write(struct iio_dev *indio_dev,
 
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret ? ret : len;
 }
@@ -2667,8 +2704,8 @@ static const struct iio_chan_spec_ext_info adrv9009_phy_rx_ext_info[] = {
 	 * values > 2^32 in order to support the entire frequency range
 	 * in Hz. Using scale is a bit ugly.
 	 */
-	IIO_ENUM_AVAILABLE_SHARED("gain_control_mode", 0,  &adrv9009_agc_modes_available),
-	IIO_ENUM("gain_control_mode", false, &adrv9009_agc_modes_available),
+	IIO_ENUM_AVAILABLE("gain_control_mode", IIO_SEPARATE,  &adrv9009_agc_modes_available),
+	IIO_ENUM("gain_control_mode", IIO_SEPARATE, &adrv9009_agc_modes_available),
 	_ADRV9009_EXT_RX_INFO("rssi", RSSI),
 	_ADRV9009_EXT_RX_INFO("quadrature_tracking_en", RX_QEC),
 	_ADRV9009_EXT_RX_INFO("bb_dc_offset_tracking_en", RX_BBDC),
@@ -2684,8 +2721,8 @@ static const struct iio_chan_spec_ext_info adrv9009_phy_obs_rx_ext_info[] = {
 	 * values > 2^32 in order to support the entire frequency range
 	 * in Hz. Using scale is a bit ugly.
 	 */
-	IIO_ENUM_AVAILABLE_SHARED("rf_port_select", 0, &adrv9009_rf_obs_rx_port_available),
-	IIO_ENUM("rf_port_select", false, &adrv9009_rf_obs_rx_port_available),
+	IIO_ENUM_AVAILABLE("rf_port_select", IIO_SEPARATE, &adrv9009_rf_obs_rx_port_available),
+	IIO_ENUM("rf_port_select", IIO_SEPARATE, &adrv9009_rf_obs_rx_port_available),
 	_ADRV9009_EXT_RX_INFO("quadrature_tracking_en", RX_QEC),
 	_ADRV9009_EXT_RX_INFO("bb_dc_offset_tracking_en", RX_BBDC),
 	_ADRV9009_EXT_RX_INFO("rf_bandwidth", RX_RF_BANDWIDTH),
@@ -2705,68 +2742,70 @@ static struct iio_chan_spec_ext_info adrv9009_phy_tx_ext_info[] = {
 static int adrv9009_gainindex_to_gain(struct adrv9009_rf_phy *phy, int channel,
 				      unsigned index, int *val, int *val2)
 {
+	taliseGainIndex_t *gainIndexes = &phy->talDevice->devStateInfo.gainIndexes;
 	int code;
+	u8 entry;
 
 	switch (channel) {
 	case CHAN_RX1:
+		entry = gainIndexes->rx1MaxGainIndex - index;
+
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[RX1_RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[RX1_RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
 		if (phy->gt_info[RX1_GT].abs_gain_tbl) {
-			code = phy->gt_info[RX1_GT].abs_gain_tbl[index];
+			code = phy->gt_info[RX1_GT].abs_gain_tbl[entry];
 			break;
 		}
 
-		code = MAX_RX_GAIN_mdB -
-		       (phy->talDevice->devStateInfo.gainIndexes.rx1MaxGainIndex - index) *
-		       RX_GAIN_STEP_mdB;
+		code = MAX_RX_GAIN_mdB - entry * RX_GAIN_STEP_mdB;
 		break;
 	case CHAN_RX2:
+		entry = gainIndexes->rx2MaxGainIndex - index;
+
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[RX1_RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[RX1_RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
 		if (phy->gt_info[RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
-		code = MAX_RX_GAIN_mdB -
-		       (phy->talDevice->devStateInfo.gainIndexes.rx2MaxGainIndex - index) *
-		       RX_GAIN_STEP_mdB;
+		code = MAX_RX_GAIN_mdB - entry * RX_GAIN_STEP_mdB;
 		break;
 	case CHAN_OBS_RX1:
+		entry = gainIndexes->orx1MaxGainIndex - index;
+
 		if (phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
 		if (phy->gt_info[ORX_RX1_GT].abs_gain_tbl) {
-			code = phy->gt_info[ORX_RX1_GT].abs_gain_tbl[index];
+			code = phy->gt_info[ORX_RX1_GT].abs_gain_tbl[entry];
 			break;
 		}
 
-		code = MAX_OBS_RX_GAIN_mdB -
-		       (phy->talDevice->devStateInfo.gainIndexes.orx1MaxGainIndex - index) *
-		       RX_GAIN_STEP_mdB;
+		code = MAX_OBS_RX_GAIN_mdB - entry * RX_GAIN_STEP_mdB;
 		break;
 	case CHAN_OBS_RX2:
+		entry = gainIndexes->orx2MaxGainIndex - index;
+
 		if (phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
 		if (phy->gt_info[RX2_GT].abs_gain_tbl) {
-			code = phy->gt_info[ORX_RX2_GT].abs_gain_tbl[index];
+			code = phy->gt_info[ORX_RX2_GT].abs_gain_tbl[entry];
 			break;
 		}
 
-		code = MAX_OBS_RX_GAIN_mdB -
-		       (phy->talDevice->devStateInfo.gainIndexes.orx2MaxGainIndex - index) *
-		       RX_GAIN_STEP_mdB;
+		code = MAX_OBS_RX_GAIN_mdB - entry * RX_GAIN_STEP_mdB;
 		break;
 	default:
 		return -EINVAL;
@@ -2787,9 +2826,9 @@ static int find_table_index(struct adrv9009_rf_phy *phy,
 	u32 i, nm1, n;
 
 	for (i = 0; i < phy->gt_info[table].max_index; i++) {
-		if (phy->gt_info[table].abs_gain_tbl[i] > gain) {
+		if (phy->gt_info[table].abs_gain_tbl[i] <= gain) {
 			nm1 = abs(phy->gt_info[table].abs_gain_tbl[
-					  (i > 0) ? i - 1 : i] - gain);
+				(i > 0) ? i - 1 : i] - gain);
 			n = abs(phy->gt_info[table].abs_gain_tbl[i]
 				- gain);
 			if (nm1 < n)
@@ -2805,6 +2844,7 @@ static int find_table_index(struct adrv9009_rf_phy *phy,
 static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 				      int val, int val2, unsigned *index)
 {
+	taliseGainIndex_t *gainIndexes = &phy->talDevice->devStateInfo.gainIndexes;
 	int ret, gain = ((abs(val) * 1000) + (abs(val2) / 1000));
 
 	switch (channel) {
@@ -2812,7 +2852,7 @@ static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->rx1MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -2820,21 +2860,21 @@ static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 		if (phy->gt_info[RX1_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->rx1MaxGainIndex - ret;
 				break;
 			}
 		}
 
 		gain = clamp(gain, MIN_GAIN_mdB, MAX_RX_GAIN_mdB);
 		*index = (gain - MAX_RX_GAIN_mdB) / RX_GAIN_STEP_mdB +
-			 phy->talDevice->devStateInfo.gainIndexes.rx1MaxGainIndex;
+			 gainIndexes->rx1MaxGainIndex;
 		break;
 
 	case CHAN_RX2:
 		if (phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, ORX_RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->rx2MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -2842,20 +2882,20 @@ static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 		if (phy->gt_info[RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->rx2MaxGainIndex - ret;
 				break;
 			}
 		}
 
 		gain = clamp(gain, MIN_GAIN_mdB, MAX_RX_GAIN_mdB);
 		*index = (gain - MAX_RX_GAIN_mdB) / RX_GAIN_STEP_mdB +
-			 phy->talDevice->devStateInfo.gainIndexes.rx2MaxGainIndex;
+			 gainIndexes->rx2MaxGainIndex;
 		break;
 	case CHAN_OBS_RX1:
 		if (phy->gt_info[ORX_RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, ORX_RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->orx1MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -2863,21 +2903,21 @@ static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 		if (phy->gt_info[ORX_RX1_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, ORX_RX1_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->orx1MaxGainIndex - ret;
 				break;
 			}
 		}
 
 		gain = clamp(gain, MIN_GAIN_mdB, MAX_OBS_RX_GAIN_mdB);
 		*index = (gain - MAX_OBS_RX_GAIN_mdB) / RX_GAIN_STEP_mdB +
-			 phy->talDevice->devStateInfo.gainIndexes.orx1MaxGainIndex;
+			 gainIndexes->orx1MaxGainIndex;
 		break;
 
 	case CHAN_OBS_RX2:
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->orx2MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -2885,14 +2925,14 @@ static int adrv9009_gain_to_gainindex(struct adrv9009_rf_phy *phy, int channel,
 		if (phy->gt_info[ORX_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, ORX_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = gainIndexes->orx2MaxGainIndex - ret;
 				break;
 			}
 		}
 
 		gain = clamp(gain, MIN_GAIN_mdB, MAX_OBS_RX_GAIN_mdB);
 		*index = (gain - MAX_OBS_RX_GAIN_mdB) / RX_GAIN_STEP_mdB +
-			 phy->talDevice->devStateInfo.gainIndexes.orx2MaxGainIndex;
+			 gainIndexes->orx2MaxGainIndex;
 		break;
 	default:
 		return -EINVAL;
@@ -2916,7 +2956,7 @@ static int adrv9009_phy_read_raw(struct iio_dev *indio_dev,
 	if (!phy->is_initialized)
 		return -EBUSY;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	switch (m) {
 	case IIO_CHAN_INFO_HARDWAREGAIN:
 		if (chan->output) {
@@ -3062,7 +3102,7 @@ static int adrv9009_phy_read_raw(struct iio_dev *indio_dev,
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 };
@@ -3080,7 +3120,7 @@ static int adrv9009_phy_write_raw(struct iio_dev *indio_dev,
 	if (!phy->is_initialized)
 		return -EBUSY;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&phy->lock);
 	switch (mask) {
 	case IIO_CHAN_INFO_HARDWAREGAIN:
 		if (chan->output) {
@@ -3136,7 +3176,7 @@ static int adrv9009_phy_write_raw(struct iio_dev *indio_dev,
 		ret = -EINVAL;
 	}
 out:
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return ret;
 }
@@ -3673,6 +3713,10 @@ static int adrv9009_restart(struct adrv9009_rf_phy *phy)
 {
 	int ret;
 
+	phy->framer_b_m = phy->talInit.jesd204Settings.framerB.M;
+	phy->framer_b_f = phy->talInit.jesd204Settings.framerB.F;
+	phy->orx_channel_enabled = phy->talInit.obsRx.obsRxChannelsEnable;
+
 	if (phy->jdev) {
 		if(jesd204_dev_is_top(phy->jdev)) {
 			int retry = 1;
@@ -3723,19 +3767,31 @@ static ssize_t adrv9009_debugfs_write(struct file *file,
 	case DBGFS_INIT:
 		if (!(ret == 1 && val == 1))
 			return -EINVAL;
-		mutex_lock(&phy->indio_dev->mlock);
+		mutex_lock(&phy->lock);
 
 		ret = adrv9009_restart(phy);
-		mutex_unlock(&phy->indio_dev->mlock);
+		mutex_unlock(&phy->lock);
 
 		return count;
 	case DBGFS_BIST_FRAMER_A_PRBS:
 	case DBGFS_BIST_FRAMER_B_PRBS:
-		mutex_lock(&phy->indio_dev->mlock);
+		mutex_lock(&phy->lock);
 		ret = TALISE_enableFramerTestData(phy->talDevice,
 						  entry->cmd == DBGFS_BIST_FRAMER_A_PRBS ? TAL_FRAMER_A : TAL_FRAMER_B,
 						  val, TAL_FTD_FRAMERINPUT);
-		mutex_unlock(&phy->indio_dev->mlock);
+		mutex_unlock(&phy->lock);
+		if (ret)
+			return ret;
+
+		entry->val = val;
+		return count;
+	case DBGFS_BIST_SERIALIZER_A_PRBS:
+	case DBGFS_BIST_SERIALIZER_B_PRBS:
+		mutex_lock(&phy->lock);
+		ret = TALISE_enableFramerTestData(phy->talDevice,
+			entry->cmd == DBGFS_BIST_SERIALIZER_A_PRBS ? TAL_FRAMER_A : TAL_FRAMER_B,
+			val, TAL_FTD_SERIALIZER);
+		mutex_unlock(&phy->lock);
 		if (ret)
 			return ret;
 
@@ -3743,11 +3799,11 @@ static ssize_t adrv9009_debugfs_write(struct file *file,
 		return count;
 	case DBGFS_BIST_FRAMER_A_LOOPBACK:
 	case DBGFS_BIST_FRAMER_B_LOOPBACK:
-		mutex_lock(&phy->indio_dev->mlock);
+		mutex_lock(&phy->lock);
 		ret = adrv9009_spi_write(phy->spi, TALISE_ADDR_JESD_FRAMER_CFG4_0 +
 			(entry->cmd == DBGFS_BIST_FRAMER_B_LOOPBACK ? 0x40 : 0),
 			val ? BIT(7) : 0);
-		mutex_unlock(&phy->indio_dev->mlock);
+		mutex_unlock(&phy->lock);
 		if (ret)
 			return ret;
 
@@ -3761,20 +3817,20 @@ static ssize_t adrv9009_debugfs_write(struct file *file,
 		nco_config.tx1ToneFreq_kHz = val2;
 		nco_config.tx2ToneFreq_kHz = val3;
 
-		mutex_lock(&phy->indio_dev->mlock);
+		mutex_lock(&phy->lock);
 		ret = TALISE_enableTxNco(phy->talDevice, &nco_config);
-		mutex_unlock(&phy->indio_dev->mlock);
+		mutex_unlock(&phy->lock);
 		if (ret < 0)
 			return ret;
 
 		entry->val = val;
 		return count;
 	case DBGFS_GPIO3V3:
-		mutex_lock(&phy->indio_dev->mlock);
+		mutex_lock(&phy->lock);
 		if (ret == 1) {
 			ret = TALISE_getGpio3v3PinLevel(phy->talDevice, &level);
 			if (ret < 0) {
-				mutex_unlock(&phy->indio_dev->mlock);
+				mutex_unlock(&phy->lock);
 				return ret;
 			}
 			if (val == 0xFFF)
@@ -3791,7 +3847,7 @@ static ssize_t adrv9009_debugfs_write(struct file *file,
 			} else if (val >= 0 && val < 12) {
 				ret = TALISE_getGpio3v3SetLevel(phy->talDevice, &level);
 				if (ret < 0) {
-					mutex_unlock(&phy->indio_dev->mlock);
+					mutex_unlock(&phy->lock);
 					return ret;
 				}
 
@@ -3809,7 +3865,7 @@ static ssize_t adrv9009_debugfs_write(struct file *file,
 		} else {
 			ret = -EINVAL;
 		}
-		mutex_unlock(&phy->indio_dev->mlock);
+		mutex_unlock(&phy->lock);
 		break;
 	default:
 		break;
@@ -3873,6 +3929,8 @@ static int adrv9009_register_debugfs(struct iio_dev *indio_dev)
 	adrv9009_add_debugfs_entry(phy, "initialize", DBGFS_INIT);
 	adrv9009_add_debugfs_entry(phy, "bist_framer_a_prbs", DBGFS_BIST_FRAMER_A_PRBS);
 	adrv9009_add_debugfs_entry(phy, "bist_framer_b_prbs", DBGFS_BIST_FRAMER_B_PRBS);
+	adrv9009_add_debugfs_entry(phy, "bist_serializer_a_prbs", DBGFS_BIST_SERIALIZER_A_PRBS);
+	adrv9009_add_debugfs_entry(phy, "bist_serializer_b_prbs", DBGFS_BIST_SERIALIZER_B_PRBS);
 	adrv9009_add_debugfs_entry(phy, "bist_framer_a_loopback", DBGFS_BIST_FRAMER_A_LOOPBACK);
 	adrv9009_add_debugfs_entry(phy, "bist_framer_b_loopback", DBGFS_BIST_FRAMER_B_LOOPBACK);
 	adrv9009_add_debugfs_entry(phy, "bist_tone", DBGFS_BIST_TONE);
@@ -4599,6 +4657,10 @@ static int adrv9009_phy_parse_dt(struct iio_dev *iodev, struct device *dev)
 	ADRV9009_OF_PROP("adi,aux-pll-lo-frequency_hz", &phy->aux_lo_frequency,
 			 2500000000ULL);
 
+	ADRV9009_OF_PROP("adi,radio-ctl-pin-mode-options-mask",
+			 &phy->pin_options_mask, TAL_TXRX_PIN_MODE);
+	ADRV9009_OF_PROP("adi,radio-ctl-pin-mode-orx-en-pinsel",
+			 &phy->orx_en_gpio_pinsel, TAL_ORX1ORX2_PAIR_NONE_SEL);
 
 	phy->loopFilter_stability = 3;
 
@@ -5048,14 +5110,14 @@ adrv9009_profile_bin_write(struct file *filp, struct kobject *kobj,
 		return ret;
 
 
-	mutex_lock(&phy->indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	ret = adrv9009_restart(phy);
 
 	if (ret == -ENOTSUPP)
 		ret = 0;
 
-	mutex_unlock(&phy->indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return (ret < 0) ? ret : count;
 }
@@ -5123,6 +5185,8 @@ static struct gain_table_info *adrv9009_parse_gt(struct adrv9009_rf_phy *phy,
 	char *line, *ptr = data;
 	u8 *p;
 	taliseOrxGainTable_t *gainTablePtr;
+	const u8 table_dest_lut[NUM_GT] =  {TAL_RX1, TAL_RX2, TAL_RX1RX2,
+		TAL_ORX1, TAL_ORX2, TAL_ORX1ORX2};
 
 	header_found = false;
 
@@ -5142,8 +5206,9 @@ static struct gain_table_info *adrv9009_parse_gt(struct adrv9009_rf_phy *phy,
 			u64 start;
 			u64 end;
 
-			ret = sscanf(line, " <gaintable AD%i type=%s dest=%i start=%lli end=%lli>",
-				     &model , type, &dest, &start, &end);
+			ret = sscanf(line,
+				" <gaintable ADRV%i type=%s dest=%i start=%lli end=%lli>",
+				&model, type, &dest, &start, &end);
 
 			if (ret == 5) {
 				if (!(model == 9009 || model == 9008)) {
@@ -5169,7 +5234,7 @@ static struct gain_table_info *adrv9009_parse_gt(struct adrv9009_rf_phy *phy,
 					goto out;
 				}
 
-				table[dest].dest = dest;
+				table[dest].dest = table_dest_lut[dest];
 				table[dest].abs_gain_tbl = (s32 *) p;
 				table[dest].gainTablePtr = (taliseRxGainTable_t *)(p +
 							   sizeof(s32[MAX_GAIN_TABLE_INDEX]));
@@ -5277,13 +5342,57 @@ adrv9009_gt_bin_write(struct file *filp, struct kobject *kobj,
 	if (IS_ERR_OR_NULL(table))
 		return PTR_ERR(table);
 
-	mutex_lock(&phy->indio_dev->mlock);
+	mutex_lock(&phy->lock);
 
 	ret = adrv9009_load_all_gt(phy, table);
 
-	mutex_unlock(&phy->indio_dev->mlock);
+	mutex_unlock(&phy->lock);
 
 	return (ret < 0) ? ret : count;
+}
+
+
+static int adrv9009_gt_fw_load(struct adrv9009_rf_phy *phy)
+{
+	const struct firmware *fw;
+	struct gain_table_info *table;
+	const char *name;
+	char *cpy;
+	int ret;
+
+	ret = of_property_read_string(phy->spi->dev.of_node,
+		"adi,gaintable-name", &name);
+	if (ret)
+		return 0;
+
+	dev_dbg(&phy->spi->dev, "request gaintable: %s\n", name);
+
+	ret = request_firmware(&fw, name, &phy->spi->dev);
+	if (ret) {
+		dev_err(&phy->spi->dev,
+			"request_firmware(%s) failed with %i\n", name, ret);
+		return ret;
+	}
+
+	cpy = kzalloc(fw->size, GFP_KERNEL);
+	if (!cpy)
+		goto out;
+
+	memcpy(cpy, fw->data, fw->size);
+
+	table = adrv9009_parse_gt(phy, cpy, fw->size);
+	if (IS_ERR_OR_NULL(table)) {
+		ret = PTR_ERR(table);
+		goto out_free;
+	}
+
+	ret = adrv9009_load_all_gt(phy, table);
+out_free:
+	kfree(cpy);
+out:
+	release_firmware(fw);
+
+	return ret;
 }
 
 #define ADRV9009_MAX_CLK_NAME 79
@@ -5417,8 +5526,6 @@ static irqreturn_t adrv9009_irq_handler(int irq, void *p)
 	case TALACT_ERR_REDUCE_TXSAMPLE_PWR:
 		TALISE_clearPaProtectErrorFlags(phy->talDevice);
 		msleep(500);
-	default:
-		break;
 	}
 
 	return IRQ_HANDLED;
@@ -6083,9 +6190,21 @@ static int adrv9009_jesd204_setup_stage5(struct jesd204_dev *jdev,
 	}
 
 	if ((ret != TALACT_NO_ACTION) || errorFlag) {
+		uint32_t calsSincePowerUp = 0, calsLastRun = 0, calsMinimum = 0;
+		uint8_t initErrCal = 0, initErrCode = 0;
+
 		dev_err(&phy->spi->dev,
 			"%s:%d (ret %d): Init Cal errorFlag (0x%X)",
 			__func__, __LINE__, ret, errorFlag);
+
+		ret = TALISE_getInitCalStatus(phy->talDevice, &calsSincePowerUp,
+			&calsLastRun, &calsMinimum, &initErrCal, &initErrCode);
+
+		dev_err(&phy->spi->dev,
+			"%s:%d (ret %d): Init Cal calsSincePowerUp (0x%X) calsLastRun (0x%X) calsMinimum (0x%X) initErrCal (0x%X) initErrCode (0x%X)\n",
+			__func__, __LINE__, ret, calsSincePowerUp, calsLastRun,
+			calsMinimum, initErrCal, initErrCode);
+
 		return -EFAULT;
 	}
 
@@ -6154,6 +6273,12 @@ static int adrv9009_jesd204_post_running_stage(struct jesd204_dev *jdev,
 				"%s:%d (ret %d)", __func__, __LINE__, ret);
 			return -EFAULT;
 		}
+		ret = adrv9009_gt_fw_load(phy);
+		if (ret < 0) {
+			dev_err(&phy->spi->dev,
+				"%s:%d (ret %d)", __func__, __LINE__, ret);
+			return -EFAULT;
+		}
 	}
 	if (has_tx_and_en(phy)) {
 		ret = TALISE_setTxAttenCtrlPin(phy->talDevice,
@@ -6180,7 +6305,7 @@ static int adrv9009_jesd204_post_running_stage(struct jesd204_dev *jdev,
 		return -EFAULT;
 	}
 	ret = TALISE_setRxTxEnable(phy->talDevice,
-		has_rx_and_en(phy) ? phy->talInit.rx.rxChannels : 0,
+		has_rx_and_en(phy) ? (taliseRxORxChannels_t)phy->talInit.rx.rxChannels : 0,
 		has_tx_and_en(phy) ? phy->talInit.tx.txChannels : 0);
 	if (ret != TALACT_NO_ACTION) {
 		dev_err(&phy->spi->dev,
@@ -6407,7 +6532,6 @@ static int adrv9009_probe(struct spi_device *spi)
 	struct adrv9009_rf_phy *phy;
 	const struct jesd204_dev_data *jesd204_init;
 	struct jesd204_dev *jdev;
-	struct clk *clk = NULL;
 	const char *name;
 	int ret;
 
@@ -6435,11 +6559,6 @@ static int adrv9009_probe(struct spi_device *spi)
 	if (IS_ERR(jdev))
 		return PTR_ERR(jdev);
 
-	clk = devm_clk_get(&spi->dev, jdev ? "dev_clk" : (id == ID_ADRV90082) ?
-			   "jesd_tx_clk" : "jesd_rx_clk");
-	if (IS_ERR(clk))
-		return PTR_ERR(clk);
-
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*phy));
 	if (indio_dev == NULL)
 		return -ENOMEM;
@@ -6449,6 +6568,7 @@ static int adrv9009_probe(struct spi_device *spi)
 	phy->spi = spi;
 	phy->spi_device_id = id;
 	phy->jdev = jdev;
+	mutex_init(&phy->lock);
 
 	ret = adrv9009_phy_parse_dt(indio_dev, &spi->dev);
 	if (ret < 0)
@@ -6465,18 +6585,26 @@ static int adrv9009_probe(struct spi_device *spi)
 					      GPIOD_OUT_HIGH);
 
 	if (!phy->jdev) {
+		if (has_tx(phy)) {
+			phy->jesd_tx_clk =
+				devm_clk_get_optional(&spi->dev, "jesd_tx_clk");
+			if (IS_ERR(phy->jesd_tx_clk))
+				return PTR_ERR(phy->jesd_tx_clk);
+		}
 
-		if (id == ID_ADRV90082)
-			phy->jesd_tx_clk = clk;
-		else
-			phy->jesd_rx_clk = clk;
+		if (has_rx(phy)) {
+			phy->jesd_rx_clk =
+				devm_clk_get_optional(&spi->dev, "jesd_rx_clk");
+			if (IS_ERR(phy->jesd_rx_clk))
+				return PTR_ERR(phy->jesd_rx_clk);
+		}
 
-		if (id == ID_ADRV9009 || id == ID_ADRV9009_X2 || id == ID_ADRV9009_X4)
-			phy->jesd_tx_clk = devm_clk_get(&spi->dev, "jesd_tx_clk");
-
-		if (id == ID_ADRV9009 || id == ID_ADRV9009_X2 ||
-			id == ID_ADRV9009_X4 || id == ID_ADRV90082)
-			phy->jesd_rx_os_clk = devm_clk_get(&spi->dev, "jesd_rx_os_clk");
+		if (has_obs(phy)) {
+			phy->jesd_rx_os_clk =
+				devm_clk_get_optional(&spi->dev, "jesd_rx_os_clk");
+			if (IS_ERR(phy->jesd_rx_os_clk))
+				return PTR_ERR(phy->jesd_rx_os_clk);
+		}
 
 		phy->dev_clk = devm_clk_get(&spi->dev, "dev_clk");
 		if (IS_ERR(phy->dev_clk))
@@ -6506,7 +6634,9 @@ static int adrv9009_probe(struct spi_device *spi)
 
 		priv = jesd204_dev_priv(jdev);
 		priv->phy = phy;
-		phy->dev_clk = clk;
+		phy->dev_clk = devm_clk_get(&spi->dev, "dev_clk");
+		if (IS_ERR(phy->dev_clk))
+			return PTR_ERR(phy->dev_clk);
 	}
 
 	ret = clk_prepare_enable(phy->dev_clk);
@@ -6744,7 +6874,6 @@ static void adrv9009_remove(struct spi_device *spi)
 	clk_disable_unprepare(phy->fmc2_clk);
 
 	adrv9009_shutdown(phy);
-
 }
 
 static const struct spi_device_id adrv9009_id[] = {

@@ -579,9 +579,9 @@ static int ad5270_i2c_probe(struct i2c_client *i2c,
 		ad5270_i2c_read, ad5270_i2c_write);
 }
 
-static int ad5270_i2c_remove(struct i2c_client *i2c)
+static void ad5270_i2c_remove(struct i2c_client *i2c)
 {
-	return ad5270_remove(&i2c->dev);
+	ad5270_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5270_i2c_ids[] = {

@@ -558,7 +558,7 @@ static int __adf4360_power_down(struct adf4360_state *st, unsigned int mode)
 		break;
 	case ADF4360_POWER_DOWN_SOFT_ASYNC: /* fallthrough */
 	case ADF4360_POWER_DOWN_SOFT_SYNC:
-		val = st->regs[ADF4360_CTRL] & ~ADF4360_ADDR_MUXOUT_MSK;
+		val = st->regs[ADF4360_CTRL] & ~ADF4360_ADDR_PWR_DWN_MSK;
 		val |= ADF4360_POWERDOWN(mode);
 		ret = adf4360_write_reg(st, ADF4360_REG(ADF4360_CTRL), val);
 		break;
@@ -854,11 +854,11 @@ static const struct iio_chan_spec_ext_info adf4360_ext_info[] = {
 	_ADF4360_EXT_INFO("refin_frequency", ADF4360_FREQ_REFIN),
 	_ADF4360_EXT_INFO("mute_till_lock_detect", ADF4360_MTLD),
 	_ADF4360_EXT_INFO("pfd_frequency", ADF4360_FREQ_PFD),
-	IIO_ENUM_AVAILABLE("muxout_mode", &adf4360_muxout_modes_available),
+	IIO_ENUM_AVAILABLE("muxout_mode", IIO_SHARED_BY_TYPE, &adf4360_muxout_modes_available),
 	IIO_ENUM("muxout_mode", false, &adf4360_muxout_modes_available),
-	IIO_ENUM_AVAILABLE("power_down", &adf4360_pwr_dwn_modes_available),
+	IIO_ENUM_AVAILABLE("power_down", IIO_SHARED_BY_TYPE, &adf4360_pwr_dwn_modes_available),
 	IIO_ENUM("power_down", false, &adf4360_pwr_dwn_modes_available),
-	IIO_ENUM_AVAILABLE("power_level", &adf4360_pwr_lvl_modes_available),
+	IIO_ENUM_AVAILABLE("power_level", IIO_SHARED_BY_TYPE, &adf4360_pwr_lvl_modes_available),
 	IIO_ENUM("power_level", false, &adf4360_pwr_lvl_modes_available),
 	{ },
 };

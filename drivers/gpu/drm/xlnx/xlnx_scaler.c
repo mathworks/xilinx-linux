@@ -1058,7 +1058,7 @@ xv_hscaler_calculate_phases(struct xilinx_scaler *scaler,
 	bool get_new_pix;
 	u64 phaseH;
 	u32 array_idx = 0;
-	int nr_rds;
+	int nr_rds = 0;
 	int nr_rds_clck;
 	unsigned int nphases = scaler->max_num_phases;
 	unsigned int nppc = scaler->pix_per_clk;
@@ -1230,7 +1230,7 @@ static const short *xv_select_coeff(struct xilinx_scaler *scaler,
 }
 
 /**
- * xv_hscaler_coeff_select - Selection of H-Scaler coefficients of operation
+ * xv_hscaler_select_coeff - Selection of H-Scaler coefficients of operation
  * @scaler: Pointer to Scaler device structure
  * @width_in: Width of input video
  * @width_out: Width of desired output video
@@ -1363,7 +1363,7 @@ static void xv_vscaler_set_coeff(struct xilinx_scaler *scaler)
 }
 
 /**
- * xv_vscaler_coeff_select - Selection of V-Scaler coefficients of operation
+ * xv_vscaler_select_coeff - Selection of V-Scaler coefficients of operation
  * @scaler: Pointer to Scaler device structure
  * @height_in: Height of input video
  * @height_out: Height of desired output video
@@ -1666,13 +1666,10 @@ static int xilinx_scaler_parse_of(struct xilinx_scaler *scaler)
  */
 static int xilinx_scaler_stream(struct xilinx_scaler *scaler)
 {
-	u32 fmt_in, fmt_out;
 	u32 pixel_rate;
 	u32 line_rate;
 	int ret;
 
-	fmt_in = scaler->fmt_in;
-	fmt_out = scaler->fmt_out;
 	line_rate = (scaler->height_in * STEP_PRECISION) / scaler->height_out;
 
 	if (scaler->is_polyphase) {
@@ -1977,4 +1974,4 @@ module_platform_driver(scaler_bridge_driver);
 
 MODULE_AUTHOR("Venkateshwar Rao <vgannava@xilinx.com>");
 MODULE_DESCRIPTION("Xilinx FPGA SCALER Bridge Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

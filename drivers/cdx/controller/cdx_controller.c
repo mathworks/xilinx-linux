@@ -5,9 +5,11 @@
  * Copyright (C) 2022-2023, Advanced Micro Devices, Inc.
  */
 
-#include <linux/of_platform.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/cdx/cdx_bus.h>
+#include <linux/irqdomain.h>
 
 #include "cdx_controller.h"
 #include "../cdx.h"
@@ -23,13 +25,24 @@ static void cdx_mcdi_request(struct cdx_mcdi *cdx,
 			     const struct cdx_dword *hdr, size_t hdr_len,
 			     const struct cdx_dword *sdu, size_t sdu_len)
 {
-	cdx_rpmsg_send(cdx, hdr, hdr_len, sdu, sdu_len);
+	if (cdx_rpmsg_send(cdx, hdr, hdr_len, sdu, sdu_len))
+		dev_err(&cdx->rpdev->dev, "Failed to send rpmsg data\n");
 }
 
 static const struct cdx_mcdi_ops mcdi_ops = {
 	.mcdi_rpc_timeout = cdx_mcdi_rpc_timeout,
 	.mcdi_request = cdx_mcdi_request,
 };
+
+static int cdx_bus_enable(struct cdx_controller *cdx, u8 bus_num)
+{
+	return cdx_mcdi_bus_enable(cdx->priv, bus_num);
+}
+
+static int cdx_bus_disable(struct cdx_controller *cdx, u8 bus_num)
+{
+	return cdx_mcdi_bus_disable(cdx->priv, bus_num);
+}
 
 void cdx_rpmsg_post_probe(struct cdx_controller *cdx)
 {
@@ -42,21 +55,6 @@ void cdx_rpmsg_pre_remove(struct cdx_controller *cdx)
 {
 	cdx_unregister_controller(cdx);
 	cdx_mcdi_wait_for_quiescence(cdx->priv, MCDI_RPC_TIMEOUT);
-}
-
-static int cdx_bus_enable(struct cdx_controller *cdx, bool enable)
-{
-	int ret;
-
-	if (enable)
-		ret = cdx_mcdi_bus_enable(cdx->priv, 0);
-	else
-		ret = cdx_mcdi_bus_disable(cdx->priv, 0);
-
-	if (ret == 0)
-		cdx->enabled = enable;
-
-	return ret;
 }
 
 static int cdx_configure_device(struct cdx_controller *cdx,
@@ -75,21 +73,20 @@ static int cdx_configure_device(struct cdx_controller *cdx,
 		addr = dev_config->msi.addr;
 
 		ret = cdx_mcdi_write_msi(cdx->priv, bus_num, dev_num,
-					 msi_index, data, addr);
+					 msi_index, addr, data);
 		break;
 	case CDX_DEV_RESET_CONF:
 		ret = cdx_mcdi_reset_device(cdx->priv, bus_num, dev_num);
 		break;
 	case CDX_DEV_BUS_MASTER_CONF:
 		ret = cdx_mcdi_bus_master_enable(cdx->priv, bus_num, dev_num,
-						 dev_config->bme);
+						 dev_config->bus_master_enable);
 		break;
 	case CDX_DEV_MSI_ENABLE:
 		ret = cdx_mcdi_msi_enable(cdx->priv, bus_num, dev_num,
 					  dev_config->msi_enable);
 		break;
 	default:
-		dev_err(cdx->dev, "Invalid device configuration flag\n");
 		ret = -EINVAL;
 	}
 
@@ -112,24 +109,19 @@ static int cdx_scan_devices(struct cdx_controller *cdx)
 	num_cdx_bus = (u8)ret;
 
 	for (bus_num = 0; bus_num < num_cdx_bus; bus_num++) {
+		struct device *bus_dev;
 		u8 num_cdx_dev;
 
-		ret = cdx_mcdi_bus_enable(cdx_mcdi, bus_num);
-		if (ret && ret != -EALREADY) {
-			dev_err(cdx->dev,
-				"CDX bus %d enable failed: %d\n", bus_num, ret);
+		/* Add the bus on cdx subsystem */
+		bus_dev = cdx_bus_add(cdx, bus_num);
+		if (!bus_dev)
 			continue;
-		}
 
 		/* MCDI FW Read: Fetch the number of devices present */
 		ret = cdx_mcdi_get_num_devs(cdx_mcdi, bus_num);
 		if (ret < 0) {
 			dev_err(cdx->dev,
-				"CDX bus %d has no devices: %d\n", bus_num, ret);
-			ret = cdx_mcdi_bus_disable(cdx_mcdi, bus_num);
-			if (ret)
-				dev_err(cdx->dev,
-					"CDX bus %d disable failed: %d\n", bus_num, ret);
+				"Get devices on CDX bus %d failed: %d\n", bus_num, ret);
 			continue;
 		}
 		num_cdx_dev = (u8)ret;
@@ -147,6 +139,7 @@ static int cdx_scan_devices(struct cdx_controller *cdx)
 				continue;
 			}
 			dev_params.cdx = cdx;
+			dev_params.parent = bus_dev;
 
 			/* Add the device to the cdx bus */
 			ret = cdx_device_add(&dev_params);
@@ -165,7 +158,8 @@ static int cdx_scan_devices(struct cdx_controller *cdx)
 }
 
 static struct cdx_ops cdx_ops = {
-	.enable		= cdx_bus_enable,
+	.bus_enable		= cdx_bus_enable,
+	.bus_disable	= cdx_bus_disable,
 	.scan		= cdx_scan_devices,
 	.dev_configure	= cdx_configure_device,
 };
@@ -200,6 +194,14 @@ static int xlnx_cdx_probe(struct platform_device *pdev)
 	cdx->priv = cdx_mcdi;
 	cdx->ops = &cdx_ops;
 
+	/* Create MSI domain */
+	cdx->msi_domain = cdx_msi_domain_init(&pdev->dev);
+	if (!cdx->msi_domain) {
+		dev_err(&pdev->dev, "cdx_msi_domain_init() failed");
+		ret = -ENODEV;
+		goto cdx_msi_fail;
+	}
+
 	ret = cdx_setup_rpmsg(pdev);
 	if (ret) {
 		if (ret != -EPROBE_DEFER)
@@ -211,6 +213,8 @@ static int xlnx_cdx_probe(struct platform_device *pdev)
 	return 0;
 
 cdx_rpmsg_fail:
+	irq_domain_remove(cdx->msi_domain);
+cdx_msi_fail:
 	kfree(cdx);
 cdx_alloc_fail:
 	cdx_mcdi_finish(cdx_mcdi);
@@ -227,6 +231,7 @@ static int xlnx_cdx_remove(struct platform_device *pdev)
 
 	cdx_destroy_rpmsg(pdev);
 
+	irq_domain_remove(cdx->msi_domain);
 	kfree(cdx);
 
 	cdx_mcdi_finish(cdx_mcdi);
@@ -257,7 +262,7 @@ static int __init cdx_controller_init(void)
 	int ret;
 
 	ret = platform_driver_register(&cdx_pdriver);
-	if (ret < 0)
+	if (ret)
 		pr_err("platform_driver_register() failed: %d\n", ret);
 
 	return ret;
@@ -274,3 +279,4 @@ module_exit(cdx_controller_exit);
 MODULE_AUTHOR("AMD Inc.");
 MODULE_DESCRIPTION("CDX controller for AMD devices");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(CDX_BUS_CONTROLLER);

@@ -48,6 +48,8 @@ KernelVersion:	5.13.8
 =======
 		- auto -> Adjust bandpass filter to track changes in input clock rate.
 		- manual -> disable/unregister the clock rate notifier / input clock tracking.
+		- bypass -> bypass low pass filter, high pass filter and disable/unregister
+								the clock rate notifier
 
 What:		/sys/bus/iio/devices/iio:deviceX/filter_mode
 KernelVersion:

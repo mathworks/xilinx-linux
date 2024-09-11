@@ -41,12 +41,15 @@
 #include <sound/soc.h>
 #include <sound/pcm_drm_eld.h>
 
+#include <linux/mfd/syscon.h>
 #include "hdcp/xlnx_hdcp_tx.h"
 
+#define XDPTX_HDCP			0
 #define XDPTX_HDCP2X_OFFSET		0x4000
 #define XDPTX_HDCP_TIMER_OFFSET		0x6000
-#define XDPTX_HDCP2X_DPCD_OFFSET	0x69000
-
+#define XDPTX_HDCP1X_OFFSET		0x2000
+#define XDP_TX_HDCP1X_ENABLE		0x400
+#define XDP_TX_HDCP1X_ENABLE_BYPASS_DISABLE_MASK 0x0001
 /* Link configuration registers */
 #define XDPTX_LINKBW_SET_REG			0x0
 #define XDPTX_LANECNT_SET_REG			0x4
@@ -508,6 +511,7 @@ enum xlnx_dp_train_state {
  * @config: IP core configuration from DTS
  * @tx_link_config: source configuration
  * @tx_hdcp: HDCP configuration
+ * @hdcpx_keymgmt_base: HDCP key management base address
  * @rx_config: sink configuration
  * @link_config: common link configuration between IP core and sink device
  * @drm: DRM core
@@ -527,7 +531,7 @@ enum xlnx_dp_train_state {
  * @status: connection status
  * @dp_base: Base address of DisplayPort Tx subsystem
  * @dpms: current dpms state
- * @hdcp2x_timer_irq: HDCP 2X timer interrupt
+ * @hdcptx_timer_irq: HDCP TX timer interrupt
  * @vtc_off: VTC sub-core offset address
  * @dpcd: DP configuration data from currently connected sink device
  * @train_set: set of training data
@@ -548,6 +552,7 @@ struct xlnx_dp {
 	struct xlnx_dp_config config;
 	struct xlnx_dp_tx_link_config tx_link_config;
 	struct xlnx_hdcptx tx_hdcp;
+	struct regmap *hdcpx_keymgmt_base;
 	struct xlnx_dp_link_config link_config;
 	struct drm_device *drm;
 	struct xlnx_dp_mode mode;
@@ -566,7 +571,7 @@ struct xlnx_dp {
 	enum drm_connector_status status;
 	void __iomem *dp_base;
 	int dpms;
-	int hdcp2x_timer_irq;
+	int hdcptx_timer_irq;
 	u32 vtc_off;
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
 	u8 train_set[XDPTX_MAX_LANES];
@@ -1355,6 +1360,7 @@ static int xlnx_dp_check_clock_recovery(struct xlnx_dp *dp, u8 lane_cnt)
 			return 1;
 		}
 		link_config->cr_done_cnt = 0x1;
+		break;
 	default:
 		break;
 	}
@@ -2548,9 +2554,16 @@ static void xlnx_dp_start(struct xlnx_dp *dp)
 		dev_err(dp->dev, "Link is DOWN after main link enabled!\n");
 		return;
 	}
-	if (dp->config.hdcp2x_enable) {
-		xlnx_dp_set(dp->dp_base, XDP_TX_HDCP2x_ENABLE,
-			    XDP_TX_HDCP2x_ENABLE_BYPASS_DISABLE_MASK);
+	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable) {
+		if (dp->config.hdcp2x_enable) {
+			xlnx_dp_set(dp->dp_base, XDP_TX_HDCP2x_ENABLE,
+				    XDP_TX_HDCP2x_ENABLE_BYPASS_DISABLE_MASK);
+		}
+		if (dp->config.hdcp1x_enable) {
+			val  = xlnx_dp_read(dp->dp_base, XDP_TX_HDCP1X_ENABLE);
+			val |= XDP_TX_HDCP1X_ENABLE_BYPASS_DISABLE_MASK;
+			xlnx_dp_write(dp->dp_base, XDP_TX_HDCP1X_ENABLE, val);
+		}
 		ret = xlnx_start_hdcp_engine(dptxhdcp, mode->lane_cnt);
 		if (ret < 0) {
 			dev_err(dp->dev, "Failed to Start HDCP\n");
@@ -3505,6 +3518,32 @@ static const struct component_ops xlnx_dp_component_ops = {
 	.unbind	= xlnx_dp_unbind,
 };
 
+static ssize_t xlnx_hdcp_load_key(struct device *sysfs_dev, struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	int ret = 0;
+	struct xlnx_dp *dp = (struct xlnx_dp *)dev_get_drvdata(sysfs_dev);
+	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
+
+	ret = xlnx_hdcp_tx_set_keys(dptxhdcp, (u8 *)buf);
+	if (ret) {
+		dev_dbg(dptxhdcp->dev, "failed to send HDCP key from Sysfs to wrapper\n");
+		return ret;
+	}
+	return count;
+}
+
+static DEVICE_ATTR(hdcp_key, XHDCP_KEY_WRITE_PERMISSION, NULL, xlnx_hdcp_load_key);
+
+static struct attribute *attrs[] = {
+	&dev_attr_hdcp_key.attr,
+	NULL,
+};
+
+static struct attribute_group attr_group = {
+	.attrs = attrs,
+};
+
 /**
  * xlnx_dp_hdcp_dpcd_write - HDCP message write through dpcd interface
  * @ref: callback reference pointer
@@ -3519,12 +3558,9 @@ static int xlnx_dp_hdcp_dpcd_write(void *ref, u32 offset,
 				   void *buf, u32 buf_size)
 {
 	struct xlnx_dp *dp = (struct xlnx_dp *)ref;
-	u32 ret, address;
+	u32 ret = 0;
 
-	address = offset;
-	address += XDPTX_HDCP2X_DPCD_OFFSET;
-
-	ret = drm_dp_dpcd_write(&dp->aux, address, buf, buf_size);
+	ret = drm_dp_dpcd_write(&dp->aux, offset, buf, buf_size);
 	if (ret < 0) {
 		dev_err(dp->dev, "dpcd write failed");
 		return ret;
@@ -3547,12 +3583,9 @@ static int xlnx_dp_hdcp_dpcd_read(void *ref, u32 offset,
 				  void *buf, u32 buf_size)
 {
 	struct xlnx_dp *dp = (struct xlnx_dp *)ref;
-	u32 ret, address;
+	u32 ret = 0;
 
-	address = offset;
-	address += XDPTX_HDCP2X_DPCD_OFFSET;
-
-	ret = drm_dp_dpcd_read(&dp->aux, address, buf, buf_size);
+	ret = drm_dp_dpcd_read(&dp->aux, offset, buf, buf_size);
 	if (ret < 0) {
 		dev_err(dp->dev, "dpcd read failed");
 		return ret;
@@ -3609,8 +3642,10 @@ static int xlnx_dp_hdcp_exit(struct xlnx_dp *dp)
 	struct xlnx_hdcptx *dptxhdcp = &dp->tx_hdcp;
 	int ret;
 
-	if (!(dptxhdcp->hdcp1xenable || dptxhdcp->hdcp2xenable))
-		return
+	if (!(dptxhdcp->hdcp1xenable || dptxhdcp->hdcp2xenable)) {
+		dev_info(dp->dev, "HDCP is not enabled in the system");
+		return -EINVAL;
+	}
 
 	ret = xlnx_dp_hdcp_reset(dp);
 	if (ret < 0) {
@@ -3664,25 +3699,12 @@ static int xlnx_hdcp_init(struct xlnx_dp *dp,
 
 		dptxhdcp->xhdcp2x = xlnx_hdcp_tx_init(&pdev->dev, dp, dptxhdcp,
 						      dp->dp_base + XDPTX_HDCP2X_OFFSET,
-						      0, XHDCPTX_HDCP_2X, dp->mode.lane_cnt);
+						      0, XHDCPTX_HDCP_2X, dp->mode.lane_cnt,
+						      XDPTX_HDCP, dp->hdcpx_keymgmt_base);
 
 		if (IS_ERR(dptxhdcp->xhdcp2x)) {
 			dev_err(dp->dev, "failed to initialize HDCP2X module\n");
 			return PTR_ERR(dptxhdcp->xhdcp2x);
-		}
-		dp->hdcp2x_timer_irq =
-				 platform_get_irq_byname(pdev, "dptxss_timer_irq");
-		if (dp->hdcp2x_timer_irq < 0) {
-			dev_err(dp->dev, "failed to get HDCP timer irq ");
-			return -EINVAL;
-		}
-		ret = devm_request_threaded_irq(dp->dev, dp->hdcp2x_timer_irq, NULL,
-						xlnx_timer_irq_handler,
-						IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
-						"dptxss_timer_irq", dp);
-		if (ret < 0) {
-			dev_err(dp->dev, "failed to register HDCP timer irq");
-			return ret;
 		}
 	}
 	dptxhdcp->xhdcptmr =
@@ -3691,23 +3713,47 @@ static int xlnx_hdcp_init(struct xlnx_dp *dp,
 		dev_err(dp->dev, "failed to initialize HDCP timer\n");
 		return PTR_ERR(dptxhdcp->xhdcptmr);
 	}
+	dp->hdcptx_timer_irq =
+			 platform_get_irq_byname(pdev, "dptxss_timer_irq");
+	if (dp->hdcptx_timer_irq < 0) {
+		dev_err(dp->dev, "failed to get HDCP timer irq ");
+		return -EINVAL;
+	}
+	ret = devm_request_threaded_irq(dp->dev, dp->hdcptx_timer_irq, NULL,
+					xlnx_timer_irq_handler,
+					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
+					"dptxss_timer_irq", dp);
+	if (ret < 0) {
+		dev_err(dp->dev, "failed to register HDCP timer irq");
+		return ret;
+	}
+	if (dp->config.hdcp1x_enable) {
+		dptxhdcp->xhdcp1x = xlnx_hdcp_tx_init(&pdev->dev, dp, dptxhdcp,
+						      dp->dp_base + XDPTX_HDCP1X_OFFSET,
+						      0, XHDCPTX_HDCP_1X, dp->mode.lane_cnt,
+						      XDPTX_HDCP, dp->hdcpx_keymgmt_base);
+		if (IS_ERR(dptxhdcp->xhdcp1x)) {
+			dev_err(dp->dev, "failed to initialize HDCP1X module\n");
+			return PTR_ERR(dptxhdcp->xhdcp1x);
+		}
+	}
 
-	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_WRITE,
-					   xlnx_dp_hdcp_dpcd_write);
+	ret = xlnx_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_WRITE,
+					xlnx_dp_hdcp_dpcd_write);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to register HDCP DPCD Write Callback");
 		return ret;
 	}
 
-	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_READ,
-					   xlnx_dp_hdcp_dpcd_read);
+	ret = xlnx_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_DPCD_READ,
+					xlnx_dp_hdcp_dpcd_read);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to register HDCP DPCD Read Callback");
 		return ret;
 	}
 
-	ret = xlnx_dp_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_STATUS,
-					   xlnx_dp_hdcp_status_update);
+	ret = xlnx_hdcp_tx_set_callback(dptxhdcp, XDPTX_HDCP_STATUS,
+					xlnx_dp_hdcp_status_update);
 	if (ret < 0) {
 		dev_err(dp->dev, "failed to register HDCP Status Update Callback");
 		return ret;
@@ -3799,6 +3845,15 @@ static int xlnx_dp_parse_of(struct xlnx_dp *dp)
 
 	config->versal_gt_present =
 		of_property_read_bool(node, "xlnx,versal-gt");
+
+	if (config->hdcp1x_enable) {
+		dp->hdcpx_keymgmt_base = syscon_regmap_lookup_by_phandle(node,
+									 "xlnx,hdcp1x-keymgmt");
+		if (IS_ERR(dp->hdcpx_keymgmt_base)) {
+			dev_err(dp->dev, "couldn't map hdcp1x Keymgmt registers\n");
+			return -ENODEV;
+		}
+	}
 
 	return 0;
 }
@@ -3955,6 +4010,10 @@ static int xlnx_dp_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto error;
 
+	ret = sysfs_create_group(&dp->dev->kobj, &attr_group);
+	if (ret)
+		dev_err(dp->dev, "sysfs group creation failed to store keys");
+
 	if (dp->config.hdcp2x_enable || dp->config.hdcp1x_enable) {
 		ret = xlnx_hdcp_init(dp, pdev);
 		if (ret < 0)
@@ -4003,6 +4062,7 @@ static int xlnx_dp_remove(struct platform_device *pdev)
 	else
 		phy_exit(dp->phy[0]);
 	component_del(&pdev->dev, &xlnx_dp_component_ops);
+	sysfs_remove_group(&pdev->dev.kobj, &attr_group);
 
 	return 0;
 }
@@ -4022,4 +4082,4 @@ module_platform_driver(dp_tx_driver);
 
 MODULE_AUTHOR("Rajesh Gugulothu <gugulothu.rajesh@xilinx.com>");
 MODULE_DESCRIPTION("Xilinx FPGA DisplayPort Tx Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

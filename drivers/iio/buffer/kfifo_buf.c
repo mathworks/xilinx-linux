@@ -138,16 +138,16 @@ static void iio_kfifo_buffer_release(struct iio_buffer *buffer)
 	kfree(kf);
 }
 
-static bool iio_kfifo_buf_space_available(struct iio_buffer *r)
+static size_t iio_kfifo_buf_space_available(struct iio_buffer *r)
 {
 	struct iio_kfifo *kf = iio_to_kfifo(r);
-	bool full;
+	size_t avail;
 
 	mutex_lock(&kf->user_lock);
-	full = kfifo_is_full(&kf->kf);
+	avail = kfifo_avail(&kf->kf);
 	mutex_unlock(&kf->user_lock);
 
-	return !full;
+	return avail;
 }
 
 static int iio_kfifo_remove_from(struct iio_buffer *r, void *data)
@@ -155,14 +155,14 @@ static int iio_kfifo_remove_from(struct iio_buffer *r, void *data)
 	int ret;
 	struct iio_kfifo *kf = iio_to_kfifo(r);
 
-	if (kfifo_len(&kf->kf) < 1)
+	if (kfifo_size(&kf->kf) < 1)
 		return -EBUSY;
 
 	ret = kfifo_out(&kf->kf, data, 1);
 	if (ret != 1)
 		return -EBUSY;
 
-	wake_up_interruptible_poll(&r->pollq, POLLOUT | POLLWRNORM);
+	wake_up_interruptible_poll(&r->pollq, EPOLLOUT | EPOLLWRNORM);
 
 	return 0;
 }
@@ -230,13 +230,13 @@ static void devm_iio_kfifo_release(struct device *dev, void *res)
 }
 
 /**
- * devm_iio_fifo_allocate - Resource-managed iio_kfifo_allocate()
+ * devm_iio_kfifo_allocate - Resource-managed iio_kfifo_allocate()
  * @dev:		Device to allocate kfifo buffer for
  *
  * RETURNS:
  * Pointer to allocated iio_buffer on success, NULL on failure.
  */
-struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
+static struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
 {
 	struct iio_buffer **ptr, *r;
 
@@ -254,6 +254,37 @@ struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
 
 	return r;
 }
-EXPORT_SYMBOL(devm_iio_kfifo_allocate);
+
+/**
+ * devm_iio_kfifo_buffer_setup_ext - Allocate a kfifo buffer & attach it to an IIO device
+ * @dev: Device object to which to attach the life-time of this kfifo buffer
+ * @indio_dev: The device the buffer should be attached to
+ * @setup_ops: The setup_ops required to configure the HW part of the buffer (optional)
+ * @buffer_attrs: Extra sysfs buffer attributes for this IIO buffer
+ *
+ * This function allocates a kfifo buffer via devm_iio_kfifo_allocate() and
+ * attaches it to the IIO device via iio_device_attach_buffer().
+ * This is meant to be a bit of a short-hand/helper function as there are a few
+ * drivers that seem to do this.
+ */
+int devm_iio_kfifo_buffer_setup_ext(struct device *dev,
+				    struct iio_dev *indio_dev,
+				    const struct iio_buffer_setup_ops *setup_ops,
+				    const struct attribute **buffer_attrs)
+{
+	struct iio_buffer *buffer;
+
+	buffer = devm_iio_kfifo_allocate(dev);
+	if (!buffer)
+		return -ENOMEM;
+
+	indio_dev->modes |= INDIO_BUFFER_SOFTWARE;
+	indio_dev->setup_ops = setup_ops;
+
+	buffer->attrs = buffer_attrs;
+
+	return iio_device_attach_buffer(indio_dev, buffer);
+}
+EXPORT_SYMBOL_GPL(devm_iio_kfifo_buffer_setup_ext);
 
 MODULE_LICENSE("GPL");

@@ -164,7 +164,7 @@ struct zynq_qspi {
  *
  * Returns true if data stripe need to be enabled, else returns false
  */
-bool zynq_qspi_update_stripe(const struct spi_mem_op *op)
+static bool zynq_qspi_update_stripe(const struct spi_mem_op *op)
 {
 	if (op->cmd.opcode ==  SPINOR_OP_BE_4K ||
 	    op->cmd.opcode ==  SPINOR_OP_BE_32K ||
@@ -333,12 +333,16 @@ static void zynq_qspi_chipselect(struct spi_device *spi, bool assert)
 	struct spi_controller *ctlr = spi->master;
 	struct zynq_qspi *xqspi = spi_controller_get_devdata(ctlr);
 	u32 config_reg;
+	u8 idx = 0;
 
 	/* Select the lower (CS0) or upper (CS1) memory */
 	if (ctlr->num_chipselect > 1) {
 		config_reg = zynq_qspi_read(xqspi, ZYNQ_QSPI_LINEAR_CFG_OFFSET);
 		if (!(xqspi->flags & ZYNQ_QSPI_IS_PARALLEL)) {
-			if (!spi_get_chipselect(spi, 0))
+			if (spi->cs_index_mask & ZYNQ_QSPI_CS1_MASK)
+				idx = 1;
+
+			if (!spi_get_chipselect(spi, idx))
 				config_reg &= ~ZYNQ_QSPI_LCFG_U_PAGE;
 			else
 				config_reg |= ZYNQ_QSPI_LCFG_U_PAGE;
@@ -741,8 +745,8 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 	}
 
 	xqspi->irq = platform_get_irq(pdev, 0);
-	if (xqspi->irq <= 0) {
-		ret = -ENXIO;
+	if (xqspi->irq < 0) {
+		ret = xqspi->irq;
 		goto clk_dis_all;
 	}
 	ret = devm_request_irq(&pdev->dev, xqspi->irq, zynq_qspi_irq,
@@ -771,7 +775,7 @@ static int zynq_qspi_probe(struct platform_device *pdev)
 	ctlr->setup = zynq_qspi_setup_op;
 	ctlr->max_speed_hz = clk_get_rate(xqspi->refclk) / 2;
 	ctlr->dev.of_node = np;
-	ctlr->multi_cs_cap = true;
+	ctlr->flags |= SPI_CONTROLLER_MULTI_CS | SPI_CONTROLLER_NO_4B;
 
 	/* QSPI controller initializations */
 	zynq_qspi_init_hw(xqspi, ctlr->num_chipselect);
@@ -804,7 +808,7 @@ remove_master:
  *
  * Return:	0 on success and error value on failure
  */
-static int zynq_qspi_remove(struct platform_device *pdev)
+static void zynq_qspi_remove(struct platform_device *pdev)
 {
 	struct zynq_qspi *xqspi = platform_get_drvdata(pdev);
 
@@ -812,8 +816,6 @@ static int zynq_qspi_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(xqspi->refclk);
 	clk_disable_unprepare(xqspi->pclk);
-
-	return 0;
 }
 
 static const struct of_device_id zynq_qspi_of_match[] = {
@@ -828,7 +830,7 @@ MODULE_DEVICE_TABLE(of, zynq_qspi_of_match);
  */
 static struct platform_driver zynq_qspi_driver = {
 	.probe = zynq_qspi_probe,
-	.remove = zynq_qspi_remove,
+	.remove_new = zynq_qspi_remove,
 	.driver = {
 		.name = "zynq-qspi",
 		.of_match_table = zynq_qspi_of_match,

@@ -69,6 +69,7 @@ typedef enum {
     ADI_ADRV9001_FHMODE_LO_RETUNE_REALTIME_PROCESS = 2u,   /*!< Frequency hopping with LO retuning during transition time. Frequency hopping table is processed during frequency hopping operation. */
     ADI_ADRV9001_FHMODE_LO_RETUNE_REALTIME_PROCESS_DUAL_HOP = 3u, /*!< 2 HOP signals are used to control Channel 1 and Channel 2 independently. Frequency hopping with LO retuning during transition time.
                                                                        Frequency hopping table is processed during frequency hopping operation. */
+	ADI_ADRV9001_FHMODE_LO_RETUNE_REALTIME_PROCESS_PFIR_SWITCH = 4u,  /*!< Dynamic Pfir Load and Switch over LO Retune */
 } adi_adrv9001_FhMode_e;
 
 typedef enum {
@@ -194,6 +195,9 @@ typedef struct {
     
     bool                               gainSetupByPin;            /*!< Use GPIO Pins to provide a Tx/Rx gain index for next hop frame. If false, gain information is provided in hop table*/
 	adi_adrv9001_FhGainSetupByPinCfg_t gainSetupByPinConfig[ADI_ADRV9001_NUM_CHANNELS];    /*!< Configuration information for gain setup by pin. This structure is ignored if gainSetupByPin is false */
+	bool                               enableAGCGainIndexSeeding;       /*!< Enable seeding of the hardware value of adi_adrv9001_GainControlCfg_t->resetOnRxonGainIndex with rxGainIndex from FHTable,
+                                                                             if mode is ADI_ADRV9001_RX_GAIN_CONTROL_MODE_AUTO then 
+                                                                             gainIndex will begin tracking from this seeded gainIndex at the beginning of the frame */
 } adi_adrv9001_FhCfg_t;
 
 #ifdef __cplusplus

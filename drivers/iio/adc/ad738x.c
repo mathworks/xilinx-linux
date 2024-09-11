@@ -232,6 +232,8 @@ struct ad738x_state {
 	struct spi_device		*spi;
 	struct spi_transfer		t[5];
 	struct regulator		*vref;
+	/* protect against device accesses */
+	struct mutex			lock;
 	const struct ad738x_chip_info 	*chip_info;
 	/*
 	 * DMA (thus cache coherency maintenance) requires the
@@ -318,7 +320,7 @@ static int ad738x_reg_access(struct iio_dev *indio_dev,
 	u8 reg_data[2];
 	int ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	if (readval == NULL) {
 		ret = ad738x_spi_reg_write(st, reg, writeval);
 	} else {
@@ -326,7 +328,7 @@ static int ad738x_reg_access(struct iio_dev *indio_dev,
 		*readval = (reg_data[0] << 8) | reg_data[1];
 		ret = 0;
 	}
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -423,12 +425,12 @@ static int ad738x_read_raw(struct iio_dev *indio_dev,
 
 	switch (info) {
 	case IIO_CHAN_INFO_RAW:
-		mutex_lock(&indio_dev->mlock);
+		mutex_lock(&st->lock);
 		if (iio_buffer_enabled(indio_dev))
 			ret = -EBUSY;
 		else
 			ret = ad738x_scan_direct(st);
-		mutex_unlock(&indio_dev->mlock);
+		mutex_unlock(&st->lock);
 		if (ret < 0)
 			return ret;
 
@@ -471,6 +473,7 @@ static int ad738x_probe(struct spi_device *spi)
 	st = iio_priv(indio_dev);
 	st->chip_info =
 		&ad738x_chip_info_tbl[spi_get_device_id(spi)->driver_data];
+	mutex_init(&st->lock);
 
 	st->vref = devm_regulator_get(&spi->dev, "vref");
 	if (IS_ERR(st->vref))
@@ -525,7 +528,6 @@ static void ad738x_remove(struct spi_device *spi)
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	regulator_disable(st->vref);
-
 }
 
 static const struct spi_device_id ad738x_id[] = {

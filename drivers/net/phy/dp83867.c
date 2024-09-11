@@ -26,7 +26,8 @@
 #define MII_DP83867_MICR	0x12
 #define MII_DP83867_ISR		0x13
 #define DP83867_CFG2		0x14
-#define MII_DP83867_BISCR	0x16
+#define DP83867_LEDCR1		0x18
+#define DP83867_LEDCR2		0x19
 #define DP83867_CFG3		0x1e
 #define DP83867_CTRL		0x1f
 
@@ -43,6 +44,7 @@
 #define DP83867_STRAP_STS1	0x006E
 #define DP83867_STRAP_STS2	0x006f
 #define DP83867_RGMIIDCTL	0x0086
+#define DP83867_DSP_FFE_CFG	0x012c
 #define DP83867_RXFCFG		0x0134
 #define DP83867_RXFPMD1	0x0136
 #define DP83867_RXFPMD2	0x0137
@@ -105,11 +107,6 @@
 #define DP83867_PHYCR_RX_FIFO_DEPTH_MASK	GENMASK(13, 12)
 #define DP83867_PHYCR_RESERVED_MASK		BIT(11)
 #define DP83867_PHYCR_FORCE_LINK_GOOD		BIT(10)
-#define DP83867_MDI_CROSSOVER		5
-#define DP83867_MDI_CROSSOVER_AUTO		0b10
-#define DP83867_PHYCTRL_SGMIIEN			0x0800
-#define DP83867_PHYCTRL_RXFIFO_SHIFT		12
-#define DP83867_PHYCTRL_TXFIFO_SHIFT		14
 
 /* RGMIIDCTL bits */
 #define DP83867_RGMII_TX_CLK_DELAY_MAX		0xf
@@ -150,19 +147,17 @@
 #define DP83867_CFG3_INT_OE			BIT(7)
 #define DP83867_CFG3_ROBUST_AUTO_MDIX		BIT(9)
 
-/* CFG2 bits */
-#define MII_DP83867_CFG2_SPEEDOPT_10EN		0x0040
-#define MII_DP83867_CFG2_SGMII_AUTONEGEN	0x0080
-#define MII_DP83867_CFG2_SPEEDOPT_ENH		0x0100
-#define MII_DP83867_CFG2_SPEEDOPT_CNT		0x0800
-#define MII_DP83867_CFG2_SPEEDOPT_INTLOW	0x2000
-#define MII_DP83867_CFG2_MASK			0x003F
-
 /* CFG4 bits */
 #define DP83867_CFG4_PORT_MIRROR_EN              BIT(0)
 
 /* FLD_THR_CFG */
 #define DP83867_FLD_THR_CFG_ENERGY_LOST_THR_MASK	0x7
+
+#define DP83867_LED_COUNT	4
+
+/* LED_DRV bits */
+#define DP83867_LED_DRV_EN(x)	BIT((x) * 4)
+#define DP83867_LED_DRV_VAL(x)	BIT((x) * 4 + 1)
 
 enum {
 	DP83867_PORT_MIRROING_KEEP,
@@ -482,8 +477,7 @@ static int dp83867_set_tunable(struct phy_device *phydev,
 
 static int dp83867_config_port_mirroring(struct phy_device *phydev)
 {
-	struct dp83867_private *dp83867 =
-		(struct dp83867_private *)phydev->priv;
+	struct dp83867_private *dp83867 = phydev->priv;
 
 	if (dp83867->port_mirroring == DP83867_PORT_MIRROING_EN)
 		phy_set_bits_mmd(phydev, DP83867_DEVADDR, DP83867_CFG4,
@@ -707,6 +701,30 @@ static int dp83867_of_init(struct phy_device *phydev)
 }
 #endif /* CONFIG_OF_MDIO */
 
+static int dp83867_suspend(struct phy_device *phydev)
+{
+	/* Disable PHY Interrupts */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->interrupts = PHY_INTERRUPT_DISABLED;
+		dp83867_config_intr(phydev);
+	}
+
+	return genphy_suspend(phydev);
+}
+
+static int dp83867_resume(struct phy_device *phydev)
+{
+	/* Enable PHY Interrupts */
+	if (phy_interrupt_is_valid(phydev)) {
+		phydev->interrupts = PHY_INTERRUPT_ENABLED;
+		dp83867_config_intr(phydev);
+	}
+
+	genphy_resume(phydev);
+
+	return 0;
+}
+
 static int dp83867_probe(struct phy_device *phydev)
 {
 	struct dp83867_private *dp83867;
@@ -725,7 +743,7 @@ static int dp83867_config_init(struct phy_device *phydev)
 {
 	struct dp83867_private *dp83867 = phydev->priv;
 	int ret, val, bs;
-	u16 delay, cfg2;
+	u16 delay;
 
 	/* Force speed optimization for the PHY even if it strapped */
 	ret = phy_modify(phydev, DP83867_CFG2, DP83867_DOWNSHIFT_EN,
@@ -875,27 +893,6 @@ static int dp83867_config_init(struct phy_device *phydev)
 			val &= ~DP83867_SGMII_TYPE;
 		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_SGMIICTL, val);
 
-		phy_write(phydev, MII_BMCR,
-			  (BMCR_ANENABLE | BMCR_FULLDPLX | BMCR_SPEED1000));
-
-		cfg2 = phy_read(phydev, DP83867_CFG2);
-		cfg2 &= MII_DP83867_CFG2_MASK;
-		cfg2 |= (MII_DP83867_CFG2_SPEEDOPT_10EN |
-			 MII_DP83867_CFG2_SGMII_AUTONEGEN |
-			 MII_DP83867_CFG2_SPEEDOPT_ENH |
-			 MII_DP83867_CFG2_SPEEDOPT_CNT |
-			 MII_DP83867_CFG2_SPEEDOPT_INTLOW);
-		phy_write(phydev, DP83867_CFG2, cfg2);
-
-		phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_RGMIICTL, 0x0);
-
-		phy_write(phydev, MII_DP83867_PHYCTRL,
-			  DP83867_PHYCTRL_SGMIIEN |
-			  (DP83867_MDI_CROSSOVER_AUTO << DP83867_MDI_CROSSOVER) |
-			  (dp83867->rx_fifo_depth << DP83867_PHYCTRL_RXFIFO_SHIFT) |
-			  (dp83867->tx_fifo_depth  << DP83867_PHYCTRL_TXFIFO_SHIFT));
-		phy_write(phydev, MII_DP83867_BISCR, 0x0);
-
 		/* This is a SW workaround for link instability if RX_CTRL is
 		 * not strapped to mode 3 or 4 in HW. This is required for SGMII
 		 * in addition to clearing bit 7, handled above.
@@ -939,14 +936,33 @@ static int dp83867_phy_reset(struct phy_device *phydev)
 {
 	int err;
 
+	err = phy_write(phydev, DP83867_CTRL, DP83867_SW_RESET);
+	if (err < 0)
+		return err;
+
+	usleep_range(10, 20);
+
+	err = phy_modify(phydev, MII_DP83867_PHYCTRL,
+			 DP83867_PHYCR_FORCE_LINK_GOOD, 0);
+	if (err < 0)
+		return err;
+
+	/* Configure the DSP Feedforward Equalizer Configuration register to
+	 * improve short cable (< 1 meter) performance. This will not affect
+	 * long cable performance.
+	 */
+	err = phy_write_mmd(phydev, DP83867_DEVADDR, DP83867_DSP_FFE_CFG,
+			    0x0e81);
+	if (err < 0)
+		return err;
+
 	err = phy_write(phydev, DP83867_CTRL, DP83867_SW_RESTART);
 	if (err < 0)
 		return err;
 
 	usleep_range(10, 20);
 
-	return phy_modify(phydev, MII_DP83867_PHYCTRL,
-			 DP83867_PHYCR_FORCE_LINK_GOOD, 0);
+	return 0;
 }
 
 static void dp83867_link_change_notify(struct phy_device *phydev)
@@ -975,6 +991,33 @@ static void dp83867_link_change_notify(struct phy_device *phydev)
 	}
 }
 
+static int dp83867_loopback(struct phy_device *phydev, bool enable)
+{
+	return phy_modify(phydev, MII_BMCR, BMCR_LOOPBACK,
+			  enable ? BMCR_LOOPBACK : 0);
+}
+
+static int
+dp83867_led_brightness_set(struct phy_device *phydev,
+			   u8 index, enum led_brightness brightness)
+{
+	u32 val;
+
+	if (index >= DP83867_LED_COUNT)
+		return -EINVAL;
+
+	/* DRV_EN==1: output is DRV_VAL */
+	val = DP83867_LED_DRV_EN(index);
+
+	if (brightness)
+		val |= DP83867_LED_DRV_VAL(index);
+
+	return phy_modify(phydev, DP83867_LEDCR2,
+			  DP83867_LED_DRV_VAL(index) |
+			  DP83867_LED_DRV_EN(index),
+			  val);
+}
+
 static struct phy_driver dp83867_driver[] = {
 	{
 		.phy_id		= DP83867_PHY_ID,
@@ -997,10 +1040,13 @@ static struct phy_driver dp83867_driver[] = {
 		.config_intr	= dp83867_config_intr,
 		.handle_interrupt = dp83867_handle_interrupt,
 
-		.suspend	= genphy_suspend,
-		.resume		= genphy_resume,
+		.suspend	= dp83867_suspend,
+		.resume		= dp83867_resume,
 
 		.link_change_notify = dp83867_link_change_notify,
+		.set_loopback	= dp83867_loopback,
+
+		.led_brightness_set = dp83867_led_brightness_set,
 	},
 };
 module_phy_driver(dp83867_driver);

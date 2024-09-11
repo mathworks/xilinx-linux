@@ -43,6 +43,70 @@
 
 struct device;
 
+/* Data structure to capture the Tile Information */
+struct aie_tile_info {
+	u32 col_size;
+	u16 major;
+	u16 minor;
+	u16 cols;
+	u16 rows;
+	u16 core_rows;
+	u16 mem_rows;
+	u16 shim_rows;
+	u16 core_row_start;
+	u16 mem_row_start;
+	u16 shim_row_start;
+	u16 core_dma_channels;
+	u16 mem_dma_channels;
+	u16 shim_dma_channels;
+	u16 core_locks;
+	u16 mem_locks;
+	u16 shim_locks;
+	u16 core_events;
+	u16 mem_events;
+	u16 shim_events;
+	u16 padding;
+};
+
+/* Data structure to capture the dma status */
+struct aie_dma_status {
+	u32 s2mm_sts;
+	u32 mm2s_sts;
+};
+
+/* Data structure to capture the core tile status */
+struct aie_core_tile_status {
+	struct aie_dma_status *dma;
+	u32 *core_mode_event_sts;
+	u32 *mem_mode_event_sts;
+	u32 core_status;
+	u32 prg_cntr;
+	u32 stack_ptr;
+	u32 link_reg;
+	u8 *lock_value;
+};
+
+/* Data structure to capture the mem tile status */
+struct aie_mem_tile_status {
+	struct aie_dma_status *dma;
+	u32 *event_sts;
+	u8 *lock_value;
+};
+
+/* Data structure to capture the shim tile status */
+struct aie_shim_tile_status {
+	struct aie_dma_status *dma;
+	u32 *event_sts;
+	u8 *lock_value;
+};
+
+/* Data structure to capture column status */
+struct aie_col_status {
+	struct aie_core_tile_status *core_tile;
+	struct aie_mem_tile_status *mem_tile;
+	struct aie_shim_tile_status *shim_tile;
+};
+
 /**
  * struct aie_error - AI engine error
  * @loc: AI engine tile location of which the error is from
@@ -84,7 +148,11 @@ void aie_free_errors(struct aie_errors *aie_errs);
 int aie_partition_set_freq_req(struct device *dev, u64 freq);
 int aie_partition_get_freq(struct device *dev, u64 *freq);
 int aie_partition_get_freq_req(struct device *dev, u64 *freq);
+int aie_part_rscmgr_set_static_range(struct device *dev,
+				     u8 start_col, u8 num_col, void *meta);
 
+int aie_get_status_dump(struct device *dev, struct aie_col_status *status);
+int aie_get_tile_info(struct device *dev, struct aie_tile_info *tile_info);
 /**
  * aie_get_error_category() - Get the category of an AIE error
  * @err: AI engine hardware error
@@ -178,5 +246,22 @@ static inline int aie_partition_get_freq_req(struct device *dev, u64 *freq)
 {
 	return -EINVAL;
 }
+
+static inline int aie_get_status_dump(struct device *dev, struct aie_col_status *status)
+{
+	return -EINVAL;
+}
+
+static inline int aie_get_tile_info(struct device *dev, struct aie_tile_info *tile_info)
+{
+	return -EINVAL;
+}
+
+static inline int aie_part_rscmgr_set_static_range(struct device *dev,
+						   u8 start_col, u8 num_col, void *meta)
+{
+	return -EINVAL;
+}
+
 #endif /* CONFIG_XILINX_AIE */
 #endif

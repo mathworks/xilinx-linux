@@ -19,10 +19,22 @@ config AD8366
 	    ADA4961 BiCMOS RF Digital Gain Amplifier (DGA)
 	    ADL5240 Digitally controlled variable gain amplifier (VGA)
 	    HMC271 1 dB LSB GaAs MMIC 5-BIT Control Digital Attenuator
+	    HMC792A 0.25 dB LSB GaAs MMIC 6-BIT Digital Attenuator
 	    HMC1119 0.25 dB LSB, 7-Bit, Silicon Digital Attenuator
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad8366.
+
+config ADA4250
+	tristate "Analog Devices ADA4250 Instrumentation Amplifier"
+	depends on SPI
+	help
+	  Say yes here to build support for Analog Devices ADA4250
+	  SPI Amplifier's support. The driver provides direct access via
+	  sysfs.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ada4250.
 
 config AD916X_AMP
 	tristate "Analog Devices AD916x Amplifiers"
@@ -35,16 +47,15 @@ config AD916X_AMP
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad916x_amp.
 
-config ADA4250
-	tristate "Analog Devices ADA4250 Instrumentation Amplifier"
+config ADL5580
+	tristate "Analog Devices ADL5580 Fully Differential, 10 GHz ADC Driver with 10 dB Gain"
 	depends on SPI
 	help
-	  Say yes here to build support for Analog Devices ADA4250
-	  SPI Amplifier's support. The driver provides direct access via
-          sysfs.
+	  Say yes here to build support for Analog Devices ADL5580 and similar
+	  gain amplifiers..
 
 	  To compile this driver as a module, choose M here: the
-	  module will be called ada4250.
+	  module will be called adl5580.
 
 config HMC425
 	tristate "Analog Devices HMC425A and similar GPIO Gain Amplifiers"
@@ -55,5 +66,7 @@ config HMC425
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called hmc425a.
+
+
 
 endmenu

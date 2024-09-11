@@ -11,6 +11,7 @@
 #include <linux/clk-provider.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/delay.h>
@@ -72,9 +73,11 @@ struct axi_jesd204_tx {
 	struct clk *device_clk;
 	struct clk *link_clk;
 	struct clk *conv2_clk;
+	struct clk *sysref_clk;
 
 	struct jesd204_dev *jdev;
 
+	unsigned long axi_clk_freq;
 	int irq;
 
 	unsigned int num_lanes;
@@ -87,6 +90,11 @@ struct axi_jesd204_tx {
 	/* Used for probe ordering */
 	struct clk_hw dummy_clk;
 	struct clk *lane_clk;
+
+	/* Versal specific gpios */
+	struct gpio_desc *reset_pll_datapath_gpio;
+	struct gpio_desc *reset_datapath_gpio;
+	struct gpio_desc *reset_done_gpio;
 };
 
 static const char * const axi_jesd204_tx_link_status_label[] = {
@@ -136,8 +144,8 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: off\n");
 	} else {
-		clock_rate = DIV_ROUND_CLOSEST_ULL(100000ULL * clock_ratio,
-			1ULL << 16);
+		clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
+			1000) * clock_ratio, 1ULL << 16);
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: %d.%.3d MHz\n",
@@ -167,8 +175,8 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"Measured Device Clock: off\n");
 		} else {
-			clock_rate = DIV_ROUND_CLOSEST_ULL(100000ULL * clock_ratio,
-				1ULL << 16);
+			clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
+				1000) * clock_ratio, 1ULL << 16);
 
 			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"Measured Device Clock: %d.%.3d MHz\n",
@@ -686,12 +694,16 @@ static int axi_jesd204_tx_jesd204_link_setup(struct jesd204_dev *jdev,
 	case JESD204_STATE_OP_REASON_UNINIT:
 		if (__clk_is_enabled(jesd->lane_clk)) /* REVIST */
 			clk_disable_unprepare(jesd->lane_clk);
-		if (__clk_is_enabled(jesd->device_clk))
-			clk_disable_unprepare(jesd->device_clk);
 		if (!IS_ERR_OR_NULL(jesd->link_clk)) {
 			if (__clk_is_enabled(jesd->link_clk))
 				clk_disable_unprepare(jesd->link_clk);
 		}
+		if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
+			if (__clk_is_enabled(jesd->sysref_clk))
+				clk_disable_unprepare(jesd->sysref_clk);
+		}
+		if (__clk_is_enabled(jesd->device_clk))
+			clk_disable_unprepare(jesd->device_clk);
 		return JESD204_STATE_CHANGE_DONE;
 	default:
 		return JESD204_STATE_CHANGE_DONE;
@@ -719,6 +731,15 @@ static int axi_jesd204_tx_jesd204_link_setup(struct jesd204_dev *jdev,
 		return ret;
 	}
 
+	if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
+		ret = clk_prepare_enable(jesd->sysref_clk);
+		if (ret) {
+			dev_err(dev, "%s: Link%u enable sysref clock failed (%d)\n",
+				__func__, lnk->link_id, ret);
+			return ret;
+		}
+	}
+
 	if (!IS_ERR_OR_NULL(jesd->link_clk)) {
 		ret = clk_prepare_enable(jesd->link_clk);
 		if (ret) {
@@ -736,6 +757,11 @@ static int axi_jesd204_tx_jesd204_link_setup(struct jesd204_dev *jdev,
 		return ret;
 	}
 
+	ret = axi_jesd_ext_reset(dev, "tx_pll_datapath", jesd->reset_pll_datapath_gpio,
+							 jesd->reset_done_gpio);
+	if (ret)
+		return ret;
+
 	return JESD204_STATE_CHANGE_DONE;
 }
 
@@ -745,11 +771,17 @@ static int axi_jesd204_tx_jesd204_clks_enable(struct jesd204_dev *jdev,
 {
 	struct device *dev = jesd204_dev_to_device(jdev);
 	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
+	int ret;
 
 	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__, lnk->link_id, jesd204_state_op_reason_str(reason));
 
 	if (reason != JESD204_STATE_OP_REASON_INIT)
 		return JESD204_STATE_CHANGE_DONE;
+
+	ret = axi_jesd_ext_reset(dev, "tx_datapath", jesd->reset_datapath_gpio,
+				 jesd->reset_done_gpio);
+	if (ret)
+		return ret;
 
 	writel_relaxed(0x1, jesd->base + JESD204_TX_REG_LINK_DISABLE);
 	udelay(1);
@@ -898,6 +930,21 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	jesd->reset_pll_datapath_gpio = devm_gpiod_get_optional(&pdev->dev,
+		"pll-datapath-reset", GPIOD_OUT_LOW);
+	if (IS_ERR(jesd->reset_pll_datapath_gpio))
+		return PTR_ERR(jesd->reset_pll_datapath_gpio);
+
+	jesd->reset_datapath_gpio = devm_gpiod_get_optional(&pdev->dev,
+		"datapath-reset", GPIOD_OUT_LOW);
+	if (IS_ERR(jesd->reset_datapath_gpio))
+		return PTR_ERR(jesd->reset_datapath_gpio);
+
+	jesd->reset_done_gpio = devm_gpiod_get_optional(&pdev->dev,
+		"reset-done", GPIOD_IN);
+	if (IS_ERR(jesd->reset_done_gpio))
+		return PTR_ERR(jesd->reset_done_gpio);
+
 	jesd->axi_clk = devm_clk_get(&pdev->dev, "s_axi_aclk");
 	if (IS_ERR(jesd->axi_clk))
 		return PTR_ERR(jesd->axi_clk);
@@ -924,9 +971,17 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 	if (IS_ERR(jesd->link_clk))
 		return PTR_ERR(jesd->link_clk);
 
+	jesd->sysref_clk = devm_clk_get_optional(&pdev->dev, "sysref_clk");
+	if (IS_ERR(jesd->sysref_clk))
+		return PTR_ERR(jesd->sysref_clk);
+
 	ret = clk_prepare_enable(jesd->axi_clk);
 	if (ret)
 		return ret;
+
+	jesd->axi_clk_freq = clk_get_rate(jesd->axi_clk);
+	if (!jesd->axi_clk_freq)
+		jesd->axi_clk_freq = 100000000; /* 100 MHz */
 
 	if (jesd->conv2_clk) {
 		ret = clk_prepare_enable(jesd->conv2_clk);
@@ -1033,7 +1088,7 @@ static const struct of_device_id axi_jesd204_tx_of_match[] = {
 	{ .compatible = "adi,axi-jesd204-tx-1.3" },
 	{ /* end of list */ },
 };
-MODULE_DEVICE_TABLE(of, adxcvr_of_match);
+MODULE_DEVICE_TABLE(of, axi_jesd204_tx_of_match);
 
 static struct platform_driver axi_jesd204_tx_driver = {
 	.probe = axi_jesd204_tx_probe,

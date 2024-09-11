@@ -50,11 +50,13 @@ static const struct spi_nor_locking_ops sst26vf_nor_locking_ops = {
 	.is_locked = sst26vf_nor_is_locked,
 };
 
-static void sst26vf_nor_late_init(struct spi_nor *nor)
+static int sst26vf_nor_late_init(struct spi_nor *nor)
 {
 	struct spi_nor_flash_parameter *params = spi_nor_get_params(nor, 0);
 
 	params->locking_ops = &sst26vf_nor_locking_ops;
+
+	return 0;
 }
 
 static const struct spi_nor_fixups sst26vf_nor_fixups = {
@@ -73,8 +75,8 @@ static const struct flash_info sst_nor_parts[] = {
 		MFR_FLAGS(SST_WRITE) },
 	{ "sst25vf016b", INFO(0xbf2541, 0, 64 * 1024, 32)
 		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE)
-		NO_SFDP_FLAGS(SECT_4K)
-		MFR_FLAGS(SST_WRITE) },
+		NO_SFDP_FLAGS(SPI_NOR_SKIP_SFDP | SECT_4K)
+		MFR_FLAGS(SST_WRITE)},
 	{ "sst25vf032b", INFO(0xbf254a, 0, 64 * 1024, 64)
 		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE)
 		NO_SFDP_FLAGS(SECT_4K)
@@ -116,8 +118,12 @@ static const struct flash_info sst_nor_parts[] = {
 		      SST_GLOBAL_PROT_UNLK | SPI_NOR_SWP_IS_VOLATILE)},
 	{ "sst26vf016b", INFO(0xbf2641, 0, 64 * 1024, 32)
 		NO_SFDP_FLAGS(SECT_4K | SPI_NOR_DUAL_READ)
-		FLAGS(SST_GLOBAL_PROT_UNLK | SPI_NOR_SWP_IS_VOLATILE)
-		MFR_FLAGS(SST_WRITE)},
+		FLAGS(SPI_NOR_HAS_LOCK |
+		      SST_GLOBAL_PROT_UNLK | SPI_NOR_SWP_IS_VOLATILE)},
+	{ "sst26vf032b", INFO(0xbf2642, 0, 0, 0)
+		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE)
+		PARSE_SFDP
+		.fixups = &sst26vf_nor_fixups },
 	{ "sst26vf064b", INFO(0xbf2643, 0, 64 * 1024, 128)
 		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE)
 		NO_SFDP_FLAGS(SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ)
@@ -133,7 +139,7 @@ static int sst_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	dev_dbg(nor->dev, "to 0x%08x, len %zd\n", (u32)to, len);
 
-	ret = spi_nor_lock_and_prep(nor);
+	ret = spi_nor_prep_and_lock(nor);
 	if (ret)
 		return ret;
 
@@ -210,10 +216,12 @@ out:
 	return ret;
 }
 
-static void sst_nor_late_init(struct spi_nor *nor)
+static int sst_nor_late_init(struct spi_nor *nor)
 {
 	if (nor->info->mfr_flags & SST_WRITE)
 		nor->mtd._write = sst_nor_write;
+
+	return 0;
 }
 
 static const struct spi_nor_fixups sst_nor_fixups = {

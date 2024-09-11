@@ -1456,7 +1456,7 @@ int irdma_uk_qp_init(struct irdma_qp_uk *qp, struct irdma_qp_uk_init_info *info)
 	qp->sq_size = info->sq_size;
 	qp->push_mode = false;
 	qp->max_sq_frag_cnt = info->max_sq_frag_cnt;
-	sq_ring_size = qp->sq_size << sqshift;
+	sq_ring_size = qp->sq_size << info->sq_shift;
 	IRDMA_RING_INIT(qp->sq_ring, sq_ring_size);
 	IRDMA_RING_INIT(qp->initial_ring, sq_ring_size);
 	if (info->first_sq_wq) {

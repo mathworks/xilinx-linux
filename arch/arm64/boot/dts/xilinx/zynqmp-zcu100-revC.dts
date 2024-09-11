@@ -2,9 +2,10 @@
 /*
  * dts file for Xilinx ZynqMP ZCU100 revC
  *
- * (C) Copyright 2016 - 2021, Xilinx, Inc.
+ * (C) Copyright 2016 - 2022, Xilinx, Inc.
+ * (C) Copyright 2022 - 2023, Advanced Micro Devices, Inc.
  *
- * Michal Simek <michal.simek@xilinx.com>
+ * Michal Simek <michal.simek@amd.com>
  * Nathalie Chan King Choy
  */
 
@@ -102,15 +103,6 @@
 		};
 	};
 
-	ltc2954: ltc2954 { /* U7 */
-		compatible = "lltc,ltc2954", "lltc,ltc2952";
-		status = "disabled";
-		trigger-gpios = <&gpio 26 GPIO_ACTIVE_LOW>; /* INT line - input */
-		/* If there is HW watchdog on mezzanine this signal should be connected there */
-		watchdog-gpios = <&gpio 35 GPIO_ACTIVE_HIGH>; /* MIO on PAD */
-		kill-gpios = <&gpio 34 GPIO_ACTIVE_LOW>; /* KILL signal - output */
-	};
-
 	wmmcsdio_fixed: fixedregulator-mmcsdio {
 		compatible = "regulator-fixed";
 		regulator-name = "wmmcsdio_fixed";
@@ -131,13 +123,13 @@
 		io-channels = <&u35 0>, <&u35 1>, <&u35 2>, <&u35 3>;
 	};
 
-	si5335_0: si5335_0 { /* clk0_usb - u23 */
+	si5335_0: si5335-0 { /* clk0_usb - u23 */
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
 		clock-frequency = <26000000>;
 	};
 
-	si5335_1: si5335_1 { /* clk1_dp - u23 */
+	si5335_1: si5335-1 { /* clk1_dp - u23 */
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
 		clock-frequency = <27000000>;
@@ -188,8 +180,8 @@
 	pinctrl-names = "default", "gpio";
 	pinctrl-0 = <&pinctrl_i2c1_default>;
 	pinctrl-1 = <&pinctrl_i2c1_gpio>;
-	scl-gpios = <&gpio 4 GPIO_ACTIVE_HIGH>;
-	sda-gpios = <&gpio 5 GPIO_ACTIVE_HIGH>;
+	scl-gpios = <&gpio 4 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&gpio 5 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	clock-frequency = <100000>;
 	i2c-mux@75 { /* u11 */
 		compatible = "nxp,pca9548";
@@ -283,7 +275,7 @@
 		};
 	};
 
-	pinctrl_i2c1_gpio: i2c1-gpio {
+	pinctrl_i2c1_gpio: i2c1-gpio-grp {
 		mux {
 			groups = "gpio0_4_grp", "gpio0_5_grp";
 			function = "gpio0";

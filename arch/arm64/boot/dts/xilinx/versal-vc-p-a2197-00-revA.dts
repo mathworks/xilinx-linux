@@ -4,7 +4,7 @@
  *
  * (C) Copyright 2019, Xilinx, Inc.
  *
- * Michal Simek <michal.simek@xilinx.com>
+ * Michal Simek <michal.simek@amd.com>
  */
 
 #include "versal.dtsi"
@@ -15,6 +15,10 @@
 		     "xlnx,versal-vc-p-a2197-00",
 		     "xlnx,versal-vc-p-a2197", "xlnx,versal";
 	model = "Xilinx Versal A2197 Processor board revA";
+
+	aliases {
+		serial2 = &dcc;
+	};
 
 	memory: memory@0 {
 		device_type = "memory";

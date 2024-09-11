@@ -66,6 +66,8 @@ struct axiadc_chip_info {
 
 struct axiadc_state {
 	struct iio_info			iio_info;
+	/* protect against device accesses */
+	struct mutex			lock;
 	void __iomem			*regs;
 	unsigned int			pcore_version;
 };
@@ -86,9 +88,7 @@ static int axiadc_hw_submit_block(struct iio_dma_buffer_queue *queue,
 	struct iio_dev *indio_dev = queue->driver_data;
 	struct axiadc_state *st = iio_priv(indio_dev);
 
-	block->block.bytes_used = block->block.size;
-
-	iio_dmaengine_buffer_submit_block(queue, block, DMA_FROM_DEVICE);
+	iio_dmaengine_buffer_submit_block(queue, block);
 
 	axiadc_write(st, ADI_REG_STATUS, ~0);
 	axiadc_write(st, ADI_REG_DMA_STATUS, ~0);
@@ -109,8 +109,8 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	if (dma_name == NULL)
 		dma_name = "rx";
 
-	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
-			&axiadc_dma_buffer_ops, indio_dev);
+	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent, dma_name,
+						 &axiadc_dma_buffer_ops, indio_dev);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -120,23 +120,18 @@ static int axiadc_configure_ring_stream(struct iio_dev *indio_dev,
 	return 0;
 }
 
-static void axiadc_unconfigure_ring_stream(struct iio_dev *indio_dev)
-{
-	iio_dmaengine_buffer_free(indio_dev->buffer);
-}
-
 static int axiadc_reg_access(struct iio_dev *indio_dev,
 			     unsigned reg, unsigned writeval,
 			     unsigned *readval)
 {
 	struct axiadc_state *st = iio_priv(indio_dev);
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&st->lock);
 	if (readval == NULL)
 		axiadc_write(st, reg & 0xFFFF, writeval);
 	else
 		*readval = axiadc_read(st, reg & 0xFFFF);
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&st->lock);
 
 	return 0;
 }
@@ -235,29 +230,16 @@ static int axiadc_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	ret = iio_device_register(indio_dev);
+	mutex_init(&st->lock);
+
+	ret = devm_iio_device_register(&pdev->dev, indio_dev);
 	if (ret)
-		goto err_unconfigure_ring;
+		return ret;
 
 	dev_info(&pdev->dev, "ADI AIM (0x%X) at 0x%08llX mapped to 0x%p, probed ADC %s as %s\n",
 		 st->pcore_version,
 		 (unsigned long long)mem->start, st->regs, chip_info->name,
 		 axiadc_read(st, ADI_AXI_REG_ID) ? "SLAVE" : "MASTER");
-
-	return 0;
-
-err_unconfigure_ring:
-	axiadc_unconfigure_ring_stream(indio_dev);
-
-	return ret;
-}
-
-static int axiadc_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-
-	iio_device_unregister(indio_dev);
-	axiadc_unconfigure_ring_stream(indio_dev);
 
 	return 0;
 }
@@ -276,7 +258,6 @@ static struct platform_driver axiadc_driver = {
 		.of_match_table = axiadc_of_match,
 	},
 	.probe	  = axiadc_probe,
-	.remove	 = axiadc_remove,
 };
 
 module_platform_driver(axiadc_driver);
@@ -284,3 +265,4 @@ module_platform_driver(axiadc_driver);
 MODULE_AUTHOR("Dragos Bogdan <dragos.bogdan@analog.com>");
 MODULE_DESCRIPTION("Analog Devices MC-ADC");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_DMAENGINE_BUFFER);

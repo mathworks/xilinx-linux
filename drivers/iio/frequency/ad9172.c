@@ -27,6 +27,7 @@
 
 #include "cf_axi_dds.h"
 #include "ad917x/AD917x.h"
+#include "ad917x/ad917x_reg.h"
 
 #define AD9172_SAMPLE_RATE_KHZ 3000000UL /* 3 GSPS */
 
@@ -418,6 +419,7 @@ static int ad9172_read_raw(struct iio_dev *indio_dev,
 	struct ad9172_state *st = container_of(conv, struct ad9172_state, conv);
 	ad917x_handle_t *ad917x_h = &st->dac_h;
 	u16 val16 = 0;
+	u8 cached_page_mask;
 	int ret;
 
 	switch (m) {
@@ -425,6 +427,9 @@ static int ad9172_read_raw(struct iio_dev *indio_dev,
 		*val = ad9172_get_data_clk(conv);
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
+		ad917x_register_read(&st->dac_h,
+			AD917X_SPI_PAGEINDX_REG, &cached_page_mask);
+
 		ret = ad917x_set_page_idx(ad917x_h,
 					  AD917X_DAC_NONE, BIT(chan->channel));
 		if (ret < 0)
@@ -432,6 +437,9 @@ static int ad9172_read_raw(struct iio_dev *indio_dev,
 		ret = ad917x_get_channel_gain(ad917x_h, &val16);
 		if (ret < 0)
 			return ret;
+
+		ad917x_register_write(&st->dac_h,
+			AD917X_SPI_PAGEINDX_REG, cached_page_mask);
 
 		*val = val16;
 		*val2 = 11;
@@ -519,7 +527,7 @@ static ssize_t ad9172_attr_store(struct device *dev,
 	if (ret)
 		return ret;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 
 	switch ((u32)this_attr->address & ~0xFF) {
 	case AD9172_ATTR_CHAN_NCO(0):
@@ -565,7 +573,7 @@ static ssize_t ad9172_attr_store(struct device *dev,
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	return ret ? ret : len;
 }
@@ -584,7 +592,7 @@ static ssize_t ad9172_attr_show(struct device *dev,
 	s64 val64 = 0;
 	s16 val16_2, val16 = 0;
 
-	mutex_lock(&indio_dev->mlock);
+	mutex_lock(&conv->lock);
 	switch ((u32)this_attr->address & ~0xFF) {
 	case AD9172_ATTR_CHAN_NCO(0):
 		ret = ad917x_nco_channel_freq_get(ad917x_h, BIT(dest),
@@ -616,7 +624,7 @@ static ssize_t ad9172_attr_show(struct device *dev,
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&indio_dev->mlock);
+	mutex_unlock(&conv->lock);
 
 	if (ret >= 0)
 		ret = sprintf(buf, "%lld\n", val64);
@@ -1040,8 +1048,14 @@ static int ad9172_jesd204_post_running_stage(struct jesd204_dev *jdev,
 {
 	struct ad9172_jesd204_priv *priv = jesd204_dev_priv(jdev);
 	struct ad9172_state *st = priv->st;
+	int ret;
 
-	return ad9172_finalize_setup(st);
+	ret = ad9172_finalize_setup(st);
+
+	if (ret < 0)
+		return ret;
+
+	return JESD204_STATE_CHANGE_DONE;
 }
 
 static const struct jesd204_dev_data jesd204_ad9172_init = {

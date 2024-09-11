@@ -1149,7 +1149,6 @@ static void ad9517_remove(struct spi_device *spi)
 
 	iio_device_unregister(indio_dev);
 	of_clk_del_provider(spi->dev.of_node);
-
 }
 
 static const struct spi_device_id ad9517_id[] = {

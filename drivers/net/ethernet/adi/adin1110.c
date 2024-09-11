@@ -294,7 +294,7 @@ static int adin1110_read_fifo(struct adin1110_port_priv *port_priv)
 {
 	struct adin1110_priv *priv = port_priv->priv;
 	u32 header_len = ADIN1110_RD_HEADER_LEN;
-	struct spi_transfer t;
+	struct spi_transfer t = {0};
 	u32 frame_size_no_fcs;
 	struct sk_buff *rxb;
 	u32 frame_size;
@@ -356,7 +356,7 @@ static int adin1110_read_fifo(struct adin1110_port_priv *port_priv)
 
 	if ((port_priv->flags & IFF_ALLMULTI && rxb->pkt_type == PACKET_MULTICAST) ||
 	    (port_priv->flags & IFF_BROADCAST && rxb->pkt_type == PACKET_BROADCAST))
-		rxb->offload_fwd_mark = 1;
+		rxb->offload_fwd_mark = port_priv->priv->forwarding;
 
 	netif_rx(rxb);
 
@@ -410,7 +410,8 @@ static int adin1110_write_fifo(struct adin1110_port_priv *port_priv,
 	memcpy(&priv->data[header_len], &frame_header,
 	       ADIN1110_FRAME_HEADER_LEN);
 
-	memcpy(&priv->data[header_len + ADIN1110_FRAME_HEADER_LEN], txb->data, txb->len);
+	memcpy(&priv->data[header_len + ADIN1110_FRAME_HEADER_LEN],
+	       txb->data, txb->len);
 
 	ret = spi_write(priv->spidev, &priv->data[0], round_len + header_len);
 	if (ret < 0)
@@ -429,6 +430,7 @@ static int adin1110_read_mdio_acc(struct adin1110_priv *priv)
 
 	mutex_lock(&priv->lock);
 	ret = adin1110_read_reg(priv, ADIN1110_MDIOACC, &val);
+	mutex_unlock(&priv->lock);
 	if (ret < 0)
 		return 0;
 
@@ -452,8 +454,8 @@ static int adin1110_mdio_read(struct mii_bus *bus, int phy_id, int reg)
 	/* write the clause 22 read command to the chip */
 	mutex_lock(&priv->lock);
 	ret = adin1110_write_reg(priv, ADIN1110_MDIOACC, val);
-	if (ret < 0) {
-		mutex_unlock(&priv->lock);
+	mutex_unlock(&priv->lock);
+	if (ret < 0)
 		return ret;
 
 	/* ADIN1110_MDIO_TRDONE BIT of the ADIN1110_MDIOACC
@@ -489,13 +491,6 @@ static int adin1110_mdio_write(struct mii_bus *bus, int phy_id,
 	/* write the clause 22 write command to the chip */
 	mutex_lock(&priv->lock);
 	ret = adin1110_write_reg(priv, ADIN1110_MDIOACC, val);
-	if (ret < 0) {
-		mutex_unlock(&priv->lock);
-		return ret;
-	}
-
-	ret = readx_poll_timeout(adin1110_read_mdio_acc, priv, val, (val & ADIN1110_MDIO_TRDONE),
-				 10000, 30000);
 	mutex_unlock(&priv->lock);
 	if (ret < 0)
 		return ret;
@@ -528,7 +523,6 @@ static int adin1110_register_mdiobus(struct adin1110_priv *priv,
 	mii_bus->priv = priv;
 	mii_bus->parent = dev;
 	mii_bus->phy_mask = ~((u32)GENMASK(2, 0));
-	mii_bus->probe_capabilities = MDIOBUS_C22;
 	snprintf(mii_bus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
 
 	ret = devm_mdiobus_register(dev, mii_bus);
@@ -543,6 +537,9 @@ static int adin1110_register_mdiobus(struct adin1110_priv *priv,
 static bool adin1110_port_rx_ready(struct adin1110_port_priv *port_priv,
 				   u32 status)
 {
+	if (!netif_oper_up(port_priv->netdev))
+		return false;
+
 	if (!port_priv->nr)
 		return !!(status & ADIN1110_RX_RDY);
 	else
@@ -595,7 +592,8 @@ static irqreturn_t adin1110_irq(int irq, void *p)
 		goto out;
 
 	if (priv->append_crc && (status1 & ADIN1110_SPI_ERR))
-		dev_warn(&priv->spidev->dev, "SPI CRC error on write.\n");
+		dev_warn_ratelimited(&priv->spidev->dev,
+				     "SPI CRC error on write.\n");
 
 	ret = adin1110_read_reg(priv, ADIN1110_TX_SPACE, &val);
 	if (ret < 0)
@@ -639,10 +637,8 @@ static int adin1110_write_mac_address(struct adin1110_port_priv *port_priv,
 	else
 		port_rules_mask = ADIN2111_MAC_ADDR_APPLY2PORT2;
 
-		/* Broadcast and multicast should also be forwarded to the other port */
-		if (mac_nr != ADIN_MAC_ADDR_SLOT)
-			port_rules |= ADIN2111_MAC_ADDR_TO_OTHER_PORT;
-	}
+	if (port_rules & port_rules_mask)
+		port_rules_mask |= ADIN1110_MAC_ADDR_TO_HOST | ADIN2111_MAC_ADDR_TO_OTHER_PORT;
 
 	port_rules_mask |= GENMASK(15, 0);
 	val = port_rules | get_unaligned_be16(&addr[0]);
@@ -727,9 +723,8 @@ static int adin1110_multicast_filter(struct adin1110_port_priv *port_priv,
 	u8 mac[ETH_ALEN] = {0};
 	u32 port_rules = 0;
 
-	if (accept_multicast) {
-		mask[0] = BIT(0);
-		mac[0] = BIT(0);
+	mask[0] = BIT(0);
+	mac[0] = BIT(0);
 
 	if (accept_multicast && port_priv->state == BR_STATE_FORWARDING)
 		port_rules = adin1110_port_rules(port_priv, true, true);
@@ -741,11 +736,10 @@ static int adin1110_multicast_filter(struct adin1110_port_priv *port_priv,
 static int adin1110_broadcasts_filter(struct adin1110_port_priv *port_priv,
 				      int mac_nr, bool accept_broadcast)
 {
-	struct adin1110_port_priv *port_priv = netdev_priv(netdev);
-	struct sockaddr *sa = addr;
+	u32 port_rules = 0;
 	u8 mask[ETH_ALEN];
 
-	memset(mask, 0xFF, ETH_ALEN);
+	eth_broadcast_addr(mask);
 
 	if (accept_broadcast && port_priv->state == BR_STATE_FORWARDING)
 		port_rules = adin1110_port_rules(port_priv, true, true);
@@ -766,7 +760,7 @@ static int adin1110_set_mac_address(struct net_device *netdev,
 		return -EADDRNOTAVAIL;
 
 	eth_hw_addr_set(netdev, dev_addr);
-	memset(mask, 0xFF, ETH_ALEN);
+	eth_broadcast_addr(mask);
 
 	mac_slot = (!port_priv->nr) ?  ADIN_MAC_P1_ADDR_SLOT : ADIN_MAC_P2_ADDR_SLOT;
 	port_rules = adin1110_port_rules(port_priv, true, false);
@@ -798,7 +792,6 @@ static int adin1110_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 static int adin1110_set_promisc_mode(struct adin1110_port_priv *port_priv,
 				     bool promisc)
 {
-	struct adin1110_port_priv *port_priv = container_of(work, struct adin1110_port_priv, rx_mode_work);
 	struct adin1110_priv *priv = port_priv->priv;
 	u32 mask;
 
@@ -842,8 +835,8 @@ static bool adin1110_can_offload_forwarding(struct adin1110_priv *priv)
 {
 	int i;
 
-	adin1110_multicast_filter(port_priv, ADIN_MAC_MULTICAST_ADDR_SLOT,
-				  !!(port_priv->flags & IFF_ALLMULTI));
+	if (priv->cfg->id != ADIN2111_MAC)
+		return false;
 
 	/* Can't enable forwarding if ports do not belong to the same bridge */
 	if (priv->ports[0]->bridge != priv->ports[1]->bridge || !priv->ports[0]->bridge)
@@ -922,8 +915,9 @@ static int adin1110_net_open(struct net_device *net_dev)
 	port_priv->state = BR_STATE_FORWARDING;
 	ret = adin1110_set_mac_address(net_dev, net_dev->dev_addr);
 	if (ret < 0) {
-		mutex_unlock(&priv->lock);
-		return ret;
+		netdev_err(net_dev, "Could not set MAC address: %pM, %d\n",
+			   net_dev->dev_addr, ret);
+		goto out;
 	}
 
 	ret = adin1110_set_bits(priv, ADIN1110_CONFIG1, ADIN1110_CONFIG1_SYNC,
@@ -983,8 +977,7 @@ static void adin1110_tx_work(struct work_struct *work)
 			dev_err_ratelimited(&priv->spidev->dev,
 					    "Frame write error: %d\n", ret);
 
-			dev_kfree_skb(txb);
-		}
+		dev_kfree_skb(txb);
 	}
 
 	mutex_unlock(&priv->lock);
@@ -1088,8 +1081,29 @@ static void adin1110_adjust_link(struct net_device *dev)
  */
 static int adin1110_check_spi(struct adin1110_priv *priv)
 {
+	struct gpio_desc *reset_gpio;
 	int ret;
 	u32 val;
+
+	reset_gpio = devm_gpiod_get_optional(&priv->spidev->dev, "reset",
+					     GPIOD_OUT_LOW);
+	if (reset_gpio) {
+		/* MISO pin is used for internal configuration, can't have
+		 * anyone else disturbing the SDO line.
+		 */
+		spi_bus_lock(priv->spidev->controller);
+
+		gpiod_set_value(reset_gpio, 1);
+		fsleep(10000);
+		gpiod_set_value(reset_gpio, 0);
+
+		/* Need to wait 90 ms before interacting with
+		 * the MAC after a HW reset.
+		 */
+		fsleep(90000);
+
+		spi_bus_unlock(priv->spidev->controller);
+	}
 
 	ret = adin1110_read_reg(priv, ADIN1110_PHY_ID, &val);
 	if (ret < 0)
@@ -1257,7 +1271,7 @@ static int adin1110_port_set_blocking_state(struct adin1110_port_priv *port_priv
 		goto out;
 
 	/* Allow only BPDUs to be passed to the CPU */
-	memset(mask, 0xFF, ETH_ALEN);
+	eth_broadcast_addr(mask);
 	port_rules = adin1110_port_rules(port_priv, true, false);
 	ret = adin1110_write_mac_address(port_priv, mac_slot, mac,
 					 mask, port_rules);
@@ -1371,8 +1385,8 @@ static int adin1110_fdb_add(struct adin1110_port_priv *port_priv,
 		return -ENOMEM;
 
 	other_port = priv->ports[!port_priv->nr];
-	port_rules = adin1110_port_rules(port_priv, false, true);
-	memset(mask, 0xFF, ETH_ALEN);
+	port_rules = adin1110_port_rules(other_port, false, true);
+	eth_broadcast_addr(mask);
 
 	return adin1110_write_mac_address(other_port, mac_nr, (u8 *)fdb->addr,
 					  mask, port_rules);

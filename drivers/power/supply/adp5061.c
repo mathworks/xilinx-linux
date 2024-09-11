@@ -74,14 +74,6 @@
 #define ADP5061_CHG_STATUS_2_RCH_LIM_INFO(x)	(((x) >> 3) & 0x1)
 #define ADP5061_CHG_STATUS_2_BAT_STATUS(x)	(((x) >> 0) & 0x7)
 
-/* ADP5061_FUNC_SET_1 */
-#define ADP5061_FUNC_SET_1_EN_CHG_MSK		BIT(0)
-#define ADP5061_FUNC_SET_1_EN_CHG_MODE(x)	(((x) & 0x01) << 0)
-
-/* ADP5061_FUNC_SET_2 */
-#define ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK	BIT(5)
-#define ADP5061_FUNC_SET_2_EN_CHG_VLIM_MODE(x)	(((x) & 0x01) << 5)
-
 /* ADP5061_IEND */
 #define ADP5061_IEND_IEND_MSK			GENMASK(7, 5)
 #define ADP5061_IEND_IEND_MODE(x)		(((x) & 0x07) << 5)
@@ -702,107 +694,10 @@ static const struct power_supply_desc adp5061_desc = {
 	.num_properties		= ARRAY_SIZE(adp5061_props),
 };
 
-static ssize_t adp5061_get_charging_enabled(struct device *dev,
-					    struct device_attribute *attr,
-					    char *buf)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct adp5061_state *st = power_supply_get_drvdata(psy);
-	unsigned int regval;
-	int ret;
-
-	ret = regmap_read(st->regmap, ADP5061_FUNC_SET_1, &regval);
-	if (ret < 0)
-		return ret;
-
-	regval &= ADP5061_FUNC_SET_1_EN_CHG_MSK;
-	return sprintf(buf, "%d\n", regval);
-}
-
-static ssize_t adp5061_set_charging_enabled(struct device *dev,
-					    struct device_attribute *attr,
-					    const char *buf, size_t count)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct adp5061_state *st = power_supply_get_drvdata(psy);
-	u8 chg_en;
-	int ret;
-
-	ret = kstrtou8(buf, 0, &chg_en);
-	if (ret < 0)
-		return ret;
-
-	ret = regmap_update_bits(st->regmap, ADP5061_FUNC_SET_1,
-				 ADP5061_FUNC_SET_1_EN_CHG_MSK,
-				 ADP5061_FUNC_SET_1_EN_CHG_MODE(!!chg_en));
-
-	if (ret < 0)
-		return ret;
-
-	return count;
-}
-
-static ssize_t adp5061_get_chg_vlim_enabled(struct device *dev,
-					    struct device_attribute *attr,
-					    char *buf)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct adp5061_state *st = power_supply_get_drvdata(psy);
-	unsigned int regval;
-	int ret;
-
-	ret = regmap_read(st->regmap, ADP5061_FUNC_SET_2, &regval);
-	if (ret < 0)
-		return ret;
-
-	regval = (regval & ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK) >> 5;
-	return sprintf(buf, "%d\n", regval);
-}
-
-static ssize_t adp5061_set_chg_vlim_enabled(struct device *dev,
-					    struct device_attribute *attr,
-					    const char *buf, size_t count)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct adp5061_state *st = power_supply_get_drvdata(psy);
-	u8 chg_vlim_en;
-	int ret;
-
-	ret = kstrtou8(buf, 0, &chg_vlim_en);
-	if (ret < 0)
-		return ret;
-
-	ret = regmap_update_bits(st->regmap, ADP5061_FUNC_SET_2,
-			ADP5061_FUNC_SET_2_EN_CHG_VLIM_MSK,
-			ADP5061_FUNC_SET_2_EN_CHG_VLIM_MODE(!!chg_vlim_en));
-
-	if (ret < 0)
-		return ret;
-
-	return count;
-}
-
-static DEVICE_ATTR(charging_enabled, 0644, adp5061_get_charging_enabled,
-		   adp5061_set_charging_enabled);
-static DEVICE_ATTR(charging_vlim_enabled, 0644, adp5061_get_chg_vlim_enabled,
-		   adp5061_set_chg_vlim_enabled);
-
-static struct attribute *adp5061_attributes[] = {
-	&dev_attr_charging_enabled.attr,
-	&dev_attr_charging_vlim_enabled.attr,
-	NULL
-};
-
-static const struct attribute_group adp5061_attr_group = {
-	.attrs = adp5061_attributes,
-};
-
-static int adp5061_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int adp5061_probe(struct i2c_client *client)
 {
 	struct power_supply_config psy_cfg = {};
 	struct adp5061_state *st;
-	int ret;
 
 	st = devm_kzalloc(&client->dev, sizeof(*st), GFP_KERNEL);
 	if (!st)
@@ -826,12 +721,6 @@ static int adp5061_probe(struct i2c_client *client,
 	if (IS_ERR(st->psy)) {
 		dev_err(&client->dev, "Failed to register power supply\n");
 		return PTR_ERR(st->psy);
-	}
-
-	ret = sysfs_create_group(&st->psy->dev.kobj, &adp5061_attr_group);
-	if (ret < 0) {
-		dev_err(&client->dev, "failed to create sysfs group\n");
-		return ret;
 	}
 
 	return 0;

@@ -12,6 +12,7 @@ obj-$(CONFIG_IIO_CONFIGFS) += industrialio-configfs.o
 obj-$(CONFIG_IIO_SW_DEVICE) += industrialio-sw-device.o
 obj-$(CONFIG_IIO_SW_TRIGGER) += industrialio-sw-trigger.o
 obj-$(CONFIG_IIO_TRIGGERED_EVENT) += industrialio-triggered-event.o
+obj-$(CONFIG_IIO_BACKEND) += industrialio-backend.o
 
 obj-y += accel/
 obj-y += adc/
@@ -20,6 +21,7 @@ obj-y += afe/
 obj-y += amplifiers/
 obj-y += beamformer/
 obj-y += buffer/
+obj-y += cdc/
 obj-y += chemical/
 obj-y += common/
 obj-y += dac/
@@ -44,5 +46,6 @@ obj-y += pressure/
 obj-y += proximity/
 obj-y += resolver/
 obj-y += temperature/
+obj-y += test/
 obj-y += trigger/
 

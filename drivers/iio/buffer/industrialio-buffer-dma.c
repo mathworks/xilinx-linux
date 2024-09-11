@@ -270,7 +270,7 @@ static int iio_dma_buffer_fileio_alloc(struct iio_dma_buffer_queue *queue,
 	queue->fileio.active_block = block;
 	queue->fileio.pos = 0;
 
-	if (indio_dev->direction == IIO_DEVICE_DIRECTION_IN) {
+	if (queue->buffer.direction == IIO_BUFFER_DIRECTION_IN) {
 		list_add_tail(&block->head, &queue->incoming);
 		queue->poll_wakup_flags = POLLIN | POLLRDNORM;
 	} else {
@@ -568,7 +568,7 @@ size_t iio_dma_buffer_data_available(struct iio_buffer *buf)
 }
 EXPORT_SYMBOL_GPL(iio_dma_buffer_data_available);
 
-bool iio_dma_buffer_space_available(struct iio_buffer *buf)
+size_t iio_dma_buffer_space_available(struct iio_buffer *buf)
 {
 	struct iio_dma_buffer_queue *queue = iio_buffer_to_queue(buf);
 	bool space_available = false;
@@ -804,7 +804,7 @@ int iio_dma_buffer_mmap(struct iio_buffer *buffer,
 
 	vma->vm_pgoff = 0;
 
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP); 
 	vma->vm_ops = &iio_dma_buffer_vm_ops;
 	vma->vm_private_data = block;
 

@@ -689,7 +689,6 @@ static void ad9508_remove(struct spi_device *spi)
 
 	if (!IS_ERR_OR_NULL(st->reg))
 		regulator_disable(st->reg);
-
 }
 
 static const struct spi_device_id ad9508_id[] = {

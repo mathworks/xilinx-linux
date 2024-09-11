@@ -7,6 +7,7 @@
  */
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/spi-nor.h>
+#include <linux/mtd/cfi.h>
 
 #include "core.h"
 
@@ -227,8 +228,13 @@ static int spi_nor_sr_lock(struct spi_nor *nor, loff_t ofs, uint64_t len)
 
 	status_new = (status_old & ~mask & ~tb_mask) | val;
 
-	/* Disallow further writes if WP pin is asserted */
-	status_new |= SR_SRWD;
+	/*
+	 * Disallow further writes if WP# pin is neither left floating nor
+	 * wrongly tied to GND (that includes internal pull-downs).
+	 * WP# pin hard strapped to GND can be a valid use case.
+	 */
+	if (!(nor->flags & SNOR_F_NO_WP))
+		status_new |= SR_SRWD;
 
 	if (!use_top)
 		status_new |= tb_mask;
@@ -392,9 +398,9 @@ static inline u16 min_lockable_sectors(struct spi_nor *nor,
 	 * protected area table is similar to that of spansion.
 	 */
 	lock_granularity = max(1, n_sectors / M25P_MAX_LOCKABLE_SECTORS);
-	if (nor->jedec_id == CFI_MFR_ST ||	/* Micron */
-	    nor->jedec_id == CFI_MFR_PMC ||	/* ISSI */
-	    nor->jedec_id == CFI_MFR_MACRONIX)	/* Macronix */
+	if (nor->info->id[0] == CFI_MFR_ST ||	/* Micron */
+	    nor->info->id[0] == CFI_MFR_PMC ||	/* ISSI */
+	    nor->info->id[0] == CFI_MFR_MACRONIX)	/* Macronix */
 		lock_granularity = 1;
 
 	return lock_granularity;
@@ -433,7 +439,7 @@ static int spi_nor_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	int ret;
 	u64 sz;
 
-	ret = spi_nor_lock_and_prep(nor);
+	ret = spi_nor_prep_and_lock(nor);
 	if (ret)
 		return ret;
 
@@ -474,7 +480,7 @@ static int spi_nor_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	int ret;
 	u64 sz;
 
-	ret = spi_nor_lock_and_prep(nor);
+	ret = spi_nor_prep_and_lock(nor);
 	if (ret)
 		return ret;
 
@@ -513,7 +519,7 @@ static int spi_nor_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
 	int ret;
 
-	ret = spi_nor_lock_and_prep(nor);
+	ret = spi_nor_prep_and_lock(nor);
 	if (ret)
 		return ret;
 
@@ -567,9 +573,9 @@ void spi_nor_try_unlock_all(struct spi_nor *nor)
 
 	dev_dbg(nor->dev, "Unprotecting entire flash array\n");
 
-	if (nor->jedec_id == CFI_MFR_ATMEL ||
-	    nor->jedec_id == CFI_MFR_INTEL ||
-	    nor->jedec_id == CFI_MFR_SST ||
+	if (nor->info->id[0] == CFI_MFR_ATMEL ||
+	    nor->info->id[0] == CFI_MFR_INTEL ||
+	    nor->info->id[0] == CFI_MFR_SST ||
 	    nor->flags & SNOR_F_HAS_LOCK) {
 		if (info->flags & SST_GLOBAL_PROT_UNLK) {
 			spi_nor_prot_unlock(nor);

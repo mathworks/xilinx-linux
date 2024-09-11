@@ -114,7 +114,6 @@ static __maybe_unused int32_t adi_adrv9001_Mcs_RfPllPhaseDifference_Get(adi_adrv
 #endif
 {
     uint32_t readData = 0;
-    uint8_t regValue = 0;
     adrv9001_BfNvsPllMemMap_e instance;
     static const adrv9001_BfNvsPllMemMap_e instances[] = {
         ADRV9001_BF_RF1_PLL,
@@ -127,14 +126,7 @@ static __maybe_unused int32_t adi_adrv9001_Mcs_RfPllPhaseDifference_Get(adi_adrv
     static const uint32_t TWOS_COMP_MAX = 2 << 23;
     
     instance = instances[pll];
-    
-    /* Save the current values of CALYP bits */
-    ADI_EXPECT(adrv9001_NvsPllMemMap_Caltyp_Get, adrv9001, instance, &regValue);
-    /* Setting the following bitfields triggers twice a phase measurement */
-    ADI_EXPECT(adrv9001_NvsPllMemMap_Caltyp_Set, adrv9001, instance, 0x1);
-    ADI_EXPECT(adrv9001_NvsPllMemMap_Caltyp_Set, adrv9001, instance, 0x1);
     ADI_EXPECT(adrv9001_NvsPllMemMap_Phdiff_Get, adrv9001, instance, &readData);
-    ADI_EXPECT(adrv9001_NvsPllMemMap_Caltyp_Set, adrv9001, instance, regValue);
 
     *phaseDifference_degrees = readData > TWOS_COMP_MID ? readData - TWOS_COMP_MAX : readData;
 #ifdef __KERNEL__

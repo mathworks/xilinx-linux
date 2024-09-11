@@ -16,7 +16,6 @@
 #include <linux/sched.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
-#include <linux/version.h>
 #include <linux/sysfs.h>
 
 #include <linux/usb.h>
@@ -338,8 +337,8 @@ static int start_host(struct dwc3_otg *otg)
 		return ret;
 	}
 
-	*(struct xhci_hcd **)xhci->shared_hcd->hcd_priv = xhci;
 	if (xhci->shared_hcd) {
+		*(struct xhci_hcd **)xhci->shared_hcd->hcd_priv = xhci;
 		ret = usb_add_hcd(xhci->shared_hcd, otg->hcd_irq, IRQF_SHARED);
 		if (ret) {
 			otg_err(otg,
@@ -1743,7 +1742,6 @@ static int dwc3_otg_set_periph(struct usb_otg *_otg, struct usb_gadget *gadget)
 
 	otg->otg.gadget = gadget;
 	otg->otg.gadget->hnp_polling_support = 1;
-	otg->otg.state = OTG_STATE_B_IDLE;
 
 	start_main_thread(otg);
 	return 0;

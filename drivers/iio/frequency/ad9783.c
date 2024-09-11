@@ -90,6 +90,11 @@
 #define AD9783_DAC1FSC_MSB              GENMASK(1, 0)
 /* AD9783_REG_DAC2_FSC_MSBS */
 #define AD9783_DAC2FSC_MSB              GENMASK(1, 0)
+#define AD9783_DAC_FSC_MIN              8660000U
+#define AD9783_DAC_FSC_MAX              31660000U
+#define AD9783_DAC_FSC_MAX_REG_VAL      GENMASK(9, 0)
+/* (FSC_MAX - FSC_MIN) / FSC_MAX_REG_VAL */
+#define AD9783_DAC_FSC_STEP             22483U
 /* AD9783_REG_BIST_CONTROL */
 #define AD9783_BISTEN                   BIT(7)
 #define AD9783_BISTRD                   BIT(6)
@@ -398,9 +403,9 @@ static int ad9783_set_chan_gain(struct ad9783_phy *phy, int ch,
 	int ret;
 
 	val = val_int * 1000 * 1000 + val_frac;
-	val = clamp(val, 8660000U, 31660000U);
-	val = (val * 10) - 86600000;
-	val = DIV_ROUND_CLOSEST(val, 220000);
+	val = clamp(val, AD9783_DAC_FSC_MIN, AD9783_DAC_FSC_MAX);
+	val = val - AD9783_DAC_FSC_MIN;
+	val = DIV_ROUND_CLOSEST(val, AD9783_DAC_FSC_STEP);
 
 	mutex_lock(&phy->lock);
 	ret = regmap_update_bits(phy->regmap, AD9783_REG_DAC_MSB(ch),
@@ -428,7 +433,8 @@ static int ad9783_get_chan_gain(struct ad9783_phy *phy, int ch,
 	if (ret < 0)
 		goto err_get_chan_gain;
 	data |= (reg & 0x03) << 8;
-	*val = DIV_ROUND_CLOSEST((data * 10 - 86600000), 220000);
+
+	*val = AD9783_DAC_FSC_MIN + (data * AD9783_DAC_FSC_STEP);
 	*val2 = 1000000;
 err_get_chan_gain:
 	mutex_unlock(&phy->lock);
@@ -663,15 +669,15 @@ static const struct iio_enum ad9783_iio_enums[] = {
 
 static struct iio_chan_spec_ext_info ad9783_dac_ext_info[] = {
 	IIO_ENUM("mix_mode", IIO_SEPARATE, &ad9783_iio_enums[0]),
-	IIO_ENUM_AVAILABLE("mix_mode", &ad9783_iio_enums[0]),
+	IIO_ENUM_AVAILABLE("mix_mode", IIO_SHARED_BY_TYPE, &ad9783_iio_enums[0]),
 	{ },
 };
 
 static struct iio_chan_spec_ext_info ad9783_auxdac_ext_info[] = {
 	IIO_ENUM("output_type", IIO_SEPARATE, &ad9783_iio_enums[1]),
-	IIO_ENUM_AVAILABLE("output_type", &ad9783_iio_enums[1]),
+	IIO_ENUM_AVAILABLE("output_type", IIO_SHARED_BY_TYPE, &ad9783_iio_enums[1]),
 	IIO_ENUM("active_output", IIO_SEPARATE, &ad9783_iio_enums[2]),
-	IIO_ENUM_AVAILABLE("active_output", &ad9783_iio_enums[2]),
+	IIO_ENUM_AVAILABLE("active_output", IIO_SHARED_BY_TYPE, &ad9783_iio_enums[2]),
 	{ },
 };
 
@@ -707,6 +713,18 @@ static const struct iio_info ad9783_info = {
 	}
 
 static const struct iio_chan_spec ad9783_channels[][4] = {
+	[ID_DEV_AD9780] = {
+		AD9783_CHANNEL_DAC("TX_I", 0),
+		AD9783_CHANNEL_DAC("TX_Q", 1),
+		AD9783_CHANNEL_AUXDAC("AUX1", 2),
+		AD9783_CHANNEL_AUXDAC("AUX2", 3),
+	},
+	[ID_DEV_AD9781] = {
+		AD9783_CHANNEL_DAC("TX_I", 0),
+		AD9783_CHANNEL_DAC("TX_Q", 1),
+		AD9783_CHANNEL_AUXDAC("AUX1", 2),
+		AD9783_CHANNEL_AUXDAC("AUX2", 3),
+	},
 	[ID_DEV_AD9783] = {
 		AD9783_CHANNEL_DAC("TX_I", 0),
 		AD9783_CHANNEL_DAC("TX_Q", 1),
@@ -823,6 +841,15 @@ static const struct of_device_id ad9783_of_match[] = {
 	{ .compatible = "adi,ad9783", .data = &ad9783_id},
 	{}
 };
+MODULE_DEVICE_TABLE(of, ad9783_of_match);
+
+static const struct spi_device_id ad9783_spi_id_table[] = {
+	{ "ad9780", (kernel_ulong_t)&ad9780_id},
+	{ "ad9781", (kernel_ulong_t)&ad9781_id},
+	{ "ad9783", (kernel_ulong_t)&ad9783_id},
+	{}
+};
+MODULE_DEVICE_TABLE(spi, ad9783_spi_id_table);
 
 static struct spi_driver ad9783_driver = {
 	.driver = {
@@ -830,6 +857,7 @@ static struct spi_driver ad9783_driver = {
 		.of_match_table = ad9783_of_match,
 	},
 	.probe = ad9783_probe,
+	.id_table = ad9783_spi_id_table,
 };
 module_spi_driver(ad9783_driver);
 

@@ -62,7 +62,7 @@ static ssize_t ad5686_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5686_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", !!(st->pwr_down_mask &
+	return sysfs_emit(buf, "%d\n", !!(st->pwr_down_mask &
 				       (0x3 << (chan->channel * 2))));
 }
 
@@ -268,6 +268,12 @@ static const struct iio_chan_spec name[] = {			\
 		AD5868_CHANNEL(0, 0, bits, _shift),		\
 }
 
+#define DECLARE_AD5338_CHANNELS(name, bits, _shift)		\
+static const struct iio_chan_spec name[] = {			\
+		AD5868_CHANNEL(0, 1, bits, _shift),		\
+		AD5868_CHANNEL(1, 8, bits, _shift),		\
+}
+
 #define DECLARE_AD5686_CHANNELS(name, bits, _shift)		\
 static const struct iio_chan_spec name[] = {			\
 		AD5868_CHANNEL(0, 1, bits, _shift),		\
@@ -310,6 +316,7 @@ static const struct iio_chan_spec name[] = {			\
 
 DECLARE_AD5693_CHANNELS(ad5310r_channels, 10, 2);
 DECLARE_AD5693_CHANNELS(ad5311r_channels, 10, 6);
+DECLARE_AD5338_CHANNELS(ad5338r_channels, 10, 6);
 DECLARE_AD5676_CHANNELS(ad5672_channels, 12, 4);
 DECLARE_AD5679_CHANNELS(ad5674r_channels, 12, 4);
 DECLARE_AD5676_CHANNELS(ad5676_channels, 16, 0);
@@ -333,6 +340,12 @@ static const struct ad5686_chip_info ad5686_chip_info_tbl[] = {
 		.int_vref_mv = 2500,
 		.num_channels = 1,
 		.regmap_type = AD5693_REGMAP,
+	},
+	[ID_AD5338R] = {
+		.channels = ad5338r_channels,
+		.int_vref_mv = 2500,
+		.num_channels = 2,
+		.regmap_type = AD5686_REGMAP,
 	},
 	[ID_AD5671R] = {
 		.channels = ad5672_channels,
@@ -497,7 +510,7 @@ static irqreturn_t ad5686_trigger_handler(int irq, void *p)
 	u16 val;
 	int ret;
 
-	ret = iio_buffer_remove_sample(buffer, sample);
+	ret = iio_pop_from_buffer(buffer, sample);
 	if (ret < 0)
 		goto out;
 
@@ -505,7 +518,7 @@ static irqreturn_t ad5686_trigger_handler(int irq, void *p)
 	for_each_set_bit(i, indio_dev->active_scan_mask, indio_dev->masklength) {
 		val = (sample[1] << 8) + sample[0];
 
-		chan = iio_find_channel_from_si(indio_dev, i);
+		chan = &indio_dev->channels[i];
 		ret = st->write(st, AD5686_CMD_WRITE_INPUT_N_UPDATE_N,
 				chan->address, val << chan->scan_type.shift);
 	}
@@ -553,7 +566,8 @@ int ad5686_probe(struct device *dev,
 
 	mutex_init(&st->lock);
 
-	st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d", name, indio_dev->id);
+	st->trig = devm_iio_trigger_alloc(dev, "%s-dev%d", name,
+					  iio_device_id(indio_dev));
 	if (st->trig == NULL)
 		ret = -ENOMEM;
 
@@ -623,7 +637,6 @@ int ad5686_probe(struct device *dev,
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = st->chip_info->channels;
 	indio_dev->num_channels = st->chip_info->num_channels;
-	indio_dev->direction = IIO_DEVICE_DIRECTION_OUT;
 
 	mutex_init(&st->lock);
 
@@ -658,8 +671,10 @@ int ad5686_probe(struct device *dev,
 	if (ret)
 		goto error_disable_reg;
 
-	ret = devm_iio_triggered_buffer_setup(dev, indio_dev, NULL,
-					      &ad5686_trigger_handler, NULL);
+	ret = devm_iio_triggered_buffer_setup_ext(dev, indio_dev, NULL,
+						  &ad5686_trigger_handler,
+						  IIO_BUFFER_DIRECTION_OUT,
+						  NULL, NULL);
 	if (ret)
 		goto error_disable_reg;
 

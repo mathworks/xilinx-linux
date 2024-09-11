@@ -41,7 +41,6 @@ typedef irqreturn_t (*cros_ec_sensors_capture_t)(int irq, void *p);
  * @param:			motion sensor parameters structure
  * @resp:			motion sensor response structure
  * @type:			type of motion sensor
- * @loc:			location where the motion sensor is placed
  * @range_updated:		True if the range of the sensor has been
  *				updated.
  * @curr_range:			If updated, the current range value.
@@ -67,7 +66,6 @@ struct cros_ec_sensors_core_state {
 	struct ec_response_motion_sense *resp;
 
 	enum motionsensor_type type;
-	enum motionsensor_location loc;
 
 	bool range_updated;
 	int curr_range;
@@ -77,7 +75,7 @@ struct cros_ec_sensors_core_state {
 		u16 scale;
 	} calib[CROS_EC_SENSOR_MAX_AXIS];
 	s8 sign[CROS_EC_SENSOR_MAX_AXIS];
-	u8 samples[CROS_EC_SAMPLE_SIZE];
+	u8 samples[CROS_EC_SAMPLE_SIZE] __aligned(8);
 
 	int (*read_ec_sensors_data)(struct iio_dev *indio_dev,
 				    unsigned long scan_mask, s16 *data);
@@ -95,9 +93,11 @@ int cros_ec_sensors_read_cmd(struct iio_dev *indio_dev, unsigned long scan_mask,
 struct platform_device;
 int cros_ec_sensors_core_init(struct platform_device *pdev,
 			      struct iio_dev *indio_dev, bool physical_device,
-			      cros_ec_sensors_capture_t trigger_capture,
-			      cros_ec_sensorhub_push_data_cb_t push_data,
-			      bool has_hw_fifo);
+			      cros_ec_sensors_capture_t trigger_capture);
+
+int cros_ec_sensors_core_register(struct device *dev,
+				  struct iio_dev *indio_dev,
+				  cros_ec_sensorhub_push_data_cb_t push_data);
 
 irqreturn_t cros_ec_sensors_capture(int irq, void *p);
 int cros_ec_sensors_push_data(struct iio_dev *indio_dev,

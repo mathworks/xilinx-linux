@@ -263,7 +263,7 @@ static int mathworks_ip_mmap(struct file *fp, struct vm_area_struct *vma)
         		return -ENOMEM;
         	}
 			/* mmap the MMIO base address */
-			vma->vm_flags |= VM_IO | VM_DONTDUMP | VM_DONTDUMP; // may be redundant with call to remap_pfn_range below
+			vm_flags_set(vma, VM_IO | VM_DONTDUMP);
 			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 			if (remap_pfn_range(vma, vma->vm_start,
 					thisIpcore->mem->start >> PAGE_SHIFT,
@@ -447,7 +447,7 @@ struct mathworks_ip_info *devm_mathworks_ip_of_init(
 	ipDev->dev = &pdev->dev;
 	ipDev->name = pdev->dev.of_node->name;
 	/* Check for IRQ first, we may have to defer */
-	ipDev->irq = platform_get_irq_optional(pdev, 0);
+	ipDev->irq = platform_get_irq(pdev, 0);
 	if (ipDev->irq < 0) {
 		switch (ipDev->irq){
 			case -EPROBE_DEFER:
@@ -562,7 +562,7 @@ EXPORT_SYMBOL_GPL(devm_mathworks_ip_register);
 
 static int __init mathworks_ip_init(void)
 {
-	mathworks_ip_class = class_create(THIS_MODULE, DRIVER_NAME);
+	mathworks_ip_class = class_create(DRIVER_NAME);
 	if (IS_ERR(mathworks_ip_class))
 		return PTR_ERR(mathworks_ip_class);
 	pr_info("Registered %s class\n", DRIVER_NAME);

@@ -84,7 +84,11 @@ int32_t adi_adrv9001_arm_AhbSpiBridge_Enable(adi_adrv9001_Device_t *device)
 
     ADI_ENTRY_EXPECT(device);
 
+#if ADI_ADRV9001_PRE_MCS_BROADCAST_DISABLE > 0
     ADRV9001_SPIREADBYTE(device, "AHB_SPI_BRIDGE", ADRV9001_ADDR_AHB_SPI_BRIDGE, &ahbSpiReg);
+#else
+    ahbSpiReg = 0x0e;
+#endif
 
     ahbSpiReg = ahbSpiReg | ADRV9001_AHB_SPI_BRIDGE_ENABLE;
     ADRV9001_SPIWRITEBYTE(device, "AHB_SPI_BRIDGE", ADRV9001_ADDR_AHB_SPI_BRIDGE, ahbSpiReg);
@@ -115,15 +119,16 @@ int32_t adi_adrv9001_arm_StartStatus_Check(adi_adrv9001_Device_t *device, uint32
     uint32_t eventCheck = 0;
     adi_adrv9001_RadioState_t state = { 0 };
     uint8_t armDebugLoaded = ((device->devStateInfo.devState & ADI_ADRV9001_STATE_ARM_DEBUG_LOADED) == ADI_ADRV9001_STATE_ARM_DEBUG_LOADED) ? 1 : 0;
-    uint8_t objId = 0;
+#if ADI_ADRV9001_PRE_MCS_BROADCAST_DISABLE > 0
+	uint8_t objId = 0;
     uint16_t errorCode = 0;
+#endif
     ADI_ENTRY_EXPECT(device);
 
     /* Wait for ARM to exit BOOTUP state */
     waitInterval_us = (ADI_ADRV9001_GETARMBOOTUP_INTERVAL_US > timeout_us) ?
         timeout_us : ADI_ADRV9001_GETARMBOOTUP_INTERVAL_US;
     numEventChecks = (waitInterval_us == 0) ? 1 : (timeout_us / waitInterval_us);
-
 
     for (eventCheck = 0; eventCheck <= numEventChecks; eventCheck++)
     {
@@ -157,6 +162,7 @@ int32_t adi_adrv9001_arm_StartStatus_Check(adi_adrv9001_Device_t *device, uint32
         {
             break; /* Valid case - ARM booted successfully */
         }
+#if ADI_ADRV9001_PRE_MCS_BROADCAST_DISABLE > 0
         else if (state.bootState <= ADI_ADRV9001_ARM_BOOT_STATE_STREAM_RUNTIME_ERR)
         {
             ADI_EXPECT(adi_adrv9001_arm_SystemError_Get, device, &objId, (uint8_t *)(&errorCode));
@@ -183,6 +189,7 @@ int32_t adi_adrv9001_arm_StartStatus_Check(adi_adrv9001_Device_t *device, uint32
                              "ARM Unknown error during bootup");
             ADI_ERROR_RETURN(device->common.error.newAction);
         }
+#endif
     }
 
     if (state.bootState != ADI_ADRV9001_ARM_BOOT_READY)
@@ -325,7 +332,36 @@ int32_t adi_adrv9001_arm_Image_Write(adi_adrv9001_Device_t *device, uint32_t byt
             (((uint32_t)binary[i + 2]) << 16) | (((uint32_t)binary[i + 1]) << 8) | ((uint32_t)binary[i]));
     }
 
-    ADI_EXPECT(adi_adrv9001_arm_Memory_Write, device, ADRV9001_ADDR_ARM_START_PROG + byteOffset, &binary[0], byteCount, spiWriteMode);
+	if (byteCount < ADRV9001_ARM_PROG_MEM_BYTE_COUNT)
+	{
+		if (byteOffset < ADRV9001_ARM_PROG_MEM_BYTE_COUNT)
+		{
+			ADI_EXPECT(adi_adrv9001_arm_Memory_Write, device, ADRV9001_ADDR_ARM_START_PROG + byteOffset, &binary[0], byteCount, spiWriteMode);
+		}
+		else
+		{
+			ADI_EXPECT(adi_adrv9001_arm_Memory_Write,
+				       device,
+				       ADRV9001_ADDR_ARM_START_DATA + ADRV9001_ADDR_CODE_REGION_OFFSET + (byteOffset - ADRV9001_ARM_PROG_MEM_BYTE_COUNT),
+				       &binary[0],
+				       byteCount,
+				       spiWriteMode);
+		}
+	}
+	else
+	{
+		ADI_EXPECT(adi_adrv9001_arm_Memory_Write, device, ADRV9001_ADDR_ARM_START_PROG + byteOffset, &binary[0], ADRV9001_ARM_PROG_MEM_BYTE_COUNT, spiWriteMode);
+
+		if (byteCount > ADRV9001_ARM_PROG_MEM_BYTE_COUNT)
+		{
+			ADI_EXPECT(adi_adrv9001_arm_Memory_Write,
+				       device,
+				       ADRV9001_ADDR_ARM_START_DATA + ADRV9001_ADDR_CODE_REGION_OFFSET,
+				       &binary[ADRV9001_ARM_DATA_MEM_BINARY_IMAGE_OFFSET],
+				       (byteCount - ADRV9001_ARM_PROG_MEM_BYTE_COUNT),
+				       spiWriteMode);
+		 }
+	}
 
     ADI_API_RETURN(device);
 }
@@ -373,7 +409,7 @@ static __maybe_unused int32_t __maybe_unused adi_adrv9001_arm_Memory_ReadWrite_V
                          "Invalid parameter value. byteCount must be a multiple of 4 when using autoIncrement");
         ADI_ERROR_RETURN(device->common.error.newAction);
     }
-
+    
     ADI_RANGE_CHECK(device, spiWriteMode, ADI_ADRV9001_ARM_SINGLE_SPI_WRITE_MODE_STANDARD_BYTES_4, ADI_ADRV9001_ARM_SINGLE_SPI_WRITE_MODE_STREAMING_BYTES_4);
     ADI_API_RETURN(device);
 }
@@ -398,7 +434,7 @@ int32_t adi_adrv9001_arm_Memory_Read32(adi_adrv9001_Device_t *device,
 	uint8_t autoIncrement)
 {
 	//uint8_t data[] = { 0 };
-
+	
 	ADI_PERFORM_VALIDATION(adi_adrv9001_arm_Memory_ReadWrite_Validate, device, address, (uint8_t *)returnData, byteCount, 0, autoIncrement);
 
 	ADI_EXPECT(adrv9001_DmaMemRead, device, address, (uint8_t *)returnData, byteCount, autoIncrement);
@@ -425,19 +461,37 @@ int32_t adi_adrv9001_arm_Memory_WriteFH(adi_adrv9001_Device_t *device,adi_adrv90
 
 int32_t adi_adrv9001_arm_Config_Write(adi_adrv9001_Device_t *device, const uint8_t armData[], uint32_t armDataSize, const uint8_t mailboxCmd[], uint32_t mailboxCmdSize)
 {
+#if !ADI_ADRV9001_PRE_MCS_BROADCAST_DISABLE > 0
+	int32_t halError = ADI_COMMON_ACT_NO_ACTION;
+#endif
+	
     ADI_ENTRY_PTR_ARRAY_EXPECT(device, armData, armDataSize);
     ADI_ENTRY_PTR_ARRAY_EXPECT(device, mailboxCmd, mailboxCmdSize);
 
     ADI_EXPECT(adi_adrv9001_arm_Memory_Write, device, (uint32_t)ADRV9001_ADDR_ARM_MAILBOX_SET, &armData[0], armDataSize, ADI_ADRV9001_ARM_SINGLE_SPI_WRITE_MODE_STANDARD_BYTES_4);
 
     ADI_EXPECT(adi_adrv9001_arm_Cmd_Write, device, ADRV9001_ARM_SET_OPCODE, &mailboxCmd[0], mailboxCmdSize);
-
+    
+#if ADI_ADRV9001_PRE_MCS_BROADCAST_DISABLE > 0
     /* Wait for command to finish executing */
     ADRV9001_ARM_CMD_STATUS_WAIT_EXPECT(device,
                                         ADRV9001_ARM_SET_OPCODE,
                                         mailboxCmd[1],
                                         ADI_ADRV9001_DEFAULT_TIMEOUT_US,
                                         ADI_ADRV9001_DEFAULT_INTERVAL_US);
+#else
+    halError = adi_common_hal_Wait_us(&device->common, ADI_ADRV9001_ARM_SET_OPCODE_WAIT_INTERVAL_US);
+	if (halError != ADI_COMMON_ACT_NO_ACTION)
+	{
+		ADI_ERROR_REPORT(&device->common,
+			ADI_COMMON_ERRSRC_ADI_HAL,
+			halError,
+			ADI_COMMON_ACT_ERR_CHECK_TIMER,
+			device,
+			"Timer not working");
+		ADI_ERROR_RETURN(device->common.error.newAction);
+	}
+#endif
 
     ADI_API_RETURN(device);
 }
@@ -820,8 +874,7 @@ int32_t adi_adrv9001_arm_Version(adi_adrv9001_Device_t *device, adi_adrv9001_Arm
     recoveryAction = adi_adrv9001_arm_Memory_Read(device, ADRV9001_ADDR_ARM_VERSION, &ver[0], sizeof(ver), ADRV9001_ARM_MEM_READ_AUTOINCR);
     ADI_ERROR_REPORT(&device->common, ADI_COMMON_ERRSRC_API, ADI_COMMON_ERR_API_FAIL, recoveryAction, NULL, "Failed to read ARM memory");
     ADI_ERROR_RETURN(device->common.error.newAction);
-    fullVersion = (((uint32_t)ver[0]) | (((uint32_t)ver[1]) << 8) | (((uint32_t)ver[2]) << 16) | (((uint32_t)ver[3]) << 24));
-
+	fullVersion = (((uint32_t)ver[0]) | (((uint32_t)ver[1]) << 8) | (((uint32_t)ver[2]) << 16));
 
 #if ADI_ADRV9001_SW_TEST > 0
     if (device->devStateInfo.swTest > 1)
@@ -832,17 +885,15 @@ int32_t adi_adrv9001_arm_Version(adi_adrv9001_Device_t *device, adi_adrv9001_Arm
 
     if (ARMBUILD_USES_FOUR_DIGIT_VERSION)
     {
-        armVersion->majorVer = (uint8_t)(fullVersion >> 28) & 0x0F;
-        armVersion->minorVer = (uint8_t)(fullVersion >> 20) & 0xFF;
-        armVersion->maintVer = (uint8_t)(fullVersion >> 12) & 0xFF;
-        armVersion->rcVer = (uint16_t)(fullVersion & 0xFFF);
+	    armVersion->majorVer = (uint8_t)(fullVersion >> 16) & 0x0F;
+	    armVersion->minorVer = (uint8_t)(fullVersion >> 8) & 0xFF;
+	    armVersion->maintVer = (uint8_t)(fullVersion & 0xFF);
     }
     else
     {
-        armVersion->rcVer = (uint8_t)(fullVersion % 100);
+	    armVersion->maintVer = (uint8_t)(fullVersion % 100);
         armVersion->minorVer = (uint8_t)((fullVersion / 100) % 100);
         armVersion->majorVer = (uint8_t)(fullVersion / 10000);
-        armVersion->maintVer = 0;
     }
 
     if (ver[4] & ARMBUILD_DEBUG)
@@ -1193,7 +1244,7 @@ int32_t adi_adrv9001_arm_System_Program(adi_adrv9001_Device_t *device, uint8_t c
 								   ((device->devStateInfo.initializedChannels & ADI_ADRV9001_ILB1) >> (ilbFlgShift)) |
 								   ((device->devStateInfo.initializedChannels & ADI_ADRV9001_ELB1) >> (elbFlgShift)) |
 								   ((device->devStateInfo.initializedChannels & ADI_ADRV9001_TX1) << (txFlgShiftUp)));
-
+	
 	/*Mask for Channel 2 */
 	device->devStateInfo.chProfEnMask[1] = (((device->devStateInfo.initializedChannels & ADI_ADRV9001_RX2) >> 1) |
 								   ((device->devStateInfo.initializedChannels & ADI_ADRV9001_ORX2) >> (orxFlgShift  + 1)) |
@@ -1206,7 +1257,7 @@ int32_t adi_adrv9001_arm_System_Program(adi_adrv9001_Device_t *device, uint8_t c
 		device->devStateInfo.chProfEnMask[0] = device->devStateInfo.chProfEnMask[0] | adcPortBFlg;
 		device->devStateInfo.chProfEnMask[1] = device->devStateInfo.chProfEnMask[1] | adcPortBFlg;
 	}
-
+	
     ADI_API_RETURN(device);
 }
 
@@ -1425,12 +1476,12 @@ int32_t adi_adrv9001_arm_Start(adi_adrv9001_Device_t *device)
 {
     uint8_t armCtl1 = 0;
     uint8_t mailBox[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
-
+    
     ADI_ENTRY_EXPECT(device);
 
     /* Set MailBox 0xFF */
     ADI_EXPECT(adi_adrv9001_arm_Memory_Write, device, ADRV9001_ADDR_ARM_MAILBOX_GET, &mailBox[0], 4, ADI_ADRV9001_ARM_SINGLE_SPI_WRITE_MODE_STANDARD_BYTES_4);
-
+    
     armCtl1 = ADRV9001_AC1_ARM_DEBUG_ENABLE | ADRV9001_AC1_ARM_MEM_HRESP_MASK | ADRV9001_AC1_ARM_M3_RUN;
     ADRV9001_SPIWRITEBYTE(device, "ARM_CTL_1", ADRV9001_ADDR_ARM_CTL_1, armCtl1);
 
