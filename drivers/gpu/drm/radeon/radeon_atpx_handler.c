@@ -1,7 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2010 Red Hat Inc.
  * Author : Dave Airlie <airlied@redhat.com>
+ *
+ * Licensed under GPLv2
  *
  * ATPX support for both Intel/ATI
  */
@@ -115,7 +116,7 @@ static union acpi_object *radeon_atpx_call(acpi_handle handle, int function,
 
 	/* Fail only if calling the method fails and ATPX is supported */
 	if (ACPI_FAILURE(status) && status != AE_NOT_FOUND) {
-		pr_err("failed to evaluate ATPX got %s\n",
+		printk("failed to evaluate ATPX got %s\n",
 		       acpi_format_exception(status));
 		kfree(buffer.pointer);
 		return NULL;
@@ -147,7 +148,7 @@ static void radeon_atpx_parse_functions(struct radeon_atpx_functions *f, u32 mas
 }
 
 /**
- * radeon_atpx_validate() - validate ATPX functions
+ * radeon_atpx_validate_functions - validate ATPX functions
  *
  * @atpx: radeon atpx struct
  *
@@ -171,7 +172,7 @@ static int radeon_atpx_validate(struct radeon_atpx *atpx)
 
 		size = *(u16 *) info->buffer.pointer;
 		if (size < 10) {
-			pr_err("ATPX buffer is too small: %zu\n", size);
+			printk("ATPX buffer is too small: %zu\n", size);
 			kfree(info);
 			return -EINVAL;
 		}
@@ -202,7 +203,7 @@ static int radeon_atpx_validate(struct radeon_atpx *atpx)
 
 	atpx->is_hybrid = false;
 	if (valid_bits & ATPX_MS_HYBRID_GFX_SUPPORTED) {
-		pr_info("ATPX Hybrid Graphics\n");
+		printk("ATPX Hybrid Graphics\n");
 		/*
 		 * Disable legacy PM methods only when pcie port PM is usable,
 		 * otherwise the device might fail to power off or power on.
@@ -239,7 +240,7 @@ static int radeon_atpx_verify_interface(struct radeon_atpx *atpx)
 
 	size = *(u16 *) info->buffer.pointer;
 	if (size < 8) {
-		pr_err("ATPX buffer is too small: %zu\n", size);
+		printk("ATPX buffer is too small: %zu\n", size);
 		err = -EINVAL;
 		goto out;
 	}
@@ -248,8 +249,8 @@ static int radeon_atpx_verify_interface(struct radeon_atpx *atpx)
 	memcpy(&output, info->buffer.pointer, size);
 
 	/* TODO: check version? */
-	pr_info("ATPX version %u, functions 0x%08x\n",
-		output.version, output.function_bits);
+	printk("ATPX version %u, functions 0x%08x\n",
+	       output.version, output.function_bits);
 
 	radeon_atpx_parse_functions(&atpx->functions, output.function_bits);
 
@@ -525,7 +526,7 @@ static int radeon_atpx_init(void)
  * look up whether we are the integrated or discrete GPU (all asics).
  * Returns the client id.
  */
-static enum vga_switcheroo_client_id radeon_atpx_get_client_id(struct pci_dev *pdev)
+static int radeon_atpx_get_client_id(struct pci_dev *pdev)
 {
 	if (radeon_atpx_priv.dhandle == ACPI_HANDLE(&pdev->dev))
 		return VGA_SWITCHEROO_IGD;
@@ -576,8 +577,8 @@ static bool radeon_atpx_detect(void)
 
 	if (has_atpx && vga_count == 2) {
 		acpi_get_name(radeon_atpx_priv.atpx.handle, ACPI_FULL_PATHNAME, &buffer);
-		pr_info("vga_switcheroo: detected switching method %s handle\n",
-			acpi_method_name);
+		printk(KERN_INFO "vga_switcheroo: detected switching method %s handle\n",
+		       acpi_method_name);
 		radeon_atpx_priv.atpx_detected = true;
 		radeon_atpx_priv.bridge_pm_usable = d3_supported;
 		radeon_atpx_init();

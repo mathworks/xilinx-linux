@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Toshiba Bluetooth Enable Driver
  *
@@ -7,6 +6,10 @@
  *
  * Thanks to Matthew Garrett for background info on ACPI innards which
  * normal people aren't meant to understand :-)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -36,7 +39,7 @@ struct toshiba_bluetooth_dev {
 };
 
 static int toshiba_bt_rfkill_add(struct acpi_device *device);
-static void toshiba_bt_rfkill_remove(struct acpi_device *device);
+static int toshiba_bt_rfkill_remove(struct acpi_device *device);
 static void toshiba_bt_rfkill_notify(struct acpi_device *device, u32 event);
 
 static const struct acpi_device_id bt_device_ids[] = {
@@ -279,7 +282,7 @@ static int toshiba_bt_rfkill_add(struct acpi_device *device)
 	return result;
 }
 
-static void toshiba_bt_rfkill_remove(struct acpi_device *device)
+static int toshiba_bt_rfkill_remove(struct acpi_device *device)
 {
 	struct toshiba_bluetooth_dev *bt_dev = acpi_driver_data(device);
 
@@ -291,7 +294,7 @@ static void toshiba_bt_rfkill_remove(struct acpi_device *device)
 
 	kfree(bt_dev);
 
-	toshiba_bluetooth_disable(device->handle);
+	return toshiba_bluetooth_disable(device->handle);
 }
 
 module_acpi_driver(toshiba_bt_rfkill_driver);

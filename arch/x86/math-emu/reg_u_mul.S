@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 	.file	"reg_u_mul.S"
 /*---------------------------------------------------------------------------+
  |  reg_u_mul.S                                                              |
@@ -45,7 +44,7 @@ FPU_accum_1:
 
 
 .text
-SYM_FUNC_START(FPU_u_mul)
+ENTRY(FPU_u_mul)
 	pushl	%ebp
 	movl	%esp,%ebp
 #ifndef NON_REENTRANT_FPU
@@ -144,7 +143,6 @@ L_exit:
 	popl	%edi
 	popl	%esi
 	leave
-	RET
+	ret
 #endif /* PARANOID */ 
 
-SYM_FUNC_END(FPU_u_mul)

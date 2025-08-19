@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * AT_SYSINFO entry point
 */
@@ -6,7 +5,7 @@
 #include <linux/linkage.h>
 #include <asm/dwarf2.h>
 #include <asm/cpufeatures.h>
-#include <asm/alternative.h>
+#include <asm/alternative-asm.h>
 
 	.text
 	.globl __kernel_vsyscall
@@ -29,7 +28,7 @@ __kernel_vsyscall:
 	 * anyone with an AMD CPU, for example).  Nonetheless, we try to keep
 	 * it working approximately as well as it ever worked.
 	 *
-	 * This link may elucidate some of the history:
+	 * This link may eludicate some of the history:
 	 *   https://android-review.googlesource.com/#/q/Iac3295376d61ef83e713ac9b528f3b50aa780cd7
 	 * personally, I find it hard to understand what's going on there.
 	 *
@@ -62,7 +61,7 @@ __kernel_vsyscall:
 
 	/* Enter using int $0x80 */
 	int	$0x80
-SYM_INNER_LABEL(int80_landing_pad, SYM_L_GLOBAL)
+GLOBAL(int80_landing_pad)
 
 	/*
 	 * Restore EDX and ECX in case they were clobbered.  EBP is not
@@ -78,7 +77,7 @@ SYM_INNER_LABEL(int80_landing_pad, SYM_L_GLOBAL)
 	popl	%ecx
 	CFI_RESTORE		ecx
 	CFI_ADJUST_CFA_OFFSET	-4
-	RET
+	ret
 	CFI_ENDPROC
 
 	.size __kernel_vsyscall,.-__kernel_vsyscall

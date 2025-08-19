@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
 #include <sched.h>
 #include <unistd.h>
@@ -27,7 +26,7 @@
 #define __stack_aligned__	__attribute__((aligned(16)))
 struct cr_clone_arg {
 	char stack[128] __stack_aligned__;
-	char stack_ptr[];
+	char stack_ptr[0];
 };
 
 static int child(void *args)
@@ -70,7 +69,7 @@ int main(int argc, char *argv[])
 			return pr_err("NS_GET_PARENT returned a wrong namespace");
 
 		if (ioctl(pns, NS_GET_PARENT) >= 0 || errno != EPERM)
-			return pr_err("Don't get EPERM");
+			return pr_err("Don't get EPERM");;
 	}
 
 	kill(pid, SIGKILL);

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copied from the kernel sources:
  *
@@ -22,7 +21,7 @@
  * Historically we have only done this type of barrier for the MMUCR, but
  * it's also necessary for the CCR, so we make it generic here instead.
  */
-#if defined(__SH4A__)
+#if defined(__SH4A__) || defined(__SH5__)
 #define mb()		__asm__ __volatile__ ("synco": : :"memory")
 #define rmb()		mb()
 #define wmb()		mb()

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Roccat Kova[+] driver for Linux
  *
@@ -6,6 +5,10 @@
  */
 
 /*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  */
 
 /*
@@ -24,6 +27,8 @@
 
 static uint profile_numbers[5] = {0, 1, 2, 3, 4};
 
+static struct class *kovaplus_class;
+
 static uint kovaplus_convert_event_cpi(uint value)
 {
 	return (value == 7 ? 4 : (value == 4 ? 3 : value));
@@ -32,8 +37,6 @@ static uint kovaplus_convert_event_cpi(uint value)
 static void kovaplus_profile_activated(struct kovaplus_device *kovaplus,
 		uint new_profile_index)
 {
-	if (new_profile_index >= ARRAY_SIZE(kovaplus->profile_settings))
-		return;
 	kovaplus->actual_profile = new_profile_index;
 	kovaplus->actual_cpi = kovaplus->profile_settings[new_profile_index].cpi_startup_level;
 	kovaplus->actual_x_sensitivity = kovaplus->profile_settings[new_profile_index].sensitivity_x;
@@ -407,11 +410,6 @@ static const struct attribute_group *kovaplus_groups[] = {
 	NULL,
 };
 
-static const struct class kovaplus_class = {
-	.name = "kovaplus",
-	.dev_groups = kovaplus_groups,
-};
-
 static int kovaplus_init_kovaplus_device_struct(struct usb_device *usb_dev,
 		struct kovaplus_device *kovaplus)
 {
@@ -466,8 +464,8 @@ static int kovaplus_init_specials(struct hid_device *hdev)
 			goto exit_free;
 		}
 
-		retval = roccat_connect(&kovaplus_class, hdev,
-					sizeof(struct kovaplus_roccat_report));
+		retval = roccat_connect(kovaplus_class, hdev,
+				sizeof(struct kovaplus_roccat_report));
 		if (retval < 0) {
 			hid_err(hdev, "couldn't init char dev\n");
 		} else {
@@ -503,9 +501,6 @@ static int kovaplus_probe(struct hid_device *hdev,
 		const struct hid_device_id *id)
 {
 	int retval;
-
-	if (!hid_is_usb(hdev))
-		return -EINVAL;
 
 	retval = hid_parse(hdev);
 	if (retval) {
@@ -641,20 +636,21 @@ static int __init kovaplus_init(void)
 {
 	int retval;
 
-	retval = class_register(&kovaplus_class);
-	if (retval)
-		return retval;
+	kovaplus_class = class_create(THIS_MODULE, "kovaplus");
+	if (IS_ERR(kovaplus_class))
+		return PTR_ERR(kovaplus_class);
+	kovaplus_class->dev_groups = kovaplus_groups;
 
 	retval = hid_register_driver(&kovaplus_driver);
 	if (retval)
-		class_unregister(&kovaplus_class);
+		class_destroy(kovaplus_class);
 	return retval;
 }
 
 static void __exit kovaplus_exit(void)
 {
 	hid_unregister_driver(&kovaplus_driver);
-	class_unregister(&kovaplus_class);
+	class_destroy(kovaplus_class);
 }
 
 module_init(kovaplus_init);

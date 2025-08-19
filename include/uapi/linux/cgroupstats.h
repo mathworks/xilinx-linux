@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1 WITH Linux-syscall-note */
 /* cgroupstats.h - exporting per-cgroup statistics
  *
  * Copyright IBM Corporation, 2007
@@ -24,6 +23,8 @@
  * basis. This data is shared using taskstats.
  *
  * Most of these states are derived by looking at the task->state value
+ * For the nr_io_wait state, a flag in the delay accounting structure
+ * indicates that the task is waiting on IO
  *
  * Each member is aligned to a 8 byte boundary.
  */

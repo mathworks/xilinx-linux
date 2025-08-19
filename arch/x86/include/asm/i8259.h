@@ -1,9 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_I8259_H
 #define _ASM_X86_I8259_H
 
 #include <linux/delay.h>
-#include <asm/io.h>
 
 extern unsigned int cached_irq_mask;
 
@@ -19,8 +17,6 @@ extern unsigned int cached_irq_mask;
 #define PIC_MASTER_OCW3		PIC_MASTER_ISR
 #define PIC_SLAVE_CMD		0xa0
 #define PIC_SLAVE_IMR		0xa1
-#define PIC_ELCR1		0x4d0
-#define PIC_ELCR2		0x4d1
 
 /* i8259A PIC related value */
 #define PIC_CASCADE_IR		2
@@ -69,15 +65,8 @@ struct legacy_pic {
 	void (*make_irq)(unsigned int irq);
 };
 
-void legacy_pic_pcat_compat(void);
-
 extern struct legacy_pic *legacy_pic;
 extern struct legacy_pic null_legacy_pic;
-
-static inline bool has_legacy_pic(void)
-{
-	return legacy_pic != &null_legacy_pic;
-}
 
 static inline int nr_legacy_irqs(void)
 {

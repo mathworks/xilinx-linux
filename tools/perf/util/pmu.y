@@ -1,7 +1,6 @@
-%define api.pure full
-%parse-param {void *format}
-%parse-param {void *scanner}
-%lex-param {void* scanner}
+
+%parse-param {struct list_head *format}
+%parse-param {char *name}
 
 %{
 
@@ -10,9 +9,8 @@
 #include <linux/bitmap.h>
 #include <string.h>
 #include "pmu.h"
-#include "pmu-bison.h"
 
-int perf_pmu_lex(YYSTYPE * yylval_param , void *yyscanner);
+extern int perf_pmu_lex (void);
 
 #define ABORT_ON(val) \
 do { \
@@ -20,23 +18,9 @@ do { \
                 YYABORT; \
 } while (0)
 
-static void perf_pmu_error(void *format, void *scanner, const char *msg);
-
-static void perf_pmu__set_format(unsigned long *bits, long from, long to)
-{
-	long b;
-
-	if (!to)
-		to = from;
-
-	memset(bits, 0, BITS_TO_BYTES(PERF_PMU_FORMAT_BITS));
-	for (b = from; b <= to; b++)
-		__set_bit(b, bits);
-}
-
 %}
 
-%token PP_CONFIG
+%token PP_CONFIG PP_CONFIG1 PP_CONFIG2
 %token PP_VALUE PP_ERROR
 %type <num> PP_VALUE
 %type <bits> bit_term
@@ -58,12 +42,23 @@ format_term
 format_term:
 PP_CONFIG ':' bits
 {
-	perf_pmu_format__set_value(format, PERF_PMU_FORMAT_VALUE_CONFIG, $3);
+	ABORT_ON(perf_pmu__new_format(format, name,
+				      PERF_PMU_FORMAT_VALUE_CONFIG,
+				      $3));
 }
 |
-PP_CONFIG PP_VALUE ':' bits
+PP_CONFIG1 ':' bits
 {
-	perf_pmu_format__set_value(format, $2, $4);
+	ABORT_ON(perf_pmu__new_format(format, name,
+				      PERF_PMU_FORMAT_VALUE_CONFIG1,
+				      $3));
+}
+|
+PP_CONFIG2 ':' bits
+{
+	ABORT_ON(perf_pmu__new_format(format, name,
+				      PERF_PMU_FORMAT_VALUE_CONFIG2,
+				      $3));
 }
 
 bits:
@@ -90,8 +85,8 @@ PP_VALUE
 
 %%
 
-static void perf_pmu_error(void *format __maybe_unused,
-			   void *scanner __maybe_unused,
-			   const char *msg __maybe_unused)
+void perf_pmu_error(struct list_head *list __maybe_unused,
+		    char *name __maybe_unused,
+		    char const *msg __maybe_unused)
 {
 }

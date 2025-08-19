@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ST Microelectronics MFD: stmpe's i2c client specific driver
  *
  * Copyright (C) ST-Ericsson SA 2010
  * Copyright (C) ST Microelectronics SA 2011
  *
+ * License Terms: GNU General Public License, version 2
  * Author: Rabin Vincent <rabin.vincent@stericsson.com> for ST-Ericsson
  * Author: Viresh Kumar <vireshk@kernel.org> for ST Microelectronics
  */
@@ -67,9 +67,8 @@ static const struct of_device_id stmpe_of_match[] = {
 MODULE_DEVICE_TABLE(of, stmpe_of_match);
 
 static int
-stmpe_i2c_probe(struct i2c_client *i2c)
+stmpe_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	enum stmpe_partnum partnum;
 	const struct of_device_id *of_id;
 
@@ -87,16 +86,16 @@ stmpe_i2c_probe(struct i2c_client *i2c)
 		dev_info(&i2c->dev, "matching on node name, compatible is preferred\n");
 		partnum = id->driver_data;
 	} else
-		partnum = (uintptr_t)of_id->data;
+		partnum = (enum stmpe_partnum)of_id->data;
 
 	return stmpe_probe(&i2c_ci, partnum);
 }
 
-static void stmpe_i2c_remove(struct i2c_client *i2c)
+static int stmpe_i2c_remove(struct i2c_client *i2c)
 {
 	struct stmpe *stmpe = dev_get_drvdata(&i2c->dev);
 
-	stmpe_remove(stmpe);
+	return stmpe_remove(stmpe);
 }
 
 static const struct i2c_device_id stmpe_i2c_id[] = {
@@ -110,12 +109,14 @@ static const struct i2c_device_id stmpe_i2c_id[] = {
 	{ "stmpe2403", STMPE2403 },
 	{ }
 };
-MODULE_DEVICE_TABLE(i2c, stmpe_i2c_id);
+MODULE_DEVICE_TABLE(i2c, stmpe_id);
 
 static struct i2c_driver stmpe_i2c_driver = {
 	.driver = {
 		.name = "stmpe-i2c",
-		.pm = pm_sleep_ptr(&stmpe_dev_pm_ops),
+#ifdef CONFIG_PM
+		.pm = &stmpe_dev_pm_ops,
+#endif
 		.of_match_table = stmpe_of_match,
 	},
 	.probe		= stmpe_i2c_probe,
@@ -135,5 +136,6 @@ static void __exit stmpe_exit(void)
 }
 module_exit(stmpe_exit);
 
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("STMPE MFD I2C Interface Driver");
 MODULE_AUTHOR("Rabin Vincent <rabin.vincent@stericsson.com>");

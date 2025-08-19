@@ -25,23 +25,19 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
-
-#include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-
+#include <drm/drmP.h>
 #include <drm/drm.h>
-#include <drm/drm_device.h>
-#include <drm/drm_file.h>
-#include <drm/radeon_drm.h>
-
-#include "r100_track.h"
-#include "r300_reg_safe.h"
-#include "r300d.h"
+#include <drm/drm_crtc_helper.h>
+#include "radeon_reg.h"
 #include "radeon.h"
 #include "radeon_asic.h"
-#include "radeon_reg.h"
+#include <drm/radeon_drm.h>
+#include "r100_track.h"
+#include "r300d.h"
 #include "rv350d.h"
+#include "r300_reg_safe.h"
 
 /* This files gather functions specifics to: r300,r350,rv350,rv370,rv380
  *
@@ -81,7 +77,7 @@ void rv370_pcie_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 /*
  * rv370,rv380 PCIE GART
  */
-static void rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
+static int rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
 
 void rv370_pcie_gart_tlb_flush(struct radeon_device *rdev)
 {
@@ -138,8 +134,9 @@ int rv370_pcie_gart_init(struct radeon_device *rdev)
 	r = radeon_gart_init(rdev);
 	if (r)
 		return r;
-	rv370_debugfs_pcie_gart_info_init(rdev);
-
+	r = rv370_debugfs_pcie_gart_info_init(rdev);
+	if (r)
+		DRM_ERROR("Failed to register debugfs file for PCIE gart !\n");
 	rdev->gart.table_size = rdev->gart.num_gpu_pages * 4;
 	rdev->asic->gart.tlb_flush = &rv370_pcie_gart_tlb_flush;
 	rdev->asic->gart.get_page_entry = &rv370_pcie_gart_get_page_entry;
@@ -249,7 +246,7 @@ void r300_ring_start(struct radeon_device *rdev, struct radeon_ring *ring)
 
 	/* Sub pixel 1/12 so we can have 4K rendering according to doc */
 	gb_tile_config = (R300_ENABLE_TILING | R300_TILE_SIZE_16);
-	switch (rdev->num_gb_pipes) {
+	switch(rdev->num_gb_pipes) {
 	case 2:
 		gb_tile_config |= R300_PIPE_COUNT_R300;
 		break;
@@ -353,7 +350,7 @@ int r300_mc_wait_for_idle(struct radeon_device *rdev)
 		if (tmp & R300_MC_IDLE) {
 			return 0;
 		}
-		udelay(1);
+		DRM_UDELAY(1);
 	}
 	return -1;
 }
@@ -390,7 +387,8 @@ static void r300_gpu_init(struct radeon_device *rdev)
 	WREG32(R300_GB_TILE_CONFIG, gb_tile_config);
 
 	if (r100_gui_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait GUI idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
 
 	tmp = RREG32(R300_DST_PIPE_CONFIG);
@@ -401,12 +399,14 @@ static void r300_gpu_init(struct radeon_device *rdev)
 	       R300_DC_DC_DISABLE_IGNORE_PE);
 
 	if (r100_gui_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait GUI idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
 	if (r300_mc_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait MC idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
-	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized\n",
+	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized.\n",
 		 rdev->num_gb_pipes, rdev->num_z_pipes);
 }
 
@@ -587,9 +587,11 @@ int rv370_get_pcie_lanes(struct radeon_device *rdev)
 }
 
 #if defined(CONFIG_DEBUG_FS)
-static int rv370_debugfs_pcie_gart_info_show(struct seq_file *m, void *unused)
+static int rv370_debugfs_pcie_gart_info(struct seq_file *m, void *data)
 {
-	struct radeon_device *rdev = m->private;
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct radeon_device *rdev = dev->dev_private;
 	uint32_t tmp;
 
 	tmp = RREG32_PCIE(RADEON_PCIE_TX_GART_CNTL);
@@ -609,16 +611,17 @@ static int rv370_debugfs_pcie_gart_info_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(rv370_debugfs_pcie_gart_info);
+static struct drm_info_list rv370_pcie_gart_info_list[] = {
+	{"rv370_pcie_gart_info", rv370_debugfs_pcie_gart_info, 0, NULL},
+};
 #endif
 
-static void rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
+static int rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev->ddev->primary->debugfs_root;
-
-	debugfs_create_file("rv370_pcie_gart_info", 0444, root, rdev,
-			    &rv370_debugfs_pcie_gart_info_fops);
+	return radeon_debugfs_add_files(rdev, rv370_pcie_gart_info_list, 1);
+#else
+	return 0;
 #endif
 }
 
@@ -638,7 +641,7 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	track = (struct r100_cs_track *)p->track;
 	idx_value = radeon_get_ib_value(p, idx);
 
-	switch (reg) {
+	switch(reg) {
 	case AVIVO_D1MODE_VLINE_START_END:
 	case RADEON_CRTC_GUI_TRIG_VLINE:
 		r = r100_cs_packet_parse_vline(p);
@@ -814,7 +817,7 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 					  ((idx_value >> 21) & 0xF));
 				return -EINVAL;
 			}
-			fallthrough;
+			/* Pass through. */
 		case 6:
 			track->cb[i].cpp = 4;
 			break;
@@ -965,7 +968,7 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 				return -EINVAL;
 			}
 			/* The same rules apply as for DXT3/5. */
-			fallthrough;
+			/* Pass through. */
 		case R300_TX_FORMAT_DXT3:
 		case R300_TX_FORMAT_DXT5:
 			track->textures[i].cpp = 1;
@@ -1156,14 +1159,13 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 		/* valid register only on RV530 */
 		if (p->rdev->family == CHIP_RV530)
 			break;
-		fallthrough;
 		/* fallthrough do not move */
 	default:
 		goto fail;
 	}
 	return 0;
 fail:
-	pr_err("Forbidden register 0x%04X in cs at %d (val=%08x)\n",
+	printk(KERN_ERR "Forbidden register 0x%04X in cs at %d (val=%08x)\n",
 	       reg, idx, idx_value);
 	return -EINVAL;
 }
@@ -1180,7 +1182,7 @@ static int r300_packet3_check(struct radeon_cs_parser *p,
 	ib = p->ib.ptr;
 	idx = pkt->idx + 1;
 	track = (struct r100_cs_track *)p->track;
-	switch (pkt->opcode) {
+	switch(pkt->opcode) {
 	case PACKET3_3D_LOAD_VBPNTR:
 		r = r100_packet3_load_vbpntr(p, pkt, idx);
 		if (r)
@@ -1325,8 +1327,12 @@ void r300_set_reg_safe(struct radeon_device *rdev)
 void r300_mc_program(struct radeon_device *rdev)
 {
 	struct r100_mc_save save;
+	int r;
 
-	r100_debugfs_mc_info_init(rdev);
+	r = r100_debugfs_mc_info_init(rdev);
+	if (r) {
+		dev_err(rdev->dev, "Failed to create r100_mc debugfs file.\n");
+	}
 
 	/* Stops all mc clients */
 	r100_mc_stop(rdev, &save);
@@ -1548,7 +1554,9 @@ int r300_init(struct radeon_device *rdev)
 	/* initialize memory controller */
 	r300_mc_init(rdev);
 	/* Fence driver */
-	radeon_fence_driver_init(rdev);
+	r = radeon_fence_driver_init(rdev);
+	if (r)
+		return r;
 	/* Memory manager */
 	r = radeon_bo_init(rdev);
 	if (r)

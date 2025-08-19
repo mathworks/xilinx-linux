@@ -1,12 +1,8 @@
 
 /dts-v1/;
-#include "vc707.dtsi"
+/include/ "vc707.dtsi"
 
 #define fmc_i2c fmc1_hpc_iic
-
-/ {
-	model = "Analog Devices AD-FMCOMMS1-EBZ @Xilinx/vc707";
-};
 
 &amba_pl {
 	axi_ad9122: cf-ad9122-core-lpc@74204000 {
@@ -34,6 +30,7 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <2>;
+				adi,cyclic;
 			};
 		};
 	};

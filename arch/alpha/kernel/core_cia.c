@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/core_cia.c
  *
@@ -21,7 +20,7 @@
 #include <linux/pci.h>
 #include <linux/sched.h>
 #include <linux/init.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 
 #include <asm/ptrace.h>
 #include <asm/mce.h>
@@ -331,10 +330,7 @@ cia_prepare_tbia_workaround(int window)
 	long i;
 
 	/* Use minimal 1K map. */
-	ppte = memblock_alloc(CIA_BROKEN_TBIA_SIZE, 32768);
-	if (!ppte)
-		panic("%s: Failed to allocate %u bytes align=0x%x\n",
-		      __func__, CIA_BROKEN_TBIA_SIZE, 32768);
+	ppte = __alloc_bootmem(CIA_BROKEN_TBIA_SIZE, 32768, 0);
 	pte = (virt_to_phys(ppte) >> (PAGE_SHIFT - 1)) | 1;
 
 	for (i = 0; i < CIA_BROKEN_TBIA_SIZE / sizeof(unsigned long); ++i)
@@ -527,7 +523,7 @@ verify_tb_operation(void)
 	if (use_tbia_try2) {
 		alpha_mv.mv_pci_tbi = cia_pci_tbi_try2;
 
-		/* Tags 0-3 must be disabled if we use this workaround. */
+		/* Tags 0-3 must be disabled if we use this workaraund. */
 		wmb();
 		*(vip)CIA_IOC_TB_TAGn(0) = 2;
 		*(vip)CIA_IOC_TB_TAGn(1) = 2;

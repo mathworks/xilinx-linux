@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _CYPRESS_PS2_H
 #define _CYPRESS_PS2_H
 
@@ -170,7 +169,18 @@ struct cytp_data {
 };
 
 
+#ifdef CONFIG_MOUSE_PS2_CYPRESS
 int cypress_detect(struct psmouse *psmouse, bool set_properties);
 int cypress_init(struct psmouse *psmouse);
+#else
+inline int cypress_detect(struct psmouse *psmouse, bool set_properties)
+{
+	return -ENOSYS;
+}
+inline int cypress_init(struct psmouse *psmouse)
+{
+	return -ENOSYS;
+}
+#endif /* CONFIG_MOUSE_PS2_CYPRESS */
 
 #endif  /* _CYPRESS_PS2_H */

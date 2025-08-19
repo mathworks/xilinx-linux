@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * fs/isofs/export.c
  *
@@ -10,7 +9,7 @@
  *
  * The following files are helpful:
  *
- *     Documentation/filesystems/nfs/exporting.rst
+ *     Documentation/filesystems/nfs/Exporting
  *     fs/exportfs/expfs.c.
  */
 

@@ -144,11 +144,12 @@ static const struct iio_chan_spec adm1177_channels[] = {
 
 static const struct iio_info adm1177_info = {
 	.read_raw = &adm1177_read_raw,
+	.driver_module = THIS_MODULE,
 };
 
-static int adm1177_probe(struct i2c_client *client)
+static int adm1177_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);	
 	struct adm1177_chip_info *chip;
 	struct iio_dev *indio_dev;
 
@@ -177,7 +178,7 @@ static int adm1177_probe(struct i2c_client *client)
 		u32 *pdata = client->dev.platform_data; /* FIXME later */
 		chip->r_sense_mohm = pdata[0];
 		chip->alert_threshold_ma = pdata[1];
-		chip->vrange_high = pdata[2];
+		chip->vrange_high = pdata[2];			
 	}
 
 	if (chip->alert_threshold_ma) {
@@ -206,27 +207,37 @@ static int adm1177_probe(struct i2c_client *client)
 	indio_dev->info = &adm1177_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	return devm_iio_device_register(&client->dev, indio_dev);
+	return iio_device_register(indio_dev);
+}
+
+static int adm1177_remove(struct i2c_client *client)
+{
+	struct iio_dev *indio_dev = i2c_get_clientdata(client);
+
+	iio_device_unregister(indio_dev);
+
+	return 0;
 }
 
 static const struct i2c_device_id adm1177_ids[] = {
-	{ "adm1177-iio", 0 },
+	{ "adm1177", 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, adm1177_ids);
 
 static const struct of_device_id adm1177_dt_ids[] = {
-	{ .compatible = "adi,adm1177-iio" },
+	{ .compatible = "adi,adm1177" },
 	{},
 };
-MODULE_DEVICE_TABLE(of, adm1177_dt_ids);
+MODULE_DEVICE_TABLE(of, nau7802_dt_ids);
 
 static struct i2c_driver adm1177_driver = {
 	.driver = {
-		.name = "adm1177-iio",
+		.name = KBUILD_MODNAME,
 		.of_match_table = adm1177_dt_ids,
 	},
 	.probe = adm1177_probe,
+	.remove = adm1177_remove,
 	.id_table = adm1177_ids,
 };
 module_i2c_driver(adm1177_driver);

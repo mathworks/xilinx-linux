@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-1.0+
-
 /*======================================================================
 
     A PCMCIA ethernet driver for Asix AX88190-based cards
@@ -19,7 +17,9 @@
 
     Written 1992,1993 by Donald Becker.
     Copyright 1993 United States Government as represented by the
-    Director, National Security Agency.
+    Director, National Security Agency.  This software may be used and
+    distributed according to the terms of the GNU General Public License,
+    incorporated herein by reference.
     Donald Becker may be reached at becker@scyld.com
 
 ======================================================================*/
@@ -46,7 +46,7 @@
 
 #include <asm/io.h>
 #include <asm/byteorder.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #define AXNET_CMD	0x00
 #define AXNET_DATAPORT	0x10	/* NatSemi-defined port window offset. */
@@ -83,9 +83,9 @@ static netdev_tx_t axnet_start_xmit(struct sk_buff *skb,
 					  struct net_device *dev);
 static struct net_device_stats *get_stats(struct net_device *dev);
 static void set_multicast_list(struct net_device *dev);
-static void axnet_tx_timeout(struct net_device *dev, unsigned int txqueue);
+static void axnet_tx_timeout(struct net_device *dev);
 static irqreturn_t ei_irq_wrapper(int irq, void *dev_id);
-static void ei_watchdog(struct timer_list *t);
+static void ei_watchdog(u_long arg);
 static void axnet_reset_8390(struct net_device *dev);
 
 static int mdio_read(unsigned int addr, int phy_id, int loc);
@@ -104,6 +104,7 @@ static void AX88190_init(struct net_device *dev, int startp);
 static int ax_open(struct net_device *dev);
 static int ax_close(struct net_device *dev);
 static irqreturn_t ax_interrupt(int irq, void *dev_id);
+static u32 axnet_msg_enable;
 
 /*====================================================================*/
 
@@ -128,11 +129,12 @@ static inline struct axnet_dev *PRIV(struct net_device *dev)
 static const struct net_device_ops axnet_netdev_ops = {
 	.ndo_open 		= axnet_open,
 	.ndo_stop		= axnet_close,
-	.ndo_eth_ioctl		= axnet_ioctl,
+	.ndo_do_ioctl		= axnet_ioctl,
 	.ndo_start_xmit		= axnet_start_xmit,
 	.ndo_tx_timeout		= axnet_tx_timeout,
 	.ndo_get_stats		= get_stats,
 	.ndo_set_rx_mode	= set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -150,6 +152,7 @@ static int axnet_probe(struct pcmcia_device *link)
 	return -ENOMEM;
 
     ei_local = netdev_priv(dev);
+    ei_local->msg_enable = axnet_msg_enable;
     spin_lock_init(&ei_local->page_lock);
 
     info = PRIV(dev);
@@ -187,7 +190,6 @@ static int get_prom(struct pcmcia_device *link)
 {
     struct net_device *dev = link->priv;
     unsigned int ioaddr = dev->base_addr;
-    u8 addr[ETH_ALEN];
     int i, j;
 
     /* This is based on drivers/net/ethernet/8390/ne.c */
@@ -221,11 +223,9 @@ static int get_prom(struct pcmcia_device *link)
 
     for (i = 0; i < 6; i += 2) {
 	j = inw(ioaddr + AXNET_DATAPORT);
-	addr[i] = j & 0xff;
-	addr[i+1] = j >> 8;
+	dev->dev_addr[i] = j & 0xff;
+	dev->dev_addr[i+1] = j >> 8;
     }
-    eth_hw_addr_set(dev, addr);
-
     return 1;
 } /* get_prom */
 
@@ -484,7 +484,7 @@ static int axnet_open(struct net_device *dev)
     link->open++;
 
     info->link_status = 0x00;
-    timer_setup(&info->watchdog, ei_watchdog, 0);
+    setup_timer(&info->watchdog, ei_watchdog, (u_long)dev);
     mod_timer(&info->watchdog, jiffies + HZ);
 
     return ax_open(dev);
@@ -548,10 +548,10 @@ static irqreturn_t ei_irq_wrapper(int irq, void *dev_id)
     return ax_interrupt(irq, dev_id);
 }
 
-static void ei_watchdog(struct timer_list *t)
+static void ei_watchdog(u_long arg)
 {
-    struct axnet_dev *info = from_timer(info, t, watchdog);
-    struct net_device *dev = info->p_dev->priv;
+    struct net_device *dev = (struct net_device *)(arg);
+    struct axnet_dev *info = PRIV(dev);
     unsigned int nic_base = dev->base_addr;
     unsigned int mii_addr = nic_base + AXNET_MII_EEP;
     u_short link;
@@ -613,7 +613,6 @@ static int axnet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
     switch (cmd) {
     case SIOCGMIIPHY:
 	data->phy_id = info->phy_id;
-	fallthrough;
     case SIOCGMIIREG:		/* Read MII PHY register. */
 	data->val_out = mdio_read(mii_addr, data->phy_id, data->reg_num & 0x1f);
 	return 0;
@@ -650,6 +649,7 @@ static void block_input(struct net_device *dev, int count,
 {
     unsigned int nic_base = dev->base_addr;
     struct ei_device *ei_local = netdev_priv(dev);
+    int xfer_count = count;
     char *buf = skb->data;
 
     if ((netif_msg_rx_status(ei_local)) && (count != 4))
@@ -659,9 +659,9 @@ static void block_input(struct net_device *dev, int count,
     outb_p(E8390_RREAD+E8390_START, nic_base + AXNET_CMD);
 
     insw(nic_base + AXNET_DATAPORT,buf,count>>1);
-    if (count & 0x01) {
-	buf[count-1] = inb(nic_base + AXNET_DATAPORT);
-    }
+    if (count & 0x01)
+	buf[count-1] = inb(nic_base + AXNET_DATAPORT), xfer_count++;
+
 }
 
 /*====================================================================*/
@@ -767,7 +767,7 @@ module_pcmcia_driver(axnet_cs_driver);
   Paul Gortmaker	: tweak ANK's above multicast changes a bit.
   Paul Gortmaker	: update packet statistics for v2.1.x
   Alan Cox		: support arbitrary stupid port mappings on the
-			  68K Macintosh. Support >16bit I/O spaces
+  			  68K Macintosh. Support >16bit I/O spaces
   Paul Gortmaker	: add kmod support for auto-loading of the 8390
 			  module by all drivers that require it.
   Alan Cox		: Spinlocking work, added 'BUG_83C690'
@@ -900,13 +900,12 @@ static int ax_close(struct net_device *dev)
 /**
  * axnet_tx_timeout - handle transmit time out condition
  * @dev: network device which has apparently fallen asleep
- * @txqueue: unused
  *
  * Called by kernel when device never acknowledges a transmit has
  * completed (or failed) - i.e. never posted a Tx related interrupt.
  */
 
-static void axnet_tx_timeout(struct net_device *dev, unsigned int txqueue)
+static void axnet_tx_timeout(struct net_device *dev)
 {
 	long e8390_base = dev->base_addr;
 	struct ei_device *ei_local = netdev_priv(dev);
@@ -1091,7 +1090,7 @@ static irqreturn_t ax_interrupt(int irq, void *dev_id)
 	long e8390_base;
 	int interrupts, nr_serviced = 0, i;
 	struct ei_device *ei_local;
-	int handled = 0;
+    	int handled = 0;
 	unsigned long flags;
 
 	e8390_base = dev->base_addr;
@@ -1272,12 +1271,10 @@ static void ei_tx_intr(struct net_device *dev)
 			ei_local->txing = 1;
 			NS8390_trigger_send(dev, ei_local->tx2, ei_local->tx_start_page + 6);
 			netif_trans_update(dev);
-			ei_local->tx2 = -1;
+			ei_local->tx2 = -1,
 			ei_local->lasttx = 2;
-		} else {
-			ei_local->lasttx = 20;
-			ei_local->txing = 0;
 		}
+		else ei_local->lasttx = 20, ei_local->txing = 0;	
 	}
 	else if (ei_local->tx2 < 0) 
 	{
@@ -1293,10 +1290,9 @@ static void ei_tx_intr(struct net_device *dev)
 			netif_trans_update(dev);
 			ei_local->tx1 = -1;
 			ei_local->lasttx = 1;
-		} else {
-			ei_local->lasttx = 10;
-			ei_local->txing = 0;
 		}
+		else
+			ei_local->lasttx = 10, ei_local->txing = 0;
 	}
 //	else
 //		netdev_warn(dev, "unexpected TX-done interrupt, lasttx=%d\n",
@@ -1587,12 +1583,12 @@ static void do_set_multicast_list(struct net_device *dev)
 	}
 	outb_p(E8390_NODMA + E8390_PAGE0, e8390_base + E8390_CMD);
 
-	if(dev->flags&IFF_PROMISC)
-		outb_p(E8390_RXCONFIG | 0x58, e8390_base + EN0_RXCR);
+  	if(dev->flags&IFF_PROMISC)
+  		outb_p(E8390_RXCONFIG | 0x58, e8390_base + EN0_RXCR);
 	else if (dev->flags & IFF_ALLMULTI || !netdev_mc_empty(dev))
-		outb_p(E8390_RXCONFIG | 0x48, e8390_base + EN0_RXCR);
-	else
-		outb_p(E8390_RXCONFIG | 0x40, e8390_base + EN0_RXCR);
+  		outb_p(E8390_RXCONFIG | 0x48, e8390_base + EN0_RXCR);
+  	else
+  		outb_p(E8390_RXCONFIG | 0x40, e8390_base + EN0_RXCR);
 
 	outb_p(E8390_NODMA+E8390_PAGE0+E8390_START, e8390_base+E8390_CMD);
 }

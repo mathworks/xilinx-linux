@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  fs/partitions/sysv68.c
  *
@@ -6,6 +5,7 @@
  */
 
 #include "check.h"
+#include "sysv68.h"
 
 /*
  *	Volume ID structure: on first 256-bytes sector of disk

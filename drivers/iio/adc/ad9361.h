@@ -9,7 +9,6 @@
 #ifndef IIO_FREQUENCY_AD9361_H_
 #define IIO_FREQUENCY_AD9361_H_
 
-#include <linux/mutex.h>
 #include "ad9361_regs.h"
 
 enum ad9361_clocks {
@@ -33,7 +32,6 @@ enum ad9361_clocks {
 	TX_RFPLL_DUMMY,
 	RX_RFPLL,
 	TX_RFPLL,
-	PL_INTF_CLK,
 	NUM_AD9361_CLKS,
 };
 
@@ -49,7 +47,6 @@ enum debugfs_cmd {
 	DBGFS_MCS,
 	DBGFS_CAL_SW_CTRL,
 	DBGFS_DIGITAL_TUNE,
-	DBGFS_GPO_SET,
 };
 
 enum dig_tune_flags {
@@ -141,15 +138,13 @@ struct ad9361_rf_phy {
 	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[182];
+	struct ad9361_debugfs_entry debugfs_entry[180];
 	struct bin_attribute 	bin;
 	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
 	struct work_struct 	work;
 	struct completion       complete;
 	struct gain_table_info  *gt_info;
-	/* protect against device accesses */
-	struct mutex		lock;
 	char			*bin_attr_buf;
 	u32 			ad9361_debugfs_entry_index;
 
@@ -181,7 +176,6 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 int ad9361_tx_mute(struct ad9361_rf_phy *phy, u32 state);
 int ad9361_write_bist_reg(struct ad9361_rf_phy *phy, u32 val);
 bool ad9361_uses_rx2tx2(struct ad9361_rf_phy *phy);
-bool ad9361_axi_half_dac_rate(struct ad9361_rf_phy *phy);
 int ad9361_get_dig_tune_data(struct ad9361_rf_phy *phy,
 			     struct ad9361_dig_tune_data *data);
 int ad9361_read_clock_data_delays(struct ad9361_rf_phy *phy);
@@ -189,10 +183,6 @@ int ad9361_write_clock_data_delays(struct ad9361_rf_phy *phy);
 bool ad9361_uses_lvds_mode(struct ad9361_rf_phy *phy);
 int ad9361_set_rx_port(struct ad9361_rf_phy *phy, enum rx_port_sel sel);
 int ad9361_set_tx_port(struct ad9361_rf_phy *phy, enum tx_port_sel sel);
-bool ad9361_bb_clk_change_dig_tune_en(struct ad9361_rf_phy *phy);
-u32 ad9361_get_dig_interface_tune_skipmode(struct ad9361_rf_phy *phy);
-void ad9361_set_dig_interface_tune_skipmode(struct ad9361_rf_phy *phy,
-					    u32 skip);
 
 #ifdef CONFIG_AD9361_EXT_BAND_CONTROL
 int ad9361_register_ext_band_control(struct ad9361_rf_phy *phy);

@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
+ * Licensed under the GPL
  */
 
 #include <stdio.h>
@@ -17,28 +17,6 @@
 #include <init.h>
 #include <os.h>
 
-/*
- * kasan_map_memory - maps memory from @start with a size of @len.
- * The allocated memory is filled with zeroes upon success.
- * @start: the start address of the memory to be mapped
- * @len: the length of the memory to be mapped
- *
- * This function is used to map shadow memory for KASAN in uml
- */
-void kasan_map_memory(void *start, size_t len)
-{
-	if (mmap(start,
-		 len,
-		 PROT_READ|PROT_WRITE,
-		 MAP_FIXED|MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE,
-		 -1,
-		 0) == MAP_FAILED) {
-		os_info("Couldn't allocate shadow memory: %s\n.",
-			strerror(errno));
-		exit(1);
-	}
-}
-
 /* Set by make_tempfile() during early boot. */
 static char *tempdir = NULL;
 
@@ -47,13 +25,13 @@ static int __init check_tmpfs(const char *dir)
 {
 	struct statfs st;
 
-	os_info("Checking if %s is on tmpfs...", dir);
+	printf("Checking if %s is on tmpfs...", dir);
 	if (statfs(dir, &st) < 0) {
-		os_info("%s\n", strerror(errno));
+		printf("%s\n", strerror(errno));
 	} else if (st.f_type != TMPFS_MAGIC) {
-		os_info("no\n");
+		printf("no\n");
 	} else {
-		os_info("OK\n");
+		printf("OK\n");
 		return 0;
 	}
 	return -1;
@@ -83,18 +61,18 @@ static char * __init choose_tempdir(void)
 	int i;
 	const char *dir;
 
-	os_info("Checking environment variables for a tempdir...");
+	printf("Checking environment variables for a tempdir...");
 	for (i = 0; vars[i]; i++) {
 		dir = getenv(vars[i]);
 		if ((dir != NULL) && (*dir != '\0')) {
-			os_info("%s\n", dir);
+			printf("%s\n", dir);
 			if (check_tmpfs(dir) >= 0)
 				goto done;
 			else
 				goto warn;
 		}
 	}
-	os_info("none found\n");
+	printf("none found\n");
 
 	for (i = 0; tmpfs_dirs[i]; i++) {
 		dir = tmpfs_dirs[i];
@@ -104,7 +82,7 @@ static char * __init choose_tempdir(void)
 
 	dir = fallback_dir;
 warn:
-	os_warn("Warning: tempdir %s is not on tmpfs\n", dir);
+	printf("Warning: tempdir %s is not on tmpfs\n", dir);
 done:
 	/* Make a copy since getenv results may not remain valid forever. */
 	return strdup(dir);
@@ -122,7 +100,7 @@ static int __init make_tempfile(const char *template)
 	if (tempdir == NULL) {
 		tempdir = choose_tempdir();
 		if (tempdir == NULL) {
-			os_warn("Failed to choose tempdir: %s\n",
+			fprintf(stderr, "Failed to choose tempdir: %s\n",
 				strerror(errno));
 			return -1;
 		}
@@ -147,7 +125,7 @@ static int __init make_tempfile(const char *template)
 	strcat(tempname, template);
 	fd = mkstemp(tempname);
 	if (fd < 0) {
-		os_warn("open - cannot create %s: %s\n", tempname,
+		fprintf(stderr, "open - cannot create %s: %s\n", tempname,
 			strerror(errno));
 		goto out;
 	}
@@ -216,16 +194,16 @@ void __init check_tmpexec(void)
 
 	addr = mmap(NULL, UM_KERN_PAGE_SIZE,
 		    PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE, fd, 0);
-	os_info("Checking PROT_EXEC mmap in %s...", tempdir);
+	printf("Checking PROT_EXEC mmap in %s...", tempdir);
 	if (addr == MAP_FAILED) {
 		err = errno;
-		os_warn("%s\n", strerror(err));
+		printf("%s\n", strerror(err));
 		close(fd);
 		if (err == EPERM)
-			os_warn("%s must be not mounted noexec\n", tempdir);
+			printf("%s must be not mounted noexec\n", tempdir);
 		exit(1);
 	}
-	os_info("OK\n");
+	printf("OK\n");
 	munmap(addr, UM_KERN_PAGE_SIZE);
 
 	close(fd);

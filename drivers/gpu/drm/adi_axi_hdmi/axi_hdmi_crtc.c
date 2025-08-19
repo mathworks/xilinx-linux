@@ -13,11 +13,8 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
-#include <drm/drm_fourcc.h>
 #include <drm/drm_gem_cma_helper.h>
-#include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_plane_helper.h>
-#include <drm/drm_vblank.h>
 
 #include "axi_hdmi_drv.h"
 
@@ -44,23 +41,18 @@ static struct dma_async_tx_descriptor *axi_hdmi_vdma_prep_interleaved_desc(
 {
 	struct axi_hdmi_crtc *axi_hdmi_crtc = plane_to_axi_hdmi_crtc(plane);
 	struct drm_framebuffer *fb = plane->state->fb;
+	struct xilinx_vdma_config vdma_config;
 	size_t offset, hw_row_size;
 	struct drm_gem_cma_object *obj;
 
-#if IS_ENABLED(CONFIG_XILINX_DMA)
-	struct xilinx_vdma_config vdma_config;
-
-	if (!strncmp(axi_hdmi_crtc->dma->device->dev->driver->name, "xilinx-vdma", 11)) {
-		memset(&vdma_config, 0, sizeof(vdma_config));
-		vdma_config.park = 1;
-		vdma_config.coalesc = 0xff;
-		xilinx_vdma_channel_set_config(axi_hdmi_crtc->dma, &vdma_config);
-	}
-#endif
-
 	obj = drm_fb_cma_get_gem_obj(plane->state->fb, 0);
 
-	offset = plane->state->crtc_x * fb->format->cpp[0] +
+	memset(&vdma_config, 0, sizeof(vdma_config));
+	vdma_config.park = 1;
+	vdma_config.coalesc = 0xff;
+	xilinx_vdma_channel_set_config(axi_hdmi_crtc->dma, &vdma_config);
+
+	offset = plane->state->crtc_x * fb->bits_per_pixel / 8 +
 		plane->state->crtc_y * fb->pitches[0];
 
 	/* Interleaved DMA is used that way:
@@ -85,7 +77,7 @@ static struct dma_async_tx_descriptor *axi_hdmi_vdma_prep_interleaved_desc(
 	axi_hdmi_crtc->dma_template->dst_inc = 0;
 	axi_hdmi_crtc->dma_template->dst_sgl = 0;
 
-	hw_row_size = plane->state->crtc_w * fb->format->cpp[0];
+	hw_row_size = plane->state->crtc_w * fb->bits_per_pixel / 8;
 	axi_hdmi_crtc->dma_template->sgl[0].size = hw_row_size;
 
 	/* the vdma driver seems to look at icg, and not src_icg */
@@ -93,7 +85,7 @@ static struct dma_async_tx_descriptor *axi_hdmi_vdma_prep_interleaved_desc(
 		fb->pitches[0] - hw_row_size;
 
 	return dmaengine_prep_interleaved_dma(axi_hdmi_crtc->dma,
-				axi_hdmi_crtc->dma_template, DMA_CYCLIC);
+						axi_hdmi_crtc->dma_template, 0);
 }
 
 static void axi_hdmi_plane_atomic_update(struct drm_plane *plane,
@@ -117,13 +109,11 @@ static void axi_hdmi_plane_atomic_update(struct drm_plane *plane,
 	dma_async_issue_pending(axi_hdmi_crtc->dma);
 }
 
-static void axi_hdmi_crtc_enable(struct drm_crtc *crtc,
-				 struct drm_crtc_state *old_state)
+static void axi_hdmi_crtc_enable(struct drm_crtc *crtc)
 {
 }
 
-static void axi_hdmi_crtc_disable(struct drm_crtc *crtc,
-				  struct drm_crtc_state *old_state)
+static void axi_hdmi_crtc_disable(struct drm_crtc *crtc)
 {
 	struct axi_hdmi_crtc *axi_hdmi_crtc = to_axi_hdmi_crtc(crtc);
 
@@ -145,8 +135,8 @@ static void axi_hdmi_crtc_atomic_begin(struct drm_crtc *crtc,
 }
 
 static const struct drm_crtc_helper_funcs axi_hdmi_crtc_helper_funcs = {
-	.atomic_enable = axi_hdmi_crtc_enable,
-	.atomic_disable = axi_hdmi_crtc_disable,
+	.enable = axi_hdmi_crtc_enable,
+	.disable = axi_hdmi_crtc_disable,
 	.atomic_begin = axi_hdmi_crtc_atomic_begin,
 };
 
@@ -174,6 +164,7 @@ static const struct drm_plane_helper_funcs axi_hdmi_plane_helper_funcs = {
 
 static void axi_hdmi_plane_destroy(struct drm_plane *plane)
 {
+	drm_plane_helper_disable(plane);
 	drm_plane_cleanup(plane);
 }
 
@@ -221,7 +212,7 @@ struct drm_crtc *axi_hdmi_crtc_create(struct drm_device *dev)
 
 	ret = drm_universal_plane_init(dev, plane, 0xff, &axi_hdmi_plane_funcs,
 		axi_hdmi_supported_formats,
-		ARRAY_SIZE(axi_hdmi_supported_formats), NULL,
+		ARRAY_SIZE(axi_hdmi_supported_formats),
 		DRM_PLANE_TYPE_PRIMARY, NULL);
 	if (ret)
 		goto err_free_dma_template;

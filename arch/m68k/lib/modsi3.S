@@ -33,7 +33,7 @@ General Public License for more details. */
    D. V. Henkel-Wallace (gumby@cygnus.com) Fete Bastille, 1992
 */
 
-#include <linux/export.h>
+#include <asm/export.h>
 
 /* These are predefined by new versions of GNU cpp.  */
 

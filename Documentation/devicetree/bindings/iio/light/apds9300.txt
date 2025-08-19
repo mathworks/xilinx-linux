@@ -1,6 +1,6 @@
 * Avago APDS9300 ambient light sensor
 
-https://www.avagotech.com/docs/AV02-1077EN
+http://www.avagotech.com/docs/AV02-1077EN
 
 Required properties:
 
@@ -9,6 +9,7 @@ Required properties:
 
 Optional properties:
 
+  - interrupt-parent : should be the phandle for the interrupt controller
   - interrupts : interrupt mapping for GPIO IRQ
 
 Example:

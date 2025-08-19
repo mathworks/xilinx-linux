@@ -226,12 +226,14 @@ static int daq1_gpio_probe(struct spi_device *spi)
 	return ret;
 }
 
-static void daq1_gpio_remove(struct spi_device *spi)
+static int daq1_gpio_remove(struct spi_device *spi)
 {
 	struct daq1_gpio *daq1 = spi_get_drvdata(spi);
 
 	gpiochip_remove(&daq1->gpio_chip);
 	mutex_destroy(&daq1->lock);
+
+	return 0;
 }
 
 static const struct spi_device_id daq1_gpio_ids[] = {

@@ -1,6 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (C) 2005-2007 Jiri Slaby <jirislaby@gmail.com>
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
  *
  *  You need a userspace library to cooperate with this driver. It (and other
  *  info) may be obtained here:
@@ -252,18 +256,18 @@ static int phantom_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static __poll_t phantom_poll(struct file *file, poll_table *wait)
+static unsigned int phantom_poll(struct file *file, poll_table *wait)
 {
 	struct phantom_device *dev = file->private_data;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 
 	pr_debug("phantom_poll: %d\n", atomic_read(&dev->counter));
 	poll_wait(file, &dev->wait, wait);
 
 	if (!(dev->status & PHB_RUNNING))
-		mask = EPOLLERR;
+		mask = POLLERR;
 	else if (atomic_read(&dev->counter))
-		mask = EPOLLIN | EPOLLRDNORM;
+		mask = POLLIN | POLLRDNORM;
 
 	pr_debug("phantom_poll end: %x/%d\n", mask, atomic_read(&dev->counter));
 
@@ -457,26 +461,31 @@ static void phantom_remove(struct pci_dev *pdev)
 	pci_disable_device(pdev);
 }
 
-static int __maybe_unused phantom_suspend(struct device *dev_d)
+#ifdef CONFIG_PM
+static int phantom_suspend(struct pci_dev *pdev, pm_message_t state)
 {
-	struct phantom_device *dev = dev_get_drvdata(dev_d);
+	struct phantom_device *dev = pci_get_drvdata(pdev);
 
 	iowrite32(0, dev->caddr + PHN_IRQCTL);
 	ioread32(dev->caddr + PHN_IRQCTL); /* PCI posting */
 
-	synchronize_irq(to_pci_dev(dev_d)->irq);
+	synchronize_irq(pdev->irq);
 
 	return 0;
 }
 
-static int __maybe_unused phantom_resume(struct device *dev_d)
+static int phantom_resume(struct pci_dev *pdev)
 {
-	struct phantom_device *dev = dev_get_drvdata(dev_d);
+	struct phantom_device *dev = pci_get_drvdata(pdev);
 
 	iowrite32(0, dev->caddr + PHN_IRQCTL);
 
 	return 0;
 }
+#else
+#define phantom_suspend	NULL
+#define phantom_resume	NULL
+#endif
 
 static struct pci_device_id phantom_pci_tbl[] = {
 	{ .vendor = PCI_VENDOR_ID_PLX, .device = PCI_DEVICE_ID_PLX_9050,
@@ -486,14 +495,13 @@ static struct pci_device_id phantom_pci_tbl[] = {
 };
 MODULE_DEVICE_TABLE(pci, phantom_pci_tbl);
 
-static SIMPLE_DEV_PM_OPS(phantom_pm_ops, phantom_suspend, phantom_resume);
-
 static struct pci_driver phantom_pci_driver = {
 	.name = "phantom",
 	.id_table = phantom_pci_tbl,
 	.probe = phantom_probe,
 	.remove = phantom_remove,
-	.driver.pm = &phantom_pm_ops,
+	.suspend = phantom_suspend,
+	.resume = phantom_resume
 };
 
 static CLASS_ATTR_STRING(version, 0444, PHANTOM_VERSION);
@@ -503,7 +511,7 @@ static int __init phantom_init(void)
 	int retval;
 	dev_t dev;
 
-	phantom_class = class_create("phantom");
+	phantom_class = class_create(THIS_MODULE, "phantom");
 	if (IS_ERR(phantom_class)) {
 		retval = PTR_ERR(phantom_class);
 		printk(KERN_ERR "phantom: can't register phantom class\n");

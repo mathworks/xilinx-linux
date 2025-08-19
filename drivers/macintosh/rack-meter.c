@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * RackMac vu-meter driver
  *
  * (c) Copyright 2006 Benjamin Herrenschmidt, IBM Corp.
  *                    <benh@kernel.crashing.org>
+ *
+ * Released under the term of the GNU GPL v2.
  *
  * Support the CPU-meter LEDs of the Xserve G5
  *
@@ -11,6 +12,7 @@
  * interface for fun. Also, the CPU-meter could be made nicer by being
  * a bit less "immediate" but giving instead a more average load over
  * time. Patches welcome :-)
+ *
  */
 #undef DEBUG
 
@@ -27,6 +29,7 @@
 #include <linux/of_irq.h>
 
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/pmac_feature.h>
 #include <asm/dbdma.h>
@@ -49,8 +52,8 @@ struct rackmeter_dma {
 struct rackmeter_cpu {
 	struct delayed_work	sniffer;
 	struct rackmeter	*rm;
-	u64			prev_wall;
-	u64			prev_idle;
+	cputime64_t		prev_wall;
+	cputime64_t		prev_idle;
 	int			zero;
 } ____cacheline_aligned;
 
@@ -78,16 +81,15 @@ static int rackmeter_ignore_nice;
 /* This is copied from cpufreq_ondemand, maybe we should put it in
  * a common header somewhere
  */
-static inline u64 get_cpu_idle_time(unsigned int cpu)
+static inline cputime64_t get_cpu_idle_time(unsigned int cpu)
 {
-	struct kernel_cpustat *kcpustat = &kcpustat_cpu(cpu);
 	u64 retval;
 
-	retval = kcpustat->cpustat[CPUTIME_IDLE] +
-		 kcpustat->cpustat[CPUTIME_IOWAIT];
+	retval = kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE] +
+		 kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
 
 	if (rackmeter_ignore_nice)
-		retval += kcpustat_field(kcpustat, CPUTIME_NICE, cpu);
+		retval += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
 
 	return retval;
 }
@@ -152,8 +154,8 @@ static void rackmeter_do_pause(struct rackmeter *rm, int pause)
 		DBDMA_DO_STOP(rm->dma_regs);
 		return;
 	}
-	memset(rdma->buf1, 0, sizeof(rdma->buf1));
-	memset(rdma->buf2, 0, sizeof(rdma->buf2));
+	memset(rdma->buf1, 0, ARRAY_SIZE(rdma->buf1));
+	memset(rdma->buf2, 0, ARRAY_SIZE(rdma->buf2));
 
 	rm->dma_buf_v->mark = 0;
 
@@ -215,23 +217,23 @@ static void rackmeter_do_timer(struct work_struct *work)
 		container_of(work, struct rackmeter_cpu, sniffer.work);
 	struct rackmeter *rm = rcpu->rm;
 	unsigned int cpu = smp_processor_id();
-	u64 cur_nsecs, total_idle_nsecs;
-	u64 total_nsecs, idle_nsecs;
+	cputime64_t cur_jiffies, total_idle_ticks;
+	unsigned int total_ticks, idle_ticks;
 	int i, offset, load, cumm, pause;
 
-	cur_nsecs = jiffies64_to_nsecs(get_jiffies_64());
-	total_nsecs = cur_nsecs - rcpu->prev_wall;
-	rcpu->prev_wall = cur_nsecs;
+	cur_jiffies = jiffies64_to_cputime64(get_jiffies_64());
+	total_ticks = (unsigned int) (cur_jiffies - rcpu->prev_wall);
+	rcpu->prev_wall = cur_jiffies;
 
-	total_idle_nsecs = get_cpu_idle_time(cpu);
-	idle_nsecs = total_idle_nsecs - rcpu->prev_idle;
-	idle_nsecs = min(idle_nsecs, total_nsecs);
-	rcpu->prev_idle = total_idle_nsecs;
+	total_idle_ticks = get_cpu_idle_time(cpu);
+	idle_ticks = (unsigned int) (total_idle_ticks - rcpu->prev_idle);
+	idle_ticks = min(idle_ticks, total_ticks);
+	rcpu->prev_idle = total_idle_ticks;
 
 	/* We do a very dumb calculation to update the LEDs for now,
 	 * we'll do better once we have actual PWM implemented
 	 */
-	load = div64_u64(9 * (total_nsecs - idle_nsecs), total_nsecs);
+	load = (9 * (total_ticks - idle_ticks)) / total_ticks;
 
 	offset = cpu << 3;
 	cumm = 0;
@@ -276,7 +278,7 @@ static void rackmeter_init_cpu_sniffer(struct rackmeter *rm)
 			continue;
 		rcpu = &rm->cpu[cpu];
 		rcpu->prev_idle = get_cpu_idle_time(cpu);
-		rcpu->prev_wall = jiffies64_to_nsecs(get_jiffies_64());
+		rcpu->prev_wall = jiffies64_to_cputime64(get_jiffies_64());
 		schedule_delayed_work_on(cpu, &rm->cpu[cpu].sniffer,
 					 msecs_to_jiffies(CPU_SAMPLING_RATE));
 	}
@@ -374,20 +376,19 @@ static int rackmeter_probe(struct macio_dev* mdev,
 	pr_debug("rackmeter_probe()\n");
 
 	/* Get i2s-a node */
-	for_each_child_of_node(mdev->ofdev.dev.of_node, i2s)
-		if (of_node_name_eq(i2s, "i2s-a"))
-			break;
-
+	while ((i2s = of_get_next_child(mdev->ofdev.dev.of_node, i2s)) != NULL)
+	       if (strcmp(i2s->name, "i2s-a") == 0)
+		       break;
 	if (i2s == NULL) {
 		pr_debug("  i2s-a child not found\n");
 		goto bail;
 	}
 	/* Get lightshow or virtual sound */
-	for_each_child_of_node(i2s, np) {
-	       if (of_node_name_eq(np, "lightshow"))
+	while ((np = of_get_next_child(i2s, np)) != NULL) {
+	       if (strcmp(np->name, "lightshow") == 0)
 		       break;
-	       if (of_node_name_eq(np, "sound") &&
-		   of_property_present(np, "virtual"))
+	       if ((strcmp(np->name, "sound") == 0) &&
+		   of_get_property(np, "virtual", NULL) != NULL)
 		       break;
 	}
 	if (np == NULL) {
@@ -396,7 +397,7 @@ static int rackmeter_probe(struct macio_dev* mdev,
 	}
 
 	/* Create and initialize our instance data */
-	rm = kzalloc(sizeof(*rm), GFP_KERNEL);
+	rm = kzalloc(sizeof(struct rackmeter), GFP_KERNEL);
 	if (rm == NULL) {
 		printk(KERN_ERR "rackmeter: failed to allocate memory !\n");
 		rc = -ENOMEM;
@@ -410,16 +411,16 @@ static int rackmeter_probe(struct macio_dev* mdev,
 #if 0 /* Use that when i2s-a is finally an mdev per-se */
 	if (macio_resource_count(mdev) < 2 || macio_irq_count(mdev) < 2) {
 		printk(KERN_ERR
-		       "rackmeter: found match but lacks resources: %pOF"
+		       "rackmeter: found match but lacks resources: %s"
 		       " (%d resources, %d interrupts)\n",
-		       mdev->ofdev.dev.of_node);
+		       mdev->ofdev.node->full_name);
 		rc = -ENXIO;
 		goto bail_free;
 	}
 	if (macio_request_resources(mdev, "rackmeter")) {
 		printk(KERN_ERR
-		       "rackmeter: failed to request resources: %pOF\n",
-		       mdev->ofdev.dev.of_node);
+		       "rackmeter: failed to request resources: %s\n",
+		       mdev->ofdev.node->full_name);
 		rc = -EBUSY;
 		goto bail_free;
 	}
@@ -430,8 +431,8 @@ static int rackmeter_probe(struct macio_dev* mdev,
 	    of_address_to_resource(i2s, 0, &ri2s) ||
 	    of_address_to_resource(i2s, 1, &rdma)) {
 		printk(KERN_ERR
-		       "rackmeter: found match but lacks resources: %pOF",
-		       mdev->ofdev.dev.of_node);
+		       "rackmeter: found match but lacks resources: %s",
+		       mdev->ofdev.dev.of_node->full_name);
 		rc = -ENXIO;
 		goto bail_free;
 	}
@@ -578,7 +579,7 @@ static int rackmeter_shutdown(struct macio_dev* mdev)
 	return 0;
 }
 
-static const struct of_device_id rackmeter_match[] = {
+static struct of_device_id rackmeter_match[] = {
 	{ .name = "i2s" },
 	{ }
 };

@@ -82,7 +82,7 @@ nfs4_fl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		goto out_err;
 
 	xdr_init_decode_pages(&stream, &buf, pdev->pages, pdev->pglen);
-	xdr_set_scratch_page(&stream, scratch);
+	xdr_set_scratch_buffer(&stream, page_address(scratch), PAGE_SIZE);
 
 	/* Get the stripe count (number of stripe index) */
 	p = xdr_inline_decode(&stream, 4);
@@ -136,7 +136,9 @@ nfs4_fl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		goto out_err_free_stripe_indices;
 	}
 
-	dsaddr = kzalloc(struct_size(dsaddr, ds_list, num), gfp_flags);
+	dsaddr = kzalloc(sizeof(*dsaddr) +
+			(sizeof(struct nfs4_pnfs_ds *) * (num - 1)),
+			gfp_flags);
 	if (!dsaddr)
 		goto out_err_free_stripe_indices;
 
@@ -264,7 +266,6 @@ nfs4_fl_prepare_ds(struct pnfs_layout_segment *lseg, u32 ds_idx)
 	struct nfs4_deviceid_node *devid = FILELAYOUT_DEVID_NODE(lseg);
 	struct nfs4_pnfs_ds *ret = ds;
 	struct nfs_server *s = NFS_SERVER(lseg->pls_layout->plh_inode);
-	int status;
 
 	if (ds == NULL) {
 		printk(KERN_ERR "NFS: %s: No data server for offset index %d\n",
@@ -276,18 +277,13 @@ nfs4_fl_prepare_ds(struct pnfs_layout_segment *lseg, u32 ds_idx)
 	if (ds->ds_clp)
 		goto out_test_devid;
 
-	status = nfs4_pnfs_ds_connect(s, ds, devid, dataserver_timeo,
+	nfs4_pnfs_ds_connect(s, ds, devid, dataserver_timeo,
 			     dataserver_retrans, 4,
-			     s->nfs_client->cl_minorversion);
-	if (status) {
-		nfs4_mark_deviceid_unavailable(devid);
-		ret = NULL;
-		goto out;
-	}
+			     s->nfs_client->cl_minorversion,
+			     s->nfs_client->cl_rpcclient->cl_auth->au_flavor);
 
 out_test_devid:
-	if (ret->ds_clp == NULL ||
-	    filelayout_test_devid_unavailable(devid))
+	if (filelayout_test_devid_unavailable(devid))
 		ret = NULL;
 out:
 	return ret;

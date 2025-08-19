@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -47,9 +46,8 @@ static struct device gio_bus = {
  * Used by a driver to check whether an of_device present in the
  * system is in its list of supported devices.
  */
-static const struct gio_device_id *
-gio_match_device(const struct gio_device_id *match,
-		 const struct gio_device *dev)
+const struct gio_device_id *gio_match_device(const struct gio_device_id *match,
+		     const struct gio_device *dev)
 {
 	const struct gio_device_id *ids;
 
@@ -59,6 +57,7 @@ gio_match_device(const struct gio_device_id *match,
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(gio_match_device);
 
 struct gio_device *gio_dev_get(struct gio_device *dev)
 {
@@ -143,13 +142,14 @@ static int gio_device_probe(struct device *dev)
 	return error;
 }
 
-static void gio_device_remove(struct device *dev)
+static int gio_device_remove(struct device *dev)
 {
 	struct gio_device *gio_dev = to_gio_device(dev);
 	struct gio_driver *drv = to_gio_driver(dev->driver);
 
-	if (drv->remove)
+	if (dev->driver && drv->remove)
 		drv->remove(gio_dev);
+	return 0;
 }
 
 static void gio_device_shutdown(struct device *dev)
@@ -169,7 +169,6 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *a,
 
 	return (len >= PAGE_SIZE) ? (PAGE_SIZE - 1) : len;
 }
-static DEVICE_ATTR_RO(modalias);
 
 static ssize_t name_show(struct device *dev,
 			 struct device_attribute *attr, char *buf)
@@ -179,7 +178,6 @@ static ssize_t name_show(struct device *dev,
 	giodev = to_gio_device(dev);
 	return sprintf(buf, "%s", giodev->name);
 }
-static DEVICE_ATTR_RO(name);
 
 static ssize_t id_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
@@ -189,19 +187,17 @@ static ssize_t id_show(struct device *dev,
 	giodev = to_gio_device(dev);
 	return sprintf(buf, "%x", giodev->id.id);
 }
-static DEVICE_ATTR_RO(id);
 
-static struct attribute *gio_dev_attrs[] = {
-	&dev_attr_modalias.attr,
-	&dev_attr_name.attr,
-	&dev_attr_id.attr,
-	NULL,
+static struct device_attribute gio_dev_attrs[] = {
+	__ATTR_RO(modalias),
+	__ATTR_RO(name),
+	__ATTR_RO(id),
+	__ATTR_NULL,
 };
-ATTRIBUTE_GROUPS(gio_dev);
 
-static int gio_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int gio_device_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	const struct gio_device *gio_dev = to_gio_device(dev);
+	struct gio_device *gio_dev = to_gio_device(dev);
 
 	add_uevent_var(env, "MODALIAS=gio:%x", gio_dev->id.id);
 	return 0;
@@ -363,8 +359,6 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 		printk(KERN_INFO "GIO: slot %d : %s (id %x)\n",
 		       slotno, name, id);
 		gio_dev = kzalloc(sizeof *gio_dev, GFP_KERNEL);
-		if (!gio_dev)
-			return;
 		gio_dev->name = name;
 		gio_dev->slotno = slotno;
 		gio_dev->id.id = id;
@@ -380,7 +374,7 @@ static void ip22_check_gio(int slotno, unsigned long addr, int irq)
 
 static struct bus_type gio_bus_type = {
 	.name	   = "gio",
-	.dev_groups = gio_dev_groups,
+	.dev_attrs = gio_dev_attrs,
 	.match	   = gio_bus_match,
 	.probe	   = gio_device_probe,
 	.remove	   = gio_device_remove,

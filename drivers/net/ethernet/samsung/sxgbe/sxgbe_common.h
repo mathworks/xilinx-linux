@@ -1,10 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /* 10G controller driver for Samsung SoCs
  *
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * Author: Siva Reddy Kallam <siva.kallam@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef __SXGBE_COMMON_H__
@@ -329,7 +332,7 @@ struct sxgbe_core_ops {
 	/* Set power management mode (e.g. magic frame) */
 	void (*pmt)(void __iomem *ioaddr, unsigned long mode);
 	/* Set/Get Unicast MAC addresses */
-	void (*set_umac_addr)(void __iomem *ioaddr, const unsigned char *addr,
+	void (*set_umac_addr)(void __iomem *ioaddr, unsigned char *addr,
 			      unsigned int reg_n);
 	void (*get_umac_addr)(void __iomem *ioaddr, unsigned char *addr,
 			      unsigned int reg_n);
@@ -381,6 +384,7 @@ struct sxgbe_tx_queue {
 	dma_addr_t *tx_skbuff_dma;
 	struct sk_buff **tx_skbuff;
 	struct timer_list txtimer;
+	spinlock_t tx_lock;	/* lock for tx queues */
 	unsigned int cur_tx;
 	unsigned int dirty_tx;
 	u32 tx_count_frames;
@@ -511,7 +515,7 @@ struct sxgbe_priv_data {
 struct sxgbe_priv_data *sxgbe_drv_probe(struct device *device,
 					struct sxgbe_plat_data *plat_dat,
 					void __iomem *addr);
-void sxgbe_drv_remove(struct net_device *ndev);
+int sxgbe_drv_remove(struct net_device *ndev);
 void sxgbe_set_ethtool_ops(struct net_device *netdev);
 int sxgbe_mdio_unregister(struct net_device *ndev);
 int sxgbe_mdio_register(struct net_device *ndev);

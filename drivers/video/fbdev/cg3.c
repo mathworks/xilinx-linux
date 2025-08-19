@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* cg3.c: CGTHREE frame buffer driver
  *
  * Copyright (C) 2003, 2006 David S. Miller (davem@davemloft.net)
@@ -17,8 +16,7 @@
 #include <linux/init.h>
 #include <linux/fb.h>
 #include <linux/mm.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <asm/io.h>
 #include <asm/fbio.h>
@@ -40,7 +38,7 @@ static int cg3_ioctl(struct fb_info *, unsigned int, unsigned long);
  *  Frame buffer operations
  */
 
-static const struct fb_ops cg3_ops = {
+static struct fb_ops cg3_ops = {
 	.owner			= THIS_MODULE,
 	.fb_setcolreg		= cg3_setcolreg,
 	.fb_blank		= cg3_blank,
@@ -180,7 +178,7 @@ static int cg3_setcolreg(unsigned regno,
 
 /**
  *      cg3_blank - Optional function.  Blanks the display.
- *      @blank: the blank mode we want.
+ *      @blank_mode: the blank mode we want.
  *      @info: frame buffer structure that represents a single frame buffer
  */
 static int cg3_blank(int blank, struct fb_info *info)
@@ -248,7 +246,7 @@ static int cg3_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 static void cg3_init_fix(struct fb_info *info, int linebytes,
 			 struct device_node *dp)
 {
-	snprintf(info->fix.id, sizeof(info->fix.id), "%pOFn", dp);
+	strlcpy(info->fix.id, dp->name, sizeof(info->fix.id));
 
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
 	info->fix.visual = FB_VISUAL_PSEUDOCOLOR;
@@ -371,7 +369,7 @@ static int cg3_probe(struct platform_device *op)
 	info->var.red.length = 8;
 	info->var.green.length = 8;
 	info->var.blue.length = 8;
-	if (of_node_name_eq(dp, "cgRDI"))
+	if (!strcmp(dp->name, "cgRDI"))
 		par->flags |= CG3_FLAG_RDI;
 	if (par->flags & CG3_FLAG_RDI)
 		cg3_rdi_maybe_fixup_var(&info->var, dp);
@@ -385,6 +383,7 @@ static int cg3_probe(struct platform_device *op)
 	if (!par->regs)
 		goto out_release_fb;
 
+	info->flags = FBINFO_DEFAULT;
 	info->fbops = &cg3_ops;
 	info->screen_base = of_ioremap(&op->resource[0], CG3_RAM_OFFSET,
 				       info->fix.smem_len, "cg3 ram");
@@ -393,7 +392,7 @@ static int cg3_probe(struct platform_device *op)
 
 	cg3_blank(FB_BLANK_UNBLANK, info);
 
-	if (!of_property_present(dp, "width")) {
+	if (!of_find_property(dp, "width", NULL)) {
 		err = cg3_do_default_mode(par);
 		if (err)
 			goto out_unmap_screen;
@@ -413,8 +412,8 @@ static int cg3_probe(struct platform_device *op)
 
 	dev_set_drvdata(&op->dev, info);
 
-	printk(KERN_INFO "%pOF: cg3 at %lx:%lx\n",
-	       dp, par->which_io, info->fix.smem_start);
+	printk(KERN_INFO "%s: cg3 at %lx:%lx\n",
+	       dp->full_name, par->which_io, info->fix.smem_start);
 
 	return 0;
 
@@ -434,7 +433,7 @@ out_err:
 	return err;
 }
 
-static void cg3_remove(struct platform_device *op)
+static int cg3_remove(struct platform_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct cg3_par *par = info->par;
@@ -446,6 +445,8 @@ static void cg3_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], info->screen_base, info->fix.smem_len);
 
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static const struct of_device_id cg3_match[] = {
@@ -465,7 +466,7 @@ static struct platform_driver cg3_driver = {
 		.of_match_table = cg3_match,
 	},
 	.probe		= cg3_probe,
-	.remove_new	= cg3_remove,
+	.remove		= cg3_remove,
 };
 
 static int __init cg3_init(void)

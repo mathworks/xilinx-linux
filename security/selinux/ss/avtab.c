@@ -1,7 +1,7 @@
 /*
  * Implementation of the access vector table type.
  *
- * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
+ * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
  */
 
 /* Updated: Frank Mayer <mayerf@tresys.com> and Karl MacMillan <kmacmillan@tresys.com>
@@ -23,13 +23,13 @@
 #include "avtab.h"
 #include "policydb.h"
 
-static struct kmem_cache *avtab_node_cachep __ro_after_init;
-static struct kmem_cache *avtab_xperms_cachep __ro_after_init;
+static struct kmem_cache *avtab_node_cachep;
+static struct kmem_cache *avtab_xperms_cachep;
 
 /* Based on MurmurHash3, written by Austin Appleby and placed in the
  * public domain.
  */
-static inline u32 avtab_hash(const struct avtab_key *keyp, u32 mask)
+static inline int avtab_hash(struct avtab_key *keyp, u32 mask)
 {
 	static const u32 c1 = 0xcc9e2d51;
 	static const u32 c2 = 0x1b873593;
@@ -40,15 +40,15 @@ static inline u32 avtab_hash(const struct avtab_key *keyp, u32 mask)
 
 	u32 hash = 0;
 
-#define mix(input) do { \
-		u32 v = input; \
-		v *= c1; \
-		v = (v << r1) | (v >> (32 - r1)); \
-		v *= c2; \
-		hash ^= v; \
-		hash = (hash << r2) | (hash >> (32 - r2)); \
-		hash = hash * m + n; \
-	} while (0)
+#define mix(input) { \
+	u32 v = input; \
+	v *= c1; \
+	v = (v << r1) | (v >> (32 - r1)); \
+	v *= c2; \
+	hash ^= v; \
+	hash = (hash << r2) | (hash >> (32 - r2)); \
+	hash = hash * m + n; \
+}
 
 	mix(keyp->target_class);
 	mix(keyp->target_type);
@@ -66,9 +66,9 @@ static inline u32 avtab_hash(const struct avtab_key *keyp, u32 mask)
 }
 
 static struct avtab_node*
-avtab_insert_node(struct avtab *h, u32 hvalue,
-		  struct avtab_node *prev,
-		  const struct avtab_key *key, const struct avtab_datum *datum)
+avtab_insert_node(struct avtab *h, int hvalue,
+		  struct avtab_node *prev, struct avtab_node *cur,
+		  struct avtab_key *key, struct avtab_datum *datum)
 {
 	struct avtab_node *newnode;
 	struct avtab_extended_perms *xperms;
@@ -93,28 +93,29 @@ avtab_insert_node(struct avtab *h, u32 hvalue,
 		newnode->next = prev->next;
 		prev->next = newnode;
 	} else {
-		struct avtab_node **n = &h->htable[hvalue];
-
-		newnode->next = *n;
-		*n = newnode;
+		newnode->next = flex_array_get_ptr(h->htable, hvalue);
+		if (flex_array_put_ptr(h->htable, hvalue, newnode,
+				       GFP_KERNEL|__GFP_ZERO)) {
+			kmem_cache_free(avtab_node_cachep, newnode);
+			return NULL;
+		}
 	}
 
 	h->nel++;
 	return newnode;
 }
 
-static int avtab_insert(struct avtab *h, const struct avtab_key *key,
-			const struct avtab_datum *datum)
+static int avtab_insert(struct avtab *h, struct avtab_key *key, struct avtab_datum *datum)
 {
-	u32 hvalue;
+	int hvalue;
 	struct avtab_node *prev, *cur, *newnode;
 	u16 specified = key->specified & ~(AVTAB_ENABLED|AVTAB_ENABLED_OLD);
 
-	if (!h || !h->nslot || h->nel == U32_MAX)
+	if (!h || !h->htable)
 		return -EINVAL;
 
 	hvalue = avtab_hash(key, h->mask);
-	for (prev = NULL, cur = h->htable[hvalue];
+	for (prev = NULL, cur = flex_array_get_ptr(h->htable, hvalue);
 	     cur;
 	     prev = cur, cur = cur->next) {
 		if (key->source_type == cur->key.source_type &&
@@ -137,7 +138,7 @@ static int avtab_insert(struct avtab *h, const struct avtab_key *key,
 			break;
 	}
 
-	newnode = avtab_insert_node(h, hvalue, prev, key, datum);
+	newnode = avtab_insert_node(h, hvalue, prev, cur, key, datum);
 	if (!newnode)
 		return -ENOMEM;
 
@@ -148,18 +149,17 @@ static int avtab_insert(struct avtab *h, const struct avtab_key *key,
  * key/specified mask into the table, as needed by the conditional avtab.
  * It also returns a pointer to the node inserted.
  */
-struct avtab_node *avtab_insert_nonunique(struct avtab *h,
-					  const struct avtab_key *key,
-					  const struct avtab_datum *datum)
+struct avtab_node *
+avtab_insert_nonunique(struct avtab *h, struct avtab_key *key, struct avtab_datum *datum)
 {
-	u32 hvalue;
+	int hvalue;
 	struct avtab_node *prev, *cur;
 	u16 specified = key->specified & ~(AVTAB_ENABLED|AVTAB_ENABLED_OLD);
 
-	if (!h || !h->nslot || h->nel == U32_MAX)
+	if (!h || !h->htable)
 		return NULL;
 	hvalue = avtab_hash(key, h->mask);
-	for (prev = NULL, cur = h->htable[hvalue];
+	for (prev = NULL, cur = flex_array_get_ptr(h->htable, hvalue);
 	     cur;
 	     prev = cur, cur = cur->next) {
 		if (key->source_type == cur->key.source_type &&
@@ -177,24 +177,56 @@ struct avtab_node *avtab_insert_nonunique(struct avtab *h,
 		    key->target_class < cur->key.target_class)
 			break;
 	}
-	return avtab_insert_node(h, hvalue, prev, key, datum);
+	return avtab_insert_node(h, hvalue, prev, cur, key, datum);
+}
+
+struct avtab_datum *avtab_search(struct avtab *h, struct avtab_key *key)
+{
+	int hvalue;
+	struct avtab_node *cur;
+	u16 specified = key->specified & ~(AVTAB_ENABLED|AVTAB_ENABLED_OLD);
+
+	if (!h || !h->htable)
+		return NULL;
+
+	hvalue = avtab_hash(key, h->mask);
+	for (cur = flex_array_get_ptr(h->htable, hvalue); cur;
+	     cur = cur->next) {
+		if (key->source_type == cur->key.source_type &&
+		    key->target_type == cur->key.target_type &&
+		    key->target_class == cur->key.target_class &&
+		    (specified & cur->key.specified))
+			return &cur->datum;
+
+		if (key->source_type < cur->key.source_type)
+			break;
+		if (key->source_type == cur->key.source_type &&
+		    key->target_type < cur->key.target_type)
+			break;
+		if (key->source_type == cur->key.source_type &&
+		    key->target_type == cur->key.target_type &&
+		    key->target_class < cur->key.target_class)
+			break;
+	}
+
+	return NULL;
 }
 
 /* This search function returns a node pointer, and can be used in
  * conjunction with avtab_search_next_node()
  */
-struct avtab_node *avtab_search_node(struct avtab *h,
-				     const struct avtab_key *key)
+struct avtab_node*
+avtab_search_node(struct avtab *h, struct avtab_key *key)
 {
-	u32 hvalue;
+	int hvalue;
 	struct avtab_node *cur;
 	u16 specified = key->specified & ~(AVTAB_ENABLED|AVTAB_ENABLED_OLD);
 
-	if (!h || !h->nslot)
+	if (!h || !h->htable)
 		return NULL;
 
 	hvalue = avtab_hash(key, h->mask);
-	for (cur = h->htable[hvalue]; cur;
+	for (cur = flex_array_get_ptr(h->htable, hvalue); cur;
 	     cur = cur->next) {
 		if (key->source_type == cur->key.source_type &&
 		    key->target_type == cur->key.target_type &&
@@ -216,7 +248,7 @@ struct avtab_node *avtab_search_node(struct avtab *h,
 }
 
 struct avtab_node*
-avtab_search_node_next(struct avtab_node *node, u16 specified)
+avtab_search_node_next(struct avtab_node *node, int specified)
 {
 	struct avtab_node *cur;
 
@@ -246,14 +278,14 @@ avtab_search_node_next(struct avtab_node *node, u16 specified)
 
 void avtab_destroy(struct avtab *h)
 {
-	u32 i;
+	int i;
 	struct avtab_node *cur, *temp;
 
-	if (!h)
+	if (!h || !h->htable)
 		return;
 
 	for (i = 0; i < h->nslot; i++) {
-		cur = h->htable[i];
+		cur = flex_array_get_ptr(h->htable, i);
 		while (cur) {
 			temp = cur;
 			cur = cur->next;
@@ -263,69 +295,57 @@ void avtab_destroy(struct avtab *h)
 			kmem_cache_free(avtab_node_cachep, temp);
 		}
 	}
-	kvfree(h->htable);
+	flex_array_free(h->htable);
 	h->htable = NULL;
-	h->nel = 0;
 	h->nslot = 0;
 	h->mask = 0;
 }
 
-void avtab_init(struct avtab *h)
+int avtab_init(struct avtab *h)
 {
 	h->htable = NULL;
 	h->nel = 0;
-	h->nslot = 0;
-	h->mask = 0;
-}
-
-static int avtab_alloc_common(struct avtab *h, u32 nslot)
-{
-	if (!nslot)
-		return 0;
-
-	h->htable = kvcalloc(nslot, sizeof(void *), GFP_KERNEL);
-	if (!h->htable)
-		return -ENOMEM;
-
-	h->nslot = nslot;
-	h->mask = nslot - 1;
 	return 0;
 }
 
 int avtab_alloc(struct avtab *h, u32 nrules)
 {
-	int rc;
+	u32 mask = 0;
+	u32 shift = 0;
+	u32 work = nrules;
 	u32 nslot = 0;
 
-	if (nrules != 0) {
-		u32 shift = 1;
-		u32 work = nrules >> 3;
-		while (work) {
-			work >>= 1;
-			shift++;
-		}
-		nslot = 1 << shift;
-		if (nslot > MAX_AVTAB_HASH_BUCKETS)
-			nslot = MAX_AVTAB_HASH_BUCKETS;
+	if (nrules == 0)
+		goto avtab_alloc_out;
 
-		rc = avtab_alloc_common(h, nslot);
-		if (rc)
-			return rc;
+	while (work) {
+		work  = work >> 1;
+		shift++;
 	}
+	if (shift > 2)
+		shift = shift - 2;
+	nslot = 1 << shift;
+	if (nslot > MAX_AVTAB_HASH_BUCKETS)
+		nslot = MAX_AVTAB_HASH_BUCKETS;
+	mask = nslot - 1;
 
-	pr_debug("SELinux: %d avtab hash slots, %d rules.\n", nslot, nrules);
+	h->htable = flex_array_alloc(sizeof(struct avtab_node *), nslot,
+				     GFP_KERNEL | __GFP_ZERO);
+	if (!h->htable)
+		return -ENOMEM;
+
+ avtab_alloc_out:
+	h->nel = 0;
+	h->nslot = nslot;
+	h->mask = mask;
+	printk(KERN_DEBUG "SELinux: %d avtab hash slots, %d rules.\n",
+	       h->nslot, nrules);
 	return 0;
 }
 
-int avtab_alloc_dup(struct avtab *new, const struct avtab *orig)
+void avtab_hash_eval(struct avtab *h, char *tag)
 {
-	return avtab_alloc_common(new, orig->nslot);
-}
-
-#ifdef CONFIG_SECURITY_SELINUX_DEBUG
-void avtab_hash_eval(struct avtab *h, const char *tag)
-{
-	u32 i, chain_len, slots_used, max_chain_len;
+	int i, chain_len, slots_used, max_chain_len;
 	unsigned long long chain2_len_sum;
 	struct avtab_node *cur;
 
@@ -333,7 +353,7 @@ void avtab_hash_eval(struct avtab *h, const char *tag)
 	max_chain_len = 0;
 	chain2_len_sum = 0;
 	for (i = 0; i < h->nslot; i++) {
-		cur = h->htable[i];
+		cur = flex_array_get_ptr(h->htable, i);
 		if (cur) {
 			slots_used++;
 			chain_len = 0;
@@ -344,18 +364,17 @@ void avtab_hash_eval(struct avtab *h, const char *tag)
 
 			if (chain_len > max_chain_len)
 				max_chain_len = chain_len;
-			chain2_len_sum += (unsigned long long)chain_len * chain_len;
+			chain2_len_sum += chain_len * chain_len;
 		}
 	}
 
-	pr_debug("SELinux: %s:  %d entries and %d/%d buckets used, "
+	printk(KERN_DEBUG "SELinux: %s:  %d entries and %d/%d buckets used, "
 	       "longest chain length %d sum of chain length^2 %llu\n",
 	       tag, h->nel, slots_used, h->nslot, max_chain_len,
 	       chain2_len_sum);
 }
-#endif /* CONFIG_SECURITY_SELINUX_DEBUG */
 
-static const uint16_t spec_order[] = {
+static uint16_t spec_order[] = {
 	AVTAB_ALLOWED,
 	AVTAB_AUDITDENY,
 	AVTAB_AUDITALLOW,
@@ -368,19 +387,19 @@ static const uint16_t spec_order[] = {
 };
 
 int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
-		    int (*insertf)(struct avtab *a, const struct avtab_key *k,
-				   const struct avtab_datum *d, void *p),
+		    int (*insertf)(struct avtab *a, struct avtab_key *k,
+				   struct avtab_datum *d, void *p),
 		    void *p)
 {
 	__le16 buf16[4];
 	u16 enabled;
-	u32 items, items2, val, i;
+	u32 items, items2, val, vers = pol->policyvers;
 	struct avtab_key key;
 	struct avtab_datum datum;
 	struct avtab_extended_perms xperms;
 	__le32 buf32[ARRAY_SIZE(xperms.perms.p)];
-	int rc;
-	unsigned int set, vers = pol->policyvers;
+	int i, rc;
+	unsigned set;
 
 	memset(&key, 0, sizeof(struct avtab_key));
 	memset(&datum, 0, sizeof(struct avtab_datum));
@@ -388,18 +407,18 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 	if (vers < POLICYDB_VERSION_AVTAB) {
 		rc = next_entry(buf32, fp, sizeof(u32));
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		items2 = le32_to_cpu(buf32[0]);
 		if (items2 > ARRAY_SIZE(buf32)) {
-			pr_err("SELinux: avtab: entry overflow\n");
+			printk(KERN_ERR "SELinux: avtab: entry overflow\n");
 			return -EINVAL;
 
 		}
 		rc = next_entry(buf32, fp, sizeof(u32)*items2);
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		items = 0;
@@ -407,19 +426,19 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 		val = le32_to_cpu(buf32[items++]);
 		key.source_type = (u16)val;
 		if (key.source_type != val) {
-			pr_err("SELinux: avtab: truncated source type\n");
+			printk(KERN_ERR "SELinux: avtab: truncated source type\n");
 			return -EINVAL;
 		}
 		val = le32_to_cpu(buf32[items++]);
 		key.target_type = (u16)val;
 		if (key.target_type != val) {
-			pr_err("SELinux: avtab: truncated target type\n");
+			printk(KERN_ERR "SELinux: avtab: truncated target type\n");
 			return -EINVAL;
 		}
 		val = le32_to_cpu(buf32[items++]);
 		key.target_class = (u16)val;
 		if (key.target_class != val) {
-			pr_err("SELinux: avtab: truncated target class\n");
+			printk(KERN_ERR "SELinux: avtab: truncated target class\n");
 			return -EINVAL;
 		}
 
@@ -427,16 +446,16 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 		enabled = (val & AVTAB_ENABLED_OLD) ? AVTAB_ENABLED : 0;
 
 		if (!(val & (AVTAB_AV | AVTAB_TYPE))) {
-			pr_err("SELinux: avtab: null entry\n");
+			printk(KERN_ERR "SELinux: avtab: null entry\n");
 			return -EINVAL;
 		}
 		if ((val & AVTAB_AV) &&
 		    (val & AVTAB_TYPE)) {
-			pr_err("SELinux: avtab: entry has both access vectors and types\n");
+			printk(KERN_ERR "SELinux: avtab: entry has both access vectors and types\n");
 			return -EINVAL;
 		}
 		if (val & AVTAB_XPERMS) {
-			pr_err("SELinux: avtab: entry has extended permissions\n");
+			printk(KERN_ERR "SELinux: avtab: entry has extended permissions\n");
 			return -EINVAL;
 		}
 
@@ -451,8 +470,7 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 		}
 
 		if (items != items2) {
-			pr_err("SELinux: avtab: entry only had %d items, expected %d\n",
-			       items2, items);
+			printk(KERN_ERR "SELinux: avtab: entry only had %d items, expected %d\n", items2, items);
 			return -EINVAL;
 		}
 		return 0;
@@ -460,7 +478,7 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 
 	rc = next_entry(buf16, fp, sizeof(u16)*4);
 	if (rc) {
-		pr_err("SELinux: avtab: truncated entry\n");
+		printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 		return rc;
 	}
 
@@ -473,7 +491,7 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 	if (!policydb_type_isvalid(pol, key.source_type) ||
 	    !policydb_type_isvalid(pol, key.target_type) ||
 	    !policydb_class_isvalid(pol, key.target_class)) {
-		pr_err("SELinux: avtab: invalid type or class\n");
+		printk(KERN_ERR "SELinux: avtab: invalid type or class\n");
 		return -EINVAL;
 	}
 
@@ -483,13 +501,13 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 			set++;
 	}
 	if (!set || set > 1) {
-		pr_err("SELinux:  avtab:  more than one specifier\n");
+		printk(KERN_ERR "SELinux:  avtab:  more than one specifier\n");
 		return -EINVAL;
 	}
 
 	if ((vers < POLICYDB_VERSION_XPERMS_IOCTL) &&
 			(key.specified & AVTAB_XPERMS)) {
-		pr_err("SELinux:  avtab:  policy version %u does not "
+		printk(KERN_ERR "SELinux:  avtab:  policy version %u does not "
 				"support extended permissions rules and one "
 				"was specified\n", vers);
 		return -EINVAL;
@@ -497,17 +515,17 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 		memset(&xperms, 0, sizeof(struct avtab_extended_perms));
 		rc = next_entry(&xperms.specified, fp, sizeof(u8));
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		rc = next_entry(&xperms.driver, fp, sizeof(u8));
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		rc = next_entry(buf32, fp, sizeof(u32)*ARRAY_SIZE(xperms.perms.p));
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		for (i = 0; i < ARRAY_SIZE(xperms.perms.p); i++)
@@ -516,21 +534,21 @@ int avtab_read_item(struct avtab *a, void *fp, struct policydb *pol,
 	} else {
 		rc = next_entry(buf32, fp, sizeof(u32));
 		if (rc) {
-			pr_err("SELinux: avtab: truncated entry\n");
+			printk(KERN_ERR "SELinux: avtab: truncated entry\n");
 			return rc;
 		}
 		datum.u.data = le32_to_cpu(*buf32);
 	}
 	if ((key.specified & AVTAB_TYPE) &&
 	    !policydb_type_isvalid(pol, datum.u.data)) {
-		pr_err("SELinux: avtab: invalid type\n");
+		printk(KERN_ERR "SELinux: avtab: invalid type\n");
 		return -EINVAL;
 	}
 	return insertf(a, &key, &datum, p);
 }
 
-static int avtab_insertf(struct avtab *a, const struct avtab_key *k,
-			 const struct avtab_datum *d, void *p)
+static int avtab_insertf(struct avtab *a, struct avtab_key *k,
+			 struct avtab_datum *d, void *p)
 {
 	return avtab_insert(a, k, d);
 }
@@ -544,12 +562,12 @@ int avtab_read(struct avtab *a, void *fp, struct policydb *pol)
 
 	rc = next_entry(buf, fp, sizeof(u32));
 	if (rc < 0) {
-		pr_err("SELinux: avtab: truncated table\n");
+		printk(KERN_ERR "SELinux: avtab: truncated table\n");
 		goto bad;
 	}
 	nel = le32_to_cpu(buf[0]);
 	if (!nel) {
-		pr_err("SELinux: avtab: table is empty\n");
+		printk(KERN_ERR "SELinux: avtab: table is empty\n");
 		rc = -EINVAL;
 		goto bad;
 	}
@@ -562,9 +580,9 @@ int avtab_read(struct avtab *a, void *fp, struct policydb *pol)
 		rc = avtab_read_item(a, fp, pol, avtab_insertf, NULL);
 		if (rc) {
 			if (rc == -ENOMEM)
-				pr_err("SELinux: avtab: out of memory\n");
+				printk(KERN_ERR "SELinux: avtab: out of memory\n");
 			else if (rc == -EEXIST)
-				pr_err("SELinux: avtab: duplicate entry\n");
+				printk(KERN_ERR "SELinux: avtab: duplicate entry\n");
 
 			goto bad;
 		}
@@ -579,7 +597,7 @@ bad:
 	goto out;
 }
 
-int avtab_write_item(struct policydb *p, const struct avtab_node *cur, void *fp)
+int avtab_write_item(struct policydb *p, struct avtab_node *cur, void *fp)
 {
 	__le16 buf16[4];
 	__le32 buf32[ARRAY_SIZE(cur->datum.u.xperms->perms.p)];
@@ -616,7 +634,7 @@ int avtab_write_item(struct policydb *p, const struct avtab_node *cur, void *fp)
 
 int avtab_write(struct policydb *p, struct avtab *a, void *fp)
 {
-	u32 i;
+	unsigned int i;
 	int rc = 0;
 	struct avtab_node *cur;
 	__le32 buf[1];
@@ -627,7 +645,7 @@ int avtab_write(struct policydb *p, struct avtab *a, void *fp)
 		return rc;
 
 	for (i = 0; i < a->nslot; i++) {
-		for (cur = a->htable[i]; cur;
+		for (cur = flex_array_get_ptr(a->htable, i); cur;
 		     cur = cur->next) {
 			rc = avtab_write_item(p, cur, fp);
 			if (rc)
@@ -637,8 +655,7 @@ int avtab_write(struct policydb *p, struct avtab *a, void *fp)
 
 	return rc;
 }
-
-void __init avtab_cache_init(void)
+void avtab_cache_init(void)
 {
 	avtab_node_cachep = kmem_cache_create("avtab_node",
 					      sizeof(struct avtab_node),
@@ -646,4 +663,10 @@ void __init avtab_cache_init(void)
 	avtab_xperms_cachep = kmem_cache_create("avtab_extended_perms",
 						sizeof(struct avtab_extended_perms),
 						0, SLAB_PANIC, NULL);
+}
+
+void avtab_cache_destroy(void)
+{
+	kmem_cache_destroy(avtab_node_cachep);
+	kmem_cache_destroy(avtab_xperms_cachep);
 }

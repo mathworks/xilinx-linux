@@ -31,12 +31,11 @@
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
-#include <linux/of_mdio.h>
 #include <linux/of_platform.h>
-#include <linux/pgtable.h>
 
+#include <asm/pgtable.h>
 #include <asm/irq.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/mpc5xxx.h>
 
 #include "fs_enet.h"
@@ -103,7 +102,7 @@ static int fs_enet_mdio_probe(struct platform_device *ofdev)
 	struct resource res;
 	struct mii_bus *new_bus;
 	struct fec_info *fec;
-	int (*get_bus_freq)(struct device *);
+	int (*get_bus_freq)(struct device_node *);
 	int ret = -ENOMEM, clock, speed;
 
 	match = of_match_device(fs_enet_mdio_fec_match, &ofdev->dev);
@@ -128,7 +127,7 @@ static int fs_enet_mdio_probe(struct platform_device *ofdev)
 	if (ret)
 		goto out_res;
 
-	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%pap", &res.start);
+	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%x", res.start);
 
 	fec->fecp = ioremap(res.start, resource_size(&res));
 	if (!fec->fecp) {
@@ -137,7 +136,7 @@ static int fs_enet_mdio_probe(struct platform_device *ofdev)
 	}
 
 	if (get_bus_freq) {
-		clock = get_bus_freq(&ofdev->dev);
+		clock = get_bus_freq(ofdev->dev.of_node);
 		if (!clock) {
 			/* Use maximum divider if clock is unknown */
 			dev_warn(&ofdev->dev, "could not determine IPS clock\n");
@@ -188,7 +187,7 @@ out:
 	return ret;
 }
 
-static void fs_enet_mdio_remove(struct platform_device *ofdev)
+static int fs_enet_mdio_remove(struct platform_device *ofdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(ofdev);
 	struct fec_info *fec = bus->priv;
@@ -197,6 +196,8 @@ static void fs_enet_mdio_remove(struct platform_device *ofdev)
 	iounmap(fec->fecp);
 	kfree(fec);
 	mdiobus_free(bus);
+
+	return 0;
 }
 
 static const struct of_device_id fs_enet_mdio_fec_match[] = {
@@ -219,8 +220,7 @@ static struct platform_driver fs_enet_fec_mdio_driver = {
 		.of_match_table = fs_enet_mdio_fec_match,
 	},
 	.probe = fs_enet_mdio_probe,
-	.remove_new = fs_enet_mdio_remove,
+	.remove = fs_enet_mdio_remove,
 };
 
 module_platform_driver(fs_enet_fec_mdio_driver);
-MODULE_LICENSE("GPL");

@@ -92,8 +92,8 @@ struct usnic_fwd_dev *usnic_fwd_dev_alloc(struct pci_dev *pdev)
 	ufdev->pdev = pdev;
 	ufdev->netdev = pci_get_drvdata(pdev);
 	spin_lock_init(&ufdev->lock);
-	BUILD_BUG_ON(sizeof(ufdev->name) != sizeof(ufdev->netdev->name));
-	strcpy(ufdev->name, ufdev->netdev->name);
+	strncpy(ufdev->name, netdev_name(ufdev->netdev),
+			sizeof(ufdev->name) - 1);
 
 	return ufdev;
 }
@@ -103,19 +103,27 @@ void usnic_fwd_dev_free(struct usnic_fwd_dev *ufdev)
 	kfree(ufdev);
 }
 
-void usnic_fwd_set_mac(struct usnic_fwd_dev *ufdev, const char mac[ETH_ALEN])
+void usnic_fwd_set_mac(struct usnic_fwd_dev *ufdev, char mac[ETH_ALEN])
 {
 	spin_lock(&ufdev->lock);
 	memcpy(&ufdev->mac, mac, sizeof(ufdev->mac));
 	spin_unlock(&ufdev->lock);
 }
 
-void usnic_fwd_add_ipaddr(struct usnic_fwd_dev *ufdev, __be32 inaddr)
+int usnic_fwd_add_ipaddr(struct usnic_fwd_dev *ufdev, __be32 inaddr)
 {
+	int status;
+
 	spin_lock(&ufdev->lock);
-	if (!ufdev->inaddr)
+	if (ufdev->inaddr == 0) {
 		ufdev->inaddr = inaddr;
+		status = 0;
+	} else {
+		status = -EFAULT;
+	}
 	spin_unlock(&ufdev->lock);
+
+	return status;
 }
 
 void usnic_fwd_del_ipaddr(struct usnic_fwd_dev *ufdev)
@@ -214,7 +222,7 @@ usnic_fwd_alloc_flow(struct usnic_fwd_dev *ufdev, struct filter *filter,
 	if (!flow)
 		return ERR_PTR(-ENOMEM);
 
-	tlv = dma_alloc_coherent(&pdev->dev, tlv_size, &tlv_pa, GFP_ATOMIC);
+	tlv = pci_alloc_consistent(pdev, tlv_size, &tlv_pa);
 	if (!tlv) {
 		usnic_err("Failed to allocate memory\n");
 		status = -ENOMEM;
@@ -258,7 +266,7 @@ usnic_fwd_alloc_flow(struct usnic_fwd_dev *ufdev, struct filter *filter,
 
 out_free_tlv:
 	spin_unlock(&ufdev->lock);
-	dma_free_coherent(&pdev->dev, tlv_size, tlv, tlv_pa);
+	pci_free_consistent(pdev, tlv_size, tlv, tlv_pa);
 	if (!status)
 		return flow;
 out_free_flow:

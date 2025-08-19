@@ -1,34 +1,31 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * drivers/power/process.c - Functions for starting/stopping processes on
+ * drivers/power/process.c - Functions for starting/stopping processes on 
  *                           suspend transitions.
  *
  * Originally from swsusp.
  */
 
+
+#undef DEBUG
+
 #include <linux/interrupt.h>
 #include <linux/oom.h>
 #include <linux/suspend.h>
 #include <linux/module.h>
-#include <linux/sched/debug.h>
-#include <linux/sched/task.h>
 #include <linux/syscalls.h>
 #include <linux/freezer.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <linux/kmod.h>
 #include <trace/events/power.h>
-#include <linux/cpuset.h>
 
-/*
+/* 
  * Timeout for stopping processes
  */
 unsigned int __read_mostly freeze_timeout_msecs = 20 * MSEC_PER_SEC;
 
 static int try_to_freeze_tasks(bool user_only)
 {
-	const char *what = user_only ? "user space processes" :
-					"remaining freezable tasks";
 	struct task_struct *g, *p;
 	unsigned long end_time;
 	unsigned int todo;
@@ -37,8 +34,6 @@ static int try_to_freeze_tasks(bool user_only)
 	unsigned int elapsed_msecs;
 	bool wakeup = false;
 	int sleep_usecs = USEC_PER_MSEC;
-
-	pr_info("Freezing %s\n", what);
 
 	start = ktime_get_boottime();
 
@@ -54,7 +49,8 @@ static int try_to_freeze_tasks(bool user_only)
 			if (p == current || !freeze_task(p))
 				continue;
 
-			todo++;
+			if (!freezer_should_skip(p))
+				todo++;
 		}
 		read_unlock(&tasklist_lock);
 
@@ -86,26 +82,28 @@ static int try_to_freeze_tasks(bool user_only)
 	elapsed_msecs = ktime_to_ms(elapsed);
 
 	if (todo) {
-		pr_err("Freezing %s %s after %d.%03d seconds "
-		       "(%d tasks refusing to freeze, wq_busy=%d):\n", what,
+		pr_cont("\n");
+		pr_err("Freezing of tasks %s after %d.%03d seconds "
+		       "(%d tasks refusing to freeze, wq_busy=%d):\n",
 		       wakeup ? "aborted" : "failed",
 		       elapsed_msecs / 1000, elapsed_msecs % 1000,
 		       todo - wq_busy, wq_busy);
 
 		if (wq_busy)
-			show_freezable_workqueues();
+			show_workqueue_state();
 
-		if (!wakeup || pm_debug_messages_on) {
+		if (!wakeup) {
 			read_lock(&tasklist_lock);
 			for_each_process_thread(g, p) {
-				if (p != current && freezing(p) && !frozen(p))
+				if (p != current && !freezer_should_skip(p)
+				    && freezing(p) && !frozen(p))
 					sched_show_task(p);
 			}
 			read_unlock(&tasklist_lock);
 		}
 	} else {
-		pr_info("Freezing %s completed (elapsed %d.%03d seconds)\n",
-			what, elapsed_msecs / 1000, elapsed_msecs % 1000);
+		pr_cont("(elapsed %d.%03d seconds) ", elapsed_msecs / 1000,
+			elapsed_msecs % 1000);
 	}
 
 	return todo ? -EBUSY : 0;
@@ -130,18 +128,21 @@ int freeze_processes(void)
 	current->flags |= PF_SUSPEND_TASK;
 
 	if (!pm_freezing)
-		static_branch_inc(&freezer_active);
+		atomic_inc(&system_freezing_cnt);
 
-	pm_wakeup_clear(0);
+	pm_wakeup_clear();
+	pr_info("Freezing user space processes ... ");
 	pm_freezing = true;
 	error = try_to_freeze_tasks(true);
-	if (!error)
+	if (!error) {
 		__usermodehelper_set_disable_depth(UMH_DISABLED);
-
+		pr_cont("done.");
+	}
+	pr_cont("\n");
 	BUG_ON(in_atomic());
 
 	/*
-	 * Now that the whole userspace is frozen we need to disable
+	 * Now that the whole userspace is frozen we need to disbale
 	 * the OOM killer to disallow any further interference with
 	 * killable tasks. There is no guarantee oom victims will
 	 * ever reach a point they go away we have to wait with a timeout.
@@ -166,9 +167,14 @@ int freeze_kernel_threads(void)
 {
 	int error;
 
+	pr_info("Freezing remaining freezable tasks ... ");
+
 	pm_nosig_freezing = true;
 	error = try_to_freeze_tasks(false);
+	if (!error)
+		pr_cont("done.");
 
+	pr_cont("\n");
 	BUG_ON(in_atomic());
 
 	if (error)
@@ -183,7 +189,7 @@ void thaw_processes(void)
 
 	trace_suspend_resume(TPS("thaw_processes"), 0, true);
 	if (pm_freezing)
-		static_branch_dec(&freezer_active);
+		atomic_dec(&system_freezing_cnt);
 	pm_freezing = false;
 	pm_nosig_freezing = false;
 
@@ -193,8 +199,6 @@ void thaw_processes(void)
 
 	__usermodehelper_set_disable_depth(UMH_FREEZING);
 	thaw_workqueues();
-
-	cpuset_wait_for_hotplug();
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, p) {
@@ -225,7 +229,7 @@ void thaw_kernel_threads(void)
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, p) {
-		if (p->flags & PF_KTHREAD)
+		if (p->flags & (PF_KTHREAD | PF_WQ_WORKER))
 			__thaw_task(p);
 	}
 	read_unlock(&tasklist_lock);

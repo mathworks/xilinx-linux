@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * bdc_ep.c - BRCM BDC USB3.0 device controller endpoint related functions
  *
@@ -7,6 +6,12 @@
  * Author: Ashwini Pahuja
  *
  * Based on drivers under drivers/usb/
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
  */
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -68,7 +73,7 @@ static void ep_bd_list_free(struct bdc_ep *ep, u32 num_tabs)
 		 * check if the bd_table struct is allocated ?
 		 * if yes, then check if bd memory has been allocated, then
 		 * free the dma_pool and also the bd_table struct memory
-		 */
+		*/
 		bd_table = bd_list->bd_table_array[index];
 		dev_dbg(bdc->dev, "bd_table:%p index:%d\n", bd_table, index);
 		if (!bd_table) {
@@ -138,20 +143,20 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 		__func__, ep, num_tabs);
 
 	/* Allocate memory for table array */
-	ep->bd_list.bd_table_array = kcalloc(num_tabs,
-					     sizeof(struct bd_table *),
-					     GFP_ATOMIC);
+	ep->bd_list.bd_table_array = kzalloc(
+					num_tabs * sizeof(struct bd_table *),
+					GFP_ATOMIC);
 	if (!ep->bd_list.bd_table_array)
 		return -ENOMEM;
 
 	/* Allocate memory for each table */
 	for (index = 0; index < num_tabs; index++) {
 		/* Allocate memory for bd_table structure */
-		bd_table = kzalloc(sizeof(*bd_table), GFP_ATOMIC);
+		bd_table = kzalloc(sizeof(struct bd_table), GFP_ATOMIC);
 		if (!bd_table)
 			goto fail;
 
-		bd_table->start_bd = dma_pool_zalloc(bdc->bd_table_pool,
+		bd_table->start_bd = dma_pool_alloc(bdc->bd_table_pool,
 							GFP_ATOMIC,
 							&dma);
 		if (!bd_table->start_bd) {
@@ -167,6 +172,7 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 			(unsigned long long)bd_table->dma, prev_table);
 
 		ep->bd_list.bd_table_array[index] = bd_table;
+		memset(bd_table->start_bd, 0, bd_p_tab * sizeof(struct bdc_bd));
 		if (prev_table)
 			chain_table(prev_table, bd_table, bd_p_tab);
 
@@ -275,7 +281,7 @@ static inline int find_end_bdi(struct bdc_ep *ep, int next_hwd_bdi)
 	end_bdi = next_hwd_bdi - 1;
 	if (end_bdi < 0)
 		end_bdi = ep->bd_list.max_bdi - 1;
-	else if ((end_bdi % (ep->bd_list.num_bds_table-1)) == 0)
+	 else if ((end_bdi % (ep->bd_list.num_bds_table-1)) == 0)
 		end_bdi--;
 
 	return end_bdi;
@@ -440,7 +446,7 @@ static int setup_bd_list_xfr(struct bdc *bdc, struct bdc_req *req, int num_bds)
 	bd_xfr->start_bdi = bd_list->eqp_bdi;
 	bd = bdi_to_bd(ep, bd_list->eqp_bdi);
 	req_len = req->usb_req.length;
-	maxp = usb_endpoint_maxp(ep->desc);
+	maxp = usb_endpoint_maxp(ep->desc) & 0x7ff;
 	tfs = roundup(req->usb_req.length, maxp);
 	tfs = tfs/maxp;
 	dev_vdbg(bdc->dev, "%s ep:%s num_bds:%d tfs:%d r_len:%d bd:%p\n",
@@ -540,7 +546,7 @@ static void bdc_req_complete(struct bdc_ep *ep, struct bdc_req *req,
 {
 	struct bdc *bdc = ep->bdc;
 
-	if (req == NULL)
+	if (req == NULL  || &req->queue == NULL || &req->usb_req == NULL)
 		return;
 
 	dev_dbg(bdc->dev, "%s ep:%s status:%d\n", __func__, ep->name, status);
@@ -615,6 +621,7 @@ int bdc_ep_enable(struct bdc_ep *ep)
 	}
 	bdc_dbg_bd_list(bdc, ep);
 	/* only for ep0: config ep is called for ep0 from connect event */
+	ep->flags |= BDC_EP_ENABLED;
 	if (ep->ep_num == 1)
 		return ret;
 
@@ -756,15 +763,12 @@ static int ep_dequeue(struct bdc_ep *ep, struct bdc_req *req)
 
 	dev_dbg(bdc->dev, "%s ep:%s start:%d end:%d\n",
 					__func__, ep->name, start_bdi, end_bdi);
-	dev_dbg(bdc->dev, "%s ep=%p ep->desc=%p\n", __func__,
+	dev_dbg(bdc->dev, "ep_dequeue ep=%p ep->desc=%p\n",
 						ep, (void *)ep->usb_ep.desc);
-	/* if still connected, stop the ep to see where the HW is ? */
-	if (!(bdc_readl(bdc->regs, BDC_USPC) & BDC_PST_MASK)) {
-		ret = bdc_stop_ep(bdc, ep->ep_num);
-		/* if there is an issue, then no need to go further */
-		if (ret)
-			return 0;
-	} else
+	/* Stop the ep to see where the HW is ? */
+	ret = bdc_stop_ep(bdc, ep->ep_num);
+	/* if there is an issue with stopping ep, then no need to go further */
+	if (ret)
 		return 0;
 
 	/*
@@ -773,9 +777,9 @@ static int ep_dequeue(struct bdc_ep *ep, struct bdc_req *req)
 	 */
 
 	/* The current hw dequeue pointer */
-	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS0);
+	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS0(0));
 	deq_ptr_64 = tmp_32;
-	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS1);
+	tmp_32 = bdc_readl(bdc->regs, BDC_EPSTS1(0));
 	deq_ptr_64 |= ((u64)tmp_32 << 32);
 
 	/* we have the dma addr of next bd that will be fetched by hardware */
@@ -795,7 +799,7 @@ static int ep_dequeue(struct bdc_ep *ep, struct bdc_req *req)
 			start_pending = true;
 			end_pending = true;
 		} else if (end_bdi >= curr_hw_dqpi || end_bdi <= eqp_bdi) {
-			end_pending = true;
+				end_pending = true;
 		}
 	} else {
 		if (start_bdi >= curr_hw_dqpi) {
@@ -929,11 +933,11 @@ static int bdc_set_test_mode(struct bdc *bdc)
 	usb2_pm &= ~BDC_PTC_MASK;
 	dev_dbg(bdc->dev, "%s\n", __func__);
 	switch (bdc->test_mode) {
-	case USB_TEST_J:
-	case USB_TEST_K:
-	case USB_TEST_SE0_NAK:
-	case USB_TEST_PACKET:
-	case USB_TEST_FORCE_ENABLE:
+	case TEST_J:
+	case TEST_K:
+	case TEST_SE0_NAK:
+	case TEST_PACKET:
+	case TEST_FORCE_EN:
 		usb2_pm |= bdc->test_mode << 28;
 		break;
 	default:
@@ -1405,7 +1409,7 @@ static int ep0_set_sel(struct bdc *bdc,
 }
 
 /*
- * Queue a 0 byte bd only if wLength is more than the length and length is
+ * Queue a 0 byte bd only if wLength is more than the length and and length is
  * a multiple of MaxPacket then queue 0 byte BD
  */
 static int ep0_queue_zlp(struct bdc *bdc)
@@ -1757,7 +1761,6 @@ static int bdc_gadget_ep_dequeue(struct usb_ep *_ep,
 				  struct usb_request *_req)
 {
 	struct bdc_req *req;
-	struct bdc_req *iter;
 	unsigned long flags;
 	struct bdc_ep *ep;
 	struct bdc *bdc;
@@ -1772,16 +1775,12 @@ static int bdc_gadget_ep_dequeue(struct usb_ep *_ep,
 	dev_dbg(bdc->dev, "%s ep:%s req:%p\n", __func__, ep->name, req);
 	bdc_dbg_bd_list(bdc, ep);
 	spin_lock_irqsave(&bdc->lock, flags);
-
-	req = NULL;
 	/* make sure it's still queued on this endpoint */
-	list_for_each_entry(iter, &ep->queue, queue) {
-		if (&iter->usb_req != _req)
-			continue;
-		req = iter;
-		break;
+	list_for_each_entry(req, &ep->queue, queue) {
+		if (&req->usb_req == _req)
+			break;
 	}
-	if (!req) {
+	if (&req->usb_req != _req) {
 		spin_unlock_irqrestore(&bdc->lock, flags);
 		dev_err(bdc->dev, "usb_req !=req n");
 		return -EINVAL;
@@ -1863,12 +1862,12 @@ static int bdc_gadget_ep_enable(struct usb_ep *_ep,
 	int ret;
 
 	if (!_ep || !desc || desc->bDescriptorType != USB_DT_ENDPOINT) {
-		pr_debug("%s invalid parameters\n", __func__);
+		pr_debug("bdc_gadget_ep_enable invalid parameters\n");
 		return -EINVAL;
 	}
 
 	if (!desc->wMaxPacketSize) {
-		pr_debug("%s missing wMaxPacketSize\n", __func__);
+		pr_debug("bdc_gadget_ep_enable missing wMaxPacketSize\n");
 		return -EINVAL;
 	}
 
@@ -1918,9 +1917,7 @@ static int bdc_gadget_ep_disable(struct usb_ep *_ep)
 		__func__, ep->name, ep->flags);
 
 	if (!(ep->flags & BDC_EP_ENABLED)) {
-		if (bdc->gadget.speed != USB_SPEED_UNKNOWN)
-			dev_warn(bdc->dev, "%s is already disabled\n",
-				 ep->name);
+		dev_warn(bdc->dev, "%s is already disabled\n", ep->name);
 		return 0;
 	}
 	spin_lock_irqsave(&bdc->lock, flags);

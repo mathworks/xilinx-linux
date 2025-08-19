@@ -1,13 +1,24 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Power capping class
  * Copyright (c) 2013, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.
+ *
  */
 
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/kstrtox.h>
 #include <linux/slab.h>
 #include <linux/powercap.h>
 
@@ -171,8 +182,9 @@ static ssize_t show_constraint_name(struct device *dev,
 	if (pconst && pconst->ops && pconst->ops->get_name) {
 		name = pconst->ops->get_name(power_zone, id);
 		if (name) {
-			sprintf(buf, "%.*s\n", POWERCAP_CONSTRAINT_NAME_LEN - 1,
-				name);
+			snprintf(buf, POWERCAP_CONSTRAINT_NAME_LEN,
+								"%s\n", name);
+			buf[POWERCAP_CONSTRAINT_NAME_LEN] = '\0';
 			len = strlen(buf);
 		}
 	}
@@ -367,9 +379,9 @@ static void create_power_zone_common_attributes(
 					&dev_attr_max_energy_range_uj.attr;
 	if (power_zone->ops->get_energy_uj) {
 		if (power_zone->ops->reset_energy_uj)
-			dev_attr_energy_uj.attr.mode = S_IWUSR | S_IRUSR;
+			dev_attr_energy_uj.attr.mode = S_IWUSR | S_IRUGO;
 		else
-			dev_attr_energy_uj.attr.mode = S_IRUSR;
+			dev_attr_energy_uj.attr.mode = S_IRUGO;
 		power_zone->zone_dev_attrs[count++] =
 					&dev_attr_energy_uj.attr;
 	}
@@ -447,7 +459,7 @@ static ssize_t enabled_store(struct device *dev,
 {
 	bool mode;
 
-	if (kstrtobool(buf, &mode))
+	if (strtobool(buf, &mode))
 		return -EINVAL;
 	if (dev->parent) {
 		struct powercap_zone *power_zone = to_powercap_zone(dev);
@@ -526,20 +538,21 @@ struct powercap_zone *powercap_register_zone(
 
 	power_zone->id = result;
 	idr_init(&power_zone->idr);
-	result = -ENOMEM;
 	power_zone->name = kstrdup(name, GFP_KERNEL);
 	if (!power_zone->name)
 		goto err_name_alloc;
-	power_zone->constraints = kcalloc(nr_constraints,
-					  sizeof(*power_zone->constraints),
-					  GFP_KERNEL);
+	dev_set_name(&power_zone->dev, "%s:%x",
+					dev_name(power_zone->dev.parent),
+					power_zone->id);
+	power_zone->constraints = kzalloc(sizeof(*power_zone->constraints) *
+					 nr_constraints, GFP_KERNEL);
 	if (!power_zone->constraints)
 		goto err_const_alloc;
 
 	nr_attrs = nr_constraints * POWERCAP_CONSTRAINTS_ATTRS +
 						POWERCAP_ZONE_MAX_ATTRS + 1;
-	power_zone->zone_dev_attrs = kcalloc(nr_attrs, sizeof(void *),
-					     GFP_KERNEL);
+	power_zone->zone_dev_attrs = kzalloc(sizeof(void *) *
+						nr_attrs, GFP_KERNEL);
 	if (!power_zone->zone_dev_attrs)
 		goto err_attr_alloc;
 	create_power_zone_common_attributes(power_zone);
@@ -552,16 +565,9 @@ struct powercap_zone *powercap_register_zone(
 	power_zone->dev_attr_groups[0] = &power_zone->dev_zone_attr_group;
 	power_zone->dev_attr_groups[1] = NULL;
 	power_zone->dev.groups = power_zone->dev_attr_groups;
-	dev_set_name(&power_zone->dev, "%s:%x",
-					dev_name(power_zone->dev.parent),
-					power_zone->id);
 	result = device_register(&power_zone->dev);
-	if (result) {
-		put_device(&power_zone->dev);
-		mutex_unlock(&control_type->lock);
-
-		return ERR_PTR(result);
-	}
+	if (result)
+		goto err_dev_ret;
 
 	control_type->nr_zones++;
 	mutex_unlock(&control_type->lock);
@@ -666,16 +672,19 @@ EXPORT_SYMBOL_GPL(powercap_unregister_control_type);
 
 static int __init powercap_init(void)
 {
-	int result;
+	int result = 0;
 
 	result = seed_constraint_attributes();
 	if (result)
 		return result;
 
-	return class_register(&powercap_class);
+	result = class_register(&powercap_class);
+
+	return result;
 }
 
-fs_initcall(powercap_init);
+device_initcall(powercap_init);
 
 MODULE_DESCRIPTION("PowerCap sysfs Driver");
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
+MODULE_LICENSE("GPL v2");

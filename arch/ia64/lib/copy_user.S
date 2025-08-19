@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *
  * Optimized version of the copy_user() routine.
@@ -30,8 +29,8 @@
  *	- fix extraneous stop bit introduced by the EX() macro.
  */
 
-#include <linux/export.h>
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 //
 // Tuneable parameters

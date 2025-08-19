@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_titan.c
  *
@@ -26,6 +25,7 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/io.h>
+#include <asm/pgtable.h>
 #include <asm/core_titan.h>
 #include <asm/hwrpb.h>
 #include <asm/tlbflush.h>

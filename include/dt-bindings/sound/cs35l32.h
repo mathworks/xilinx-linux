@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __DT_CS35L32_H
 #define __DT_CS35L32_H
 

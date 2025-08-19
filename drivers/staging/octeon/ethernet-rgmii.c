@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * This file is based on code from OCTEON SDK by Cavium Networks.
  *
  * Copyright (c) 2003-2007 Cavium Networks
+ *
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, Version 2, as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -12,10 +15,18 @@
 #include <linux/ratelimit.h>
 #include <net/dst.h>
 
-#include "octeon-ethernet.h"
+#include <asm/octeon/octeon.h>
+
 #include "ethernet-defines.h"
+#include "octeon-ethernet.h"
 #include "ethernet-util.h"
 #include "ethernet-mdio.h"
+
+#include <asm/octeon/cvmx-helper.h>
+
+#include <asm/octeon/cvmx-ipd-defs.h>
+#include <asm/octeon/cvmx-npi-defs.h>
+#include <asm/octeon/cvmx-gmxx-defs.h>
 
 static DEFINE_SPINLOCK(global_register_lock);
 
@@ -53,7 +64,7 @@ static void cvm_oct_set_hw_preamble(struct octeon_ethernet *priv, bool enable)
 static void cvm_oct_check_preamble_errors(struct net_device *dev)
 {
 	struct octeon_ethernet *priv = netdev_priv(dev);
-	union cvmx_helper_link_info link_info;
+	cvmx_helper_link_info_t link_info;
 	unsigned long flags;
 
 	link_info.u64 = priv->link_info;
@@ -103,7 +114,7 @@ static void cvm_oct_check_preamble_errors(struct net_device *dev)
 static void cvm_oct_rgmii_poll(struct net_device *dev)
 {
 	struct octeon_ethernet *priv = netdev_priv(dev);
-	union cvmx_helper_link_info link_info;
+	cvmx_helper_link_info_t link_info;
 	bool status_change;
 
 	link_info = cvmx_helper_link_get(priv->port);

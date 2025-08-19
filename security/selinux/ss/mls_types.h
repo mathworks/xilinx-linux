@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Type definitions for the multi-level security (MLS) policy.
  *
- * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
+ * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
  */
 /*
  * Updated: Trusted Computer Solutions, Inc. <dgoeddel@trustedcs.com>
@@ -27,13 +26,13 @@ struct mls_range {
 	struct mls_level level[2]; /* low == level[0], high == level[1] */
 };
 
-static inline int mls_level_eq(const struct mls_level *l1, const struct mls_level *l2)
+static inline int mls_level_eq(struct mls_level *l1, struct mls_level *l2)
 {
 	return ((l1->sens == l2->sens) &&
 		ebitmap_cmp(&l1->cat, &l2->cat));
 }
 
-static inline int mls_level_dom(const struct mls_level *l1, const struct mls_level *l2)
+static inline int mls_level_dom(struct mls_level *l1, struct mls_level *l2)
 {
 	return ((l1->sens >= l2->sens) &&
 		ebitmap_contains(&l1->cat, &l2->cat, 0));

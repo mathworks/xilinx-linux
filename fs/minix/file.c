@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/minix/file.c
  *
@@ -19,16 +18,15 @@ const struct file_operations minix_file_operations = {
 	.write_iter	= generic_file_write_iter,
 	.mmap		= generic_file_mmap,
 	.fsync		= generic_file_fsync,
-	.splice_read	= filemap_splice_read,
+	.splice_read	= generic_file_splice_read,
 };
 
-static int minix_setattr(struct mnt_idmap *idmap,
-			 struct dentry *dentry, struct iattr *attr)
+static int minix_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
 	int error;
 
-	error = setattr_prepare(&nop_mnt_idmap, dentry, attr);
+	error = setattr_prepare(dentry, attr);
 	if (error)
 		return error;
 
@@ -42,7 +40,7 @@ static int minix_setattr(struct mnt_idmap *idmap,
 		minix_truncate(inode);
 	}
 
-	setattr_copy(&nop_mnt_idmap, inode, attr);
+	setattr_copy(inode, attr);
 	mark_inode_dirty(inode);
 	return 0;
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Linux VM pressure
  *
@@ -7,6 +6,10 @@
  *
  * Based on ideas from Andrew Morton, David Rientjes, KOSAKI Motohiro,
  * Leonid Moiseichuk, Mel Gorman, Minchan Kim and Pekka Enberg.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published
+ * by the Free Software Foundation.
  */
 
 #include <linux/cgroup.h>
@@ -74,7 +77,8 @@ static struct vmpressure *work_to_vmpressure(struct work_struct *work)
 
 static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr)
 {
-	struct mem_cgroup *memcg = vmpressure_to_memcg(vmpr);
+	struct cgroup_subsys_state *css = vmpressure_to_css(vmpr);
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
 
 	memcg = parent_mem_cgroup(memcg);
 	if (!memcg)
@@ -89,23 +93,10 @@ enum vmpressure_levels {
 	VMPRESSURE_NUM_LEVELS,
 };
 
-enum vmpressure_modes {
-	VMPRESSURE_NO_PASSTHROUGH = 0,
-	VMPRESSURE_HIERARCHY,
-	VMPRESSURE_LOCAL,
-	VMPRESSURE_NUM_MODES,
-};
-
 static const char * const vmpressure_str_levels[] = {
 	[VMPRESSURE_LOW] = "low",
 	[VMPRESSURE_MEDIUM] = "medium",
 	[VMPRESSURE_CRITICAL] = "critical",
-};
-
-static const char * const vmpressure_str_modes[] = {
-	[VMPRESSURE_NO_PASSTHROUGH] = "default",
-	[VMPRESSURE_HIERARCHY] = "hierarchy",
-	[VMPRESSURE_LOCAL] = "local",
 };
 
 static enum vmpressure_levels vmpressure_level(unsigned long pressure)
@@ -121,15 +112,8 @@ static enum vmpressure_levels vmpressure_calc_level(unsigned long scanned,
 						    unsigned long reclaimed)
 {
 	unsigned long scale = scanned + reclaimed;
-	unsigned long pressure = 0;
+	unsigned long pressure;
 
-	/*
-	 * reclaimed can be greater than scanned for things such as reclaimed
-	 * slab pages. shrink_node() just adds reclaimed pages without a
-	 * related increment to scanned pages.
-	 */
-	if (reclaimed >= scanned)
-		goto out;
 	/*
 	 * We calculate the ratio (in percents) of how many pages were
 	 * scanned vs. reclaimed in a given time frame (window). Note that
@@ -140,7 +124,6 @@ static enum vmpressure_levels vmpressure_calc_level(unsigned long scanned,
 	pressure = scale - (reclaimed * scale / scanned);
 	pressure = pressure * 100 / scale;
 
-out:
 	pr_debug("%s: %3lu  (s: %lu  r: %lu)\n", __func__, pressure,
 		 scanned, reclaimed);
 
@@ -150,31 +133,27 @@ out:
 struct vmpressure_event {
 	struct eventfd_ctx *efd;
 	enum vmpressure_levels level;
-	enum vmpressure_modes mode;
 	struct list_head node;
 };
 
 static bool vmpressure_event(struct vmpressure *vmpr,
-			     const enum vmpressure_levels level,
-			     bool ancestor, bool signalled)
+			     enum vmpressure_levels level)
 {
 	struct vmpressure_event *ev;
-	bool ret = false;
+	bool signalled = false;
 
 	mutex_lock(&vmpr->events_lock);
+
 	list_for_each_entry(ev, &vmpr->events, node) {
-		if (ancestor && ev->mode == VMPRESSURE_LOCAL)
-			continue;
-		if (signalled && ev->mode == VMPRESSURE_NO_PASSTHROUGH)
-			continue;
-		if (level < ev->level)
-			continue;
-		eventfd_signal(ev->efd, 1);
-		ret = true;
+		if (level >= ev->level) {
+			eventfd_signal(ev->efd, 1);
+			signalled = true;
+		}
 	}
+
 	mutex_unlock(&vmpr->events_lock);
 
-	return ret;
+	return signalled;
 }
 
 static void vmpressure_work_fn(struct work_struct *work)
@@ -183,8 +162,6 @@ static void vmpressure_work_fn(struct work_struct *work)
 	unsigned long scanned;
 	unsigned long reclaimed;
 	enum vmpressure_levels level;
-	bool ancestor = false;
-	bool signalled = false;
 
 	spin_lock(&vmpr->sr_lock);
 	/*
@@ -209,9 +186,12 @@ static void vmpressure_work_fn(struct work_struct *work)
 	level = vmpressure_calc_level(scanned, reclaimed);
 
 	do {
-		if (vmpressure_event(vmpr, level, ancestor, signalled))
-			signalled = true;
-		ancestor = true;
+		if (vmpressure_event(vmpr, level))
+			break;
+		/*
+		 * If not handled, propagate the event upward into the
+		 * hierarchy.
+		 */
 	} while ((vmpr = vmpressure_parent(vmpr)));
 }
 
@@ -239,20 +219,7 @@ static void vmpressure_work_fn(struct work_struct *work)
 void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 		unsigned long scanned, unsigned long reclaimed)
 {
-	struct vmpressure *vmpr;
-
-	if (mem_cgroup_disabled())
-		return;
-
-	/*
-	 * The in-kernel users only care about the reclaim efficiency
-	 * for this @memcg rather than the whole subtree, and there
-	 * isn't and won't be any in-kernel user in a legacy cgroup.
-	 */
-	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys) && !tree)
-		return;
-
-	vmpr = memcg_to_vmpressure(memcg);
+	struct vmpressure *vmpr = memcg_to_vmpressure(memcg);
 
 	/*
 	 * Here we only want to account pressure that userland is able to
@@ -292,7 +259,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 		enum vmpressure_levels level;
 
 		/* For now, no users for root-level efficiency */
-		if (!memcg || mem_cgroup_is_root(memcg))
+		if (!memcg || memcg == root_mem_cgroup)
 			return;
 
 		spin_lock(&vmpr->sr_lock);
@@ -316,7 +283,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 			 * asserted for a second in which subsequent
 			 * pressure events can occur.
 			 */
-			WRITE_ONCE(memcg->socket_pressure, jiffies + HZ);
+			memcg->socket_pressure = jiffies + HZ;
 		}
 	}
 }
@@ -351,74 +318,47 @@ void vmpressure_prio(gfp_t gfp, struct mem_cgroup *memcg, int prio)
 	vmpressure(gfp, memcg, true, vmpressure_win, 0);
 }
 
-#define MAX_VMPRESSURE_ARGS_LEN	(strlen("critical") + strlen("hierarchy") + 2)
-
 /**
  * vmpressure_register_event() - Bind vmpressure notifications to an eventfd
  * @memcg:	memcg that is interested in vmpressure notifications
  * @eventfd:	eventfd context to link notifications with
- * @args:	event arguments (pressure level threshold, optional mode)
+ * @args:	event arguments (used to set up a pressure level threshold)
  *
  * This function associates eventfd context with the vmpressure
  * infrastructure, so that the notifications will be delivered to the
- * @eventfd. The @args parameter is a comma-delimited string that denotes a
- * pressure level threshold (one of vmpressure_str_levels, i.e. "low", "medium",
- * or "critical") and an optional mode (one of vmpressure_str_modes, i.e.
- * "hierarchy" or "local").
+ * @eventfd. The @args parameter is a string that denotes pressure level
+ * threshold (one of vmpressure_str_levels, i.e. "low", "medium", or
+ * "critical").
  *
  * To be used as memcg event method.
- *
- * Return: 0 on success, -ENOMEM on memory failure or -EINVAL if @args could
- * not be parsed.
  */
 int vmpressure_register_event(struct mem_cgroup *memcg,
 			      struct eventfd_ctx *eventfd, const char *args)
 {
 	struct vmpressure *vmpr = memcg_to_vmpressure(memcg);
 	struct vmpressure_event *ev;
-	enum vmpressure_modes mode = VMPRESSURE_NO_PASSTHROUGH;
-	enum vmpressure_levels level;
-	char *spec, *spec_orig;
-	char *token;
-	int ret = 0;
+	int level;
 
-	spec_orig = spec = kstrndup(args, MAX_VMPRESSURE_ARGS_LEN, GFP_KERNEL);
-	if (!spec)
-		return -ENOMEM;
-
-	/* Find required level */
-	token = strsep(&spec, ",");
-	ret = match_string(vmpressure_str_levels, VMPRESSURE_NUM_LEVELS, token);
-	if (ret < 0)
-		goto out;
-	level = ret;
-
-	/* Find optional mode */
-	token = strsep(&spec, ",");
-	if (token) {
-		ret = match_string(vmpressure_str_modes, VMPRESSURE_NUM_MODES, token);
-		if (ret < 0)
-			goto out;
-		mode = ret;
+	for (level = 0; level < VMPRESSURE_NUM_LEVELS; level++) {
+		if (!strcmp(vmpressure_str_levels[level], args))
+			break;
 	}
+
+	if (level >= VMPRESSURE_NUM_LEVELS)
+		return -EINVAL;
 
 	ev = kzalloc(sizeof(*ev), GFP_KERNEL);
-	if (!ev) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	if (!ev)
+		return -ENOMEM;
 
 	ev->efd = eventfd;
 	ev->level = level;
-	ev->mode = mode;
 
 	mutex_lock(&vmpr->events_lock);
 	list_add(&ev->node, &vmpr->events);
 	mutex_unlock(&vmpr->events_lock);
-	ret = 0;
-out:
-	kfree(spec_orig);
-	return ret;
+
+	return 0;
 }
 
 /**

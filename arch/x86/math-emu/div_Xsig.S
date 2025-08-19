@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 	.file	"div_Xsig.S"
 /*---------------------------------------------------------------------------+
  |  div_Xsig.S                                                               |
@@ -75,7 +74,7 @@ FPU_result_1:
 
 
 .text
-SYM_FUNC_START(div_Xsig)
+ENTRY(div_Xsig)
 	pushl	%ebp
 	movl	%esp,%ebp
 #ifndef NON_REENTRANT_FPU
@@ -341,7 +340,7 @@ L_exit:
 	popl	%esi
 
 	leave
-	RET
+	ret
 
 
 #ifdef PARANOID
@@ -364,4 +363,3 @@ L_bugged_2:
 	pop	%ebx
 	jmp	L_exit
 #endif /* PARANOID */ 
-SYM_FUNC_END(div_Xsig)

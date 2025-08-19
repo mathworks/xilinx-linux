@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, Fuzhou Rockchip Electronics Co., Ltd
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #include <linux/clk.h>
@@ -8,8 +16,8 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/mailbox_controller.h>
-#include <linux/of.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #define MAILBOX_A2B_INTEN		0x00
@@ -164,6 +172,7 @@ MODULE_DEVICE_TABLE(of, rockchp_mbox_of_match);
 static int rockchip_mbox_probe(struct platform_device *pdev)
 {
 	struct rockchip_mbox *mb;
+	const struct of_device_id *match;
 	const struct rockchip_mbox_data *drv_data;
 	struct resource *res;
 	int ret, irq, i;
@@ -171,7 +180,8 @@ static int rockchip_mbox_probe(struct platform_device *pdev)
 	if (!pdev->dev.of_node)
 		return -ENODEV;
 
-	drv_data = (const struct rockchip_mbox_data *) device_get_match_data(&pdev->dev);
+	match = of_match_node(rockchip_mbox_of_match, pdev->dev.of_node);
+	drv_data = (const struct rockchip_mbox_data *)match->data;
 
 	mb = devm_kzalloc(&pdev->dev, sizeof(*mb), GFP_KERNEL);
 	if (!mb)
@@ -194,7 +204,11 @@ static int rockchip_mbox_probe(struct platform_device *pdev)
 	mb->mbox.ops = &rockchip_mbox_chan_ops;
 	mb->mbox.txdone_irq = true;
 
-	mb->mbox_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -ENODEV;
+
+	mb->mbox_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(mb->mbox_base))
 		return PTR_ERR(mb->mbox_base);
 
@@ -233,23 +247,37 @@ static int rockchip_mbox_probe(struct platform_device *pdev)
 		mb->chans[i].msg = NULL;
 	}
 
-	ret = devm_mbox_controller_register(&pdev->dev, &mb->mbox);
+	ret = mbox_controller_register(&mb->mbox);
 	if (ret < 0)
 		dev_err(&pdev->dev, "Failed to register mailbox: %d\n", ret);
 
 	return ret;
 }
 
+static int rockchip_mbox_remove(struct platform_device *pdev)
+{
+	struct rockchip_mbox *mb = platform_get_drvdata(pdev);
+
+	if (!mb)
+		return -EINVAL;
+
+	mbox_controller_unregister(&mb->mbox);
+
+	return 0;
+}
+
 static struct platform_driver rockchip_mbox_driver = {
 	.probe	= rockchip_mbox_probe,
+	.remove	= rockchip_mbox_remove,
 	.driver = {
 		.name = "rockchip-mailbox",
-		.of_match_table = rockchip_mbox_of_match,
+		.of_match_table = of_match_ptr(rockchip_mbox_of_match),
 	},
 };
 
 module_platform_driver(rockchip_mbox_driver);
 
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Rockchip mailbox: communicate between CPU cores and MCU");
 MODULE_AUTHOR("Addy Ke <addy.ke@rock-chips.com>");
 MODULE_AUTHOR("Caesar Wang <wxt@rock-chips.com>");

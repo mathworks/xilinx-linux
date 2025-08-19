@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * nvec_power: power supply driver for a NVIDIA compliant embedded controller
  *
@@ -6,6 +5,11 @@
  *
  * Authors:  Ilya Petrov <ilya.muromec@gmail.com>
  *           Marc Dietrich <marvin24@gmx.de>
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
  */
 
 #include <linux/module.h>
@@ -338,7 +342,7 @@ static const struct power_supply_desc nvec_psy_desc = {
 };
 
 static int counter;
-static const int bat_iter[] = {
+static int const bat_iter[] = {
 	SLOT_STATUS, VOLTAGE, CURRENT, CAPACITY_REMAINING,
 #ifdef EC_FULL_DIAG
 	AVERAGE_CURRENT, TEMPERATURE, TIME_REMAINING,
@@ -416,7 +420,7 @@ static int nvec_power_probe(struct platform_device *pdev)
 	return PTR_ERR_OR_ZERO(*psy);
 }
 
-static void nvec_power_remove(struct platform_device *pdev)
+static int nvec_power_remove(struct platform_device *pdev)
 {
 	struct nvec_power *power = platform_get_drvdata(pdev);
 
@@ -429,14 +433,16 @@ static void nvec_power_remove(struct platform_device *pdev)
 	case BAT:
 		power_supply_unregister(nvec_bat_psy);
 	}
+
+	return 0;
 }
 
 static struct platform_driver nvec_power_driver = {
 	.probe = nvec_power_probe,
-	.remove_new = nvec_power_remove,
+	.remove = nvec_power_remove,
 	.driver = {
 		   .name = "nvec-power",
-	}
+		   }
 };
 
 module_platform_driver(nvec_power_driver);

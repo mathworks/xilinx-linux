@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mm/flush.c
  *
  *  Copyright (C) 1995-2002 Russell King
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #include <linux/module.h>
 #include <linux/mm.h>
@@ -95,10 +98,10 @@ void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned
 		__flush_icache_all();
 }
 
-void flush_cache_pages(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn, unsigned int nr)
+void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn)
 {
 	if (cache_is_vivt()) {
-		vivt_flush_cache_pages(vma, user_addr, pfn, nr);
+		vivt_flush_cache_page(vma, user_addr, pfn);
 		return;
 	}
 
@@ -196,31 +199,30 @@ void copy_to_user_page(struct vm_area_struct *vma, struct page *page,
 #endif
 }
 
-void __flush_dcache_folio(struct address_space *mapping, struct folio *folio)
+void __flush_dcache_page(struct address_space *mapping, struct page *page)
 {
 	/*
 	 * Writeback any data associated with the kernel mapping of this
 	 * page.  This ensures that data in the physical page is mutually
 	 * coherent with the kernels mapping.
 	 */
-	if (!folio_test_highmem(folio)) {
-		__cpuc_flush_dcache_area(folio_address(folio),
-					folio_size(folio));
+	if (!PageHighMem(page)) {
+		size_t page_size = PAGE_SIZE << compound_order(page);
+		__cpuc_flush_dcache_area(page_address(page), page_size);
 	} else {
 		unsigned long i;
 		if (cache_is_vipt_nonaliasing()) {
-			for (i = 0; i < folio_nr_pages(folio); i++) {
-				void *addr = kmap_local_folio(folio,
-								i * PAGE_SIZE);
+			for (i = 0; i < (1 << compound_order(page)); i++) {
+				void *addr = kmap_atomic(page + i);
 				__cpuc_flush_dcache_area(addr, PAGE_SIZE);
-				kunmap_local(addr);
+				kunmap_atomic(addr);
 			}
 		} else {
-			for (i = 0; i < folio_nr_pages(folio); i++) {
-				void *addr = kmap_high_get(folio_page(folio, i));
+			for (i = 0; i < (1 << compound_order(page)); i++) {
+				void *addr = kmap_high_get(page + i);
 				if (addr) {
 					__cpuc_flush_dcache_area(addr, PAGE_SIZE);
-					kunmap_high(folio_page(folio, i));
+					kunmap_high(page + i);
 				}
 			}
 		}
@@ -232,14 +234,15 @@ void __flush_dcache_folio(struct address_space *mapping, struct folio *folio)
 	 * userspace colour, which is congruent with page->index.
 	 */
 	if (mapping && cache_is_vipt_aliasing())
-		flush_pfn_alias(folio_pfn(folio), folio_pos(folio));
+		flush_pfn_alias(page_to_pfn(page),
+				page->index << PAGE_SHIFT);
 }
 
-static void __flush_dcache_aliases(struct address_space *mapping, struct folio *folio)
+static void __flush_dcache_aliases(struct address_space *mapping, struct page *page)
 {
 	struct mm_struct *mm = current->active_mm;
-	struct vm_area_struct *vma;
-	pgoff_t pgoff, pgoff_end;
+	struct vm_area_struct *mpnt;
+	pgoff_t pgoff;
 
 	/*
 	 * There are possible user space mappings of this page:
@@ -247,36 +250,21 @@ static void __flush_dcache_aliases(struct address_space *mapping, struct folio *
 	 *   data in the current VM view associated with this page.
 	 * - aliasing VIPT: we only need to find one mapping of this page.
 	 */
-	pgoff = folio->index;
-	pgoff_end = pgoff + folio_nr_pages(folio) - 1;
+	pgoff = page->index;
 
 	flush_dcache_mmap_lock(mapping);
-	vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff, pgoff_end) {
-		unsigned long start, offset, pfn;
-		unsigned int nr;
+	vma_interval_tree_foreach(mpnt, &mapping->i_mmap, pgoff, pgoff) {
+		unsigned long offset;
 
 		/*
 		 * If this VMA is not in our MM, we can ignore it.
 		 */
-		if (vma->vm_mm != mm)
+		if (mpnt->vm_mm != mm)
 			continue;
-		if (!(vma->vm_flags & VM_MAYSHARE))
+		if (!(mpnt->vm_flags & VM_MAYSHARE))
 			continue;
-
-		start = vma->vm_start;
-		pfn = folio_pfn(folio);
-		nr = folio_nr_pages(folio);
-		offset = pgoff - vma->vm_pgoff;
-		if (offset > -nr) {
-			pfn -= offset;
-			nr += offset;
-		} else {
-			start += offset * PAGE_SIZE;
-		}
-		if (start + nr * PAGE_SIZE > vma->vm_end)
-			nr = (vma->vm_end - start) / PAGE_SIZE;
-
-		flush_cache_pages(vma, start, pfn, nr);
+		offset = (pgoff - mpnt->vm_pgoff) << PAGE_SHIFT;
+		flush_cache_page(mpnt, mpnt->vm_start + offset, page_to_pfn(page));
 	}
 	flush_dcache_mmap_unlock(mapping);
 }
@@ -285,7 +273,7 @@ static void __flush_dcache_aliases(struct address_space *mapping, struct folio *
 void __sync_icache_dcache(pte_t pteval)
 {
 	unsigned long pfn;
-	struct folio *folio;
+	struct page *page;
 	struct address_space *mapping;
 
 	if (cache_is_vipt_nonaliasing() && !pte_exec(pteval))
@@ -295,14 +283,14 @@ void __sync_icache_dcache(pte_t pteval)
 	if (!pfn_valid(pfn))
 		return;
 
-	folio = page_folio(pfn_to_page(pfn));
+	page = pfn_to_page(pfn);
 	if (cache_is_vipt_aliasing())
-		mapping = folio_flush_mapping(folio);
+		mapping = page_mapping(page);
 	else
 		mapping = NULL;
 
-	if (!test_and_set_bit(PG_dcache_clean, &folio->flags))
-		__flush_dcache_folio(mapping, folio);
+	if (!test_and_set_bit(PG_dcache_clean, &page->flags))
+		__flush_dcache_page(mapping, page);
 
 	if (pte_exec(pteval))
 		__flush_icache_all();
@@ -328,7 +316,7 @@ void __sync_icache_dcache(pte_t pteval)
  * Note that we disable the lazy flush for SMP configurations where
  * the cache maintenance operations are not automatically broadcasted.
  */
-void flush_dcache_folio(struct folio *folio)
+void flush_dcache_page(struct page *page)
 {
 	struct address_space *mapping;
 
@@ -336,36 +324,58 @@ void flush_dcache_folio(struct folio *folio)
 	 * The zero page is never written to, so never has any dirty
 	 * cache lines, and therefore never needs to be flushed.
 	 */
-	if (is_zero_pfn(folio_pfn(folio)))
+	if (page == ZERO_PAGE(0))
 		return;
 
-	if (!cache_ops_need_broadcast() && cache_is_vipt_nonaliasing()) {
-		if (test_bit(PG_dcache_clean, &folio->flags))
-			clear_bit(PG_dcache_clean, &folio->flags);
-		return;
-	}
-
-	mapping = folio_flush_mapping(folio);
+	mapping = page_mapping(page);
 
 	if (!cache_ops_need_broadcast() &&
-	    mapping && !folio_mapped(folio))
-		clear_bit(PG_dcache_clean, &folio->flags);
+	    mapping && !page_mapcount(page))
+		clear_bit(PG_dcache_clean, &page->flags);
 	else {
-		__flush_dcache_folio(mapping, folio);
+		__flush_dcache_page(mapping, page);
 		if (mapping && cache_is_vivt())
-			__flush_dcache_aliases(mapping, folio);
+			__flush_dcache_aliases(mapping, page);
 		else if (mapping)
 			__flush_icache_all();
-		set_bit(PG_dcache_clean, &folio->flags);
+		set_bit(PG_dcache_clean, &page->flags);
 	}
 }
-EXPORT_SYMBOL(flush_dcache_folio);
-
-void flush_dcache_page(struct page *page)
-{
-	flush_dcache_folio(page_folio(page));
-}
 EXPORT_SYMBOL(flush_dcache_page);
+
+/*
+ * Ensure cache coherency for the kernel mapping of this page. We can
+ * assume that the page is pinned via kmap.
+ *
+ * If the page only exists in the page cache and there are no user
+ * space mappings, this is a no-op since the page was already marked
+ * dirty at creation.  Otherwise, we need to flush the dirty kernel
+ * cache lines directly.
+ */
+void flush_kernel_dcache_page(struct page *page)
+{
+	if (cache_is_vivt() || cache_is_vipt_aliasing()) {
+		struct address_space *mapping;
+
+		mapping = page_mapping(page);
+
+		if (!mapping || mapping_mapped(mapping)) {
+			void *addr;
+
+			addr = page_address(page);
+			/*
+			 * kmap_atomic() doesn't set the page virtual
+			 * address for highmem pages, and
+			 * kunmap_atomic() takes care of cache
+			 * flushing already.
+			 */
+			if (!IS_ENABLED(CONFIG_HIGHMEM) || addr)
+				__cpuc_flush_dcache_area(addr, PAGE_SIZE);
+		}
+	}
+}
+EXPORT_SYMBOL(flush_kernel_dcache_page);
+
 /*
  * Flush an anonymous page so that users of get_user_pages()
  * can safely access the data.  The expected sequence is:
@@ -375,7 +385,6 @@ EXPORT_SYMBOL(flush_dcache_page);
  *  memcpy() to/from page
  *  if written to page, flush_dcache_page()
  */
-void __flush_anon_page(struct vm_area_struct *vma, struct page *page, unsigned long vmaddr);
 void __flush_anon_page(struct vm_area_struct *vma, struct page *page, unsigned long vmaddr)
 {
 	unsigned long pfn;

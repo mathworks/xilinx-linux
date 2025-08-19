@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* Simplified ASN.1 notation parser
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public Licence
+ * as published by the Free Software Foundation; either version
+ * 2 of the Licence, or (at your option) any later version.
  */
 
 #include <stdarg.h>
@@ -409,7 +413,7 @@ static void tokenise(char *buffer, char *end)
 
 			/* Handle string tokens */
 			if (isalpha(*p)) {
-				const char **dir;
+				const char **dir, *start = p;
 
 				/* Can be a directive, type name or element
 				 * name.  Find the end of the name.
@@ -567,8 +571,8 @@ int main(int argc, char **argv)
 	int fd;
 
 	kbuild_verbose = getenv("KBUILD_VERBOSE");
-	if (kbuild_verbose && strchr(kbuild_verbose, '1'))
-		verbose_opt = true;
+	if (kbuild_verbose)
+		verbose_opt = atoi(kbuild_verbose);
 
 	while (argc > 4) {
 		if (strcmp(argv[1], "-v") == 0)
@@ -625,7 +629,7 @@ int main(int argc, char **argv)
 	p = strrchr(argv[1], '/');
 	p = p ? p + 1 : argv[1];
 	grammar_name = strdup(p);
-	if (!grammar_name) {
+	if (!p) {
 		perror(NULL);
 		exit(1);
 	}
@@ -832,7 +836,7 @@ static void parse(void)
 
 static struct element *element_list;
 
-static struct element *alloc_elem(void)
+static struct element *alloc_elem(struct token *type)
 {
 	struct element *e = calloc(1, sizeof(*e));
 	if (!e) {
@@ -860,7 +864,7 @@ static struct element *parse_type(struct token **_cursor, struct token *end,
 	char *p;
 	int labelled = 0, implicit = 0;
 
-	top = element = alloc_elem();
+	top = element = alloc_elem(cursor);
 	element->class = ASN1_UNIV;
 	element->method = ASN1_PRIM;
 	element->tag = token_to_tag[cursor->token_type];
@@ -939,7 +943,7 @@ static struct element *parse_type(struct token **_cursor, struct token *end,
 		if (!implicit)
 			element->method |= ASN1_CONS;
 		element->compound = implicit ? TAG_OVERRIDE : SEQUENCE;
-		element->children = alloc_elem();
+		element->children = alloc_elem(cursor);
 		element = element->children;
 		element->class = ASN1_UNIV;
 		element->method = ASN1_PRIM;
@@ -1315,7 +1319,7 @@ static void render(FILE *out, FILE *hdr)
 	fprintf(out, " * ASN.1 parser for %s\n", grammar_name);
 	fprintf(out, " */\n");
 	fprintf(out, "#include <linux/asn1_ber_bytecode.h>\n");
-	fprintf(out, "#include \"%s.asn1.h\"\n", grammar_name);
+	fprintf(out, "#include \"%s-asn1.h\"\n", grammar_name);
 	fprintf(out, "\n");
 	if (ferror(out)) {
 		perror(outputname);

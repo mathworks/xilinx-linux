@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _UAPI_ASM_S390_SIE_H
 #define _UAPI_ASM_S390_SIE_H
 
@@ -29,7 +28,7 @@
 	{ 0x13, "SIGP conditional emergency signal" },		\
 	{ 0x15, "SIGP sense running" },				\
 	{ 0x16, "SIGP set multithreading"},			\
-	{ 0x17, "SIGP store additional status at address"}
+	{ 0x17, "SIGP store additional status ait address"}
 
 #define icpt_prog_codes						\
 	{ 0x0001, "Prog Operation" },				\

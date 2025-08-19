@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef HOSTAP_COMMON_H
 #define HOSTAP_COMMON_H
 
@@ -322,7 +321,7 @@ struct prism2_download_param {
 		u32 addr; /* wlan card address */
 		u32 len;
 		void __user *ptr; /* pointer to data in user space */
-	} data[];
+	} data[0];
 };
 
 #define PRISM2_MAX_DOWNLOAD_AREA_LEN 131072

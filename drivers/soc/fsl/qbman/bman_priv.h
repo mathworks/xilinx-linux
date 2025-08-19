@@ -46,9 +46,11 @@ extern u16 bman_ip_rev;	/* 0 if uninitialised, otherwise BMAN_REVx */
 extern struct gen_pool *bm_bpalloc;
 
 struct bm_portal_config {
-	/* Portal addresses */
-	void  *addr_virt_ce;
-	void __iomem *addr_virt_ci;
+	/*
+	 * Corenet portal addresses;
+	 * [0]==cache-enabled, [1]==cache-inhibited.
+	 */
+	void __iomem *addr_virt[2];
 	/* Allow these to be joined in lists */
 	struct list_head list;
 	struct device *dev;
@@ -76,8 +78,3 @@ int bman_p_irqsource_add(struct bman_portal *p, u32 bits);
 
 const struct bm_portal_config *
 bman_get_bm_portal_config(const struct bman_portal *portal);
-
-int bman_requires_cleanup(void);
-void bman_done_cleanup(void);
-
-int bm_shutdown_pool(u32 bpid);

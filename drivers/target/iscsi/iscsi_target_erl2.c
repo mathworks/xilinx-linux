@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * This file contains error recovery level two functions used by
  * the iSCSI Target driver.
@@ -7,9 +6,17 @@
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  ******************************************************************************/
 
-#include <linux/slab.h>
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
@@ -26,11 +33,11 @@
  *	FIXME: Does RData SNACK apply here as well?
  */
 void iscsit_create_conn_recovery_datain_values(
-	struct iscsit_cmd *cmd,
+	struct iscsi_cmd *cmd,
 	__be32 exp_data_sn)
 {
 	u32 data_sn = 0;
-	struct iscsit_conn *conn = cmd->conn;
+	struct iscsi_conn *conn = cmd->conn;
 
 	cmd->next_burst_len = 0;
 	cmd->read_data_done = 0;
@@ -54,10 +61,10 @@ void iscsit_create_conn_recovery_datain_values(
 }
 
 void iscsit_create_conn_recovery_dataout_values(
-	struct iscsit_cmd *cmd)
+	struct iscsi_cmd *cmd)
 {
 	u32 write_data_done = 0;
-	struct iscsit_conn *conn = cmd->conn;
+	struct iscsi_conn *conn = cmd->conn;
 
 	cmd->data_sn = 0;
 	cmd->next_burst_len = 0;
@@ -74,7 +81,7 @@ void iscsit_create_conn_recovery_dataout_values(
 }
 
 static int iscsit_attach_active_connection_recovery_entry(
-	struct iscsit_session *sess,
+	struct iscsi_session *sess,
 	struct iscsi_conn_recovery *cr)
 {
 	spin_lock(&sess->cr_a_lock);
@@ -85,7 +92,7 @@ static int iscsit_attach_active_connection_recovery_entry(
 }
 
 static int iscsit_attach_inactive_connection_recovery_entry(
-	struct iscsit_session *sess,
+	struct iscsi_session *sess,
 	struct iscsi_conn_recovery *cr)
 {
 	spin_lock(&sess->cr_i_lock);
@@ -100,7 +107,7 @@ static int iscsit_attach_inactive_connection_recovery_entry(
 }
 
 struct iscsi_conn_recovery *iscsit_get_inactive_connection_recovery_entry(
-	struct iscsit_session *sess,
+	struct iscsi_session *sess,
 	u16 cid)
 {
 	struct iscsi_conn_recovery *cr;
@@ -117,9 +124,9 @@ struct iscsi_conn_recovery *iscsit_get_inactive_connection_recovery_entry(
 	return NULL;
 }
 
-void iscsit_free_connection_recovery_entries(struct iscsit_session *sess)
+void iscsit_free_connection_recovery_entires(struct iscsi_session *sess)
 {
-	struct iscsit_cmd *cmd, *cmd_tmp;
+	struct iscsi_cmd *cmd, *cmd_tmp;
 	struct iscsi_conn_recovery *cr, *cr_tmp;
 
 	spin_lock(&sess->cr_a_lock);
@@ -169,7 +176,7 @@ void iscsit_free_connection_recovery_entries(struct iscsit_session *sess)
 
 int iscsit_remove_active_connection_recovery_entry(
 	struct iscsi_conn_recovery *cr,
-	struct iscsit_session *sess)
+	struct iscsi_session *sess)
 {
 	spin_lock(&sess->cr_a_lock);
 	list_del(&cr->cr_list);
@@ -186,7 +193,7 @@ int iscsit_remove_active_connection_recovery_entry(
 
 static void iscsit_remove_inactive_connection_recovery_entry(
 	struct iscsi_conn_recovery *cr,
-	struct iscsit_session *sess)
+	struct iscsi_session *sess)
 {
 	spin_lock(&sess->cr_i_lock);
 	list_del(&cr->cr_list);
@@ -197,8 +204,8 @@ static void iscsit_remove_inactive_connection_recovery_entry(
  *	Called with cr->conn_recovery_cmd_lock help.
  */
 int iscsit_remove_cmd_from_connection_recovery(
-	struct iscsit_cmd *cmd,
-	struct iscsit_session *sess)
+	struct iscsi_cmd *cmd,
+	struct iscsi_session *sess)
 {
 	struct iscsi_conn_recovery *cr;
 
@@ -218,8 +225,8 @@ void iscsit_discard_cr_cmds_by_expstatsn(
 	u32 exp_statsn)
 {
 	u32 dropped_count = 0;
-	struct iscsit_cmd *cmd, *cmd_tmp;
-	struct iscsit_session *sess = cr->sess;
+	struct iscsi_cmd *cmd, *cmd_tmp;
+	struct iscsi_session *sess = cr->sess;
 
 	spin_lock(&cr->conn_recovery_cmd_lock);
 	list_for_each_entry_safe(cmd, cmd_tmp,
@@ -263,12 +270,12 @@ void iscsit_discard_cr_cmds_by_expstatsn(
 	}
 }
 
-int iscsit_discard_unacknowledged_ooo_cmdsns_for_conn(struct iscsit_conn *conn)
+int iscsit_discard_unacknowledged_ooo_cmdsns_for_conn(struct iscsi_conn *conn)
 {
 	u32 dropped_count = 0;
-	struct iscsit_cmd *cmd, *cmd_tmp;
+	struct iscsi_cmd *cmd, *cmd_tmp;
 	struct iscsi_ooo_cmdsn *ooo_cmdsn, *ooo_cmdsn_tmp;
-	struct iscsit_session *sess = conn->sess;
+	struct iscsi_session *sess = conn->sess;
 
 	mutex_lock(&sess->cmdsn_mutex);
 	list_for_each_entry_safe(ooo_cmdsn, ooo_cmdsn_tmp,
@@ -304,16 +311,16 @@ int iscsit_discard_unacknowledged_ooo_cmdsns_for_conn(struct iscsit_conn *conn)
 	return 0;
 }
 
-int iscsit_prepare_cmds_for_reallegiance(struct iscsit_conn *conn)
+int iscsit_prepare_cmds_for_realligance(struct iscsi_conn *conn)
 {
 	u32 cmd_count = 0;
-	struct iscsit_cmd *cmd, *cmd_tmp;
+	struct iscsi_cmd *cmd, *cmd_tmp;
 	struct iscsi_conn_recovery *cr;
 
 	/*
 	 * Allocate an struct iscsi_conn_recovery for this connection.
-	 * Each struct iscsit_cmd contains an struct iscsi_conn_recovery pointer
-	 * (struct iscsit_cmd->cr) so we need to allocate this before preparing the
+	 * Each struct iscsi_cmd contains an struct iscsi_conn_recovery pointer
+	 * (struct iscsi_cmd->cr) so we need to allocate this before preparing the
 	 * connection's command list for connection recovery.
 	 */
 	cr = kzalloc(sizeof(struct iscsi_conn_recovery), GFP_KERNEL);
@@ -339,7 +346,7 @@ int iscsit_prepare_cmds_for_reallegiance(struct iscsit_conn *conn)
 
 		if ((cmd->iscsi_opcode != ISCSI_OP_SCSI_CMD) &&
 		    (cmd->iscsi_opcode != ISCSI_OP_NOOP_OUT)) {
-			pr_debug("Not performing reallegiance on"
+			pr_debug("Not performing realligence on"
 				" Opcode: 0x%02x, ITT: 0x%08x, CmdSN: 0x%08x,"
 				" CID: %hu\n", cmd->iscsi_opcode,
 				cmd->init_task_tag, cmd->cmd_sn, conn->cid);
@@ -374,7 +381,7 @@ int iscsit_prepare_cmds_for_reallegiance(struct iscsit_conn *conn)
 		cmd_count++;
 		pr_debug("Preparing Opcode: 0x%02x, ITT: 0x%08x,"
 			" CmdSN: 0x%08x, StatSN: 0x%08x, CID: %hu for"
-			" reallegiance.\n", cmd->iscsi_opcode,
+			" realligence.\n", cmd->iscsi_opcode,
 			cmd->init_task_tag, cmd->cmd_sn, cmd->stat_sn,
 			conn->cid);
 
@@ -393,7 +400,7 @@ int iscsit_prepare_cmds_for_reallegiance(struct iscsit_conn *conn)
 
 		transport_wait_for_tasks(&cmd->se_cmd);
 		/*
-		 * Add the struct iscsit_cmd to the connection recovery cmd list
+		 * Add the struct iscsi_cmd to the connection recovery cmd list
 		 */
 		spin_lock(&cr->conn_recovery_cmd_lock);
 		list_add_tail(&cmd->i_conn_node, &cr->conn_recovery_cmd_list);
@@ -418,7 +425,7 @@ int iscsit_prepare_cmds_for_reallegiance(struct iscsit_conn *conn)
 	return 0;
 }
 
-int iscsit_connection_recovery_transport_reset(struct iscsit_conn *conn)
+int iscsit_connection_recovery_transport_reset(struct iscsi_conn *conn)
 {
 	atomic_set(&conn->connection_recovery, 1);
 

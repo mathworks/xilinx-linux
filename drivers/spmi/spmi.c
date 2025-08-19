@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -23,7 +31,6 @@ static DEFINE_IDA(ctrl_ida);
 static void spmi_dev_release(struct device *dev)
 {
 	struct spmi_device *sdev = to_spmi_device(dev);
-
 	kfree(sdev);
 }
 
@@ -34,8 +41,7 @@ static const struct device_type spmi_dev_type = {
 static void spmi_ctrl_release(struct device *dev)
 {
 	struct spmi_controller *ctrl = to_spmi_controller(dev);
-
-	ida_free(&ctrl_ida, ctrl->nr);
+	ida_simple_remove(&ctrl_ida, ctrl->nr);
 	kfree(ctrl);
 }
 
@@ -345,36 +351,17 @@ fail_probe:
 	return err;
 }
 
-static void spmi_drv_remove(struct device *dev)
+static int spmi_drv_remove(struct device *dev)
 {
 	const struct spmi_driver *sdrv = to_spmi_driver(dev->driver);
 
 	pm_runtime_get_sync(dev);
-	if (sdrv->remove)
-		sdrv->remove(to_spmi_device(dev));
+	sdrv->remove(to_spmi_device(dev));
 	pm_runtime_put_noidle(dev);
 
 	pm_runtime_disable(dev);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_put_noidle(dev);
-}
-
-static void spmi_drv_shutdown(struct device *dev)
-{
-	const struct spmi_driver *sdrv = to_spmi_driver(dev->driver);
-
-	if (sdrv && sdrv->shutdown)
-		sdrv->shutdown(to_spmi_device(dev));
-}
-
-static int spmi_drv_uevent(const struct device *dev, struct kobj_uevent_env *env)
-{
-	int ret;
-
-	ret = of_device_uevent_modalias(dev, env);
-	if (ret != -ENODEV)
-		return ret;
-
 	return 0;
 }
 
@@ -383,29 +370,10 @@ static struct bus_type spmi_bus_type = {
 	.match		= spmi_device_match,
 	.probe		= spmi_drv_probe,
 	.remove		= spmi_drv_remove,
-	.shutdown	= spmi_drv_shutdown,
-	.uevent		= spmi_drv_uevent,
 };
 
 /**
- * spmi_device_from_of() - get the associated SPMI device from a device node
- *
- * @np:		device node
- *
- * Returns the struct spmi_device associated with a device node or NULL.
- */
-struct spmi_device *spmi_device_from_of(struct device_node *np)
-{
-	struct device *dev = bus_find_device_by_of_node(&spmi_bus_type, np);
-
-	if (dev)
-		return to_spmi_device(dev);
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(spmi_device_from_of);
-
-/**
- * spmi_device_alloc() - Allocate a new SPMI device
+ * spmi_controller_alloc() - Allocate a new SPMI device
  * @ctrl:	associated controller
  *
  * Caller is responsible for either calling spmi_device_add() to add the
@@ -458,7 +426,7 @@ struct spmi_controller *spmi_controller_alloc(struct device *parent,
 	ctrl->dev.of_node = parent->of_node;
 	spmi_controller_set_drvdata(ctrl, &ctrl[1]);
 
-	id = ida_alloc(&ctrl_ida, GFP_KERNEL);
+	id = ida_simple_get(&ctrl_ida, 0, 0, GFP_KERNEL);
 	if (id < 0) {
 		dev_err(parent,
 			"unable to allocate SPMI controller identifier.\n");
@@ -486,25 +454,27 @@ static void of_spmi_register_devices(struct spmi_controller *ctrl)
 		struct spmi_device *sdev;
 		u32 reg[2];
 
-		dev_dbg(&ctrl->dev, "adding child %pOF\n", node);
+		dev_dbg(&ctrl->dev, "adding child %s\n", node->full_name);
 
 		err = of_property_read_u32_array(node, "reg", reg, 2);
 		if (err) {
 			dev_err(&ctrl->dev,
-				"node %pOF err (%d) does not have 'reg' property\n",
-				node, err);
+				"node %s err (%d) does not have 'reg' property\n",
+				node->full_name, err);
 			continue;
 		}
 
 		if (reg[1] != SPMI_USID) {
 			dev_err(&ctrl->dev,
-				"node %pOF contains unsupported 'reg' entry\n",
-				node);
+				"node %s contains unsupported 'reg' entry\n",
+				node->full_name);
 			continue;
 		}
 
 		if (reg[0] >= SPMI_MAX_SLAVE_ID) {
-			dev_err(&ctrl->dev, "invalid usid on node %pOF\n", node);
+			dev_err(&ctrl->dev,
+				"invalid usid on node %s\n",
+				node->full_name);
 			continue;
 		}
 
@@ -515,7 +485,7 @@ static void of_spmi_register_devices(struct spmi_controller *ctrl)
 			continue;
 
 		sdev->dev.of_node = node;
-		sdev->usid = (u8)reg[0];
+		sdev->usid = (u8) reg[0];
 
 		err = spmi_device_add(sdev);
 		if (err) {
@@ -559,7 +529,6 @@ EXPORT_SYMBOL_GPL(spmi_controller_add);
 static int spmi_ctrl_remove_device(struct device *dev, void *data)
 {
 	struct spmi_device *spmidev = to_spmi_device(dev);
-
 	if (dev->type == &spmi_dev_type)
 		spmi_device_remove(spmidev);
 	return 0;
@@ -574,18 +543,20 @@ static int spmi_ctrl_remove_device(struct device *dev, void *data)
  */
 void spmi_controller_remove(struct spmi_controller *ctrl)
 {
+	int dummy;
+
 	if (!ctrl)
 		return;
 
-	device_for_each_child(&ctrl->dev, NULL, spmi_ctrl_remove_device);
+	dummy = device_for_each_child(&ctrl->dev, NULL,
+				      spmi_ctrl_remove_device);
 	device_del(&ctrl->dev);
 }
 EXPORT_SYMBOL_GPL(spmi_controller_remove);
 
 /**
- * __spmi_driver_register() - Register client driver with SPMI core
+ * spmi_driver_register() - Register client driver with SPMI core
  * @sdrv:	client driver to be associated with client-device.
- * @owner:	module owner
  *
  * This API will register the client driver with the SPMI framework.
  * It is typically called from the driver's module-init function.

@@ -121,8 +121,13 @@ static const struct i2c_device_id pm80x_id_table[] = {
 };
 MODULE_DEVICE_TABLE(i2c, pm80x_id_table);
 
-static const struct resource rtc_resources[] = {
-	DEFINE_RES_IRQ_NAMED(PM800_IRQ_RTC, "88pm80x-rtc"),
+static struct resource rtc_resources[] = {
+	{
+	 .name = "88pm80x-rtc",
+	 .start = PM800_IRQ_RTC,
+	 .end = PM800_IRQ_RTC,
+	 .flags = IORESOURCE_IRQ,
+	 },
 };
 
 static struct mfd_cell rtc_devs[] = {
@@ -135,7 +140,12 @@ static struct mfd_cell rtc_devs[] = {
 };
 
 static struct resource onkey_resources[] = {
-	DEFINE_RES_IRQ_NAMED(PM800_IRQ_ONKEY, "88pm80x-onkey"),
+	{
+	 .name = "88pm80x-onkey",
+	 .start = PM800_IRQ_ONKEY,
+	 .end = PM800_IRQ_ONKEY,
+	 .flags = IORESOURCE_IRQ,
+	 },
 };
 
 static const struct mfd_cell onkey_devs[] = {
@@ -398,8 +408,9 @@ static struct regmap_irq_chip pm800_irq_chip = {
 
 	.num_regs = 4,
 	.status_base = PM800_INT_STATUS1,
-	.unmask_base = PM800_INT_ENA_1,
+	.mask_base = PM800_INT_ENA_1,
 	.ack_base = PM800_INT_STATUS1,
+	.mask_invert = 1,
 };
 
 static int pm800_pages_init(struct pm80x_chip *chip)
@@ -414,10 +425,10 @@ static int pm800_pages_init(struct pm80x_chip *chip)
 		return -ENODEV;
 
 	/* PM800 block power page */
-	subchip->power_page = i2c_new_dummy_device(client->adapter,
+	subchip->power_page = i2c_new_dummy(client->adapter,
 					    subchip->power_page_addr);
-	if (IS_ERR(subchip->power_page)) {
-		ret = PTR_ERR(subchip->power_page);
+	if (subchip->power_page == NULL) {
+		ret = -ENODEV;
 		goto out;
 	}
 
@@ -433,10 +444,10 @@ static int pm800_pages_init(struct pm80x_chip *chip)
 	i2c_set_clientdata(subchip->power_page, chip);
 
 	/* PM800 block GPADC */
-	subchip->gpadc_page = i2c_new_dummy_device(client->adapter,
+	subchip->gpadc_page = i2c_new_dummy(client->adapter,
 					    subchip->gpadc_page_addr);
-	if (IS_ERR(subchip->gpadc_page)) {
-		ret = PTR_ERR(subchip->gpadc_page);
+	if (subchip->gpadc_page == NULL) {
+		ret = -ENODEV;
 		goto out;
 	}
 
@@ -527,7 +538,8 @@ out:
 	return ret;
 }
 
-static int pm800_probe(struct i2c_client *client)
+static int pm800_probe(struct i2c_client *client,
+				 const struct i2c_device_id *id)
 {
 	int ret = 0;
 	struct pm80x_chip *chip;
@@ -581,7 +593,7 @@ out_init:
 	return ret;
 }
 
-static void pm800_remove(struct i2c_client *client)
+static int pm800_remove(struct i2c_client *client)
 {
 	struct pm80x_chip *chip = i2c_get_clientdata(client);
 
@@ -590,12 +602,14 @@ static void pm800_remove(struct i2c_client *client)
 
 	pm800_pages_exit(chip);
 	pm80x_deinit();
+
+	return 0;
 }
 
 static struct i2c_driver pm800_driver = {
 	.driver = {
 		.name = "88PM800",
-		.pm = pm_sleep_ptr(&pm80x_pm_ops),
+		.pm = &pm80x_pm_ops,
 		},
 	.probe = pm800_probe,
 	.remove = pm800_remove,

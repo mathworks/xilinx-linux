@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * SH7760 Setup
  *
  *  Copyright (C) 2006  Paul Mundt
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -11,7 +14,6 @@
 #include <linux/sh_intc.h>
 #include <linux/serial_sci.h>
 #include <linux/io.h>
-#include <asm/platform_early.h>
 
 enum {
 	UNUSED = 0,
@@ -126,7 +128,8 @@ static DECLARE_INTC_DESC(intc_desc_irq, "sh7760-irq", vectors_irq, groups,
 			 mask_registers, prio_registers, NULL);
 
 static struct plat_sci_port scif0_platform_data = {
-	.scscr		= SCSCR_REIE,
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
 	.type		= PORT_SCIF,
 	.regtype	= SCIx_SH4_SCIF_FIFODATA_REGTYPE,
 };
@@ -150,8 +153,9 @@ static struct platform_device scif0_device = {
 };
 
 static struct plat_sci_port scif1_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
 	.type		= PORT_SCIF,
-	.scscr		= SCSCR_REIE,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
 	.regtype	= SCIx_SH4_SCIF_FIFODATA_REGTYPE,
 };
 
@@ -174,7 +178,8 @@ static struct platform_device scif1_device = {
 };
 
 static struct plat_sci_port scif2_platform_data = {
-	.scscr		= SCSCR_REIE,
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
 	.type		= PORT_SCIF,
 	.regtype	= SCIx_SH4_SCIF_FIFODATA_REGTYPE,
 };
@@ -198,18 +203,14 @@ static struct platform_device scif2_device = {
 };
 
 static struct plat_sci_port scif3_platform_data = {
-	/*
-	 * This is actually a SIM card module serial port, based on an SCI with
-	 * additional registers. The sh-sci driver doesn't support the SIM port
-	 * type, declare it as a SCI. Don't declare the additional registers in
-	 * the memory resource or the driver will compute an incorrect regshift
-	 * value.
-	 */
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
 	.type		= PORT_SCI,
+	.regshift	= 2,
 };
 
 static struct resource scif3_resources[] = {
-	DEFINE_RES_MEM(0xfe480000, 0x10),
+	DEFINE_RES_MEM(0xfe480000, 0x100),
 	DEFINE_RES_IRQ(evt2irq(0xc00)),
 	DEFINE_RES_IRQ(evt2irq(0xc20)),
 	DEFINE_RES_IRQ(evt2irq(0xc40)),
@@ -272,7 +273,7 @@ static struct platform_device *sh7760_early_devices[] __initdata = {
 
 void __init plat_early_device_setup(void)
 {
-	sh_early_platform_add_devices(sh7760_early_devices,
+	early_platform_add_devices(sh7760_early_devices,
 				   ARRAY_SIZE(sh7760_early_devices));
 }
 

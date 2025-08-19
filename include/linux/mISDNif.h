@@ -18,6 +18,7 @@
 #ifndef mISDNIF_H
 #define mISDNIF_H
 
+#include <stdarg.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/socket.h>
@@ -553,7 +554,7 @@ _alloc_mISDN_skb(u_int prim, u_int id, u_int len, void *dp, gfp_t gfp_mask)
 	if (!skb)
 		return NULL;
 	if (len)
-		skb_put_data(skb, dp, len);
+		memcpy(skb_put(skb, len), dp, len);
 	hh = mISDN_HEAD_P(skb);
 	hh->prim = prim;
 	hh->id = id;
@@ -586,7 +587,7 @@ extern struct mISDNclock *mISDN_register_clock(char *, int, clockctl_func_t *,
 						void *);
 extern void	mISDN_unregister_clock(struct mISDNclock *);
 
-static inline struct mISDNdevice *dev_to_mISDN(const struct device *dev)
+static inline struct mISDNdevice *dev_to_mISDN(struct device *dev)
 {
 	if (dev)
 		return dev_get_drvdata(dev);

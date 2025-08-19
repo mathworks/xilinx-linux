@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #include "nv20.h"
 #include "regs.h"
 
@@ -60,7 +59,7 @@ void *
 nv20_gr_chan_dtor(struct nvkm_object *object)
 {
 	struct nv20_gr_chan *chan = nv20_gr_chan(object);
-	nvkm_memory_unref(&chan->inst);
+	nvkm_memory_del(&chan->inst);
 	return chan;
 }
 
@@ -72,7 +71,7 @@ nv20_gr_chan = {
 };
 
 static int
-nv20_gr_chan_new(struct nvkm_gr *base, struct nvkm_chan *fifoch,
+nv20_gr_chan_new(struct nvkm_gr *base, struct nvkm_fifo_chan *fifoch,
 		 const struct nvkm_oclass *oclass, struct nvkm_object **pobject)
 {
 	struct nv20_gr *gr = nv20_gr(base);
@@ -83,7 +82,7 @@ nv20_gr_chan_new(struct nvkm_gr *base, struct nvkm_chan *fifoch,
 		return -ENOMEM;
 	nvkm_object_ctor(&nv20_gr_chan, oclass, &chan->object);
 	chan->gr = gr;
-	chan->chid = fifoch->id;
+	chan->chid = fifoch->chid;
 	*pobject = &chan->object;
 
 	ret = nvkm_memory_new(gr->base.engine.subdev.device,
@@ -182,7 +181,7 @@ nv20_gr_intr(struct nvkm_gr *base)
 	struct nv20_gr *gr = nv20_gr(base);
 	struct nvkm_subdev *subdev = &gr->base.engine.subdev;
 	struct nvkm_device *device = subdev->device;
-	struct nvkm_chan *chan;
+	struct nvkm_fifo_chan *chan;
 	u32 stat = nvkm_rd32(device, NV03_PGRAPH_INTR);
 	u32 nsource = nvkm_rd32(device, NV03_PGRAPH_NSOURCE);
 	u32 nstatus = nvkm_rd32(device, NV03_PGRAPH_NSTATUS);
@@ -196,7 +195,7 @@ nv20_gr_intr(struct nvkm_gr *base)
 	char msg[128], src[128], sta[128];
 	unsigned long flags;
 
-	chan = nvkm_chan_get_chid(&gr->base.engine, chid, &flags);
+	chan = nvkm_fifo_chan_chid(device->fifo, chid, &flags);
 
 	nvkm_wr32(device, NV03_PGRAPH_INTR, stat);
 	nvkm_wr32(device, NV04_PGRAPH_FIFO, 0x00000001);
@@ -209,11 +208,11 @@ nv20_gr_intr(struct nvkm_gr *base)
 				   "nstatus %08x [%s] ch %d [%s] subc %d "
 				   "class %04x mthd %04x data %08x\n",
 			   show, msg, nsource, src, nstatus, sta, chid,
-			   chan ? chan->name : "unknown",
+			   chan ? chan->object.client->name : "unknown",
 			   subc, class, mthd, data);
 	}
 
-	nvkm_chan_put(&chan, flags);
+	nvkm_fifo_chan_put(device->fifo, flags, &chan);
 }
 
 int
@@ -324,13 +323,13 @@ void *
 nv20_gr_dtor(struct nvkm_gr *base)
 {
 	struct nv20_gr *gr = nv20_gr(base);
-	nvkm_memory_unref(&gr->ctxtab);
+	nvkm_memory_del(&gr->ctxtab);
 	return gr;
 }
 
 int
 nv20_gr_new_(const struct nvkm_gr_func *func, struct nvkm_device *device,
-	     enum nvkm_subdev_type type, int inst, struct nvkm_gr **pgr)
+	     int index, struct nvkm_gr **pgr)
 {
 	struct nv20_gr *gr;
 
@@ -338,7 +337,7 @@ nv20_gr_new_(const struct nvkm_gr_func *func, struct nvkm_device *device,
 		return -ENOMEM;
 	*pgr = &gr->base;
 
-	return nvkm_gr_ctor(func, device, type, inst, true, &gr->base);
+	return nvkm_gr_ctor(func, device, index, true, &gr->base);
 }
 
 static const struct nvkm_gr_func
@@ -370,7 +369,7 @@ nv20_gr = {
 };
 
 int
-nv20_gr_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, struct nvkm_gr **pgr)
+nv20_gr_new(struct nvkm_device *device, int index, struct nvkm_gr **pgr)
 {
-	return nv20_gr_new_(&nv20_gr, device, type, inst, pgr);
+	return nv20_gr_new_(&nv20_gr, device, index, pgr);
 }

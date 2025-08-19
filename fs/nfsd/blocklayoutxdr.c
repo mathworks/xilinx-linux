@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014-2016 Christoph Hellwig.
  */
@@ -9,7 +8,6 @@
 
 #include "nfsd.h"
 #include "blocklayoutxdr.h"
-#include "vfs.h"
 
 #define NFSDDBG_FACILITY	NFSDDBG_PNFS
 
@@ -82,15 +80,6 @@ nfsd4_block_encode_getdeviceinfo(struct xdr_stream *xdr,
 	struct pnfs_block_deviceaddr *dev = gdp->gd_device;
 	int len = sizeof(__be32), ret, i;
 	__be32 *p;
-
-	/*
-	 * See paragraph 5 of RFC 8881 S18.40.3.
-	 */
-	if (!gdp->gd_maxcount) {
-		if (xdr_stream_encode_u32(xdr, 0) != XDR_UNIT)
-			return nfserr_resource;
-		return nfs_ok;
-	}
 
 	p = xdr_reserve_space(xdr, len + sizeof(__be32));
 	if (!p)

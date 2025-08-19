@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_PREEMPT_H
 #define __ASM_PREEMPT_H
 
@@ -29,7 +28,7 @@ static __always_inline void preempt_count_set(int pc)
 } while (0)
 
 #define init_idle_preempt_count(p, cpu) do { \
-	task_thread_info(p)->preempt_count = PREEMPT_DISABLED; \
+	task_thread_info(p)->preempt_count = PREEMPT_ENABLED; \
 } while (0)
 
 static __always_inline void set_preempt_need_resched(void)
@@ -78,23 +77,11 @@ static __always_inline bool should_resched(int preempt_offset)
 			tif_need_resched());
 }
 
-#ifdef CONFIG_PREEMPTION
+#ifdef CONFIG_PREEMPT
 extern asmlinkage void preempt_schedule(void);
-extern asmlinkage void preempt_schedule_notrace(void);
-
-#if defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
-
-void dynamic_preempt_schedule(void);
-void dynamic_preempt_schedule_notrace(void);
-#define __preempt_schedule()		dynamic_preempt_schedule()
-#define __preempt_schedule_notrace()	dynamic_preempt_schedule_notrace()
-
-#else /* !CONFIG_PREEMPT_DYNAMIC || !CONFIG_HAVE_PREEMPT_DYNAMIC_KEY*/
-
 #define __preempt_schedule() preempt_schedule()
+extern asmlinkage void preempt_schedule_notrace(void);
 #define __preempt_schedule_notrace() preempt_schedule_notrace()
-
-#endif /* CONFIG_PREEMPT_DYNAMIC && CONFIG_HAVE_PREEMPT_DYNAMIC_KEY*/
-#endif /* CONFIG_PREEMPTION */
+#endif /* CONFIG_PREEMPT */
 
 #endif /* __ASM_PREEMPT_H */

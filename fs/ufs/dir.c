@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ufs/ufs_dir.c
  *
@@ -20,7 +19,6 @@
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/swap.h>
-#include <linux/iversion.h>
 
 #include "ufs_fs.h"
 #include "ufs.h"
@@ -42,27 +40,22 @@ static inline int ufs_match(struct super_block *sb, int len,
 	return !memcmp(name, de->d_name, len);
 }
 
-static void ufs_commit_chunk(struct page *page, loff_t pos, unsigned len)
+static int ufs_commit_chunk(struct page *page, loff_t pos, unsigned len)
 {
 	struct address_space *mapping = page->mapping;
 	struct inode *dir = mapping->host;
+	int err = 0;
 
-	inode_inc_iversion(dir);
+	dir->i_version++;
 	block_write_end(NULL, mapping, pos, len, len, page, NULL);
 	if (pos+len > dir->i_size) {
 		i_size_write(dir, pos+len);
 		mark_inode_dirty(dir);
 	}
-	unlock_page(page);
-}
-
-static int ufs_handle_dirsync(struct inode *dir)
-{
-	int err;
-
-	err = filemap_write_and_wait(dir->i_mapping);
-	if (!err)
-		err = sync_inode_metadata(dir, 1);
+	if (IS_DIRSYNC(dir))
+		err = write_one_page(page, 1);
+	else
+		unlock_page(page);
 	return err;
 }
 
@@ -104,12 +97,11 @@ void ufs_set_link(struct inode *dir, struct ufs_dir_entry *de,
 	de->d_ino = cpu_to_fs32(dir->i_sb, inode->i_ino);
 	ufs_set_de_type(dir->i_sb, de, inode->i_mode);
 
-	ufs_commit_chunk(page, pos, len);
+	err = ufs_commit_chunk(page, pos, len);
 	ufs_put_page(page);
 	if (update_times)
-		dir->i_mtime = inode_set_ctime_current(dir);
+		dir->i_mtime = dir->i_ctime = current_time(dir);
 	mark_inode_dirty(dir);
-	ufs_handle_dirsync(dir);
 }
 
 
@@ -199,7 +191,7 @@ static struct page *ufs_get_page(struct inode *dir, unsigned long n)
 	if (!IS_ERR(page)) {
 		kmap(page);
 		if (unlikely(!PageChecked(page))) {
-			if (!ufs_check_page(page))
+			if (PageError(page) || !ufs_check_page(page))
 				goto fail;
 		}
 	}
@@ -396,11 +388,10 @@ got_it:
 	de->d_ino = cpu_to_fs32(sb, inode->i_ino);
 	ufs_set_de_type(sb, de, inode->i_mode);
 
-	ufs_commit_chunk(page, pos, rec_len);
-	dir->i_mtime = inode_set_ctime_current(dir);
+	err = ufs_commit_chunk(page, pos, rec_len);
+	dir->i_mtime = dir->i_ctime = current_time(dir);
 
 	mark_inode_dirty(dir);
-	err = ufs_handle_dirsync(dir);
 	/* OFFSET_CACHE */
 out_put:
 	ufs_put_page(page);
@@ -436,7 +427,7 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
 	unsigned long n = pos >> PAGE_SHIFT;
 	unsigned long npages = dir_pages(inode);
 	unsigned chunk_mask = ~(UFS_SB(sb)->s_uspi->s_dirblksize - 1);
-	bool need_revalidate = !inode_eq_iversion(inode, file->f_version);
+	int need_revalidate = file->f_version != inode->i_version;
 	unsigned flags = UFS_SB(sb)->s_flags;
 
 	UFSD("BEGIN\n");
@@ -463,8 +454,8 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
 				offset = ufs_validate_entry(sb, kaddr, offset, chunk_mask);
 				ctx->pos = (n<<PAGE_SHIFT) + offset;
 			}
-			file->f_version = inode_query_iversion(inode);
-			need_revalidate = false;
+			file->f_version = inode->i_version;
+			need_revalidate = 0;
 		}
 		de = (struct ufs_dir_entry *)(kaddr+offset);
 		limit = kaddr + ufs_last_byte(inode, n) - UFS_DIR_REC_LEN(1);
@@ -538,10 +529,9 @@ int ufs_delete_entry(struct inode *inode, struct ufs_dir_entry *dir,
 	if (pde)
 		pde->d_reclen = cpu_to_fs16(sb, to - from);
 	dir->d_ino = 0;
-	ufs_commit_chunk(page, pos, to - from);
-	inode->i_mtime = inode_set_ctime_current(inode);
+	err = ufs_commit_chunk(page, pos, to - from);
+	inode->i_ctime = inode->i_mtime = current_time(inode);
 	mark_inode_dirty(inode);
-	err = ufs_handle_dirsync(inode);
 out:
 	ufs_put_page(page);
 	UFSD("EXIT\n");
@@ -587,8 +577,7 @@ int ufs_make_empty(struct inode * inode, struct inode *dir)
 	strcpy (de->d_name, "..");
 	kunmap(page);
 
-	ufs_commit_chunk(page, 0, chunk_size);
-	err = ufs_handle_dirsync(inode);
+	err = ufs_commit_chunk(page, 0, chunk_size);
 fail:
 	put_page(page);
 	return err;

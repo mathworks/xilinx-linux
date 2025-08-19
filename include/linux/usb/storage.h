@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #ifndef __LINUX_USB_STORAGE_H
 #define __LINUX_USB_STORAGE_H
 
@@ -9,6 +8,8 @@
  *
  * This file contains definitions taken from the
  * USB Mass Storage Class Specification Overview
+ *
+ * Distributed under the terms of the GNU GPL, version two.
  */
 
 /* Storage subclass codes */

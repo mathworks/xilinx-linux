@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ALPHA_LOCAL_H
 #define _ALPHA_LOCAL_H
 
@@ -52,16 +51,8 @@ static __inline__ long local_sub_return(long i, local_t * l)
 	return result;
 }
 
-static __inline__ long local_cmpxchg(local_t *l, long old, long new)
-{
-	return cmpxchg_local(&l->a.counter, old, new);
-}
-
-static __inline__ bool local_try_cmpxchg(local_t *l, long *old, long new)
-{
-	return try_cmpxchg_local(&l->a.counter, (s64 *)old, new);
-}
-
+#define local_cmpxchg(l, o, n) \
+	(cmpxchg_local(&((l)->a.counter), (o), (n)))
 #define local_xchg(l, n) (xchg_local(&((l)->a.counter), (n)))
 
 /**

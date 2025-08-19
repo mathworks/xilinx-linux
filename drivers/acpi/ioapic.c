@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * IOAPIC/IOxAPIC/IOSAPIC driver
  *
@@ -6,6 +5,10 @@
  * (c) Copyright 2009 Hewlett-Packard Development Company, L.P.
  *
  * Copyright (C) 2014 Intel Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Based on original drivers/pci/ioapic.c
  *	Yinghai Lu <yinghai@kernel.org>
@@ -18,13 +21,12 @@
  * registered when we parsed the ACPI MADT.
  */
 
-#define pr_fmt(fmt) "ACPI: IOAPIC: " fmt
+#define pr_fmt(fmt) "ACPI : IOAPIC: " fmt
 
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <linux/pci.h>
 #include <acpi/acpi.h>
-#include "internal.h"
 
 struct acpi_pci_ioapic {
 	acpi_handle	root_handle;
@@ -42,12 +44,6 @@ static acpi_status setup_res(struct acpi_resource *acpi_res, void *data)
 {
 	struct resource *res = data;
 	struct resource_win win;
-
-	/*
-	 * We might assign this to 'res' later, make sure all pointers are
-	 * cleared before the resource is added to the global list
-	 */
-	memset(&win, 0, sizeof(win));
 
 	res->flags = 0;
 	if (acpi_dev_filter_resource_type(acpi_res, IORESOURCE_MEM))
@@ -210,23 +206,6 @@ int acpi_ioapic_add(acpi_handle root_handle)
 	return ACPI_SUCCESS(status) && ACPI_SUCCESS(retval) ? 0 : -ENODEV;
 }
 
-void pci_ioapic_remove(struct acpi_pci_root *root)
-{
-	struct acpi_pci_ioapic *ioapic, *tmp;
-
-	mutex_lock(&ioapic_list_lock);
-	list_for_each_entry_safe(ioapic, tmp, &ioapic_list, list) {
-		if (root->device->handle != ioapic->root_handle)
-			continue;
-		if (ioapic->pdev) {
-			pci_release_region(ioapic->pdev, 0);
-			pci_disable_device(ioapic->pdev);
-			pci_dev_put(ioapic->pdev);
-		}
-	}
-	mutex_unlock(&ioapic_list_lock);
-}
-
 int acpi_ioapic_remove(struct acpi_pci_root *root)
 {
 	int retval = 0;
@@ -236,8 +215,15 @@ int acpi_ioapic_remove(struct acpi_pci_root *root)
 	list_for_each_entry_safe(ioapic, tmp, &ioapic_list, list) {
 		if (root->device->handle != ioapic->root_handle)
 			continue;
+
 		if (acpi_unregister_ioapic(ioapic->handle, ioapic->gsi_base))
 			retval = -EBUSY;
+
+		if (ioapic->pdev) {
+			pci_release_region(ioapic->pdev, 0);
+			pci_disable_device(ioapic->pdev);
+			pci_dev_put(ioapic->pdev);
+		}
 		if (ioapic->res.flags && ioapic->res.parent)
 			release_resource(&ioapic->res);
 		list_del(&ioapic->list);

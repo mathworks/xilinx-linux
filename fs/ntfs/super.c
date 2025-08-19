@@ -1,9 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * super.c - NTFS kernel super block handling. Part of the Linux-NTFS project.
  *
  * Copyright (c) 2001-2012 Anton Altaparmakov and Tuxera Inc.
  * Copyright (c) 2001,2002 Richard Russon
+ *
+ * This program/include file is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as published
+ * by the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program/include file is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program (in the main directory of the Linux-NTFS
+ * distribution in the file COPYING); if not, write to the Free Software
+ * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -58,17 +72,9 @@ const option_t on_errors_arr[] = {
 };
 
 /**
- * simple_getbool - convert input string to a boolean value
- * @s: input string to convert
- * @setval: where to store the output boolean value
+ * simple_getbool -
  *
  * Copied from old ntfs driver (which copied from vfat driver).
- *
- * "1", "yes", "true", or an empty string are converted to %true.
- * "0", "no", and "false" are converted to %false.
- *
- * Return: %1 if the string is converted or was empty and *setval contains it;
- *	   %0 if the string was not valid.
  */
 static int simple_getbool(char *s, bool *setval)
 {
@@ -467,7 +473,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 
 #ifndef NTFS_RW
 	/* For read-only compiled driver, enforce read-only flag. */
-	*flags |= SB_RDONLY;
+	*flags |= MS_RDONLY;
 #else /* NTFS_RW */
 	/*
 	 * For the read-write compiled driver, if we are remounting read-write,
@@ -481,7 +487,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 	 * When remounting read-only, mark the volume clean if no volume errors
 	 * have occurred.
 	 */
-	if (sb_rdonly(sb) && !(*flags & SB_RDONLY)) {
+	if ((sb->s_flags & MS_RDONLY) && !(*flags & MS_RDONLY)) {
 		static const char *es = ".  Cannot remount read-write.";
 
 		/* Remounting read-write. */
@@ -542,7 +548,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 			NVolSetErrors(vol);
 			return -EROFS;
 		}
-	} else if (!sb_rdonly(sb) && (*flags & SB_RDONLY)) {
+	} else if (!(sb->s_flags & MS_RDONLY) && (*flags & MS_RDONLY)) {
 		/* Remounting read-only. */
 		if (!NVolErrors(vol)) {
 			if (ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY))
@@ -726,7 +732,7 @@ hotfix_primary_boot_sector:
 		 * on a large sector device contains the whole boot loader or
 		 * just the first 512 bytes).
 		 */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			ntfs_warning(sb, "Hot-fix: Recovering invalid primary "
 					"boot sector from backup copy.");
 			memcpy(bh_primary->b_data, bh_backup->b_data,
@@ -1483,7 +1489,7 @@ not_enabled:
 	kfree(name);
 	/* Get the inode. */
 	tmp_ino = ntfs_iget(vol->sb, MREF(mref));
-	if (IS_ERR(tmp_ino) || unlikely(is_bad_inode(tmp_ino))) {
+	if (unlikely(IS_ERR(tmp_ino) || is_bad_inode(tmp_ino))) {
 		if (!IS_ERR(tmp_ino))
 			iput(tmp_ino);
 		ntfs_error(vol->sb, "Failed to load $UsnJrnl.");
@@ -1620,7 +1626,7 @@ read_partial_attrdef_page:
 		memcpy((u8*)vol->attrdef + (index++ << PAGE_SHIFT),
 				page_address(page), size);
 		ntfs_unmap_page(page);
-	}
+	};
 	if (size == PAGE_SIZE) {
 		size = i_size & ~PAGE_MASK;
 		if (size)
@@ -1689,7 +1695,7 @@ read_partial_upcase_page:
 		memcpy((char*)vol->upcase + (index++ << PAGE_SHIFT),
 				page_address(page), size);
 		ntfs_unmap_page(page);
-	}
+	};
 	if (size == PAGE_SIZE) {
 		size = i_size & ~PAGE_MASK;
 		if (size)
@@ -1783,7 +1789,7 @@ static bool load_system_files(ntfs_volume *vol)
 		static const char *es3 = ".  Run ntfsfix and/or chkdsk.";
 
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -1793,7 +1799,7 @@ static bool load_system_files(ntfs_volume *vol)
 						es3);
 				goto iput_mirr_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s",
 					!vol->mftmirr_ino ? es1 : es2, es3);
 		} else
@@ -1922,7 +1928,7 @@ get_ctx_vol_failed:
 					(unsigned)le16_to_cpu(vol->vol_flags));
 		}
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -1931,7 +1937,7 @@ get_ctx_vol_failed:
 						es1, es2);
 				goto iput_vol_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
 		} else
 			ntfs_warning(sb, "%s.  Will not be able to remount "
@@ -1955,7 +1961,7 @@ get_ctx_vol_failed:
 
 		es1 = !vol->logfile_ino ? es1a : es1b;
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -1968,7 +1974,7 @@ get_ctx_vol_failed:
 				}
 				goto iput_logfile_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
 		} else
 			ntfs_warning(sb, "%s.  Will not be able to remount "
@@ -2004,7 +2010,7 @@ get_ctx_vol_failed:
 
 		es1 = err < 0 ? es1a : es1b;
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -2013,7 +2019,7 @@ get_ctx_vol_failed:
 						es1, es2);
 				goto iput_root_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
 		} else
 			ntfs_warning(sb, "%s.  Will not be able to remount "
@@ -2022,7 +2028,8 @@ get_ctx_vol_failed:
 		NVolSetErrors(vol);
 	}
 	/* If (still) a read-write mount, mark the volume dirty. */
-	if (!sb_rdonly(sb) && ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY)) {
+	if (!(sb->s_flags & MS_RDONLY) &&
+			ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY)) {
 		static const char *es1 = "Failed to set dirty bit in volume "
 				"information flags";
 		static const char *es2 = ".  Run chkdsk.";
@@ -2036,7 +2043,7 @@ get_ctx_vol_failed:
 			goto iput_root_err_out;
 		}
 		ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
-		sb->s_flags |= SB_RDONLY;
+		sb->s_flags |= MS_RDONLY;
 		/*
 		 * Do not set NVolErrors() because ntfs_remount() might manage
 		 * to set the dirty flag in which case all would be well.
@@ -2049,7 +2056,7 @@ get_ctx_vol_failed:
 	 * If (still) a read-write mount, set the NT4 compatibility flag on
 	 * newer NTFS version volumes.
 	 */
-	if (!(sb->s_flags & SB_RDONLY) && (vol->major_ver > 1) &&
+	if (!(sb->s_flags & MS_RDONLY) && (vol->major_ver > 1) &&
 			ntfs_set_volume_flags(vol, VOLUME_MOUNTED_ON_NT4)) {
 		static const char *es1 = "Failed to set NT4 compatibility flag";
 		static const char *es2 = ".  Run chkdsk.";
@@ -2063,12 +2070,13 @@ get_ctx_vol_failed:
 			goto iput_root_err_out;
 		}
 		ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
-		sb->s_flags |= SB_RDONLY;
+		sb->s_flags |= MS_RDONLY;
 		NVolSetErrors(vol);
 	}
 #endif
 	/* If (still) a read-write mount, empty the logfile. */
-	if (!sb_rdonly(sb) && !ntfs_empty_logfile(vol->logfile_ino)) {
+	if (!(sb->s_flags & MS_RDONLY) &&
+			!ntfs_empty_logfile(vol->logfile_ino)) {
 		static const char *es1 = "Failed to empty $LogFile";
 		static const char *es2 = ".  Mount in Windows.";
 
@@ -2081,7 +2089,7 @@ get_ctx_vol_failed:
 			goto iput_root_err_out;
 		}
 		ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
-		sb->s_flags |= SB_RDONLY;
+		sb->s_flags |= MS_RDONLY;
 		NVolSetErrors(vol);
 	}
 #endif /* NTFS_RW */
@@ -2100,8 +2108,7 @@ get_ctx_vol_failed:
 	// TODO: Initialize security.
 	/* Get the extended system files' directory inode. */
 	vol->extend_ino = ntfs_iget(sb, FILE_Extend);
-	if (IS_ERR(vol->extend_ino) || is_bad_inode(vol->extend_ino) ||
-	    !S_ISDIR(vol->extend_ino->i_mode)) {
+	if (IS_ERR(vol->extend_ino) || is_bad_inode(vol->extend_ino)) {
 		if (!IS_ERR(vol->extend_ino))
 			iput(vol->extend_ino);
 		ntfs_error(sb, "Failed to load $Extend.");
@@ -2114,7 +2121,7 @@ get_ctx_vol_failed:
 		static const char *es2 = ".  Run chkdsk.";
 
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -2123,7 +2130,7 @@ get_ctx_vol_failed:
 						es1, es2);
 				goto iput_quota_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
 		} else
 			ntfs_warning(sb, "%s.  Will not be able to remount "
@@ -2132,7 +2139,8 @@ get_ctx_vol_failed:
 		NVolSetErrors(vol);
 	}
 	/* If (still) a read-write mount, mark the quotas out of date. */
-	if (!sb_rdonly(sb) && !ntfs_mark_quotas_out_of_date(vol)) {
+	if (!(sb->s_flags & MS_RDONLY) &&
+			!ntfs_mark_quotas_out_of_date(vol)) {
 		static const char *es1 = "Failed to mark quotas out of date";
 		static const char *es2 = ".  Run chkdsk.";
 
@@ -2145,7 +2153,7 @@ get_ctx_vol_failed:
 			goto iput_quota_err_out;
 		}
 		ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
-		sb->s_flags |= SB_RDONLY;
+		sb->s_flags |= MS_RDONLY;
 		NVolSetErrors(vol);
 	}
 	/*
@@ -2157,7 +2165,7 @@ get_ctx_vol_failed:
 		static const char *es2 = ".  Run chkdsk.";
 
 		/* If a read-write mount, convert it to a read-only mount. */
-		if (!sb_rdonly(sb)) {
+		if (!(sb->s_flags & MS_RDONLY)) {
 			if (!(vol->on_errors & (ON_ERRORS_REMOUNT_RO |
 					ON_ERRORS_CONTINUE))) {
 				ntfs_error(sb, "%s and neither on_errors="
@@ -2166,7 +2174,7 @@ get_ctx_vol_failed:
 						es1, es2);
 				goto iput_usnjrnl_err_out;
 			}
-			sb->s_flags |= SB_RDONLY;
+			sb->s_flags |= MS_RDONLY;
 			ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
 		} else
 			ntfs_warning(sb, "%s.  Will not be able to remount "
@@ -2175,7 +2183,7 @@ get_ctx_vol_failed:
 		NVolSetErrors(vol);
 	}
 	/* If (still) a read-write mount, stamp the transaction log. */
-	if (!sb_rdonly(sb) && !ntfs_stamp_usnjrnl(vol)) {
+	if (!(sb->s_flags & MS_RDONLY) && !ntfs_stamp_usnjrnl(vol)) {
 		static const char *es1 = "Failed to stamp transaction log "
 				"($UsnJrnl)";
 		static const char *es2 = ".  Run chkdsk.";
@@ -2189,7 +2197,7 @@ get_ctx_vol_failed:
 			goto iput_usnjrnl_err_out;
 		}
 		ntfs_error(sb, "%s.  Mounting read-only%s", es1, es2);
-		sb->s_flags |= SB_RDONLY;
+		sb->s_flags |= MS_RDONLY;
 		NVolSetErrors(vol);
 	}
 #endif /* NTFS_RW */
@@ -2306,7 +2314,7 @@ static void ntfs_put_super(struct super_block *sb)
 	 * If a read-write mount and no volume errors have occurred, mark the
 	 * volume clean.  Also, re-commit all affected inodes.
 	 */
-	if (!sb_rdonly(sb)) {
+	if (!(sb->s_flags & MS_RDONLY)) {
 		if (!NVolErrors(vol)) {
 			if (ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY))
 				ntfs_warning(sb, "Failed to clear dirty bit "
@@ -2652,7 +2660,8 @@ static int ntfs_statfs(struct dentry *dentry, struct kstatfs *sfs)
 	 * the least significant 32-bits in f_fsid[0] and the most significant
 	 * 32-bits in f_fsid[1].
 	 */
-	sfs->f_fsid = u64_to_fsid(vol->serial_no);
+	sfs->f_fsid.val[0] = vol->serial_no & 0xffffffff;
+	sfs->f_fsid.val[1] = (vol->serial_no >> 32) & 0xffffffff;
 	/* Maximum length of filenames. */
 	sfs->f_namelen	   = NTFS_MAX_NAME_LEN;
 	return 0;
@@ -2665,12 +2674,12 @@ static int ntfs_write_inode(struct inode *vi, struct writeback_control *wbc)
 }
 #endif
 
-/*
+/**
  * The complete super operations.
  */
 static const struct super_operations ntfs_sops = {
 	.alloc_inode	= ntfs_alloc_big_inode,	  /* VFS: Allocate new inode. */
-	.free_inode	= ntfs_free_big_inode, /* VFS: Deallocate inode. */
+	.destroy_inode	= ntfs_destroy_big_inode, /* VFS: Deallocate inode. */
 #ifdef NTFS_RW
 	.write_inode	= ntfs_write_inode,	/* VFS: Write dirty inode to
 						   disk. */
@@ -2722,7 +2731,7 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 	lockdep_off();
 	ntfs_debug("Entering.");
 #ifndef NTFS_RW
-	sb->s_flags |= SB_RDONLY;
+	sb->s_flags |= MS_RDONLY;
 #endif /* ! NTFS_RW */
 	/* Allocate a new ntfs_volume and place it in sb->s_fs_info. */
 	sb->s_fs_info = kmalloc(sizeof(ntfs_volume), GFP_NOFS);
@@ -2781,12 +2790,13 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 	ntfs_debug("Set device block size to %i bytes (block size bits %i).",
 			blocksize, sb->s_blocksize_bits);
 	/* Determine the size of the device in units of block_size bytes. */
-	vol->nr_blocks = sb_bdev_nr_blocks(sb);
-	if (!vol->nr_blocks) {
+	if (!i_size_read(sb->s_bdev->bd_inode)) {
 		if (!silent)
 			ntfs_error(sb, "Unable to determine device size.");
 		goto err_out_now;
 	}
+	vol->nr_blocks = i_size_read(sb->s_bdev->bd_inode) >>
+			sb->s_blocksize_bits;
 	/* Read the boot sector and return unlocked buffer head to it. */
 	if (!(bh = read_ntfs_boot_sector(sb, silent))) {
 		if (!silent)
@@ -2824,7 +2834,8 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 			goto err_out_now;
 		}
 		BUG_ON(blocksize != sb->s_blocksize);
-		vol->nr_blocks = sb_bdev_nr_blocks(sb);
+		vol->nr_blocks = i_size_read(sb->s_bdev->bd_inode) >>
+				sb->s_blocksize_bits;
 		ntfs_debug("Changed device block size to %i bytes (block size "
 				"bits %i) to match volume sector size.",
 				blocksize, sb->s_blocksize_bits);

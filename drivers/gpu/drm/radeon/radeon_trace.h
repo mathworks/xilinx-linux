@@ -1,12 +1,11 @@
-/* SPDX-License-Identifier: MIT */
 #if !defined(_RADEON_TRACE_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _RADEON_TRACE_H_
 
 #include <linux/stringify.h>
-#include <linux/tracepoint.h>
 #include <linux/types.h>
+#include <linux/tracepoint.h>
 
-#include <drm/drm_file.h>
+#include <drm/drmP.h>
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM radeon
@@ -22,7 +21,7 @@ TRACE_EVENT(radeon_bo_create,
 
 	    TP_fast_assign(
 			   __entry->bo = bo;
-			   __entry->pages = PFN_UP(bo->tbo.resource->size);
+			   __entry->pages = bo->tbo.num_pages;
 			   ),
 	    TP_printk("bo=%p, pages=%u", __entry->bo, __entry->pages)
 );
@@ -205,5 +204,5 @@ DEFINE_EVENT(radeon_semaphore_request, radeon_semaphore_wait,
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH ../../drivers/gpu/drm/radeon
+#define TRACE_INCLUDE_PATH .
 #include <trace/define_trace.h>

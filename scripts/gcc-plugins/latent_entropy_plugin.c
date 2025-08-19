@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012-2016 by the PaX Team <pageexec@freemail.hu>
  * Copyright 2016 by Emese Revfy <re.emese@gmail.com>
+ * Licensed under the GPL v2
  *
  * Note: the choice of the license means that the compilation process is
  *       NOT 'eligible' as defined by gcc's library exception to the GPL v3,
@@ -82,35 +82,29 @@ __visible int plugin_is_GPL_compatible;
 static GTY(()) tree latent_entropy_decl;
 
 static struct plugin_info latent_entropy_plugin_info = {
-	.version	= PLUGIN_VERSION,
+	.version	= "201606141920vanilla",
 	.help		= "disable\tturn off latent entropy instrumentation\n",
 };
 
-static unsigned HOST_WIDE_INT deterministic_seed;
-static unsigned HOST_WIDE_INT rnd_buf[32];
-static size_t rnd_idx = ARRAY_SIZE(rnd_buf);
-static int urandom_fd = -1;
-
+static unsigned HOST_WIDE_INT seed;
+/*
+ * get_random_seed() (this is a GCC function) generates the seed.
+ * This is a simple random generator without any cryptographic security because
+ * the entropy doesn't come from here.
+ */
 static unsigned HOST_WIDE_INT get_random_const(void)
 {
-	if (deterministic_seed) {
-		unsigned HOST_WIDE_INT w = deterministic_seed;
-		w ^= w << 13;
-		w ^= w >> 7;
-		w ^= w << 17;
-		deterministic_seed = w;
-		return deterministic_seed;
+	unsigned int i;
+	unsigned HOST_WIDE_INT ret = 0;
+
+	for (i = 0; i < 8 * sizeof(ret); i++) {
+		ret = (ret << 1) | (seed & 1);
+		seed >>= 1;
+		if (ret & 1)
+			seed ^= 0xD800000000000000ULL;
 	}
 
-	if (urandom_fd < 0) {
-		urandom_fd = open("/dev/urandom", O_RDONLY);
-		gcc_assert(urandom_fd >= 0);
-	}
-	if (rnd_idx >= ARRAY_SIZE(rnd_buf)) {
-		gcc_assert(read(urandom_fd, rnd_buf, sizeof(rnd_buf)) == sizeof(rnd_buf));
-		rnd_idx = 0;
-	}
-	return rnd_buf[rnd_idx++];
+	return ret;
 }
 
 static tree tree_get_random_const(tree type)
@@ -131,7 +125,11 @@ static tree handle_latent_entropy_attribute(tree *node, tree name,
 						bool *no_add_attrs)
 {
 	tree type;
+#if BUILDING_GCC_VERSION <= 4007
+	VEC(constructor_elt, gc) *vals;
+#else
 	vec<constructor_elt, va_gc> *vals;
+#endif
 
 	switch (TREE_CODE(*node)) {
 	default:
@@ -183,7 +181,11 @@ static tree handle_latent_entropy_attribute(tree *node, tree name,
 			if (fld)
 				break;
 
+#if BUILDING_GCC_VERSION <= 4007
+			vals = VEC_alloc(constructor_elt, gc, nelt);
+#else
 			vec_alloc(vals, nelt);
+#endif
 
 			for (fld = lst; fld; fld = TREE_CHAIN(fld)) {
 				tree random_const, fld_t = TREE_TYPE(fld);
@@ -223,7 +225,11 @@ static tree handle_latent_entropy_attribute(tree *node, tree name,
 			elt_size_int = TREE_INT_CST_LOW(elt_size);
 			nelt = array_size_int / elt_size_int;
 
+#if BUILDING_GCC_VERSION <= 4007
+			vals = VEC_alloc(constructor_elt, gc, nelt);
+#else
 			vec_alloc(vals, nelt);
+#endif
 
 			for (i = 0; i < nelt; i++) {
 				tree cst = size_int(i);
@@ -249,14 +255,21 @@ static tree handle_latent_entropy_attribute(tree *node, tree name,
 	return NULL_TREE;
 }
 
-static struct attribute_spec latent_entropy_attr = { };
+static struct attribute_spec latent_entropy_attr = {
+	.name				= "latent_entropy",
+	.min_length			= 0,
+	.max_length			= 0,
+	.decl_required			= true,
+	.type_required			= false,
+	.function_type_required		= false,
+	.handler			= handle_latent_entropy_attribute,
+#if BUILDING_GCC_VERSION >= 4007
+	.affects_type_identity		= false
+#endif
+};
 
 static void register_attributes(void *event_data __unused, void *data __unused)
 {
-	latent_entropy_attr.name		= "latent_entropy";
-	latent_entropy_attr.decl_required	= true;
-	latent_entropy_attr.handler		= handle_latent_entropy_attribute;
-
 	register_attribute(&latent_entropy_attr);
 }
 
@@ -315,9 +328,9 @@ static enum tree_code get_op(tree *rhs)
 			op = LROTATE_EXPR;
 			/*
 			 * This code limits the value of random_const to
-			 * the size of a long for the rotation
+			 * the size of a wide int for the rotation
 			 */
-			random_const %= TYPE_PRECISION(long_unsigned_type_node);
+			random_const &= HOST_BITS_PER_WIDE_INT - 1;
 			break;
 		}
 
@@ -530,7 +543,7 @@ static unsigned int latent_entropy_execute(void)
 	while (bb != EXIT_BLOCK_PTR_FOR_FN(cfun)) {
 		perturb_local_entropy(bb, local_entropy);
 		bb = bb->next_bb;
-	}
+	};
 
 	/* 4. mix local entropy into the global entropy variable */
 	perturb_latent_entropy(local_entropy);
@@ -542,6 +555,8 @@ static void latent_entropy_start_unit(void *gcc_data __unused,
 {
 	tree type, id;
 	int quals;
+
+	seed = get_random_seed(false);
 
 	if (in_lto_p)
 		return;
@@ -577,12 +592,12 @@ __visible int plugin_init(struct plugin_name_args *plugin_info,
 	const struct plugin_argument * const argv = plugin_info->argv;
 	int i;
 
-	/*
-	 * Call get_random_seed() with noinit=true, so that this returns
-	 * 0 in the case where no seed has been passed via -frandom-seed.
-	 */
-	deterministic_seed = get_random_seed(true);
+	struct register_pass_info latent_entropy_pass_info;
 
+	latent_entropy_pass_info.pass		= make_latent_entropy_pass();
+	latent_entropy_pass_info.reference_pass_name		= "optimized";
+	latent_entropy_pass_info.ref_pass_instance_number	= 1;
+	latent_entropy_pass_info.pos_op		= PASS_POS_INSERT_BEFORE;
 	static const struct ggc_root_tab gt_ggc_r_gt_latent_entropy[] = {
 		{
 			.base = &latent_entropy_decl,
@@ -594,8 +609,6 @@ __visible int plugin_init(struct plugin_name_args *plugin_info,
 		LAST_GGC_ROOT_TAB
 	};
 
-	PASS_INFO(latent_entropy, "optimized", 1, PASS_POS_INSERT_BEFORE);
-
 	if (!plugin_default_version_check(version, &gcc_version)) {
 		error(G_("incompatible gcc/plugin versions"));
 		return 1;
@@ -606,7 +619,7 @@ __visible int plugin_init(struct plugin_name_args *plugin_info,
 			enabled = false;
 			continue;
 		}
-		error(G_("unknown option '-fplugin-arg-%s-%s'"), plugin_name, argv[i].key);
+		error(G_("unkown option '-fplugin-arg-%s-%s'"), plugin_name, argv[i].key);
 	}
 
 	register_callback(plugin_name, PLUGIN_INFO, NULL,

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ADB through the IOP
  * Written by Joshua M. Thompson
@@ -29,7 +28,6 @@
 
 #define ADB_IOP_EXPLICIT	0x80	/* nonzero if explicit command */
 #define ADB_IOP_AUTOPOLL	0x40	/* auto/SRQ polling enabled    */
-#define ADB_IOP_SET_AUTOPOLL	0x20	/* set autopoll device list    */
 #define ADB_IOP_SRQ		0x04	/* SRQ detected                */
 #define ADB_IOP_TIMEOUT		0x02	/* nonzero if timeout          */
 

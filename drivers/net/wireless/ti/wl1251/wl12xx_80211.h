@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __WL12XX_80211_H__
 #define __WL12XX_80211_H__
 
@@ -65,7 +64,7 @@ struct ieee80211_header {
 	u8 sa[ETH_ALEN];
 	u8 bssid[ETH_ALEN];
 	__le16 seq_ctl;
-	u8 payload[];
+	u8 payload[0];
 } __packed;
 
 struct wl12xx_ie_header {

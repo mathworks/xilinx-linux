@@ -163,6 +163,7 @@ static int efficeon_free_gatt_table(struct agp_bridge_data *bridge)
 		unsigned long page = efficeon_private.l1_table[index];
 		if (page) {
 			efficeon_private.l1_table[index] = 0;
+			ClearPageReserved(virt_to_page((char *)page));
 			free_page(page);
 			freed++;
 		}
@@ -218,6 +219,7 @@ static int efficeon_create_gatt_table(struct agp_bridge_data *bridge)
 			efficeon_free_gatt_table(agp_bridge);
 			return -ENOMEM;
 		}
+		SetPageReserved(virt_to_page((char *)page));
 
 		for (offset = 0; offset < PAGE_SIZE; offset += clflush_chunk)
 			clflush((char *)page+offset);
@@ -412,13 +414,20 @@ static void agp_efficeon_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static int agp_efficeon_resume(struct device *dev)
+#ifdef CONFIG_PM
+static int agp_efficeon_suspend(struct pci_dev *dev, pm_message_t state)
+{
+	return 0;
+}
+
+static int agp_efficeon_resume(struct pci_dev *pdev)
 {
 	printk(KERN_DEBUG PFX "agp_efficeon_resume()\n");
 	return efficeon_configure();
 }
+#endif
 
-static const struct pci_device_id agp_efficeon_pci_table[] = {
+static struct pci_device_id agp_efficeon_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,
@@ -430,8 +439,6 @@ static const struct pci_device_id agp_efficeon_pci_table[] = {
 	{ }
 };
 
-static DEFINE_SIMPLE_DEV_PM_OPS(agp_efficeon_pm_ops, NULL, agp_efficeon_resume);
-
 MODULE_DEVICE_TABLE(pci, agp_efficeon_pci_table);
 
 static struct pci_driver agp_efficeon_pci_driver = {
@@ -439,7 +446,10 @@ static struct pci_driver agp_efficeon_pci_driver = {
 	.id_table	= agp_efficeon_pci_table,
 	.probe		= agp_efficeon_probe,
 	.remove		= agp_efficeon_remove,
-	.driver.pm	= &agp_efficeon_pm_ops,
+#ifdef CONFIG_PM
+	.suspend	= agp_efficeon_suspend,
+	.resume		= agp_efficeon_resume,
+#endif
 };
 
 static int __init agp_efficeon_init(void)

@@ -26,7 +26,15 @@
 
 #include <core/memory.h>
 #include <core/option.h>
-#include <subdev/therm.h>
+
+extern const u8 gf100_pte_storage_type_map[256];
+
+bool
+gf100_fb_memtype_valid(struct nvkm_fb *fb, u32 tile_flags)
+{
+	u8 memtype = (tile_flags & 0x0000ff00) >> 8;
+	return likely((gf100_pte_storage_type_map[memtype] != 0xff));
+}
 
 void
 gf100_fb_intr(struct nvkm_fb *base)
@@ -42,45 +50,41 @@ gf100_fb_intr(struct nvkm_fb *base)
 }
 
 int
-gf100_fb_oneinit(struct nvkm_fb *base)
-{
-	struct gf100_fb *fb = gf100_fb(base);
-	struct nvkm_device *device = fb->base.subdev.device;
-	int ret, size = 1 << (fb->base.page ? fb->base.page : 17);
-
-	size = nvkm_longopt(device->cfgopt, "MmuDebugBufferSize", size);
-	size = max(size, 0x1000);
-
-	ret = nvkm_memory_new(device, NVKM_MEM_TARGET_INST, size, 0x1000,
-			      true, &fb->base.mmu_rd);
-	if (ret)
-		return ret;
-
-	ret = nvkm_memory_new(device, NVKM_MEM_TARGET_INST, size, 0x1000,
-			      true, &fb->base.mmu_wr);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-int
-gf100_fb_init_page(struct nvkm_fb *fb)
+gf100_fb_oneinit(struct nvkm_fb *fb)
 {
 	struct nvkm_device *device = fb->subdev.device;
-	switch (fb->page) {
-	case 16: nvkm_mask(device, 0x100c80, 0x00000001, 0x00000001); break;
-	case 17: nvkm_mask(device, 0x100c80, 0x00000001, 0x00000000); break;
-	default:
-		return -EINVAL;
-	}
+	int ret, size = 0x1000;
+
+	size = nvkm_longopt(device->cfgopt, "MmuDebugBufferSize", size);
+	size = min(size, 0x1000);
+
+	ret = nvkm_memory_new(device, NVKM_MEM_TARGET_INST, size, 0x1000,
+			      false, &fb->mmu_rd);
+	if (ret)
+		return ret;
+
+	ret = nvkm_memory_new(device, NVKM_MEM_TARGET_INST, size, 0x1000,
+			      false, &fb->mmu_wr);
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
 void
-gf100_fb_sysmem_flush_page_init(struct nvkm_fb *fb)
+gf100_fb_init_page(struct nvkm_fb *fb)
 {
-	nvkm_wr32(fb->subdev.device, 0x100c10, fb->sysmem.flush_page_addr >> 8);
+	struct nvkm_device *device = fb->subdev.device;
+	switch (fb->page) {
+	case 16:
+		nvkm_mask(device, 0x100c80, 0x00000001, 0x00000001);
+		break;
+	case 17:
+	default:
+		nvkm_mask(device, 0x100c80, 0x00000001, 0x00000000);
+		fb->page = 17;
+		break;
+	}
 }
 
 void
@@ -89,30 +93,43 @@ gf100_fb_init(struct nvkm_fb *base)
 	struct gf100_fb *fb = gf100_fb(base);
 	struct nvkm_device *device = fb->base.subdev.device;
 
-	if (base->func->clkgate_pack) {
-		nvkm_therm_clkgate_init(device->therm,
-					base->func->clkgate_pack);
-	}
+	if (fb->r100c10_page)
+		nvkm_wr32(device, 0x100c10, fb->r100c10 >> 8);
 }
 
 void *
 gf100_fb_dtor(struct nvkm_fb *base)
 {
 	struct gf100_fb *fb = gf100_fb(base);
+	struct nvkm_device *device = fb->base.subdev.device;
+
+	if (fb->r100c10_page) {
+		dma_unmap_page(device->dev, fb->r100c10, PAGE_SIZE,
+			       DMA_BIDIRECTIONAL);
+		__free_page(fb->r100c10_page);
+	}
 
 	return fb;
 }
 
 int
 gf100_fb_new_(const struct nvkm_fb_func *func, struct nvkm_device *device,
-	      enum nvkm_subdev_type type, int inst, struct nvkm_fb **pfb)
+	      int index, struct nvkm_fb **pfb)
 {
 	struct gf100_fb *fb;
 
 	if (!(fb = kzalloc(sizeof(*fb), GFP_KERNEL)))
 		return -ENOMEM;
-	nvkm_fb_ctor(func, device, type, inst, &fb->base);
+	nvkm_fb_ctor(func, device, index, &fb->base);
 	*pfb = &fb->base;
+
+	fb->r100c10_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+	if (fb->r100c10_page) {
+		fb->r100c10 = dma_map_page(device->dev, fb->r100c10_page, 0,
+					   PAGE_SIZE, DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(device->dev, fb->r100c10))
+			return -EFAULT;
+	}
 
 	return 0;
 }
@@ -124,13 +141,12 @@ gf100_fb = {
 	.init = gf100_fb_init,
 	.init_page = gf100_fb_init_page,
 	.intr = gf100_fb_intr,
-	.sysmem.flush_page_init = gf100_fb_sysmem_flush_page_init,
 	.ram_new = gf100_ram_new,
-	.default_bigpage = 17,
+	.memtype_valid = gf100_fb_memtype_valid,
 };
 
 int
-gf100_fb_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, struct nvkm_fb **pfb)
+gf100_fb_new(struct nvkm_device *device, int index, struct nvkm_fb **pfb)
 {
-	return gf100_fb_new_(&gf100_fb, device, type, inst, pfb);
+	return gf100_fb_new_(&gf100_fb, device, index, pfb);
 }

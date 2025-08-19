@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Freescale PowerQUICC Ethernet Driver -- MIIM bus implementation
  * Provides Bus interface for MIIM regs
@@ -9,10 +8,15 @@
  * Copyright 2002-2004, 2008-2009 Freescale Semiconductor, Inc.
  *
  * Based on gianfar_mii.c and ucc_geth_mii.c (Li Yang, Kim Phillips)
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  */
 
 #include <linux/kernel.h>
-#include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
@@ -263,8 +267,8 @@ static void ucc_configure(phys_addr_t start, phys_addr_t end)
 
 		ret = of_address_to_resource(np, 0, &res);
 		if (ret < 0) {
-			pr_debug("fsl-pq-mdio: no address range in node %pOF\n",
-				 np);
+			pr_debug("fsl-pq-mdio: no address range in node %s\n",
+				 np->full_name);
 			continue;
 		}
 
@@ -276,8 +280,8 @@ static void ucc_configure(phys_addr_t start, phys_addr_t end)
 		if (!iprop) {
 			iprop = of_get_property(np, "device-id", NULL);
 			if (!iprop) {
-				pr_debug("fsl-pq-mdio: no UCC ID in node %pOF\n",
-					 np);
+				pr_debug("fsl-pq-mdio: no UCC ID in node %s\n",
+					 np->full_name);
 				continue;
 			}
 		}
@@ -289,8 +293,8 @@ static void ucc_configure(phys_addr_t start, phys_addr_t end)
 		 * numbered from 1, not 0.
 		 */
 		if (ucc_set_qe_mux_mii_mng(id - 1) < 0) {
-			pr_debug("fsl-pq-mdio: invalid UCC ID in node %pOF\n",
-				 np);
+			pr_debug("fsl-pq-mdio: invalid UCC ID in node %s\n",
+				 np->full_name);
 			continue;
 		}
 
@@ -373,56 +377,17 @@ static const struct of_device_id fsl_pq_mdio_match[] = {
 };
 MODULE_DEVICE_TABLE(of, fsl_pq_mdio_match);
 
-static void set_tbipa(const u32 tbipa_val, struct platform_device *pdev,
-		      uint32_t __iomem * (*get_tbipa)(void __iomem *),
-		      void __iomem *reg_map, struct resource *reg_res)
-{
-	struct device_node *np = pdev->dev.of_node;
-	uint32_t __iomem *tbipa;
-	bool tbipa_mapped;
-
-	tbipa = of_iomap(np, 1);
-	if (tbipa) {
-		tbipa_mapped = true;
-	} else {
-		tbipa_mapped = false;
-		tbipa = (*get_tbipa)(reg_map);
-
-		/*
-		 * Add consistency check to make sure TBI is contained within
-		 * the mapped range (not because we would get a segfault,
-		 * rather to catch bugs in computing TBI address). Print error
-		 * message but continue anyway.
-		 */
-		if ((void *)tbipa > reg_map + resource_size(reg_res) - 4)
-			dev_err(&pdev->dev, "invalid register map (should be at least 0x%04zx to contain TBI address)\n",
-				((void *)tbipa - reg_map) + 4);
-	}
-
-	iowrite32be(be32_to_cpu(tbipa_val), tbipa);
-
-	if (tbipa_mapped)
-		iounmap(tbipa);
-}
-
 static int fsl_pq_mdio_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *id =
 		of_match_device(fsl_pq_mdio_match, &pdev->dev);
-	const struct fsl_pq_mdio_data *data;
+	const struct fsl_pq_mdio_data *data = id->data;
 	struct device_node *np = pdev->dev.of_node;
 	struct resource res;
 	struct device_node *tbi;
 	struct fsl_pq_mdio_priv *priv;
 	struct mii_bus *new_bus;
 	int err;
-
-	if (!id) {
-		dev_err(&pdev->dev, "Failed to match device\n");
-		return -ENODEV;
-	}
-
-	data = id->data;
 
 	dev_dbg(&pdev->dev, "found %s compatible node\n", id->compatible);
 
@@ -431,7 +396,7 @@ static int fsl_pq_mdio_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv = new_bus->priv;
-	new_bus->name = "Freescale PowerQUICC MII Bus";
+	new_bus->name = "Freescale PowerQUICC MII Bus",
 	new_bus->read = &fsl_pq_mdio_read;
 	new_bus->write = &fsl_pq_mdio_write;
 	new_bus->reset = &fsl_pq_mdio_reset;
@@ -442,8 +407,8 @@ static int fsl_pq_mdio_probe(struct platform_device *pdev)
 		goto error;
 	}
 
-	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%pOFn@%llx", np,
-		 (unsigned long long)res.start);
+	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%s@%llx", np->name,
+		(unsigned long long)res.start);
 
 	priv->map = of_iomap(np, 0);
 	if (!priv->map) {
@@ -469,24 +434,38 @@ static int fsl_pq_mdio_probe(struct platform_device *pdev)
 
 	if (data->get_tbipa) {
 		for_each_child_of_node(np, tbi) {
-			if (of_node_is_type(tbi, "tbi-phy")) {
-				dev_dbg(&pdev->dev, "found TBI PHY node %pOFP\n",
-					tbi);
+			if (strcmp(tbi->type, "tbi-phy") == 0) {
+				dev_dbg(&pdev->dev, "found TBI PHY node %s\n",
+					strrchr(tbi->full_name, '/') + 1);
 				break;
 			}
 		}
 
 		if (tbi) {
 			const u32 *prop = of_get_property(tbi, "reg", NULL);
+			uint32_t __iomem *tbipa;
+
 			if (!prop) {
 				dev_err(&pdev->dev,
-					"missing 'reg' property in node %pOF\n",
-					tbi);
+					"missing 'reg' property in node %s\n",
+					tbi->full_name);
 				err = -EBUSY;
 				goto error;
 			}
-			set_tbipa(*prop, pdev,
-				  data->get_tbipa, priv->map, &res);
+
+			tbipa = data->get_tbipa(priv->map);
+
+			/*
+			 * Add consistency check to make sure TBI is contained
+			 * within the mapped range (not because we would get a
+			 * segfault, rather to catch bugs in computing TBI
+			 * address). Print error message but continue anyway.
+			 */
+			if ((void *)tbipa > priv->map + resource_size(&res) - 4)
+				dev_err(&pdev->dev, "invalid register map (should be at least 0x%04zx to contain TBI address)\n",
+					((void *)tbipa - priv->map) + 4);
+
+			iowrite32be(be32_to_cpup(prop), tbipa);
 		}
 	}
 
@@ -512,7 +491,7 @@ error:
 }
 
 
-static void fsl_pq_mdio_remove(struct platform_device *pdev)
+static int fsl_pq_mdio_remove(struct platform_device *pdev)
 {
 	struct device *device = &pdev->dev;
 	struct mii_bus *bus = dev_get_drvdata(device);
@@ -522,6 +501,8 @@ static void fsl_pq_mdio_remove(struct platform_device *pdev)
 
 	iounmap(priv->map);
 	mdiobus_free(bus);
+
+	return 0;
 }
 
 static struct platform_driver fsl_pq_mdio_driver = {
@@ -530,7 +511,7 @@ static struct platform_driver fsl_pq_mdio_driver = {
 		.of_match_table = fsl_pq_mdio_match,
 	},
 	.probe = fsl_pq_mdio_probe,
-	.remove_new = fsl_pq_mdio_remove,
+	.remove = fsl_pq_mdio_remove,
 };
 
 module_platform_driver(fsl_pq_mdio_driver);

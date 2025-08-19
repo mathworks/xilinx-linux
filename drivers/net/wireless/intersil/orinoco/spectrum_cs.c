@@ -157,7 +157,6 @@ spectrum_cs_probe(struct pcmcia_device *link)
 {
 	struct orinoco_private *priv;
 	struct orinoco_pccard *card;
-	int ret;
 
 	priv = alloc_orinocodev(sizeof(*card), &link->dev,
 				spectrum_cs_hard_reset,
@@ -170,16 +169,8 @@ spectrum_cs_probe(struct pcmcia_device *link)
 	card->p_dev = link;
 	link->priv = priv;
 
-	ret = spectrum_cs_config(link);
-	if (ret)
-		goto err_free_orinocodev;
-
-	return 0;
-
-err_free_orinocodev:
-	free_orinocodev(priv);
-	return ret;
-}
+	return spectrum_cs_config(link);
+}				/* spectrum_cs_attach */
 
 static void spectrum_cs_detach(struct pcmcia_device *link)
 {
@@ -287,11 +278,12 @@ static int
 spectrum_cs_suspend(struct pcmcia_device *link)
 {
 	struct orinoco_private *priv = link->priv;
+	int err = 0;
 
 	/* Mark the device as stopped, to block IO until later */
 	orinoco_down(priv);
 
-	return 0;
+	return err;
 }
 
 static int

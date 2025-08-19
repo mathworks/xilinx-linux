@@ -143,7 +143,7 @@ xremap_match_mapping(struct xremap_device *xremap,
  */
 
 static int xremap_enum_mbus_code(struct v4l2_subdev *subdev,
-				 struct v4l2_subdev_state *sd_state,
+				 struct v4l2_subdev_pad_config *cfg,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct xremap_device *xremap = to_remap(subdev);
@@ -176,7 +176,7 @@ static int xremap_enum_mbus_code(struct v4l2_subdev *subdev,
 		if (code->index)
 			return -EINVAL;
 
-		format = v4l2_subdev_get_try_format(subdev, sd_state, code->pad);
+		format = v4l2_subdev_get_try_format(subdev, cfg, code->pad);
 		code->code = format->code;
 	}
 
@@ -184,12 +184,12 @@ static int xremap_enum_mbus_code(struct v4l2_subdev *subdev,
 }
 
 static int xremap_enum_frame_size(struct v4l2_subdev *subdev,
-				  struct v4l2_subdev_state *sd_state,
+				  struct v4l2_subdev_pad_config *cfg,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct v4l2_mbus_framefmt *format;
 
-	format = v4l2_subdev_get_try_format(subdev, sd_state, fse->pad);
+	format = v4l2_subdev_get_try_format(subdev, cfg, fse->pad);
 
 	if (fse->index || fse->code != format->code)
 		return -EINVAL;
@@ -215,56 +215,42 @@ static int xremap_enum_frame_size(struct v4l2_subdev *subdev,
 
 static struct v4l2_mbus_framefmt *
 xremap_get_pad_format(struct xremap_device *xremap,
-		      struct v4l2_subdev_state *sd_state,
+		      struct v4l2_subdev_pad_config *cfg,
 		      unsigned int pad, u32 which)
 {
-	struct v4l2_mbus_framefmt *format;
-
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		format = v4l2_subdev_get_try_format(&xremap->xvip.subdev,
-						    sd_state, pad);
-		break;
+		return v4l2_subdev_get_try_format(&xremap->xvip.subdev, cfg,
+						  pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		format = &xremap->formats[pad];
-		break;
+		return &xremap->formats[pad];
 	default:
-		format = NULL;
-		break;
+		return NULL;
 	}
-
-	return format;
 }
 
 static int xremap_get_format(struct v4l2_subdev *subdev,
-			     struct v4l2_subdev_state *sd_state,
+			     struct v4l2_subdev_pad_config *cfg,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct xremap_device *xremap = to_remap(subdev);
-	struct v4l2_mbus_framefmt *format;
 
-	format = xremap_get_pad_format(xremap, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
-
-	fmt->format = *format;
+	fmt->format = *xremap_get_pad_format(xremap, cfg, fmt->pad, fmt->which);
 
 	return 0;
 }
 
 static int xremap_set_format(struct v4l2_subdev *subdev,
-			     struct v4l2_subdev_state *sd_state,
+			     struct v4l2_subdev_pad_config *cfg,
 			     struct v4l2_subdev_format *fmt)
 {
 	struct xremap_device *xremap = to_remap(subdev);
-	const struct xremap_mapping_output *output = NULL;
+	const struct xremap_mapping_output *output;
 	const struct xremap_mapping *mapping;
 	struct v4l2_mbus_framefmt *format;
 	unsigned int i;
 
-	format = xremap_get_pad_format(xremap, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
+	format = xremap_get_pad_format(xremap, cfg, fmt->pad, fmt->which);
 
 	if (fmt->pad == XREMAP_PAD_SOURCE) {
 		fmt->format = *format;
@@ -300,10 +286,8 @@ static int xremap_set_format(struct v4l2_subdev *subdev,
 	fmt->format = *format;
 
 	/* Propagate the format to the source pad. */
-	format = xremap_get_pad_format(xremap, sd_state, XREMAP_PAD_SOURCE,
+	format = xremap_get_pad_format(xremap, cfg, XREMAP_PAD_SOURCE,
 				       fmt->which);
-	if (!format)
-		return -EINVAL;
 	*format = fmt->format;
 	format->code = output->code;
 
@@ -337,7 +321,7 @@ static void xremap_init_formats(struct v4l2_subdev *subdev,
 	format.format.width = XREMAP_DEF_WIDTH;
 	format.format.height = XREMAP_DEF_HEIGHT;
 
-	xremap_set_format(subdev, fh ? fh->state : NULL, &format);
+	xremap_set_format(subdev, fh ? fh->pad : NULL, &format);
 }
 
 static int xremap_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
@@ -489,11 +473,7 @@ static int xremap_probe(struct platform_device *pdev)
 	if (IS_ERR(xremap->xvip.clk))
 		return PTR_ERR(xremap->xvip.clk);
 
-	ret = clk_prepare_enable(xremap->xvip.clk);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to enable clk (%d)\n", ret);
-		return ret;
-	}
+	clk_prepare_enable(xremap->xvip.clk);
 
 	/* Initialize V4L2 subdevice and media entity */
 	subdev = &xremap->xvip.subdev;
@@ -563,4 +543,4 @@ module_platform_driver(xremap_driver);
 
 MODULE_AUTHOR("Laurent Pinchart <laurent.pinchart@ideasonboard.com>");
 MODULE_DESCRIPTION("Xilinx Video Remapper Driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

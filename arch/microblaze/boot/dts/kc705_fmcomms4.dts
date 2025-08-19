@@ -1,29 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Analog Devices EVAL-AD-FMCOMMS4-EBZ
- * https://wiki.analog.com/resources/tools-software/linux-drivers/iio-transceiver/ad9361
- * https://wiki.analog.com/eval/user-guides/ad-fmcomms4-ebz
- *
- * hdl_project: <fmcomms2/kc705>
- * board_revision: <>
- *
- * Copyright (C) 2014-2021 Analog Devices Inc.
- */
+
 /dts-v1/;
-#include "kc705.dtsi"
+/include/ "kc705.dtsi"
 
 #define fmc_i2c fmc_lpc_iic
 #define fmc_spi axi_spi
-
-/ {
-	model = "Analog Devices AD-FMCOMMS4-EBZ @Xilinx/kc705";
-};
-
-/* fmcomms2_kcu105: updated 2019_R2 */
-&axi_intc {
-	xlnx,kind-of-intr = <0xffffc5f0>;
-};
-
 
 &amba_pl {
 	rx_dma: dma@7c400000 {
@@ -65,6 +45,7 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <2>;
+				adi,cyclic;
 			};
 		};
 	};

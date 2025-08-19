@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM rpm
@@ -69,12 +68,6 @@ DEFINE_EVENT(rpm_internal, rpm_resume,
 	TP_ARGS(dev, flags)
 );
 DEFINE_EVENT(rpm_internal, rpm_idle,
-
-	TP_PROTO(struct device *dev, int flags),
-
-	TP_ARGS(dev, flags)
-);
-DEFINE_EVENT(rpm_internal, rpm_usage,
 
 	TP_PROTO(struct device *dev, int flags),
 

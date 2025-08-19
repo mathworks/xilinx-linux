@@ -21,22 +21,17 @@
  *
  */
 
-#include <linux/acpi.h>
-#include <linux/backlight.h>
 #include <linux/pci.h>
-#include <linux/pm_runtime.h>
-#include <linux/power_supply.h>
+#include <linux/acpi.h>
 #include <linux/slab.h>
-
-#include <acpi/acpi_bus.h>
+#include <linux/power_supply.h>
+#include <linux/pm_runtime.h>
 #include <acpi/video.h>
-
-#include <drm/drm_probe_helper.h>
-
-#include "atom.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
 #include "radeon.h"
 #include "radeon_acpi.h"
-#include "radeon_pm.h"
+#include "atom.h"
 
 #if defined(CONFIG_VGA_SWITCHEROO)
 bool radeon_atpx_dgpu_req_power_for_displays(void);
@@ -45,6 +40,8 @@ static inline bool radeon_atpx_dgpu_req_power_for_displays(void) { return false;
 #endif
 
 #define ACPI_AC_CLASS           "ac_adapter"
+
+extern void radeon_pm_acpi_event_handler(struct radeon_device *rdev);
 
 struct atif_verify_interface {
 	u16 size;		/* structure size in bytes (includes size field) */
@@ -354,7 +351,7 @@ out:
  * handles it.
  * Returns NOTIFY code
  */
-static int radeon_atif_handler(struct radeon_device *rdev,
+int radeon_atif_handler(struct radeon_device *rdev,
 		struct acpi_bus_event *event)
 {
 	struct radeon_atif *atif = &rdev->atif;
@@ -391,6 +388,7 @@ static int radeon_atif_handler(struct radeon_device *rdev,
 
 			radeon_set_backlight_level(rdev, enc, req.backlight_level);
 
+#if defined(CONFIG_BACKLIGHT_CLASS_DEVICE) || defined(CONFIG_BACKLIGHT_CLASS_DEVICE_MODULE)
 			if (rdev->is_atom_bios) {
 				struct radeon_encoder_atom_dig *dig = enc->enc_priv;
 				backlight_force_update(dig->bl_dev,
@@ -400,6 +398,7 @@ static int radeon_atif_handler(struct radeon_device *rdev,
 				backlight_force_update(dig->bl_dev,
 						       BACKLIGHT_UPDATE_HOTKEY);
 			}
+#endif
 		}
 	}
 	if (req.pending & ATIF_DGPU_DISPLAY_EVENT) {
@@ -618,7 +617,7 @@ int radeon_acpi_pcie_performance_request(struct radeon_device *rdev,
 
 	atcs_input.size = sizeof(struct atcs_pref_req_input);
 	/* client id (bit 2-0: func num, 7-3: dev num, 15-8: bus num) */
-	atcs_input.client_id = pci_dev_id(rdev->pdev);
+	atcs_input.client_id = rdev->pdev->devfn | (rdev->pdev->bus->number << 8);
 	atcs_input.valid_flags_mask = ATCS_VALID_FLAGS_MASK;
 	atcs_input.flags = ATCS_WAIT_FOR_COMPLETION;
 	if (advertise)

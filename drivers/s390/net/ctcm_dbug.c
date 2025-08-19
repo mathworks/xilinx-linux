@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	Copyright IBM Corp. 2001, 2007
  *	Authors:	Peter Tiedemann (ptiedem@de.ibm.com)
@@ -70,7 +69,7 @@ void ctcm_dbf_longtext(enum ctcm_dbf_names dbf_nix, int level, char *fmt, ...)
 	if (!debug_level_enabled(ctcm_dbf[dbf_nix].id, level))
 		return;
 	va_start(args, fmt);
-	vscnprintf(dbf_txt_buf, sizeof(dbf_txt_buf), fmt, args);
+	vsnprintf(dbf_txt_buf, sizeof(dbf_txt_buf), fmt, args);
 	va_end(args);
 
 	debug_text_event(ctcm_dbf[dbf_nix].id, level, dbf_txt_buf);

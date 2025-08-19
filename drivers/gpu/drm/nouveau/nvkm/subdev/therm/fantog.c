@@ -53,7 +53,7 @@ nvkm_fantog_update(struct nvkm_fantog *fan, int percent)
 	duty = !nvkm_gpio_get(gpio, 0, DCB_GPIO_FAN, 0xff);
 	nvkm_gpio_set(gpio, 0, DCB_GPIO_FAN, 0xff, duty);
 
-	if (percent != (duty * 100)) {
+	if (list_empty(&fan->alarm.head) && percent != (duty * 100)) {
 		u64 next_change = (percent * fan->period_us) / 100;
 		if (!duty)
 			next_change = fan->period_us - next_change;
@@ -100,10 +100,10 @@ nvkm_fantog_create(struct nvkm_therm *therm, struct dcb_gpio_func *func)
 	}
 
 	fan = kzalloc(sizeof(*fan), GFP_KERNEL);
+	therm->fan = &fan->base;
 	if (!fan)
 		return -ENOMEM;
 
-	therm->fan = &fan->base;
 	fan->base.type = "toggle";
 	fan->base.get = nvkm_fantog_get;
 	fan->base.set = nvkm_fantog_set;

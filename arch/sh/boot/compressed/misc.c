@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/boot/compressed/misc.c
  *
@@ -12,7 +11,7 @@
  * Modified to use standard LinuxSH BIOS by Greg Banks 7Jul2000
  */
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/addrspace.h>
 #include <asm/page.h>
 
@@ -104,22 +103,11 @@ static void error(char *x)
 	while(1);	/* Halt */
 }
 
-const unsigned long __stack_chk_guard = 0x000a0dff;
-
-void __stack_chk_fail(void)
-{
-	error("stack-protector: Kernel stack is corrupted\n");
-}
-
-/* Needed because vmlinux.lds.h references this */
-void ftrace_stub(void)
-{
-}
-void arch_ftrace_ops_list_func(void)
-{
-}
-
+#ifdef CONFIG_SUPERH64
+#define stackalign	8
+#else
 #define stackalign	4
+#endif
 
 #define STACK_SIZE (4096)
 long __attribute__ ((aligned(stackalign))) user_stack[STACK_SIZE];
@@ -129,9 +117,13 @@ void decompress_kernel(void)
 {
 	unsigned long output_addr;
 
+#ifdef CONFIG_SUPERH64
+	output_addr = (CONFIG_MEMORY_START + 0x2000);
+#else
 	output_addr = __pa((unsigned long)&_text+PAGE_SIZE);
 #if defined(CONFIG_29BIT)
 	output_addr |= P2SEG;
+#endif
 #endif
 
 	output = (unsigned char *)output_addr;

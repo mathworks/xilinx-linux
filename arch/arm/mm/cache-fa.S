@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/mm/cache-fa.S
  *
@@ -8,11 +7,16 @@
  * Based on cache-v4wb.S:
  *  Copyright (C) 1997-2002 Russell king
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  *  Processors: FA520 FA526 FA626	
  */
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
+#include <asm/memory.h>
 #include <asm/page.h>
 
 #include "proc-macros.S"

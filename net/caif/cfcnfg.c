@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson AB 2010
  * Author:	Sjur Brendeland
+ * License terms: GNU General Public License (GPL) version 2
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
@@ -268,15 +268,17 @@ static int caif_connect_req_to_link_param(struct cfcnfg *cnfg,
 	case CAIFPROTO_RFM:
 		l->linktype = CFCTRL_SRV_RFM;
 		l->u.datagram.connid = s->sockaddr.u.rfm.connection_id;
-		strscpy(l->u.rfm.volume, s->sockaddr.u.rfm.volume,
-			sizeof(l->u.rfm.volume));
+		strncpy(l->u.rfm.volume, s->sockaddr.u.rfm.volume,
+			sizeof(l->u.rfm.volume)-1);
+		l->u.rfm.volume[sizeof(l->u.rfm.volume)-1] = 0;
 		break;
 	case CAIFPROTO_UTIL:
 		l->linktype = CFCTRL_SRV_UTIL;
 		l->endpoint = 0x00;
 		l->chtype = 0x00;
-		strscpy(l->u.utility.name, s->sockaddr.u.util.service,
-			sizeof(l->u.utility.name));
+		strncpy(l->u.utility.name, s->sockaddr.u.util.service,
+			sizeof(l->u.utility.name)-1);
+		l->u.utility.name[sizeof(l->u.utility.name)-1] = 0;
 		caif_assert(sizeof(l->u.utility.name) > 10);
 		l->u.utility.paramlen = s->param.size;
 		if (l->u.utility.paramlen > sizeof(l->u.utility.params))
@@ -388,7 +390,8 @@ cfcnfg_linkup_rsp(struct cflayer *layer, u8 channel_id, enum cfctrl_srv serv,
 	rcu_read_lock();
 
 	if (adapt_layer == NULL) {
-		pr_debug("link setup response but no client exist, send linkdown back\n");
+		pr_debug("link setup response but no client exist,"
+				"send linkdown back\n");
 		cfctrl_linkdown_req(cnfg->ctrl, channel_id, NULL);
 		goto unlock;
 	}
@@ -398,7 +401,8 @@ cfcnfg_linkup_rsp(struct cflayer *layer, u8 channel_id, enum cfctrl_srv serv,
 
 	phyinfo = cfcnfg_get_phyinfo_rcu(cnfg, phyid);
 	if (phyinfo == NULL) {
-		pr_err("ERROR: Link Layer Device disappeared while connecting\n");
+		pr_err("ERROR: Link Layer Device disappeared"
+				"while connecting\n");
 		goto unlock;
 	}
 
@@ -432,7 +436,8 @@ cfcnfg_linkup_rsp(struct cflayer *layer, u8 channel_id, enum cfctrl_srv serv,
 		servicel = cfdbgl_create(channel_id, &phyinfo->dev_info);
 		break;
 	default:
-		pr_err("Protocol error. Link setup response - unknown channel type\n");
+		pr_err("Protocol error. Link setup response "
+				"- unknown channel type\n");
 		goto unlock;
 	}
 	if (!servicel)
@@ -450,7 +455,7 @@ unlock:
 	rcu_read_unlock();
 }
 
-int
+void
 cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
 		     struct net_device *dev, struct cflayer *phy_layer,
 		     enum cfcnfg_phy_preference pref,
@@ -459,7 +464,7 @@ cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
 {
 	struct cflayer *frml;
 	struct cfcnfg_phyinfo *phyinfo = NULL;
-	int i, res = 0;
+	int i;
 	u8 phyid;
 
 	mutex_lock(&cnfg->lock);
@@ -473,15 +478,12 @@ cfcnfg_add_phy_layer(struct cfcnfg *cnfg,
 			goto got_phyid;
 	}
 	pr_warn("Too many CAIF Link Layers (max 6)\n");
-	res = -EEXIST;
 	goto out;
 
 got_phyid:
 	phyinfo = kzalloc(sizeof(struct cfcnfg_phyinfo), GFP_ATOMIC);
-	if (!phyinfo) {
-		res = -ENOMEM;
-		goto out;
-	}
+	if (!phyinfo)
+		goto out_err;
 
 	phy_layer->id = phyid;
 	phyinfo->pref = pref;
@@ -495,10 +497,8 @@ got_phyid:
 
 	frml = cffrml_create(phyid, fcs);
 
-	if (!frml) {
-		res = -ENOMEM;
+	if (!frml)
 		goto out_err;
-	}
 	phyinfo->frm_layer = frml;
 	layer_set_up(frml, cnfg->mux);
 
@@ -516,12 +516,11 @@ got_phyid:
 	list_add_rcu(&phyinfo->node, &cnfg->phys);
 out:
 	mutex_unlock(&cnfg->lock);
-	return res;
+	return;
 
 out_err:
 	kfree(phyinfo);
 	mutex_unlock(&cnfg->lock);
-	return res;
 }
 EXPORT_SYMBOL(cfcnfg_add_phy_layer);
 

@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * NXP Wireless LAN device driver: functions for station ioctl
+ * Marvell Wireless LAN device driver: functions for station ioctl
  *
- * Copyright 2011-2020 NXP
+ * Copyright (C) 2011-2014, Marvell International Ltd.
+ *
+ * This software file (the "File") is distributed by Marvell International
+ * Ltd. under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -134,6 +146,7 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	size_t beacon_ie_len;
 	struct mwifiex_bss_priv *bss_priv = (void *)bss->priv;
 	const struct cfg80211_bss_ies *ies;
+	int ret;
 
 	rcu_read_lock();
 	ies = rcu_dereference(bss->ies);
@@ -177,7 +190,48 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	if (bss_desc->cap_info_bitmap & WLAN_CAPABILITY_SPECTRUM_MGMT)
 		bss_desc->sensed_11h = true;
 
-	return mwifiex_update_bss_desc_with_ie(priv->adapter, bss_desc);
+	ret = mwifiex_update_bss_desc_with_ie(priv->adapter, bss_desc);
+	if (ret)
+		return ret;
+
+	/* Update HT40 capability based on current channel information */
+	if (bss_desc->bcn_ht_oper && bss_desc->bcn_ht_cap) {
+		u8 ht_param = bss_desc->bcn_ht_oper->ht_param;
+		u8 radio = mwifiex_band_to_radio_type(bss_desc->bss_band);
+		struct ieee80211_supported_band *sband =
+						priv->wdev.wiphy->bands[radio];
+		int freq = ieee80211_channel_to_frequency(bss_desc->channel,
+							  radio);
+		struct ieee80211_channel *chan =
+			ieee80211_get_channel(priv->adapter->wiphy, freq);
+
+		switch (ht_param & IEEE80211_HT_PARAM_CHA_SEC_OFFSET) {
+		case IEEE80211_HT_PARAM_CHA_SEC_ABOVE:
+			if (chan->flags & IEEE80211_CHAN_NO_HT40PLUS) {
+				sband->ht_cap.cap &=
+					~IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+				sband->ht_cap.cap &= ~IEEE80211_HT_CAP_SGI_40;
+			} else {
+				sband->ht_cap.cap |=
+					IEEE80211_HT_CAP_SUP_WIDTH_20_40 |
+					IEEE80211_HT_CAP_SGI_40;
+			}
+			break;
+		case IEEE80211_HT_PARAM_CHA_SEC_BELOW:
+			if (chan->flags & IEEE80211_CHAN_NO_HT40MINUS) {
+				sband->ht_cap.cap &=
+					~IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+				sband->ht_cap.cap &= ~IEEE80211_HT_CAP_SGI_40;
+			} else {
+				sband->ht_cap.cap |=
+					IEEE80211_HT_CAP_SUP_WIDTH_20_40 |
+					IEEE80211_HT_CAP_SGI_40;
+			}
+			break;
+		}
+	}
+
+	return 0;
 }
 
 void mwifiex_dnld_txpwr_table(struct mwifiex_private *priv)
@@ -217,15 +271,6 @@ static int mwifiex_process_country_ie(struct mwifiex_private *priv,
 			    "11D: skip setting domain info in FW\n");
 		return 0;
 	}
-
-	if (country_ie_len >
-	    (IEEE80211_COUNTRY_STRING_LEN + MWIFIEX_MAX_TRIPLET_802_11D)) {
-		rcu_read_unlock();
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "11D: country_ie_len overflow!, deauth AP\n");
-		return -EINVAL;
-	}
-
 	memcpy(priv->adapter->country_code, &country_ie[2], 2);
 
 	domain_info->country_code[0] = country_ie[2];
@@ -269,9 +314,8 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 	priv->scan_block = false;
 
 	if (bss) {
-		if (adapter->region_code == 0x00 &&
-		    mwifiex_process_country_ie(priv, bss))
-			return -EINVAL;
+		if (adapter->region_code == 0x00)
+			mwifiex_process_country_ie(priv, bss);
 
 		/* Allocate and fill new bss descriptor */
 		bss_desc = kzalloc(sizeof(struct mwifiex_bssdescriptor),
@@ -417,8 +461,7 @@ int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
 		}
 		if (hs_cfg->is_invoke_hostcmd) {
 			if (hs_cfg->conditions == HS_CFG_CANCEL) {
-				if (!test_bit(MWIFIEX_IS_HS_CONFIGURED,
-					      &adapter->work_flags))
+				if (!adapter->is_hs_configured)
 					/* Already cancelled */
 					break;
 				/* Save previous condition */
@@ -517,7 +560,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 #endif
 			mwifiex_dbg(adapter, CMD, "aborting bgscan!\n");
 			mwifiex_stop_bg_scan(priv);
-			cfg80211_sched_scan_stopped(priv->wdev.wiphy, 0);
+			cfg80211_sched_scan_stopped(priv->wdev.wiphy);
 #ifdef CONFIG_PM
 		}
 #endif
@@ -534,7 +577,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 	memset(&hscfg, 0, sizeof(hscfg));
 	hscfg.is_invoke_hostcmd = true;
 
-	set_bit(MWIFIEX_IS_HS_ENABLING, &adapter->work_flags);
+	adapter->hs_enabling = true;
 	mwifiex_cancel_all_pending_cmd(adapter);
 
 	if (mwifiex_set_hs_params(mwifiex_get_priv(adapter,
@@ -600,8 +643,7 @@ int mwifiex_get_bss_info(struct mwifiex_private *priv,
 	else
 		info->wep_status = false;
 
-	info->is_hs_configured = test_bit(MWIFIEX_IS_HS_CONFIGURED,
-					  &adapter->work_flags);
+	info->is_hs_configured = adapter->is_hs_configured;
 	info->is_deep_sleep = adapter->is_deep_sleep;
 
 	return 0;
@@ -612,9 +654,9 @@ int mwifiex_get_bss_info(struct mwifiex_private *priv,
  */
 int mwifiex_disable_auto_ds(struct mwifiex_private *priv)
 {
-	struct mwifiex_ds_auto_ds auto_ds = {
-		.auto_ds = DEEP_SLEEP_OFF,
-	};
+	struct mwifiex_ds_auto_ds auto_ds;
+
+	auto_ds.auto_ds = DEEP_SLEEP_OFF;
 
 	return mwifiex_send_cmd(priv, HostCmd_CMD_802_11_PS_MODE_ENH,
 				DIS_AUTO_PS, BITMAP_AUTO_DS, &auto_ds, true);
@@ -686,9 +728,6 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 	txp_cfg = (struct host_cmd_ds_txpwr_cfg *) buf;
 	txp_cfg->action = cpu_to_le16(HostCmd_ACT_GEN_SET);
 	if (!power_cfg->is_power_auto) {
-		u16 dbm_min = power_cfg->is_power_fixed ?
-			      dbm : priv->min_tx_power_level;
-
 		txp_cfg->mode = cpu_to_le32(1);
 		pg_tlv = (struct mwifiex_types_power_group *)
 			 (buf + sizeof(struct host_cmd_ds_txpwr_cfg));
@@ -703,7 +742,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x03;
 		pg->modulation_class = MOD_CLASS_HR_DSSS;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg++;
 		/* Power group for modulation class OFDM */
@@ -711,7 +750,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x07;
 		pg->modulation_class = MOD_CLASS_OFDM;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg++;
 		/* Power group for modulation class HTBW20 */
@@ -719,7 +758,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x20;
 		pg->modulation_class = MOD_CLASS_HT;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg->ht_bandwidth = HT_BW_20;
 		pg++;
@@ -728,7 +767,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x20;
 		pg->modulation_class = MOD_CLASS_HT;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg->ht_bandwidth = HT_BW_40;
 	}
@@ -772,8 +811,8 @@ int mwifiex_drv_set_power(struct mwifiex_private *priv, u32 *ps_mode)
  * is checked to determine WPA version. If buffer length is zero, the existing
  * WPA IE is reset.
  */
-static int mwifiex_set_wpa_ie(struct mwifiex_private *priv,
-			      u8 *ie_data_ptr, u16 ie_len)
+static int mwifiex_set_wpa_ie_helper(struct mwifiex_private *priv,
+				     u8 *ie_data_ptr, u16 ie_len)
 {
 	if (ie_len) {
 		if (ie_len > sizeof(priv->wpa_ie)) {
@@ -1120,6 +1159,8 @@ int mwifiex_set_encode(struct mwifiex_private *priv, struct key_params *kp,
 			encrypt_key.is_rx_seq_valid = true;
 		}
 	} else {
+		if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP)
+			return 0;
 		encrypt_key.key_disable = true;
 		if (mac_addr)
 			memcpy(encrypt_key.mac_addr, mac_addr, ETH_ALEN);
@@ -1312,96 +1353,101 @@ static int
 mwifiex_set_gen_ie_helper(struct mwifiex_private *priv, u8 *ie_data_ptr,
 			  u16 ie_len)
 {
+	int ret = 0;
 	struct ieee_types_vendor_header *pvendor_ie;
-	static const u8 wpa_oui[] = { 0x00, 0x50, 0xf2, 0x01 };
-	static const u8 wps_oui[] = { 0x00, 0x50, 0xf2, 0x04 };
-	u16 unparsed_len = ie_len, cur_ie_len;
+	const u8 wpa_oui[] = { 0x00, 0x50, 0xf2, 0x01 };
+	const u8 wps_oui[] = { 0x00, 0x50, 0xf2, 0x04 };
+	u16 unparsed_len = ie_len;
+	int find_wpa_ie = 0;
 
 	/* If the passed length is zero, reset the buffer */
 	if (!ie_len) {
 		priv->gen_ie_buf_len = 0;
 		priv->wps.session_enable = false;
+
 		return 0;
-	} else if (!ie_data_ptr ||
-		   ie_len <= sizeof(struct ieee_types_header)) {
+	} else if (!ie_data_ptr) {
 		return -1;
 	}
 	pvendor_ie = (struct ieee_types_vendor_header *) ie_data_ptr;
 
 	while (pvendor_ie) {
-		cur_ie_len = pvendor_ie->len + sizeof(struct ieee_types_header);
+		if (pvendor_ie->element_id == WLAN_EID_VENDOR_SPECIFIC) {
+			/* Test to see if it is a WPA IE, if not, then it is a
+			 * gen IE
+			 */
+			if (!memcmp(pvendor_ie->oui, wpa_oui,
+				    sizeof(wpa_oui))) {
+				find_wpa_ie = 1;
+				break;
+			}
+
+			/* Test to see if it is a WPS IE, if so, enable
+			 * wps session flag
+			 */
+			if (!memcmp(pvendor_ie->oui, wps_oui,
+				    sizeof(wps_oui))) {
+				priv->wps.session_enable = true;
+				mwifiex_dbg(priv->adapter, MSG,
+					    "info: WPS Session Enabled.\n");
+				ret = mwifiex_set_wps_ie(priv,
+							 (u8 *)pvendor_ie,
+							 unparsed_len);
+			}
+		}
 
 		if (pvendor_ie->element_id == WLAN_EID_RSN) {
-			/* IE is a WPA/WPA2 IE so call set_wpa function */
-			mwifiex_set_wpa_ie(priv, (u8 *)pvendor_ie, cur_ie_len);
-			priv->wps.session_enable = false;
-			goto next_ie;
+			find_wpa_ie = 1;
+			break;
 		}
 
 		if (pvendor_ie->element_id == WLAN_EID_BSS_AC_ACCESS_DELAY) {
-			/* IE is a WAPI IE so call set_wapi function */
-			mwifiex_set_wapi_ie(priv, (u8 *)pvendor_ie,
-					    cur_ie_len);
-			goto next_ie;
+		/* IE is a WAPI IE so call set_wapi function */
+			ret = mwifiex_set_wapi_ie(priv, (u8 *)pvendor_ie,
+						  unparsed_len);
+			return ret;
 		}
 
-		if (pvendor_ie->element_id == WLAN_EID_VENDOR_SPECIFIC) {
-			/* Test to see if it is a WPA IE, if not, then
-			 * it is a gen IE
-			 */
-			if (!memcmp(&pvendor_ie->oui, wpa_oui,
-				    sizeof(wpa_oui))) {
-				/* IE is a WPA/WPA2 IE so call set_wpa function
-				 */
-				mwifiex_set_wpa_ie(priv, (u8 *)pvendor_ie,
-						   cur_ie_len);
-				priv->wps.session_enable = false;
-				goto next_ie;
-			}
-
-			if (!memcmp(&pvendor_ie->oui, wps_oui,
-				    sizeof(wps_oui))) {
-				/* Test to see if it is a WPS IE,
-				 * if so, enable wps session flag
-				 */
-				priv->wps.session_enable = true;
-				mwifiex_dbg(priv->adapter, MSG,
-					    "WPS Session Enabled.\n");
-				mwifiex_set_wps_ie(priv, (u8 *)pvendor_ie,
-						   cur_ie_len);
-				goto next_ie;
-			}
-		}
-
-		/* Saved in gen_ie, such as P2P IE.etc.*/
-
-		/* Verify that the passed length is not larger than the
-		 * available space remaining in the buffer
-		 */
-		if (cur_ie_len <
-		    (sizeof(priv->gen_ie_buf) - priv->gen_ie_buf_len)) {
-			/* Append the passed data to the end
-			 * of the genIeBuffer
-			 */
-			memcpy(priv->gen_ie_buf + priv->gen_ie_buf_len,
-			       (u8 *)pvendor_ie, cur_ie_len);
-			/* Increment the stored buffer length by the
-			 * size passed
-			 */
-			priv->gen_ie_buf_len += cur_ie_len;
-		}
-
-next_ie:
-		unparsed_len -= cur_ie_len;
+		unparsed_len -= (pvendor_ie->len +
+				 sizeof(struct ieee_types_header));
 
 		if (unparsed_len <= sizeof(struct ieee_types_header))
 			pvendor_ie = NULL;
 		else
 			pvendor_ie = (struct ieee_types_vendor_header *)
-				(((u8 *)pvendor_ie) + cur_ie_len);
+				(((u8 *)pvendor_ie) + pvendor_ie->len +
+				 sizeof(struct ieee_types_header));
 	}
 
-	return 0;
+	if (find_wpa_ie) {
+		/* IE is a WPA/WPA2 IE so call set_wpa function */
+		ret = mwifiex_set_wpa_ie_helper(priv, (u8 *)pvendor_ie,
+						unparsed_len);
+		priv->wps.session_enable = false;
+		return ret;
+	}
+
+	/*
+	 * Verify that the passed length is not larger than the
+	 * available space remaining in the buffer
+	 */
+	if (ie_len < (sizeof(priv->gen_ie_buf) - priv->gen_ie_buf_len)) {
+
+		/* Append the passed data to the end of the
+		   genIeBuffer */
+		memcpy(priv->gen_ie_buf + priv->gen_ie_buf_len, ie_data_ptr,
+		       ie_len);
+		/* Increment the stored buffer length by the
+		   size passed */
+		priv->gen_ie_buf_len += ie_len;
+	} else {
+		/* Passed data does not fit in the remaining
+		   buffer space */
+		ret = -1;
+	}
+
+	/* Return 0, or -1 for error case */
+	return ret;
 }
 
 /*
@@ -1481,18 +1527,6 @@ int mwifiex_get_wakeup_reason(struct mwifiex_private *priv, u16 action,
 	status = mwifiex_send_cmd(priv, HostCmd_CMD_HS_WAKEUP_REASON,
 				  HostCmd_ACT_GEN_GET, 0, wakeup_reason,
 				  cmd_type == MWIFIEX_SYNC_CMD);
-
-	return status;
-}
-
-int mwifiex_get_chan_info(struct mwifiex_private *priv,
-			  struct mwifiex_channel_band *channel_band)
-{
-	int status = 0;
-
-	status = mwifiex_send_cmd(priv, HostCmd_CMD_STA_CONFIGURE,
-				  HostCmd_ACT_GEN_GET, 0, channel_band,
-				  MWIFIEX_SYNC_CMD);
 
 	return status;
 }

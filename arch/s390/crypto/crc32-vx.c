@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Crypto-API module for CRC-32 algorithms implemented with the
  * z/Architecture Vector Extension Facility.
@@ -111,8 +110,10 @@ static int crc32_vx_setkey(struct crypto_shash *tfm, const u8 *newkey,
 {
 	struct crc_ctx *mctx = crypto_shash_ctx(tfm);
 
-	if (newkeylen != sizeof(mctx->key))
+	if (newkeylen != sizeof(mctx->key)) {
+		crypto_shash_set_flags(tfm, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
+	}
 	mctx->key = le32_to_cpu(*(__le32 *)newkey);
 	return 0;
 }
@@ -122,8 +123,10 @@ static int crc32be_vx_setkey(struct crypto_shash *tfm, const u8 *newkey,
 {
 	struct crc_ctx *mctx = crypto_shash_ctx(tfm);
 
-	if (newkeylen != sizeof(mctx->key))
+	if (newkeylen != sizeof(mctx->key)) {
+		crypto_shash_set_flags(tfm, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
+	}
 	mctx->key = be32_to_cpu(*(__be32 *)newkey);
 	return 0;
 }
@@ -235,7 +238,6 @@ static struct shash_alg crc32_vx_algs[] = {
 			.cra_name	 = "crc32",
 			.cra_driver_name = "crc32-vx",
 			.cra_priority	 = 200,
-			.cra_flags	 = CRYPTO_ALG_OPTIONAL_KEY,
 			.cra_blocksize	 = CRC32_BLOCK_SIZE,
 			.cra_ctxsize	 = sizeof(struct crc_ctx),
 			.cra_module	 = THIS_MODULE,
@@ -256,7 +258,6 @@ static struct shash_alg crc32_vx_algs[] = {
 			.cra_name	 = "crc32be",
 			.cra_driver_name = "crc32be-vx",
 			.cra_priority	 = 200,
-			.cra_flags	 = CRYPTO_ALG_OPTIONAL_KEY,
 			.cra_blocksize	 = CRC32_BLOCK_SIZE,
 			.cra_ctxsize	 = sizeof(struct crc_ctx),
 			.cra_module	 = THIS_MODULE,
@@ -277,7 +278,6 @@ static struct shash_alg crc32_vx_algs[] = {
 			.cra_name	 = "crc32c",
 			.cra_driver_name = "crc32c-vx",
 			.cra_priority	 = 200,
-			.cra_flags	 = CRYPTO_ALG_OPTIONAL_KEY,
 			.cra_blocksize	 = CRC32_BLOCK_SIZE,
 			.cra_ctxsize	 = sizeof(struct crc_ctx),
 			.cra_module	 = THIS_MODULE,
@@ -298,7 +298,7 @@ static void __exit crc_vx_mod_exit(void)
 	crypto_unregister_shashes(crc32_vx_algs, ARRAY_SIZE(crc32_vx_algs));
 }
 
-module_cpu_feature_match(S390_CPU_FEATURE_VXRS, crc_vx_mod_init);
+module_cpu_feature_match(VXRS, crc_vx_mod_init);
 module_exit(crc_vx_mod_exit);
 
 MODULE_AUTHOR("Hendrik Brueckner <brueckner@linux.vnet.ibm.com>");

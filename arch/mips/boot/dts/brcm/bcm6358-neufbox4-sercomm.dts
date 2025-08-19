@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
-#include "bcm6358.dtsi"
+/include/ "bcm6358.dtsi"
 
 / {
 	compatible = "sfr,nb4-ser", "brcm,bcm6358";
@@ -19,7 +18,7 @@
 };
 
 &leds0 {
-	status = "okay";
+	status = "ok";
 
 	led@0 {
 		reg = <0>;

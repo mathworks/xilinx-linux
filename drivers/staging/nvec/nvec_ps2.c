@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * nvec_ps2: mouse driver for a NVIDIA compliant embedded controller
  *
@@ -7,6 +6,11 @@
  * Authors:  Pierre-Hugues Husson <phhusson@free.fr>
  *           Ilya Petrov <ilya.muromec@gmail.com>
  *           Marc Dietrich <marvin24@gmx.de>
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
  */
 
 #include <linux/module.h>
@@ -28,7 +32,7 @@
 	print_hex_dump(KERN_DEBUG, str, DUMP_PREFIX_NONE, \
 			16, 1, buf, len, false)
 #else
-#define NVEC_PHD(str, buf, len) do { } while (0)
+#define NVEC_PHD(str, buf, len)
 #endif
 
 enum ps2_subcmds {
@@ -103,7 +107,7 @@ static int nvec_mouse_probe(struct platform_device *pdev)
 	struct nvec_chip *nvec = dev_get_drvdata(pdev->dev.parent);
 	struct serio *ser_dev;
 
-	ser_dev = kzalloc(sizeof(*ser_dev), GFP_KERNEL);
+	ser_dev = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (!ser_dev)
 		return -ENOMEM;
 
@@ -112,8 +116,8 @@ static int nvec_mouse_probe(struct platform_device *pdev)
 	ser_dev->start = ps2_startstreaming;
 	ser_dev->stop = ps2_stopstreaming;
 
-	strscpy(ser_dev->name, "nvec mouse", sizeof(ser_dev->name));
-	strscpy(ser_dev->phys, "nvec", sizeof(ser_dev->phys));
+	strlcpy(ser_dev->name, "nvec mouse", sizeof(ser_dev->name));
+	strlcpy(ser_dev->phys, "nvec", sizeof(ser_dev->phys));
 
 	ps2_dev.ser_dev = ser_dev;
 	ps2_dev.notifier.notifier_call = nvec_ps2_notifier;
@@ -125,7 +129,7 @@ static int nvec_mouse_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void nvec_mouse_remove(struct platform_device *pdev)
+static int nvec_mouse_remove(struct platform_device *pdev)
 {
 	struct nvec_chip *nvec = dev_get_drvdata(pdev->dev.parent);
 
@@ -133,6 +137,8 @@ static void nvec_mouse_remove(struct platform_device *pdev)
 	ps2_stopstreaming(ps2_dev.ser_dev);
 	nvec_unregister_notifier(nvec, &ps2_dev.notifier);
 	serio_unregister_port(ps2_dev.ser_dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -164,7 +170,7 @@ static SIMPLE_DEV_PM_OPS(nvec_mouse_pm_ops, nvec_mouse_suspend,
 
 static struct platform_driver nvec_mouse_driver = {
 	.probe  = nvec_mouse_probe,
-	.remove_new = nvec_mouse_remove,
+	.remove = nvec_mouse_remove,
 	.driver = {
 		.name = "nvec-mouse",
 		.pm = &nvec_mouse_pm_ops,

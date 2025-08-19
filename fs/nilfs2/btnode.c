@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
- * NILFS B-tree node cache
+ * btnode.c - NILFS B-tree node cache
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Originally written by Seiji Kihara.
  * Fully revised by Ryusuke Konishi for stabilization and simplification.
@@ -20,23 +29,6 @@
 #include "page.h"
 #include "btnode.h"
 
-
-/**
- * nilfs_init_btnc_inode - initialize B-tree node cache inode
- * @btnc_inode: inode to be initialized
- *
- * nilfs_init_btnc_inode() sets up an inode for B-tree node cache.
- */
-void nilfs_init_btnc_inode(struct inode *btnc_inode)
-{
-	struct nilfs_inode_info *ii = NILFS_I(btnc_inode);
-
-	btnc_inode->i_mode = S_IFREG;
-	ii->i_flags = 0;
-	memset(&ii->i_bmap_data, 0, sizeof(struct nilfs_bmap));
-	mapping_set_gfp_mask(btnc_inode->i_mapping, GFP_NOFS);
-}
-
 void nilfs_btnode_cache_clear(struct address_space *btnc)
 {
 	invalidate_mapping_pages(btnc, 0, -1);
@@ -46,7 +38,7 @@ void nilfs_btnode_cache_clear(struct address_space *btnc)
 struct buffer_head *
 nilfs_btnode_create_block(struct address_space *btnc, __u64 blocknr)
 {
-	struct inode *inode = btnc->host;
+	struct inode *inode = NILFS_BTNC_I(btnc);
 	struct buffer_head *bh;
 
 	bh = nilfs_grab_buffer(inode, btnc, blocknr, BIT(BH_NILFS_Node));
@@ -58,7 +50,7 @@ nilfs_btnode_create_block(struct address_space *btnc, __u64 blocknr)
 		brelse(bh);
 		BUG();
 	}
-	memset(bh->b_data, 0, i_blocksize(inode));
+	memset(bh->b_data, 0, 1 << inode->i_blkbits);
 	bh->b_bdev = inode->i_sb->s_bdev;
 	bh->b_blocknr = blocknr;
 	set_buffer_mapped(bh);
@@ -70,11 +62,11 @@ nilfs_btnode_create_block(struct address_space *btnc, __u64 blocknr)
 }
 
 int nilfs_btnode_submit_block(struct address_space *btnc, __u64 blocknr,
-			      sector_t pblocknr, blk_opf_t opf,
+			      sector_t pblocknr, int mode, int mode_flags,
 			      struct buffer_head **pbh, sector_t *submit_ptr)
 {
 	struct buffer_head *bh;
-	struct inode *inode = btnc->host;
+	struct inode *inode = NILFS_BTNC_I(btnc);
 	struct page *page;
 	int err;
 
@@ -103,13 +95,13 @@ int nilfs_btnode_submit_block(struct address_space *btnc, __u64 blocknr,
 		}
 	}
 
-	if (opf & REQ_RAHEAD) {
+	if (mode_flags & REQ_RAHEAD) {
 		if (pblocknr != *submit_ptr + 1 || !trylock_buffer(bh)) {
 			err = -EBUSY; /* internal code */
 			brelse(bh);
 			goto out_locked;
 		}
-	} else { /* opf == REQ_OP_READ */
+	} else { /* mode == READ */
 		lock_buffer(bh);
 	}
 	if (buffer_uptodate(bh)) {
@@ -122,7 +114,7 @@ int nilfs_btnode_submit_block(struct address_space *btnc, __u64 blocknr,
 	bh->b_blocknr = pblocknr; /* set block address for read */
 	bh->b_end_io = end_buffer_read_sync;
 	get_bh(bh);
-	submit_bh(opf, bh);
+	submit_bh(mode, mode_flags, bh);
 	bh->b_blocknr = blocknr; /* set back to the given block address */
 	*submit_ptr = pblocknr;
 	err = 0;
@@ -174,7 +166,7 @@ int nilfs_btnode_prepare_change_key(struct address_space *btnc,
 				    struct nilfs_btnode_chkey_ctxt *ctxt)
 {
 	struct buffer_head *obh, *nbh;
-	struct inode *inode = btnc->host;
+	struct inode *inode = NILFS_BTNC_I(btnc);
 	__u64 oldkey = ctxt->oldkey, newkey = ctxt->newkey;
 	int err;
 
@@ -185,35 +177,42 @@ int nilfs_btnode_prepare_change_key(struct address_space *btnc,
 	ctxt->newbh = NULL;
 
 	if (inode->i_blkbits == PAGE_SHIFT) {
-		struct page *opage = obh->b_page;
-		lock_page(opage);
+		lock_page(obh->b_page);
+		/*
+		 * We cannot call radix_tree_preload for the kernels older
+		 * than 2.6.23, because it is not exported for modules.
+		 */
 retry:
-		/* BUG_ON(oldkey != obh->b_folio->index); */
-		if (unlikely(oldkey != opage->index))
-			NILFS_PAGE_BUG(opage,
+		err = radix_tree_preload(GFP_NOFS & ~__GFP_HIGHMEM);
+		if (err)
+			goto failed_unlock;
+		/* BUG_ON(oldkey != obh->b_page->index); */
+		if (unlikely(oldkey != obh->b_page->index))
+			NILFS_PAGE_BUG(obh->b_page,
 				       "invalid oldkey %lld (newkey=%lld)",
 				       (unsigned long long)oldkey,
 				       (unsigned long long)newkey);
 
-		xa_lock_irq(&btnc->i_pages);
-		err = __xa_insert(&btnc->i_pages, newkey, opage, GFP_NOFS);
-		xa_unlock_irq(&btnc->i_pages);
+		spin_lock_irq(&btnc->tree_lock);
+		err = radix_tree_insert(&btnc->page_tree, newkey, obh->b_page);
+		spin_unlock_irq(&btnc->tree_lock);
 		/*
 		 * Note: page->index will not change to newkey until
 		 * nilfs_btnode_commit_change_key() will be called.
 		 * To protect the page in intermediate state, the page lock
 		 * is held.
 		 */
+		radix_tree_preload_end();
 		if (!err)
 			return 0;
-		else if (err != -EBUSY)
+		else if (err != -EEXIST)
 			goto failed_unlock;
 
 		err = invalidate_inode_pages2_range(btnc, newkey, newkey);
 		if (!err)
 			goto retry;
 		/* fallback to copy mode */
-		unlock_page(opage);
+		unlock_page(obh->b_page);
 	}
 
 	nbh = nilfs_btnode_create_block(btnc, newkey);
@@ -252,10 +251,11 @@ void nilfs_btnode_commit_change_key(struct address_space *btnc,
 				       (unsigned long long)newkey);
 		mark_buffer_dirty(obh);
 
-		xa_lock_irq(&btnc->i_pages);
-		__xa_erase(&btnc->i_pages, oldkey);
-		__xa_set_mark(&btnc->i_pages, newkey, PAGECACHE_TAG_DIRTY);
-		xa_unlock_irq(&btnc->i_pages);
+		spin_lock_irq(&btnc->tree_lock);
+		radix_tree_delete(&btnc->page_tree, oldkey);
+		radix_tree_tag_set(&btnc->page_tree, newkey,
+				   PAGECACHE_TAG_DIRTY);
+		spin_unlock_irq(&btnc->tree_lock);
 
 		opage->index = obh->b_blocknr = newkey;
 		unlock_page(opage);
@@ -283,16 +283,10 @@ void nilfs_btnode_abort_change_key(struct address_space *btnc,
 		return;
 
 	if (nbh == NULL) {	/* blocksize == pagesize */
-		xa_erase_irq(&btnc->i_pages, newkey);
+		spin_lock_irq(&btnc->tree_lock);
+		radix_tree_delete(&btnc->page_tree, newkey);
+		spin_unlock_irq(&btnc->tree_lock);
 		unlock_page(ctxt->bh->b_page);
-	} else {
-		/*
-		 * When canceling a buffer that a prepare operation has
-		 * allocated to copy a node block to another location, use
-		 * nilfs_btnode_delete() to initialize and release the buffer
-		 * so that the buffer flags will not be in an inconsistent
-		 * state when it is reallocated.
-		 */
-		nilfs_btnode_delete(nbh);
-	}
+	} else
+		brelse(nbh);
 }

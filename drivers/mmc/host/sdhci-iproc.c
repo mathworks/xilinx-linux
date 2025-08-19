@@ -1,16 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2014 Broadcom Corporation
+/*
+ * Copyright (C) 2014 Broadcom Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 /*
  * iProc SDHCI platform driver
  */
 
-#include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mmc/host.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include "sdhci-pltfm.h"
 
 struct sdhci_iproc_data {
@@ -18,15 +27,12 @@ struct sdhci_iproc_data {
 	u32 caps;
 	u32 caps1;
 	u32 mmc_caps;
-	bool missing_caps;
 };
 
 struct sdhci_iproc_host {
 	const struct sdhci_iproc_data *data;
 	u32 shadow_cmd;
 	u32 shadow_blk;
-	bool is_cmd_shadowed;
-	bool is_blk_shadowed;
 };
 
 #define REG_OFFSET_IN_BITS(reg) ((reg) << 3 & 0x18)
@@ -42,22 +48,8 @@ static inline u32 sdhci_iproc_readl(struct sdhci_host *host, int reg)
 
 static u16 sdhci_iproc_readw(struct sdhci_host *host, int reg)
 {
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_iproc_host *iproc_host = sdhci_pltfm_priv(pltfm_host);
-	u32 val;
-	u16 word;
-
-	if ((reg == SDHCI_TRANSFER_MODE) && iproc_host->is_cmd_shadowed) {
-		/* Get the saved transfer mode */
-		val = iproc_host->shadow_cmd;
-	} else if ((reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) &&
-		   iproc_host->is_blk_shadowed) {
-		/* Get the saved block info */
-		val = iproc_host->shadow_blk;
-	} else {
-		val = sdhci_iproc_readl(host, (reg & ~3));
-	}
-	word = val >> REG_OFFSET_IN_BITS(reg) & 0xffff;
+	u32 val = sdhci_iproc_readl(host, (reg & ~3));
+	u16 word = val >> REG_OFFSET_IN_BITS(reg) & 0xffff;
 	return word;
 }
 
@@ -113,15 +105,13 @@ static void sdhci_iproc_writew(struct sdhci_host *host, u16 val, int reg)
 
 	if (reg == SDHCI_COMMAND) {
 		/* Write the block now as we are issuing a command */
-		if (iproc_host->is_blk_shadowed) {
+		if (iproc_host->shadow_blk != 0) {
 			sdhci_iproc_writel(host, iproc_host->shadow_blk,
 				SDHCI_BLOCK_SIZE);
-			iproc_host->is_blk_shadowed = false;
+			iproc_host->shadow_blk = 0;
 		}
 		oldval = iproc_host->shadow_cmd;
-		iproc_host->is_cmd_shadowed = false;
-	} else if ((reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) &&
-		   iproc_host->is_blk_shadowed) {
+	} else if (reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) {
 		/* Block size and count are stored in shadow reg */
 		oldval = iproc_host->shadow_blk;
 	} else {
@@ -133,11 +123,9 @@ static void sdhci_iproc_writew(struct sdhci_host *host, u16 val, int reg)
 	if (reg == SDHCI_TRANSFER_MODE) {
 		/* Save the transfer mode until the command is issued */
 		iproc_host->shadow_cmd = newval;
-		iproc_host->is_cmd_shadowed = true;
 	} else if (reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) {
 		/* Save the block info until the command is issued */
 		iproc_host->shadow_blk = newval;
-		iproc_host->is_blk_shadowed = true;
 	} else {
 		/* Command or other regular 32-bit write */
 		sdhci_iproc_writel(host, newval, reg & ~3);
@@ -154,42 +142,7 @@ static void sdhci_iproc_writeb(struct sdhci_host *host, u8 val, int reg)
 	sdhci_iproc_writel(host, newval, reg & ~3);
 }
 
-static unsigned int sdhci_iproc_get_max_clock(struct sdhci_host *host)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-
-	if (pltfm_host->clk)
-		return sdhci_pltfm_clk_get_max_clock(host);
-	else
-		return pltfm_host->clock;
-}
-
-/*
- * There is a known bug on BCM2711's SDHCI core integration where the
- * controller will hang when the difference between the core clock and the bus
- * clock is too great. Specifically this can be reproduced under the following
- * conditions:
- *
- *  - No SD card plugged in, polling thread is running, probing cards at
- *    100 kHz.
- *  - BCM2711's core clock configured at 500MHz or more
- *
- * So we set 200kHz as the minimum clock frequency available for that SoC.
- */
-static unsigned int sdhci_iproc_bcm2711_get_min_clock(struct sdhci_host *host)
-{
-	return 200000;
-}
-
 static const struct sdhci_ops sdhci_iproc_ops = {
-	.set_clock = sdhci_set_clock,
-	.get_max_clock = sdhci_iproc_get_max_clock,
-	.set_bus_width = sdhci_set_bus_width,
-	.reset = sdhci_reset,
-	.set_uhs_signaling = sdhci_set_uhs_signaling,
-};
-
-static const struct sdhci_ops sdhci_iproc_32only_ops = {
 	.read_l = sdhci_iproc_readl,
 	.read_w = sdhci_iproc_readw,
 	.read_b = sdhci_iproc_readb,
@@ -197,39 +150,14 @@ static const struct sdhci_ops sdhci_iproc_32only_ops = {
 	.write_w = sdhci_iproc_writew,
 	.write_b = sdhci_iproc_writeb,
 	.set_clock = sdhci_set_clock,
-	.get_max_clock = sdhci_iproc_get_max_clock,
+	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.set_bus_width = sdhci_set_bus_width,
 	.reset = sdhci_reset,
 	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
-static const struct sdhci_pltfm_data sdhci_iproc_cygnus_pltfm_data = {
-	.quirks = SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
-		  SDHCI_QUIRK_NO_HISPD_BIT,
-	.quirks2 = SDHCI_QUIRK2_ACMD23_BROKEN | SDHCI_QUIRK2_HOST_OFF_CARD_ON,
-	.ops = &sdhci_iproc_32only_ops,
-};
-
-static const struct sdhci_iproc_data iproc_cygnus_data = {
-	.pdata = &sdhci_iproc_cygnus_pltfm_data,
-	.caps = ((0x1 << SDHCI_MAX_BLOCK_SHIFT)
-			& SDHCI_MAX_BLOCK_MASK) |
-		SDHCI_CAN_VDD_330 |
-		SDHCI_CAN_VDD_180 |
-		SDHCI_CAN_DO_SUSPEND |
-		SDHCI_CAN_DO_HISPD |
-		SDHCI_CAN_DO_ADMA2 |
-		SDHCI_CAN_DO_SDMA,
-	.caps1 = SDHCI_DRIVER_TYPE_C |
-		 SDHCI_DRIVER_TYPE_D |
-		 SDHCI_SUPPORT_DDR50,
-	.mmc_caps = MMC_CAP_1_8V_DDR,
-};
-
 static const struct sdhci_pltfm_data sdhci_iproc_pltfm_data = {
-	.quirks = SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
-		  SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12 |
-		  SDHCI_QUIRK_NO_HISPD_BIT,
+	.quirks = SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK,
 	.quirks2 = SDHCI_QUIRK2_ACMD23_BROKEN,
 	.ops = &sdhci_iproc_ops,
 };
@@ -247,126 +175,43 @@ static const struct sdhci_iproc_data iproc_data = {
 	.caps1 = SDHCI_DRIVER_TYPE_C |
 		 SDHCI_DRIVER_TYPE_D |
 		 SDHCI_SUPPORT_DDR50,
+	.mmc_caps = MMC_CAP_1_8V_DDR,
 };
 
 static const struct sdhci_pltfm_data sdhci_bcm2835_pltfm_data = {
 	.quirks = SDHCI_QUIRK_BROKEN_CARD_DETECTION |
 		  SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
-		  SDHCI_QUIRK_NO_HISPD_BIT,
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
-	.ops = &sdhci_iproc_32only_ops,
+		  SDHCI_QUIRK_MISSING_CAPS,
+	.ops = &sdhci_iproc_ops,
 };
 
 static const struct sdhci_iproc_data bcm2835_data = {
 	.pdata = &sdhci_bcm2835_pltfm_data,
-	.caps = ((0x1 << SDHCI_MAX_BLOCK_SHIFT)
-			& SDHCI_MAX_BLOCK_MASK) |
-		SDHCI_CAN_VDD_330 |
-		SDHCI_CAN_DO_HISPD,
-	.caps1 = SDHCI_DRIVER_TYPE_A |
-		 SDHCI_DRIVER_TYPE_C,
+	.caps = SDHCI_CAN_VDD_330,
+	.caps1 = 0x00000000,
 	.mmc_caps = 0x00000000,
-	.missing_caps = true,
-};
-
-static const struct sdhci_ops sdhci_iproc_bcm2711_ops = {
-	.read_l = sdhci_iproc_readl,
-	.read_w = sdhci_iproc_readw,
-	.read_b = sdhci_iproc_readb,
-	.write_l = sdhci_iproc_writel,
-	.write_w = sdhci_iproc_writew,
-	.write_b = sdhci_iproc_writeb,
-	.set_clock = sdhci_set_clock,
-	.set_power = sdhci_set_power_and_bus_voltage,
-	.get_max_clock = sdhci_iproc_get_max_clock,
-	.get_min_clock = sdhci_iproc_bcm2711_get_min_clock,
-	.set_bus_width = sdhci_set_bus_width,
-	.reset = sdhci_reset,
-	.set_uhs_signaling = sdhci_set_uhs_signaling,
-};
-
-static const struct sdhci_pltfm_data sdhci_bcm2711_pltfm_data = {
-	.quirks = SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12,
-	.ops = &sdhci_iproc_bcm2711_ops,
-};
-
-static const struct sdhci_iproc_data bcm2711_data = {
-	.pdata = &sdhci_bcm2711_pltfm_data,
-	.mmc_caps = MMC_CAP_3_3V_DDR,
-};
-
-static const struct sdhci_pltfm_data sdhci_bcm7211a0_pltfm_data = {
-	.quirks = SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
-		SDHCI_QUIRK_BROKEN_DMA |
-		SDHCI_QUIRK_BROKEN_ADMA,
-	.ops = &sdhci_iproc_ops,
-};
-
-#define BCM7211A0_BASE_CLK_MHZ 100
-static const struct sdhci_iproc_data bcm7211a0_data = {
-	.pdata = &sdhci_bcm7211a0_pltfm_data,
-	.caps = ((BCM7211A0_BASE_CLK_MHZ / 2) << SDHCI_TIMEOUT_CLK_SHIFT) |
-		(BCM7211A0_BASE_CLK_MHZ << SDHCI_CLOCK_BASE_SHIFT) |
-		((0x2 << SDHCI_MAX_BLOCK_SHIFT)
-			& SDHCI_MAX_BLOCK_MASK) |
-		SDHCI_CAN_VDD_330 |
-		SDHCI_CAN_VDD_180 |
-		SDHCI_CAN_DO_SUSPEND |
-		SDHCI_CAN_DO_HISPD,
-	.caps1 = SDHCI_DRIVER_TYPE_C |
-		 SDHCI_DRIVER_TYPE_D,
-	.missing_caps = true,
 };
 
 static const struct of_device_id sdhci_iproc_of_match[] = {
 	{ .compatible = "brcm,bcm2835-sdhci", .data = &bcm2835_data },
-	{ .compatible = "brcm,bcm2711-emmc2", .data = &bcm2711_data },
-	{ .compatible = "brcm,sdhci-iproc-cygnus", .data = &iproc_cygnus_data},
-	{ .compatible = "brcm,sdhci-iproc", .data = &iproc_data },
-	{ .compatible = "brcm,bcm7211a0-sdhci", .data = &bcm7211a0_data },
+	{ .compatible = "brcm,sdhci-iproc-cygnus", .data = &iproc_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_iproc_of_match);
 
-#ifdef CONFIG_ACPI
-/*
- * This is a duplicate of bcm2835_(pltfrm_)data without caps quirks
- * which are provided by the ACPI table.
- */
-static const struct sdhci_pltfm_data sdhci_bcm_arasan_data = {
-	.quirks = SDHCI_QUIRK_BROKEN_CARD_DETECTION |
-		  SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
-		  SDHCI_QUIRK_NO_HISPD_BIT,
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
-	.ops = &sdhci_iproc_32only_ops,
-};
-
-static const struct sdhci_iproc_data bcm_arasan_data = {
-	.pdata = &sdhci_bcm_arasan_data,
-};
-
-static const struct acpi_device_id sdhci_iproc_acpi_ids[] = {
-	{ .id = "BRCM5871", .driver_data = (kernel_ulong_t)&iproc_cygnus_data },
-	{ .id = "BRCM5872", .driver_data = (kernel_ulong_t)&iproc_data },
-	{ .id = "BCM2847",  .driver_data = (kernel_ulong_t)&bcm_arasan_data },
-	{ .id = "BRCME88C", .driver_data = (kernel_ulong_t)&bcm2711_data },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(acpi, sdhci_iproc_acpi_ids);
-#endif
-
 static int sdhci_iproc_probe(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-	const struct sdhci_iproc_data *iproc_data = NULL;
+	const struct of_device_id *match;
+	const struct sdhci_iproc_data *iproc_data;
 	struct sdhci_host *host;
 	struct sdhci_iproc_host *iproc_host;
 	struct sdhci_pltfm_host *pltfm_host;
 	int ret;
 
-	iproc_data = device_get_match_data(dev);
-	if (!iproc_data)
-		return -ENODEV;
+	match = of_match_device(sdhci_iproc_of_match, &pdev->dev);
+	if (!match)
+		return -EINVAL;
+	iproc_data = match->data;
 
 	host = sdhci_pltfm_init(pdev, iproc_data->pdata, sizeof(*iproc_host));
 	if (IS_ERR(host))
@@ -377,55 +222,48 @@ static int sdhci_iproc_probe(struct platform_device *pdev)
 
 	iproc_host->data = iproc_data;
 
-	ret = mmc_of_parse(host->mmc);
-	if (ret)
-		goto err;
-
-	sdhci_get_property(pdev);
+	mmc_of_parse(host->mmc);
+	sdhci_get_of_property(pdev);
 
 	host->mmc->caps |= iproc_host->data->mmc_caps;
 
-	if (dev->of_node) {
-		pltfm_host->clk = devm_clk_get_enabled(dev, NULL);
-		if (IS_ERR(pltfm_host->clk)) {
-			ret = PTR_ERR(pltfm_host->clk);
-			goto err;
-		}
+	pltfm_host->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(pltfm_host->clk)) {
+		ret = PTR_ERR(pltfm_host->clk);
+		goto err;
+	}
+	ret = clk_prepare_enable(pltfm_host->clk);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to enable host clk\n");
+		goto err;
 	}
 
-	if (iproc_host->data->missing_caps) {
-		__sdhci_read_caps(host, NULL,
-				  &iproc_host->data->caps,
-				  &iproc_host->data->caps1);
+	if (iproc_host->data->pdata->quirks & SDHCI_QUIRK_MISSING_CAPS) {
+		host->caps = iproc_host->data->caps;
+		host->caps1 = iproc_host->data->caps1;
 	}
 
 	ret = sdhci_add_host(host);
 	if (ret)
-		goto err;
+		goto err_clk;
 
 	return 0;
 
+err_clk:
+	clk_disable_unprepare(pltfm_host->clk);
 err:
 	sdhci_pltfm_free(pdev);
 	return ret;
 }
 
-static void sdhci_iproc_shutdown(struct platform_device *pdev)
-{
-	sdhci_pltfm_suspend(&pdev->dev);
-}
-
 static struct platform_driver sdhci_iproc_driver = {
 	.driver = {
 		.name = "sdhci-iproc",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_iproc_of_match,
-		.acpi_match_table = ACPI_PTR(sdhci_iproc_acpi_ids),
 		.pm = &sdhci_pltfm_pmops,
 	},
 	.probe = sdhci_iproc_probe,
-	.remove_new = sdhci_pltfm_remove,
-	.shutdown = sdhci_iproc_shutdown,
+	.remove = sdhci_pltfm_unregister,
 };
 module_platform_driver(sdhci_iproc_driver);
 

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/ev67-strlen.S
  * 21264 version by Rick Gorton <rick.gorton@alpha-processor.com>
@@ -18,7 +17,7 @@
  *	U	- upper subcluster; U0 - subcluster U0; U1 - subcluster U1
  *	L	- lower subcluster; L0 - subcluster L0; L1 - subcluster L1
  */
-#include <linux/export.h>
+#include <asm/export.h>
 	.set noreorder
 	.set noat
 

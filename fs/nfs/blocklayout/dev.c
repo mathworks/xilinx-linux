@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014-2016 Christoph Hellwig.
  */
@@ -35,7 +34,7 @@ bl_free_device(struct pnfs_block_dev *dev)
 		}
 
 		if (dev->bdev)
-			blkdev_put(dev->bdev, NULL);
+			blkdev_put(dev->bdev, FMODE_READ | FMODE_WRITE);
 	}
 }
 
@@ -204,7 +203,7 @@ static bool bl_map_stripe(struct pnfs_block_dev *dev, u64 offset,
 	chunk = div_u64(offset, dev->chunk_size);
 	div_u64_rem(chunk, dev->nr_children, &chunk_idx);
 
-	if (chunk_idx >= dev->nr_children) {
+	if (chunk_idx > dev->nr_children) {
 		dprintk("%s: invalid chunk idx %d (%lld/%lld)\n",
 			__func__, chunk_idx, offset, dev->chunk_size);
 		/* error, should not happen */
@@ -243,8 +242,7 @@ bl_parse_simple(struct nfs_server *server, struct pnfs_block_dev *d,
 	if (!dev)
 		return -EIO;
 
-	bdev = blkdev_get_by_dev(dev, BLK_OPEN_READ | BLK_OPEN_WRITE, NULL,
-				 NULL);
+	bdev = blkdev_get_by_dev(dev, FMODE_READ | FMODE_WRITE, NULL);
 	if (IS_ERR(bdev)) {
 		printk(KERN_WARNING "pNFS: failed to open device %d:%d (%ld)\n",
 			MAJOR(dev), MINOR(dev), PTR_ERR(bdev));
@@ -253,7 +251,7 @@ bl_parse_simple(struct nfs_server *server, struct pnfs_block_dev *d,
 	d->bdev = bdev;
 
 
-	d->len = bdev_nr_bytes(d->bdev);
+	d->len = i_size_read(d->bdev->bd_inode);
 	d->map = bl_map_simple;
 
 	printk(KERN_INFO "pNFS: using block device %s\n",
@@ -302,24 +300,49 @@ bl_validate_designator(struct pnfs_block_volume *v)
 	}
 }
 
+/*
+ * Try to open the udev path for the WWN.  At least on Debian the udev
+ * by-id path will always point to the dm-multipath device if one exists.
+ */
 static struct block_device *
-bl_open_path(struct pnfs_block_volume *v, const char *prefix)
+bl_open_udev_path(struct pnfs_block_volume *v)
 {
 	struct block_device *bdev;
 	const char *devname;
 
-	devname = kasprintf(GFP_KERNEL, "/dev/disk/by-id/%s%*phN",
-			prefix, v->scsi.designator_len, v->scsi.designator);
+	devname = kasprintf(GFP_KERNEL, "/dev/disk/by-id/wwn-0x%*phN",
+				v->scsi.designator_len, v->scsi.designator);
 	if (!devname)
 		return ERR_PTR(-ENOMEM);
 
-	bdev = blkdev_get_by_path(devname, BLK_OPEN_READ | BLK_OPEN_WRITE, NULL,
-				  NULL);
+	bdev = blkdev_get_by_path(devname, FMODE_READ | FMODE_WRITE, NULL);
 	if (IS_ERR(bdev)) {
 		pr_warn("pNFS: failed to open device %s (%ld)\n",
 			devname, PTR_ERR(bdev));
 	}
 
+	kfree(devname);
+	return bdev;
+}
+
+/*
+ * Try to open the RH/Fedora specific dm-mpath udev path for this WWN, as the
+ * wwn- links will only point to the first discovered SCSI device there.
+ */
+static struct block_device *
+bl_open_dm_mpath_udev_path(struct pnfs_block_volume *v)
+{
+	struct block_device *bdev;
+	const char *devname;
+
+	devname = kasprintf(GFP_KERNEL,
+			"/dev/disk/by-id/dm-uuid-mpath-%d%*phN",
+			v->scsi.designator_type,
+			v->scsi.designator_len, v->scsi.designator);
+	if (!devname)
+		return ERR_PTR(-ENOMEM);
+
+	bdev = blkdev_get_by_path(devname, FMODE_READ | FMODE_WRITE, NULL);
 	kfree(devname);
 	return bdev;
 }
@@ -336,20 +359,14 @@ bl_parse_scsi(struct nfs_server *server, struct pnfs_block_dev *d,
 	if (!bl_validate_designator(v))
 		return -EINVAL;
 
-	/*
-	 * Try to open the RH/Fedora specific dm-mpath udev path first, as the
-	 * wwn- links will only point to the first discovered SCSI device there.
-	 * On other distributions like Debian, the default SCSI by-id path will
-	 * point to the dm-multipath device if one exists.
-	 */
-	bdev = bl_open_path(v, "dm-uuid-mpath-0x");
+	bdev = bl_open_dm_mpath_udev_path(v);
 	if (IS_ERR(bdev))
-		bdev = bl_open_path(v, "wwn-0x");
+		bdev = bl_open_udev_path(v);
 	if (IS_ERR(bdev))
 		return PTR_ERR(bdev);
 	d->bdev = bdev;
 
-	d->len = bdev_nr_bytes(d->bdev);
+	d->len = i_size_read(d->bdev->bd_inode);
 	d->map = bl_map_simple;
 	d->pr_key = v->scsi.pr_key;
 
@@ -375,7 +392,7 @@ bl_parse_scsi(struct nfs_server *server, struct pnfs_block_dev *d,
 	return 0;
 
 out_blkdev_put:
-	blkdev_put(d->bdev, NULL);
+	blkdev_put(d->bdev, FMODE_READ | FMODE_WRITE);
 	return error;
 }
 
@@ -404,7 +421,7 @@ bl_parse_concat(struct nfs_server *server, struct pnfs_block_dev *d,
 	int ret, i;
 
 	d->children = kcalloc(v->concat.volumes_count,
-			sizeof(struct pnfs_block_dev), gfp_mask);
+			sizeof(struct pnfs_block_dev), GFP_KERNEL);
 	if (!d->children)
 		return -ENOMEM;
 
@@ -433,7 +450,7 @@ bl_parse_stripe(struct nfs_server *server, struct pnfs_block_dev *d,
 	int ret, i;
 
 	d->children = kcalloc(v->stripe.volumes_count,
-			sizeof(struct pnfs_block_dev), gfp_mask);
+			sizeof(struct pnfs_block_dev), GFP_KERNEL);
 	if (!d->children)
 		return -ENOMEM;
 
@@ -492,7 +509,7 @@ bl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		goto out;
 
 	xdr_init_decode_pages(&xdr, &buf, pdev->pages, pdev->pglen);
-	xdr_set_scratch_page(&xdr, scratch);
+	xdr_set_scratch_buffer(&xdr, page_address(scratch), PAGE_SIZE);
 
 	p = xdr_inline_decode(&xdr, sizeof(__be32));
 	if (!p)
@@ -515,11 +532,14 @@ bl_alloc_deviceid_node(struct nfs_server *server, struct pnfs_device *pdev,
 		goto out_free_volumes;
 
 	ret = bl_parse_deviceid(server, top, volumes, nr_volumes - 1, gfp_mask);
+	if (ret) {
+		bl_free_device(top);
+		kfree(top);
+		goto out_free_volumes;
+	}
 
 	node = &top->node;
 	nfs4_init_deviceid_node(node, server, &pdev->dev_id);
-	if (ret)
-		nfs4_mark_deviceid_unavailable(node);
 
 out_free_volumes:
 	kfree(volumes);

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _FIREWIRE_CORE_H
 #define _FIREWIRE_CORE_H
 
@@ -13,7 +12,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 
-#include <linux/refcount.h>
+#include <linux/atomic.h>
 
 struct device;
 struct fw_card;
@@ -158,6 +157,8 @@ void fw_node_event(struct fw_card *card, struct fw_node *node, int event);
 int fw_iso_buffer_alloc(struct fw_iso_buffer *buffer, int page_count);
 int fw_iso_buffer_map_dma(struct fw_iso_buffer *buffer, struct fw_card *card,
 			  enum dma_data_direction direction);
+int fw_iso_buffer_map_vma(struct fw_iso_buffer *buffer,
+			  struct vm_area_struct *vma);
 
 
 /* -topology */
@@ -183,7 +184,7 @@ struct fw_node {
 			 * local node to this node. */
 	u8 max_depth:4;	/* Maximum depth to any leaf node */
 	u8 max_hops:4;	/* Max hops in this sub tree */
-	refcount_t ref_count;
+	atomic_t ref_count;
 
 	/* For serializing node topology into a list. */
 	struct list_head link;
@@ -191,19 +192,19 @@ struct fw_node {
 	/* Upper layer specific data. */
 	void *data;
 
-	struct fw_node *ports[];
+	struct fw_node *ports[0];
 };
 
 static inline struct fw_node *fw_node_get(struct fw_node *node)
 {
-	refcount_inc(&node->ref_count);
+	atomic_inc(&node->ref_count);
 
 	return node;
 }
 
 static inline void fw_node_put(struct fw_node *node)
 {
-	if (refcount_dec_and_test(&node->ref_count))
+	if (atomic_dec_and_test(&node->ref_count))
 		kfree(node);
 }
 
@@ -244,16 +245,6 @@ int fw_get_response_length(struct fw_request *request);
 void fw_fill_response(struct fw_packet *response, u32 *request_header,
 		      int rcode, void *payload, size_t length);
 
-void fw_request_get(struct fw_request *request);
-void fw_request_put(struct fw_request *request);
-
-// Convert the value of IEEE 1394 CYCLE_TIME register to the format of timeStamp field in
-// descriptors of 1394 OHCI.
-static inline u32 cycle_time_to_ohci_tstamp(u32 tstamp)
-{
-	return (tstamp & 0x0ffff000) >> 12;
-}
-
 #define FW_PHY_CONFIG_NO_NODE_ID	-1
 #define FW_PHY_CONFIG_CURRENT_GAP_COUNT	-1
 void fw_send_phy_config(struct fw_card *card,
@@ -262,12 +253,6 @@ void fw_send_phy_config(struct fw_card *card,
 static inline bool is_ping_packet(u32 *data)
 {
 	return (data[0] & 0xc0ffffff) == 0 && ~data[0] == data[1];
-}
-
-static inline bool is_in_fcp_region(u64 offset, size_t length)
-{
-	return offset >= (CSR_REGISTER_BASE | CSR_FCP_COMMAND) &&
-		offset + length <= (CSR_REGISTER_BASE | CSR_FCP_END);
 }
 
 #endif /* _FIREWIRE_CORE_H */

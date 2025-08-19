@@ -234,9 +234,9 @@ static irqreturn_t pd6729_interrupt(int irq, void *dev)
 
 /* socket functions */
 
-static void pd6729_interrupt_wrapper(struct timer_list *t)
+static void pd6729_interrupt_wrapper(unsigned long data)
 {
-	struct pd6729_socket *socket = from_timer(socket, t, poll_timer);
+	struct pd6729_socket *socket = (struct pd6729_socket *) data;
 
 	pd6729_interrupt(0, (void *)socket);
 	mod_timer(&socket->poll_timer, jiffies + HZ);
@@ -628,7 +628,7 @@ static int pd6729_pci_probe(struct pci_dev *dev,
 	char configbyte;
 	struct pd6729_socket *socket;
 
-	socket = kcalloc(MAX_SOCKETS, sizeof(struct pd6729_socket),
+	socket = kzalloc(sizeof(struct pd6729_socket) * MAX_SOCKETS,
 			 GFP_KERNEL);
 	if (!socket) {
 		dev_warn(&dev->dev, "failed to kzalloc socket.\n");
@@ -707,7 +707,8 @@ static int pd6729_pci_probe(struct pci_dev *dev,
 		}
 	} else {
 		/* poll Card status change */
-		timer_setup(&socket->poll_timer, pd6729_interrupt_wrapper, 0);
+		setup_timer(&socket->poll_timer, pd6729_interrupt_wrapper,
+			    (unsigned long)socket);
 		mod_timer(&socket->poll_timer, jiffies + HZ);
 	}
 
@@ -727,7 +728,7 @@ err_out_free_res2:
 	if (irq_mode == 1)
 		free_irq(dev->irq, socket);
 	else
-		timer_shutdown_sync(&socket->poll_timer);
+		del_timer_sync(&socket->poll_timer);
 err_out_free_res:
 	pci_release_regions(dev);
 err_out_disable:
@@ -754,7 +755,7 @@ static void pd6729_pci_remove(struct pci_dev *dev)
 	if (irq_mode == 1)
 		free_irq(dev->irq, socket);
 	else
-		timer_shutdown_sync(&socket->poll_timer);
+		del_timer_sync(&socket->poll_timer);
 	pci_release_regions(dev);
 	pci_disable_device(dev);
 

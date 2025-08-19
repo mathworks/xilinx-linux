@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* bw2.c: BWTWO frame buffer driver
  *
  * Copyright (C) 2003, 2006 David S. Miller (davem@davemloft.net)
@@ -17,8 +16,7 @@
 #include <linux/init.h>
 #include <linux/fb.h>
 #include <linux/mm.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <asm/io.h>
 #include <asm/fbio.h>
@@ -38,7 +36,7 @@ static int bw2_ioctl(struct fb_info *, unsigned int, unsigned long);
  *  Frame buffer operations
  */
 
-static const struct fb_ops bw2_ops = {
+static struct fb_ops bw2_ops = {
 	.owner			= THIS_MODULE,
 	.fb_blank		= bw2_blank,
 	.fb_fillrect		= cfb_fillrect,
@@ -117,7 +115,7 @@ struct bw2_par {
 
 /**
  *      bw2_blank - Optional function.  Blanks the display.
- *      @blank: the blank mode we want.
+ *      @blank_mode: the blank mode we want.
  *      @info: frame buffer structure that represents a single frame buffer
  */
 static int
@@ -183,7 +181,7 @@ static int bw2_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 
 static void bw2_init_fix(struct fb_info *info, int linebytes)
 {
-	strscpy(info->fix.id, "bwtwo", sizeof(info->fix.id));
+	strlcpy(info->fix.id, "bwtwo", sizeof(info->fix.id));
 
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
 	info->fix.visual = FB_VISUAL_MONO01;
@@ -307,7 +305,7 @@ static int bw2_probe(struct platform_device *op)
 	if (!par->regs)
 		goto out_release_fb;
 
-	if (!of_property_present(dp, "width")) {
+	if (!of_find_property(dp, "width", NULL)) {
 		err = bw2_do_default_mode(par, info, &linebytes);
 		if (err)
 			goto out_unmap_regs;
@@ -315,6 +313,7 @@ static int bw2_probe(struct platform_device *op)
 
 	info->fix.smem_len = PAGE_ALIGN(linebytes * info->var.yres);
 
+	info->flags = FBINFO_DEFAULT;
 	info->fbops = &bw2_ops;
 
 	info->screen_base = of_ioremap(&op->resource[0], 0,
@@ -334,8 +333,8 @@ static int bw2_probe(struct platform_device *op)
 
 	dev_set_drvdata(&op->dev, info);
 
-	printk(KERN_INFO "%pOF: bwtwo at %lx:%lx\n",
-	       dp, par->which_io, info->fix.smem_start);
+	printk(KERN_INFO "%s: bwtwo at %lx:%lx\n",
+	       dp->full_name, par->which_io, info->fix.smem_start);
 
 	return 0;
 
@@ -352,7 +351,7 @@ out_err:
 	return err;
 }
 
-static void bw2_remove(struct platform_device *op)
+static int bw2_remove(struct platform_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct bw2_par *par = info->par;
@@ -363,6 +362,8 @@ static void bw2_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], info->screen_base, info->fix.smem_len);
 
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static const struct of_device_id bw2_match[] = {
@@ -379,7 +380,7 @@ static struct platform_driver bw2_driver = {
 		.of_match_table = bw2_match,
 	},
 	.probe		= bw2_probe,
-	.remove_new	= bw2_remove,
+	.remove		= bw2_remove,
 };
 
 static int __init bw2_init(void)

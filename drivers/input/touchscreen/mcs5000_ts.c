@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * mcs5000_ts.c - Touchscreen driver for MELFAS MCS-5000 controller
  *
@@ -6,14 +5,20 @@
  * Author: Joonyoung Shim <jy0922.shim@samsung.com>
  *
  * Based on wm97xx-core.c
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ *
  */
 
 #include <linux/module.h>
 #include <linux/i2c.h>
+#include <linux/i2c/mcs.h>
 #include <linux/interrupt.h>
 #include <linux/input.h>
 #include <linux/irq.h>
-#include <linux/platform_data/mcs.h>
 #include <linux/slab.h>
 
 /* Registers */
@@ -180,7 +185,8 @@ static void mcs5000_ts_phys_init(struct mcs5000_ts_data *data,
 			OP_MODE_ACTIVE | REPORT_RATE_80);
 }
 
-static int mcs5000_ts_probe(struct i2c_client *client)
+static int mcs5000_ts_probe(struct i2c_client *client,
+			    const struct i2c_device_id *id)
 {
 	const struct mcs_platform_data *pdata;
 	struct mcs5000_ts_data *data;
@@ -215,6 +221,7 @@ static int mcs5000_ts_probe(struct i2c_client *client)
 	input_set_abs_params(input_dev, ABS_X, 0, MCS5000_MAX_XC, 0, 0);
 	input_set_abs_params(input_dev, ABS_Y, 0, MCS5000_MAX_YC, 0, 0);
 
+	input_set_drvdata(input_dev, data);
 	data->input_dev = input_dev;
 
 	if (pdata->cfg_pin)
@@ -241,7 +248,7 @@ static int mcs5000_ts_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int mcs5000_ts_suspend(struct device *dev)
+static int __maybe_unused mcs5000_ts_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
@@ -251,7 +258,7 @@ static int mcs5000_ts_suspend(struct device *dev)
 	return 0;
 }
 
-static int mcs5000_ts_resume(struct device *dev)
+static int __maybe_unused mcs5000_ts_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct mcs5000_ts_data *data = i2c_get_clientdata(client);
@@ -262,8 +269,7 @@ static int mcs5000_ts_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(mcs5000_ts_pm,
-				mcs5000_ts_suspend, mcs5000_ts_resume);
+static SIMPLE_DEV_PM_OPS(mcs5000_ts_pm, mcs5000_ts_suspend, mcs5000_ts_resume);
 
 static const struct i2c_device_id mcs5000_ts_id[] = {
 	{ "mcs5000_ts", 0 },
@@ -275,7 +281,7 @@ static struct i2c_driver mcs5000_ts_driver = {
 	.probe		= mcs5000_ts_probe,
 	.driver = {
 		.name = "mcs5000_ts",
-		.pm   = pm_sleep_ptr(&mcs5000_ts_pm),
+		.pm   = &mcs5000_ts_pm,
 	},
 	.id_table	= mcs5000_ts_id,
 };

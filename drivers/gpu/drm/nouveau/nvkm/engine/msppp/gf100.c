@@ -43,8 +43,8 @@ gf100_msppp = {
 };
 
 int
-gf100_msppp_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+gf100_msppp_new(struct nvkm_device *device, int index,
 		struct nvkm_engine **pengine)
 {
-	return nvkm_msppp_new_(&gf100_msppp, device, type, inst, pengine);
+	return nvkm_msppp_new_(&gf100_msppp, device, index, pengine);
 }

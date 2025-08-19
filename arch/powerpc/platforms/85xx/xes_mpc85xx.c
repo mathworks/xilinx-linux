@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2009 Extreme Engineering Solutions, Inc.
  *
@@ -7,6 +6,10 @@
  * Based on mpc85xx_ds code from Freescale Semiconductor, Inc.
  *
  * Author: Nate Case <ncase@xes-inc.com>
+ *
+ * This is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/stddef.h>
@@ -16,13 +19,13 @@
 #include <linux/delay.h>
 #include <linux/seq_file.h>
 #include <linux/interrupt.h>
-#include <linux/of.h>
-#include <linux/of_address.h>
+#include <linux/of_platform.h>
 
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <mm/mmu_decl.h>
+#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/mpic.h>
 
@@ -45,7 +48,7 @@ void __init xes_mpc85xx_pic_init(void)
 	mpic_init(mpic);
 }
 
-static void __init xes_mpc85xx_configure_l2(void __iomem *l2_base)
+static void xes_mpc85xx_configure_l2(void __iomem *l2_base)
 {
 	volatile uint32_t ctl, tmp;
 
@@ -72,7 +75,7 @@ static void __init xes_mpc85xx_configure_l2(void __iomem *l2_base)
 	asm volatile("msync; isync");
 }
 
-static void __init xes_mpc85xx_fixups(void)
+static void xes_mpc85xx_fixups(void)
 {
 	struct device_node *np;
 	int err;
@@ -97,8 +100,8 @@ static void __init xes_mpc85xx_fixups(void)
 		err = of_address_to_resource(np, 0, &r[0]);
 		if (err) {
 			printk(KERN_WARNING "xes_mpc85xx: Could not get "
-			       "resource for device tree node '%pOF'",
-			       np);
+			       "resource for device tree node '%s'",
+			       np->full_name);
 			continue;
 		}
 
@@ -136,9 +139,27 @@ machine_arch_initcall(xes_mpc8572, mpc85xx_common_publish_devices);
 machine_arch_initcall(xes_mpc8548, mpc85xx_common_publish_devices);
 machine_arch_initcall(xes_mpc8540, mpc85xx_common_publish_devices);
 
+/*
+ * Called very early, device-tree isn't unflattened
+ */
+static int __init xes_mpc8572_probe(void)
+{
+	return of_machine_is_compatible("xes,MPC8572");
+}
+
+static int __init xes_mpc8548_probe(void)
+{
+	return of_machine_is_compatible("xes,MPC8548");
+}
+
+static int __init xes_mpc8540_probe(void)
+{
+	return of_machine_is_compatible("xes,MPC8540");
+}
+
 define_machine(xes_mpc8572) {
 	.name			= "X-ES MPC8572",
-	.compatible		= "xes,MPC8572",
+	.probe			= xes_mpc8572_probe,
 	.setup_arch		= xes_mpc85xx_setup_arch,
 	.init_IRQ		= xes_mpc85xx_pic_init,
 #ifdef CONFIG_PCI
@@ -146,12 +167,13 @@ define_machine(xes_mpc8572) {
 	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };
 
 define_machine(xes_mpc8548) {
 	.name			= "X-ES MPC8548",
-	.compatible		= "xes,MPC8548",
+	.probe			= xes_mpc8548_probe,
 	.setup_arch		= xes_mpc85xx_setup_arch,
 	.init_IRQ		= xes_mpc85xx_pic_init,
 #ifdef CONFIG_PCI
@@ -159,12 +181,13 @@ define_machine(xes_mpc8548) {
 	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };
 
 define_machine(xes_mpc8540) {
 	.name			= "X-ES MPC8540",
-	.compatible		= "xes,MPC8540",
+	.probe			= xes_mpc8540_probe,
 	.setup_arch		= xes_mpc85xx_setup_arch,
 	.init_IRQ		= xes_mpc85xx_pic_init,
 #ifdef CONFIG_PCI
@@ -172,5 +195,6 @@ define_machine(xes_mpc8540) {
 	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

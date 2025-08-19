@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * omap_wdt.c
  *
@@ -7,7 +6,10 @@
  * Author: MontaVista Software, Inc.
  *	 <gdavis@mvista.com> or <source@mvista.com>
  *
- * 2003 (c) MontaVista Software, Inc.
+ * 2003 (c) MontaVista Software, Inc. This file is licensed under the
+ * terms of the GNU General Public License version 2. This program is
+ * licensed "as is" without any warranty of any kind, whether express
+ * or implied.
  *
  * History:
  *
@@ -27,7 +29,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -229,6 +230,7 @@ static const struct watchdog_ops omap_wdt_ops = {
 static int omap_wdt_probe(struct platform_device *pdev)
 {
 	struct omap_wd_timer_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct resource *res;
 	struct omap_wdt_dev *wdev;
 	int ret;
 
@@ -242,7 +244,8 @@ static int omap_wdt_probe(struct platform_device *pdev)
 	mutex_init(&wdev->lock);
 
 	/* reserve static register mappings */
-	wdev->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	wdev->base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(wdev->base))
 		return PTR_ERR(wdev->base);
 
@@ -250,10 +253,10 @@ static int omap_wdt_probe(struct platform_device *pdev)
 	wdev->wdog.ops = &omap_wdt_ops;
 	wdev->wdog.min_timeout = TIMER_MARGIN_MIN;
 	wdev->wdog.max_timeout = TIMER_MARGIN_MAX;
-	wdev->wdog.timeout = TIMER_MARGIN_DEFAULT;
 	wdev->wdog.parent = &pdev->dev;
 
-	watchdog_init_timeout(&wdev->wdog, timer_margin, &pdev->dev);
+	if (watchdog_init_timeout(&wdev->wdog, timer_margin, &pdev->dev) < 0)
+		wdev->wdog.timeout = TIMER_MARGIN_DEFAULT;
 
 	watchdog_set_nowayout(&wdev->wdog, nowayout);
 
@@ -268,16 +271,11 @@ static int omap_wdt_probe(struct platform_device *pdev)
 			wdev->wdog.bootstatus = WDIOF_CARDRESET;
 	}
 
-	if (early_enable) {
-		omap_wdt_start(&wdev->wdog);
-		set_bit(WDOG_HW_RUNNING, &wdev->wdog.status);
-	} else {
+	if (!early_enable)
 		omap_wdt_disable(wdev);
-	}
 
 	ret = watchdog_register_device(&wdev->wdog);
 	if (ret) {
-		pm_runtime_put(wdev->dev);
 		pm_runtime_disable(wdev->dev);
 		return ret;
 	}
@@ -306,13 +304,17 @@ static void omap_wdt_shutdown(struct platform_device *pdev)
 	mutex_unlock(&wdev->lock);
 }
 
-static void omap_wdt_remove(struct platform_device *pdev)
+static int omap_wdt_remove(struct platform_device *pdev)
 {
 	struct omap_wdt_dev *wdev = platform_get_drvdata(pdev);
 
 	pm_runtime_disable(wdev->dev);
 	watchdog_unregister_device(&wdev->wdog);
+
+	return 0;
 }
+
+#ifdef	CONFIG_PM
 
 /* REVISIT ... not clear this is the best way to handle system suspend; and
  * it's very inappropriate for selective device suspend (e.g. suspending this
@@ -349,6 +351,11 @@ static int omap_wdt_resume(struct platform_device *pdev)
 	return 0;
 }
 
+#else
+#define	omap_wdt_suspend	NULL
+#define	omap_wdt_resume		NULL
+#endif
+
 static const struct of_device_id omap_wdt_of_match[] = {
 	{ .compatible = "ti,omap3-wdt", },
 	{},
@@ -357,10 +364,10 @@ MODULE_DEVICE_TABLE(of, omap_wdt_of_match);
 
 static struct platform_driver omap_wdt_driver = {
 	.probe		= omap_wdt_probe,
-	.remove_new	= omap_wdt_remove,
+	.remove		= omap_wdt_remove,
 	.shutdown	= omap_wdt_shutdown,
-	.suspend	= pm_ptr(omap_wdt_suspend),
-	.resume		= pm_ptr(omap_wdt_resume),
+	.suspend	= omap_wdt_suspend,
+	.resume		= omap_wdt_resume,
 	.driver		= {
 		.name	= "omap_wdt",
 		.of_match_table = omap_wdt_of_match,

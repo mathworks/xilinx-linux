@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * sun4m irq support
  *
@@ -11,11 +10,11 @@
  */
 
 #include <linux/slab.h>
-#include <linux/sched/debug.h>
-#include <linux/pgtable.h>
 
 #include <asm/timer.h>
 #include <asm/traps.h>
+#include <asm/pgalloc.h>
+#include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/io.h>
 #include <asm/cacheflush.h>

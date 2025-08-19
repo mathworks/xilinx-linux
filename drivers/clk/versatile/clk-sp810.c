@@ -1,5 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Copyright (C) 2013 ARM Limited
  */
@@ -9,7 +16,6 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
-#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 
@@ -63,7 +69,6 @@ static int clk_sp810_timerclken_set_parent(struct clk_hw *hw, u8 index)
 }
 
 static const struct clk_ops clk_sp810_timerclken_ops = {
-	.determine_rate = clk_hw_determine_rate_no_reparent,
 	.get_parent = clk_sp810_timerclken_get_parent,
 	.set_parent = clk_sp810_timerclken_set_parent,
 };
@@ -106,7 +111,7 @@ static void __init clk_sp810_of_setup(struct device_node *node)
 
 	init.name = name;
 	init.ops = &clk_sp810_timerclken_ops;
-	init.flags = 0;
+	init.flags = CLK_IS_BASIC;
 	init.parent_names = parent_names;
 	init.num_parents = num;
 

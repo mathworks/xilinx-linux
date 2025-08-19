@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 1999-2000 Hewlett-Packard Co
  * Copyright (C) 1999-2000 David Mosberger-Tang <davidm@hpl.hp.com>
@@ -15,8 +14,8 @@
  * (http://www.goodreads.com/book/show/2019887.Ia_64_and_Elementary_Functions)
  */
 
-#include <linux/export.h>
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 #ifdef MODULO
 # define OP	mod

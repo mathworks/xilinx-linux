@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Support for the Maxtor OneTouch USB hard drive's button
  *
@@ -11,6 +10,24 @@
  * Based on usbmouse.c (Vojtech Pavlik) and xpad.c (Marko Friedemann)
  *
  */
+
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ */
+
 #include <linux/kernel.h>
 #include <linux/input.h>
 #include <linux/slab.h>
@@ -25,7 +42,6 @@
 MODULE_DESCRIPTION("Maxtor USB OneTouch hard drive button driver");
 MODULE_AUTHOR("Nick Sillik <n.sillik@temple.edu>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(USB_STORAGE);
 
 #define ONETOUCH_PKT_LEN        0x02
 #define ONETOUCH_BUTTON         KEY_PROG1
@@ -180,7 +196,7 @@ static int onetouch_connect_input(struct us_data *ss)
 		return -ENODEV;
 
 	pipe = usb_rcvintpipe(udev, endpoint->bEndpointAddress);
-	maxp = usb_maxpacket(udev, pipe);
+	maxp = usb_maxpacket(udev, pipe, usb_pipeout(pipe));
 	maxp = min(maxp, ONETOUCH_PKT_LEN);
 
 	onetouch = kzalloc(sizeof(struct usb_onetouch), GFP_KERNEL);
@@ -201,7 +217,7 @@ static int onetouch_connect_input(struct us_data *ss)
 	onetouch->dev = input_dev;
 
 	if (udev->manufacturer)
-		strscpy(onetouch->name, udev->manufacturer,
+		strlcpy(onetouch->name, udev->manufacturer,
 			sizeof(onetouch->name));
 	if (udev->product) {
 		if (udev->manufacturer)

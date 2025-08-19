@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2008 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
+ *
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 #include <linux/string.h>
 #include <linux/errno.h>
@@ -39,7 +51,7 @@ static irqreturn_t fnic_isr_legacy(int irq, void *data)
 	}
 
 	if (pba & (1 << FNIC_INTX_WQ_RQ_COPYWQ)) {
-		work_done += fnic_wq_copy_cmpl_handler(fnic, io_completions);
+		work_done += fnic_wq_copy_cmpl_handler(fnic, -1);
 		work_done += fnic_wq_cmpl_handler(fnic, -1);
 		work_done += fnic_rq_cmpl_handler(fnic, -1);
 
@@ -60,7 +72,7 @@ static irqreturn_t fnic_isr_msi(int irq, void *data)
 	fnic->fnic_stats.misc_stats.last_isr_time = jiffies;
 	atomic64_inc(&fnic->fnic_stats.misc_stats.isr_count);
 
-	work_done += fnic_wq_copy_cmpl_handler(fnic, io_completions);
+	work_done += fnic_wq_copy_cmpl_handler(fnic, -1);
 	work_done += fnic_wq_cmpl_handler(fnic, -1);
 	work_done += fnic_rq_cmpl_handler(fnic, -1);
 
@@ -113,7 +125,7 @@ static irqreturn_t fnic_isr_msix_wq_copy(int irq, void *data)
 	fnic->fnic_stats.misc_stats.last_isr_time = jiffies;
 	atomic64_inc(&fnic->fnic_stats.misc_stats.isr_count);
 
-	wq_copy_work_done = fnic_wq_copy_cmpl_handler(fnic, io_completions);
+	wq_copy_work_done = fnic_wq_copy_cmpl_handler(fnic, -1);
 	vnic_intr_return_credits(&fnic->intr[FNIC_MSIX_WQ_COPY],
 				 wq_copy_work_done,
 				 1 /* unmask intr */,
@@ -142,13 +154,13 @@ void fnic_free_intr(struct fnic *fnic)
 	switch (vnic_dev_get_intr_mode(fnic->vdev)) {
 	case VNIC_DEV_INTR_MODE_INTX:
 	case VNIC_DEV_INTR_MODE_MSI:
-		free_irq(pci_irq_vector(fnic->pdev, 0), fnic);
+		free_irq(fnic->pdev->irq, fnic);
 		break;
 
 	case VNIC_DEV_INTR_MODE_MSIX:
 		for (i = 0; i < ARRAY_SIZE(fnic->msix); i++)
 			if (fnic->msix[i].requested)
-				free_irq(pci_irq_vector(fnic->pdev, i),
+				free_irq(fnic->msix_entry[i].vector,
 					 fnic->msix[i].devid);
 		break;
 
@@ -165,12 +177,12 @@ int fnic_request_intr(struct fnic *fnic)
 	switch (vnic_dev_get_intr_mode(fnic->vdev)) {
 
 	case VNIC_DEV_INTR_MODE_INTX:
-		err = request_irq(pci_irq_vector(fnic->pdev, 0),
-				&fnic_isr_legacy, IRQF_SHARED, DRV_NAME, fnic);
+		err = request_irq(fnic->pdev->irq, &fnic_isr_legacy,
+				  IRQF_SHARED, DRV_NAME, fnic);
 		break;
 
 	case VNIC_DEV_INTR_MODE_MSI:
-		err = request_irq(pci_irq_vector(fnic->pdev, 0), &fnic_isr_msi,
+		err = request_irq(fnic->pdev->irq, &fnic_isr_msi,
 				  0, fnic->name, fnic);
 		break;
 
@@ -198,7 +210,7 @@ int fnic_request_intr(struct fnic *fnic)
 		fnic->msix[FNIC_MSIX_ERR_NOTIFY].devid = fnic;
 
 		for (i = 0; i < ARRAY_SIZE(fnic->msix); i++) {
-			err = request_irq(pci_irq_vector(fnic->pdev, i),
+			err = request_irq(fnic->msix_entry[i].vector,
 					  fnic->msix[i].isr, 0,
 					  fnic->msix[i].devname,
 					  fnic->msix[i].devid);
@@ -225,6 +237,7 @@ int fnic_set_intr_mode(struct fnic *fnic)
 	unsigned int n = ARRAY_SIZE(fnic->rq);
 	unsigned int m = ARRAY_SIZE(fnic->wq);
 	unsigned int o = ARRAY_SIZE(fnic->wq_copy);
+	unsigned int i;
 
 	/*
 	 * Set interrupt mode (INTx, MSI, MSI-X) depending
@@ -235,20 +248,23 @@ int fnic_set_intr_mode(struct fnic *fnic)
 	 * We need n RQs, m WQs, o Copy WQs, n+m+o CQs, and n+m+o+1 INTRs
 	 * (last INTR is used for WQ/RQ errors and notification area)
 	 */
+
+	BUG_ON(ARRAY_SIZE(fnic->msix_entry) < n + m + o + 1);
+	for (i = 0; i < n + m + o + 1; i++)
+		fnic->msix_entry[i].entry = i;
+
 	if (fnic->rq_count >= n &&
 	    fnic->raw_wq_count >= m &&
 	    fnic->wq_copy_count >= o &&
 	    fnic->cq_count >= n + m + o) {
-		int vecs = n + m + o + 1;
-
-		if (pci_alloc_irq_vectors(fnic->pdev, vecs, vecs,
-				PCI_IRQ_MSIX) == vecs) {
+		if (!pci_enable_msix_exact(fnic->pdev, fnic->msix_entry,
+					   n + m + o + 1)) {
 			fnic->rq_count = n;
 			fnic->raw_wq_count = m;
 			fnic->wq_copy_count = o;
 			fnic->wq_count = m + o;
 			fnic->cq_count = n + m + o;
-			fnic->intr_count = vecs;
+			fnic->intr_count = n + m + o + 1;
 			fnic->err_intr_offset = FNIC_MSIX_ERR_NOTIFY;
 
 			FNIC_ISR_DBG(KERN_DEBUG, fnic->lport->host,
@@ -268,7 +284,8 @@ int fnic_set_intr_mode(struct fnic *fnic)
 	    fnic->wq_copy_count >= 1 &&
 	    fnic->cq_count >= 3 &&
 	    fnic->intr_count >= 1 &&
-	    pci_alloc_irq_vectors(fnic->pdev, 1, 1, PCI_IRQ_MSI) == 1) {
+	    !pci_enable_msi(fnic->pdev)) {
+
 		fnic->rq_count = 1;
 		fnic->raw_wq_count = 1;
 		fnic->wq_copy_count = 1;
@@ -317,6 +334,17 @@ int fnic_set_intr_mode(struct fnic *fnic)
 
 void fnic_clear_intr_mode(struct fnic *fnic)
 {
-	pci_free_irq_vectors(fnic->pdev);
+	switch (vnic_dev_get_intr_mode(fnic->vdev)) {
+	case VNIC_DEV_INTR_MODE_MSIX:
+		pci_disable_msix(fnic->pdev);
+		break;
+	case VNIC_DEV_INTR_MODE_MSI:
+		pci_disable_msi(fnic->pdev);
+		break;
+	default:
+		break;
+	}
+
 	vnic_dev_set_intr_mode(fnic->vdev, VNIC_DEV_INTR_MODE_INTX);
 }
+

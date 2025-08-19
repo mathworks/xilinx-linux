@@ -1,5 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2014 Jozsef Kadlecsik <kadlec@netfilter.org> */
+/* Copyright (C) 2014 Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
 
 /* Kernel module implementing an IP set type: the hash:mac type */
 
@@ -16,10 +20,10 @@
 #include <linux/netfilter/ipset/ip_set_hash.h>
 
 #define IPSET_TYPE_REV_MIN	0
-#define IPSET_TYPE_REV_MAX	1	/* bucketsize, initval support */
+#define IPSET_TYPE_REV_MAX	0
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jozsef Kadlecsik <kadlec@netfilter.org>");
+MODULE_AUTHOR("Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>");
 IP_SET_MODULE_DESC("hash:mac", IPSET_TYPE_REV_MIN, IPSET_TYPE_REV_MAX);
 MODULE_ALIAS("ip_set_hash:mac");
 
@@ -37,7 +41,7 @@ struct hash_mac4_elem {
 
 /* Common functions */
 
-static bool
+static inline bool
 hash_mac4_data_equal(const struct hash_mac4_elem *e1,
 		     const struct hash_mac4_elem *e2,
 		     u32 *multi)
@@ -45,7 +49,7 @@ hash_mac4_data_equal(const struct hash_mac4_elem *e1,
 	return ether_addr_equal(e1->ether, e2->ether);
 }
 
-static bool
+static inline bool
 hash_mac4_data_list(struct sk_buff *skb, const struct hash_mac4_elem *e)
 {
 	if (nla_put(skb, IPSET_ATTR_ETHER, ETH_ALEN, e->ether))
@@ -56,7 +60,7 @@ nla_put_failure:
 	return true;
 }
 
-static void
+static inline void
 hash_mac4_data_next(struct hash_mac4_elem *next,
 		    const struct hash_mac4_elem *e)
 {
@@ -68,6 +72,9 @@ hash_mac4_data_next(struct hash_mac4_elem *next,
 #define IP_SET_PROTO_UNDEF
 #include "ip_set_hash_gen.h"
 
+/* Zero valued element is not supported */
+static const unsigned char invalid_ether[ETH_ALEN] = { 0 };
+
 static int
 hash_mac4_kadt(struct ip_set *set, const struct sk_buff *skb,
 	       const struct xt_action_param *par,
@@ -77,16 +84,16 @@ hash_mac4_kadt(struct ip_set *set, const struct sk_buff *skb,
 	struct hash_mac4_elem e = { { .foo[0] = 0, .foo[1] = 0 } };
 	struct ip_set_ext ext = IP_SET_INIT_KEXT(skb, opt, set);
 
+	 /* MAC can be src only */
+	if (!(opt->flags & IPSET_DIM_ONE_SRC))
+		return 0;
+
 	if (skb_mac_header(skb) < skb->head ||
 	    (skb_mac_header(skb) + ETH_HLEN) > skb->data)
 		return -EINVAL;
 
-	if (opt->flags & IPSET_DIM_ONE_SRC)
-		ether_addr_copy(e.ether, eth_hdr(skb)->h_source);
-	else
-		ether_addr_copy(e.ether, eth_hdr(skb)->h_dest);
-
-	if (is_zero_ether_addr(e.ether))
+	ether_addr_copy(e.ether, eth_hdr(skb)->h_source);
+	if (memcmp(e.ether, invalid_ether, ETH_ALEN) == 0)
 		return -EINVAL;
 	return adtfn(set, &e, &ext, &opt->ext, opt->cmdflags);
 }
@@ -111,7 +118,7 @@ hash_mac4_uadt(struct ip_set *set, struct nlattr *tb[],
 	if (ret)
 		return ret;
 	ether_addr_copy(e.ether, nla_data(tb[IPSET_ATTR_ETHER]));
-	if (is_zero_ether_addr(e.ether))
+	if (memcmp(e.ether, invalid_ether, ETH_ALEN) == 0)
 		return -IPSET_ERR_HASH_ELEM;
 
 	return adtfn(set, &e, &ext, &ext, flags);
@@ -125,13 +132,11 @@ static struct ip_set_type hash_mac_type __read_mostly = {
 	.family		= NFPROTO_UNSPEC,
 	.revision_min	= IPSET_TYPE_REV_MIN,
 	.revision_max	= IPSET_TYPE_REV_MAX,
-	.create_flags[IPSET_TYPE_REV_MAX] = IPSET_CREATE_FLAG_BUCKETSIZE,
 	.create		= hash_mac_create,
 	.create_policy	= {
 		[IPSET_ATTR_HASHSIZE]	= { .type = NLA_U32 },
 		[IPSET_ATTR_MAXELEM]	= { .type = NLA_U32 },
-		[IPSET_ATTR_INITVAL]	= { .type = NLA_U32 },
-		[IPSET_ATTR_BUCKETSIZE]	= { .type = NLA_U8 },
+		[IPSET_ATTR_PROBES]	= { .type = NLA_U8 },
 		[IPSET_ATTR_RESIZE]	= { .type = NLA_U8  },
 		[IPSET_ATTR_TIMEOUT]	= { .type = NLA_U32 },
 		[IPSET_ATTR_CADT_FLAGS]	= { .type = NLA_U32 },

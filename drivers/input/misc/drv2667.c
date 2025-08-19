@@ -1,10 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DRV2667 haptics driver family
  *
  * Author: Dan Murphy <dmurphy@ti.com>
  *
  * Copyright: (C) 2014 Texas Instruments, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  */
 
 #include <linux/i2c.h>
@@ -90,14 +98,12 @@
 
 /**
  * struct drv2667_data -
- * @input_dev: Pointer to the input device
- * @client: Pointer to the I2C client
- * @regmap: Register map of the device
- * @work: Work item used to off load the enable/disable of the vibration
- * @regulator: Pointer to the regulator for the IC
- * @page: Page number
- * @magnitude: Magnitude of the vibration event
- * @frequency: Frequency of the vibration event
+ * @input_dev - Pointer to the input device
+ * @client - Pointer to the I2C client
+ * @regmap - Register map of the device
+ * @work - Work item used to off load the enable/disable of the vibration
+ * @regulator - Pointer to the regulator for the IC
+ * @magnitude - Magnitude of the vibration event
 **/
 struct drv2667_data {
 	struct input_dev *input_dev;
@@ -171,9 +177,9 @@ static int drv2667_set_waveform_freq(struct drv2667_data *haptics)
 		error = regmap_write(haptics->regmap, DRV2667_PAGE, read_buf);
 		if (error) {
 			dev_err(&haptics->client->dev,
-				"Failed to set the page: %d\n", error);
-			return -EIO;
-		}
+					"Failed to set the page: %d\n", error);
+				return -EIO;
+			}
 	}
 
 	return error;
@@ -250,7 +256,7 @@ static void drv2667_close(struct input_dev *input)
 	cancel_work_sync(&haptics->work);
 
 	error = regmap_update_bits(haptics->regmap, DRV2667_CTRL_2,
-				   DRV2667_STANDBY, DRV2667_STANDBY);
+				DRV2667_STANDBY, 1);
 	if (error)
 		dev_err(&haptics->client->dev,
 			"Failed to enter standby mode: %d\n", error);
@@ -333,7 +339,8 @@ static const struct regmap_config drv2667_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int drv2667_probe(struct i2c_client *client)
+static int drv2667_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct drv2667_data *haptics;
 	int error;
@@ -399,16 +406,16 @@ static int drv2667_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int drv2667_suspend(struct device *dev)
+static int __maybe_unused drv2667_suspend(struct device *dev)
 {
 	struct drv2667_data *haptics = dev_get_drvdata(dev);
 	int ret = 0;
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (input_device_enabled(haptics->input_dev)) {
+	if (haptics->input_dev->users) {
 		ret = regmap_update_bits(haptics->regmap, DRV2667_CTRL_2,
-					 DRV2667_STANDBY, DRV2667_STANDBY);
+				DRV2667_STANDBY, 1);
 		if (ret) {
 			dev_err(dev, "Failed to set standby mode\n");
 			regulator_disable(haptics->regulator);
@@ -428,14 +435,14 @@ out:
 	return ret;
 }
 
-static int drv2667_resume(struct device *dev)
+static int __maybe_unused drv2667_resume(struct device *dev)
 {
 	struct drv2667_data *haptics = dev_get_drvdata(dev);
 	int ret = 0;
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (input_device_enabled(haptics->input_dev)) {
+	if (haptics->input_dev->users) {
 		ret = regulator_enable(haptics->regulator);
 		if (ret) {
 			dev_err(dev, "Failed to enable regulator\n");
@@ -457,7 +464,7 @@ out:
 	return ret;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(drv2667_pm_ops, drv2667_suspend, drv2667_resume);
+static SIMPLE_DEV_PM_OPS(drv2667_pm_ops, drv2667_suspend, drv2667_resume);
 
 static const struct i2c_device_id drv2667_id[] = {
 	{ "drv2667", 0 },
@@ -478,7 +485,7 @@ static struct i2c_driver drv2667_driver = {
 	.driver		= {
 		.name	= "drv2667-haptics",
 		.of_match_table = of_match_ptr(drv2667_of_match),
-		.pm	= pm_sleep_ptr(&drv2667_pm_ops),
+		.pm	= &drv2667_pm_ops,
 	},
 	.id_table = drv2667_id,
 };

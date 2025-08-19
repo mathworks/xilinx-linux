@@ -3,7 +3,6 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * (C) Copyright 2020 Hewlett Packard Enterprise Development LP
  * Copyright (c) 2004-2009 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
@@ -60,16 +59,16 @@
 
 /* define two XPC debug device structures to be used with dev_dbg() et al */
 
-static struct device_driver xpc_dbg_name = {
+struct device_driver xpc_dbg_name = {
 	.name = "xpc"
 };
 
-static struct device xpc_part_dbg_subname = {
+struct device xpc_part_dbg_subname = {
 	.init_name = "",	/* set to "part" at xpc_init() time */
 	.driver = &xpc_dbg_name
 };
 
-static struct device xpc_chan_dbg_subname = {
+struct device xpc_chan_dbg_subname = {
 	.init_name = "",	/* set to "chan" at xpc_init() time */
 	.driver = &xpc_dbg_name
 };
@@ -93,7 +92,7 @@ int xpc_disengage_timelimit = XPC_DISENGAGE_DEFAULT_TIMELIMIT;
 static int xpc_disengage_min_timelimit;	/* = 0 */
 static int xpc_disengage_max_timelimit = 120;
 
-static struct ctl_table xpc_sys_xpc_hb[] = {
+static struct ctl_table xpc_sys_xpc_hb_dir[] = {
 	{
 	 .procname = "hb_interval",
 	 .data = &xpc_hb_interval,
@@ -112,7 +111,11 @@ static struct ctl_table xpc_sys_xpc_hb[] = {
 	 .extra2 = &xpc_hb_check_max_interval},
 	{}
 };
-static struct ctl_table xpc_sys_xpc[] = {
+static struct ctl_table xpc_sys_xpc_dir[] = {
+	{
+	 .procname = "hb",
+	 .mode = 0555,
+	 .child = xpc_sys_xpc_hb_dir},
 	{
 	 .procname = "disengage_timelimit",
 	 .data = &xpc_disengage_timelimit,
@@ -123,9 +126,14 @@ static struct ctl_table xpc_sys_xpc[] = {
 	 .extra2 = &xpc_disengage_max_timelimit},
 	{}
 };
-
+static struct ctl_table xpc_sys_dir[] = {
+	{
+	 .procname = "xpc",
+	 .mode = 0555,
+	 .child = xpc_sys_xpc_dir},
+	{}
+};
 static struct ctl_table_header *xpc_sysctl;
-static struct ctl_table_header *xpc_sysctl_hb;
 
 /* non-zero if any remote partition disengage was timed out */
 int xpc_disengage_timedout;
@@ -164,13 +172,13 @@ struct xpc_arch_operations xpc_arch_ops;
  * Timer function to enforce the timelimit on the partition disengage.
  */
 static void
-xpc_timeout_partition_disengage(struct timer_list *t)
+xpc_timeout_partition_disengage(unsigned long data)
 {
-	struct xpc_partition *part = from_timer(part, t, disengage_timer);
+	struct xpc_partition *part = (struct xpc_partition *)data;
 
 	DBUG_ON(time_is_after_jiffies(part->disengage_timeout));
 
-	xpc_partition_disengaged_from_timer(part);
+	(void)xpc_partition_disengaged(part);
 
 	DBUG_ON(part->disengage_timeout != 0);
 	DBUG_ON(xpc_arch_ops.partition_engaged(XPC_PARTID(part)));
@@ -182,7 +190,7 @@ xpc_timeout_partition_disengage(struct timer_list *t)
  * specify when the next timeout should occur.
  */
 static void
-xpc_hb_beater(struct timer_list *unused)
+xpc_hb_beater(unsigned long dummy)
 {
 	xpc_arch_ops.increment_heartbeat();
 
@@ -197,8 +205,9 @@ static void
 xpc_start_hb_beater(void)
 {
 	xpc_arch_ops.heartbeat_init();
-	timer_setup(&xpc_hb_timer, xpc_hb_beater, 0);
-	xpc_hb_beater(NULL);
+	init_timer(&xpc_hb_timer);
+	xpc_hb_timer.function = xpc_hb_beater;
+	xpc_hb_beater(0);
 }
 
 static void
@@ -271,6 +280,13 @@ xpc_hb_checker(void *ignore)
 
 			dev_dbg(xpc_part, "checking remote heartbeats\n");
 			xpc_check_remote_hb();
+
+			/*
+			 * On sn2 we need to periodically recheck to ensure no
+			 * IRQ/amo pairs have been missed.
+			 */
+			if (is_shub())
+				force_IRQ = 1;
 		}
 
 		/* check for outstanding IRQs */
@@ -401,8 +417,7 @@ xpc_setup_ch_structures(struct xpc_partition *part)
 	 * memory.
 	 */
 	DBUG_ON(part->channels != NULL);
-	part->channels = kcalloc(XPC_MAX_NCHANNELS,
-				 sizeof(struct xpc_channel),
+	part->channels = kzalloc(sizeof(struct xpc_channel) * XPC_MAX_NCHANNELS,
 				 GFP_KERNEL);
 	if (part->channels == NULL) {
 		dev_err(xpc_chan, "can't get memory for channels\n");
@@ -891,9 +906,8 @@ xpc_setup_partitions(void)
 	short partid;
 	struct xpc_partition *part;
 
-	xpc_partitions = kcalloc(xp_max_npartitions,
-				 sizeof(struct xpc_partition),
-				 GFP_KERNEL);
+	xpc_partitions = kzalloc(sizeof(struct xpc_partition) *
+				 xp_max_npartitions, GFP_KERNEL);
 	if (xpc_partitions == NULL) {
 		dev_err(xpc_part, "can't get memory for partition structure\n");
 		return -ENOMEM;
@@ -917,8 +931,10 @@ xpc_setup_partitions(void)
 		part->act_state = XPC_P_AS_INACTIVE;
 		XPC_SET_REASON(part, 0, 0);
 
-		timer_setup(&part->disengage_timer,
-			    xpc_timeout_partition_disengage, 0);
+		init_timer(&part->disengage_timer);
+		part->disengage_timer.function =
+		    xpc_timeout_partition_disengage;
+		part->disengage_timer.data = (unsigned long)part;
 
 		part->setup_state = XPC_P_SS_UNSET;
 		init_waitqueue_head(&part->teardown_wq);
@@ -1032,12 +1048,12 @@ xpc_do_exit(enum xp_retval reason)
 
 	if (xpc_sysctl)
 		unregister_sysctl_table(xpc_sysctl);
-	if (xpc_sysctl_hb)
-		unregister_sysctl_table(xpc_sysctl_hb);
 
 	xpc_teardown_partitions();
 
-	if (is_uv_system())
+	if (is_shub())
+		xpc_exit_sn2();
+	else if (is_uv())
 		xpc_exit_uv();
 }
 
@@ -1167,7 +1183,7 @@ xpc_system_die(struct notifier_block *nb, unsigned long event, void *_die_args)
 		if (!xpc_kdebug_ignore)
 			break;
 
-		fallthrough;
+		/* fall through */
 	case DIE_MCA_MONARCH_ENTER:
 	case DIE_INIT_MONARCH_ENTER:
 		xpc_arch_ops.offline_heartbeat();
@@ -1178,7 +1194,7 @@ xpc_system_die(struct notifier_block *nb, unsigned long event, void *_die_args)
 		if (!xpc_kdebug_ignore)
 			break;
 
-		fallthrough;
+		/* fall through */
 	case DIE_MCA_MONARCH_LEAVE:
 	case DIE_INIT_MONARCH_LEAVE:
 		xpc_arch_ops.online_heartbeat();
@@ -1211,7 +1227,7 @@ xpc_system_die(struct notifier_block *nb, unsigned long event, void *_die_args)
 	return NOTIFY_DONE;
 }
 
-static int __init
+int __init
 xpc_init(void)
 {
 	int ret;
@@ -1220,7 +1236,21 @@ xpc_init(void)
 	dev_set_name(xpc_part, "part");
 	dev_set_name(xpc_chan, "chan");
 
-	if (is_uv_system()) {
+	if (is_shub()) {
+		/*
+		 * The ia64-sn2 architecture supports at most 64 partitions.
+		 * And the inability to unregister remote amos restricts us
+		 * further to only support exactly 64 partitions on this
+		 * architecture, no less.
+		 */
+		if (xp_max_npartitions != 64) {
+			dev_err(xpc_part, "max #of partitions not set to 64\n");
+			ret = -EINVAL;
+		} else {
+			ret = xpc_init_sn2();
+		}
+
+	} else if (is_uv()) {
 		ret = xpc_init_uv();
 
 	} else {
@@ -1236,8 +1266,7 @@ xpc_init(void)
 		goto out_1;
 	}
 
-	xpc_sysctl = register_sysctl("xpc", xpc_sys_xpc);
-	xpc_sysctl_hb = register_sysctl("xpc/hb", xpc_sys_xpc_hb);
+	xpc_sysctl = register_sysctl_table(xpc_sys_dir);
 
 	/*
 	 * Fill the partition reserved page with the information needed by
@@ -1302,21 +1331,21 @@ out_3:
 	(void)unregister_die_notifier(&xpc_die_notifier);
 	(void)unregister_reboot_notifier(&xpc_reboot_notifier);
 out_2:
-	if (xpc_sysctl_hb)
-		unregister_sysctl_table(xpc_sysctl_hb);
 	if (xpc_sysctl)
 		unregister_sysctl_table(xpc_sysctl);
 
 	xpc_teardown_partitions();
 out_1:
-	if (is_uv_system())
+	if (is_shub())
+		xpc_exit_sn2();
+	else if (is_uv())
 		xpc_exit_uv();
 	return ret;
 }
 
 module_init(xpc_init);
 
-static void __exit
+void __exit
 xpc_exit(void)
 {
 	xpc_do_exit(xpUnloading);

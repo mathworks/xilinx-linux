@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * New-style PCI core.
  *
@@ -7,12 +6,17 @@
  *
  * Modelled after arch/mips/pci/pci.c:
  *  Copyright (C) 2003, 04 Ralf Baechle (ralf@linux-mips.org)
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/types.h>
+#include <linux/dma-debug.h>
 #include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -35,18 +39,12 @@ static void pcibios_scanbus(struct pci_channel *hose)
 	LIST_HEAD(resources);
 	struct resource *res;
 	resource_size_t offset;
-	int i, ret;
-	struct pci_host_bridge *bridge;
-
-	bridge = pci_alloc_host_bridge(0);
-	if (!bridge)
-		return;
+	int i;
+	struct pci_bus *bus;
 
 	for (i = 0; i < hose->nr_resources; i++) {
 		res = hose->resources + i;
 		offset = 0;
-		if (res->flags & IORESOURCE_DISABLED)
-			continue;
 		if (res->flags & IORESOURCE_IO)
 			offset = hose->io_offset;
 		else if (res->flags & IORESOURCE_MEM)
@@ -54,26 +52,19 @@ static void pcibios_scanbus(struct pci_channel *hose)
 		pci_add_resource_offset(&resources, res, offset);
 	}
 
-	list_splice_init(&resources, &bridge->windows);
-	bridge->dev.parent = NULL;
-	bridge->sysdata = hose;
-	bridge->busnr = next_busno;
-	bridge->ops = hose->pci_ops;
-	bridge->swizzle_irq = pci_common_swizzle;
-	bridge->map_irq = pcibios_map_platform_irq;
-
-	ret = pci_scan_root_bus_bridge(bridge);
-	if (ret) {
-		pci_free_host_bridge(bridge);
-		return;
-	}
-
-	hose->bus = bridge->bus;
+	bus = pci_scan_root_bus(NULL, next_busno, hose->pci_ops, hose,
+				&resources);
+	hose->bus = bus;
 
 	need_domain_info = need_domain_info || hose->index;
 	hose->need_domain_info = need_domain_info;
 
-	next_busno = hose->bus->busn_res.end + 1;
+	if (!bus) {
+		pci_free_resource_list(&resources);
+		return;
+	}
+
+	next_busno = bus->busn_res.end + 1;
 	/* Don't allow 8-bit bus number overflow inside the hose -
 	   reserve some space for bridges. */
 	if (next_busno > 224) {
@@ -81,9 +72,9 @@ static void pcibios_scanbus(struct pci_channel *hose)
 		need_domain_info = 1;
 	}
 
-	pci_bus_size_bridges(hose->bus);
-	pci_bus_assign_resources(hose->bus);
-	pci_bus_add_devices(hose->bus);
+	pci_bus_size_bridges(bus);
+	pci_bus_assign_resources(bus);
+	pci_bus_add_devices(bus);
 }
 
 /*
@@ -99,9 +90,6 @@ int register_pci_controller(struct pci_channel *hose)
 
 	for (i = 0; i < hose->nr_resources; i++) {
 		struct resource *res = hose->resources + i;
-
-		if (res->flags & IORESOURCE_DISABLED)
-			continue;
 
 		if (res->flags & IORESOURCE_IO) {
 			if (request_resource(&ioport_resource, res) < 0)
@@ -119,7 +107,8 @@ int register_pci_controller(struct pci_channel *hose)
 	 * Do not panic here but later - this might happen before console init.
 	 */
 	if (!hose->io_map_base) {
-		pr_warn("registering PCI controller with io_map_base unset\n");
+		printk(KERN_WARNING
+		       "registering PCI controller with io_map_base unset\n");
 	}
 
 	/*
@@ -143,7 +132,7 @@ out:
 	for (--i; i >= 0; i--)
 		release_resource(&hose->resources[i]);
 
-	pr_warn("Skipping PCI bus scan due to resource conflict\n");
+	printk(KERN_WARNING "Skipping PCI bus scan due to resource conflict\n");
 	return -1;
 }
 
@@ -155,11 +144,23 @@ static int __init pcibios_init(void)
 	for (hose = hose_head; hose; hose = hose->next)
 		pcibios_scanbus(hose);
 
+	pci_fixup_irqs(pci_common_swizzle, pcibios_map_platform_irq);
+
+	dma_debug_add_bus(&pci_bus_type);
+
 	pci_initialized = 1;
 
 	return 0;
 }
 subsys_initcall(pcibios_init);
+
+/*
+ *  Called after each bus is probed, but before its children
+ *  are examined.
+ */
+void pcibios_fixup_bus(struct pci_bus *bus)
+{
+}
 
 /*
  * We need to avoid collisions with `mirrored' VGA ports
@@ -211,8 +212,8 @@ pcibios_bus_report_status_early(struct pci_channel *hose,
 					pci_devfn, PCI_STATUS,
 					status & status_mask);
 		if (warn)
-			pr_cont("(%02x:%02x: %04X) ", current_bus, pci_devfn,
-				status);
+			printk("(%02x:%02x: %04X) ", current_bus,
+			       pci_devfn, status);
 	}
 }
 
@@ -247,7 +248,7 @@ pcibios_bus_report_status(struct pci_bus *bus, unsigned int status_mask,
 		pci_write_config_word(dev, PCI_STATUS, status & status_mask);
 
 		if (warn)
-			pr_cont("(%s: %04X) ", pci_name(dev), status);
+			printk("(%s: %04X) ", pci_name(dev), status);
 	}
 
 	list_for_each_entry(dev, &bus->devices, bus_list)
@@ -266,6 +267,27 @@ void __ref pcibios_report_status(unsigned int status_mask, int warn)
 		else
 			pcibios_bus_report_status(hose->bus, status_mask, warn);
 	}
+}
+
+int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+			enum pci_mmap_state mmap_state, int write_combine)
+{
+	/*
+	 * I/O space can be accessed via normal processor loads and stores on
+	 * this platform but for now we elect not to do this and portable
+	 * drivers should not do this anyway.
+	 */
+	if (mmap_state == pci_mmap_io)
+		return -EINVAL;
+
+	/*
+	 * Ignore write-combine; for now only return uncached mappings.
+	 */
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+			       vma->vm_end - vma->vm_start,
+			       vma->vm_page_prot);
 }
 
 #ifndef CONFIG_GENERIC_IOMAP

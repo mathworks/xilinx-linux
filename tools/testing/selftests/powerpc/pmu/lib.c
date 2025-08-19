@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2014, Michael Ellerman, IBM Corp.
+ * Licensed under GPLv2.
  */
 
 #define _GNU_SOURCE	/* For CPU_ZERO etc. */
@@ -13,6 +13,19 @@
 
 #include "utils.h"
 #include "lib.h"
+
+
+int bind_to_cpu(int cpu)
+{
+	cpu_set_t mask;
+
+	printf("Binding to cpu %d\n", cpu);
+
+	CPU_ZERO(&mask);
+	CPU_SET(cpu, &mask);
+
+	return sched_setaffinity(0, sizeof(mask), &mask);
+}
 
 #define PARENT_TOKEN	0xAA
 #define CHILD_TOKEN	0x55
@@ -103,10 +116,12 @@ static int eat_cpu_child(union pipe read_pipe, union pipe write_pipe)
 pid_t eat_cpu(int (test_function)(void))
 {
 	union pipe read_pipe, write_pipe;
-	int rc;
+	int cpu, rc;
 	pid_t pid;
 
-	FAIL_IF(bind_to_cpu(BIND_CPU_ANY) < 0);
+	cpu = pick_online_cpu();
+	FAIL_IF(cpu < 0);
+	FAIL_IF(bind_to_cpu(cpu));
 
 	if (pipe(read_pipe.fds) == -1)
 		return -1;
@@ -175,14 +190,38 @@ int parse_proc_maps(void)
 
 bool require_paranoia_below(int level)
 {
-	int err;
 	long current;
+	char *end, buf[16];
+	FILE *f;
+	int rc;
 
-	err = read_long(PARANOID_PATH, &current, 10);
-	if (err) {
-		printf("Couldn't parse " PARANOID_PATH "?\n");
-		return false;
+	rc = -1;
+
+	f = fopen(PARANOID_PATH, "r");
+	if (!f) {
+		perror("fopen");
+		goto out;
 	}
 
-	return current < level;
+	if (!fgets(buf, sizeof(buf), f)) {
+		printf("Couldn't read " PARANOID_PATH "?\n");
+		goto out_close;
+	}
+
+	current = strtol(buf, &end, 10);
+
+	if (end == buf) {
+		printf("Couldn't parse " PARANOID_PATH "?\n");
+		goto out_close;
+	}
+
+	if (current >= level)
+		goto out_close;
+
+	rc = 0;
+out_close:
+	fclose(f);
+out:
+	return rc;
 }
+

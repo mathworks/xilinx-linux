@@ -1,11 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * atxp1.c - kernel module for setting CPU VID and general purpose
  *	     I/Os using the Attansic ATXP1 chip.
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  * The ATXP1 can reside on I2C addresses 0x37 or 0x4e. The chip is
  * not auto-detected by the driver and must be instantiated explicitly.
- * See Documentation/i2c/instantiating-devices.rst for more information.
+ * See Documentation/i2c/instantiating-devices for more information.
  */
 
 #include <linux/kernel.h>
@@ -16,7 +25,6 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-vid.h>
 #include <linux/err.h>
-#include <linux/kstrtox.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/slab.h>
@@ -38,7 +46,7 @@ struct atxp1_data {
 	struct i2c_client *client;
 	struct mutex update_lock;
 	unsigned long last_updated;
-	bool valid;
+	u8 valid;
 	struct {
 		u8 vid;		/* VID output register */
 		u8 cpu_vid; /* VID input from CPU */
@@ -64,7 +72,7 @@ static struct atxp1_data *atxp1_update_device(struct device *dev)
 		data->reg.gpio1 = i2c_smbus_read_byte_data(client, ATXP1_GPIO1);
 		data->reg.gpio2 = i2c_smbus_read_byte_data(client, ATXP1_GPIO2);
 
-		data->valid = true;
+		data->valid = 1;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -73,8 +81,8 @@ static struct atxp1_data *atxp1_update_device(struct device *dev)
 }
 
 /* sys file functions for cpu0_vid */
-static ssize_t cpu0_vid_show(struct device *dev,
-			     struct device_attribute *attr, char *buf)
+static ssize_t atxp1_showvcore(struct device *dev,
+			       struct device_attribute *attr, char *buf)
 {
 	int size;
 	struct atxp1_data *data;
@@ -87,9 +95,9 @@ static ssize_t cpu0_vid_show(struct device *dev,
 	return size;
 }
 
-static ssize_t cpu0_vid_store(struct device *dev,
-			      struct device_attribute *attr, const char *buf,
-			      size_t count)
+static ssize_t atxp1_storevcore(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
 	struct atxp1_data *data = atxp1_update_device(dev);
 	struct i2c_client *client = data->client;
@@ -137,7 +145,7 @@ static ssize_t cpu0_vid_store(struct device *dev,
 						ATXP1_VID, cvid | ATXP1_VIDENA);
 	}
 
-	data->valid = false;
+	data->valid = 0;
 
 	return count;
 }
@@ -146,11 +154,12 @@ static ssize_t cpu0_vid_store(struct device *dev,
  * CPU core reference voltage
  * unit: millivolt
  */
-static DEVICE_ATTR_RW(cpu0_vid);
+static DEVICE_ATTR(cpu0_vid, S_IRUGO | S_IWUSR, atxp1_showvcore,
+		   atxp1_storevcore);
 
 /* sys file functions for GPIO1 */
-static ssize_t gpio1_show(struct device *dev, struct device_attribute *attr,
-			  char *buf)
+static ssize_t atxp1_showgpio1(struct device *dev,
+			       struct device_attribute *attr, char *buf)
 {
 	int size;
 	struct atxp1_data *data;
@@ -162,8 +171,9 @@ static ssize_t gpio1_show(struct device *dev, struct device_attribute *attr,
 	return size;
 }
 
-static ssize_t gpio1_store(struct device *dev, struct device_attribute *attr,
-			   const char *buf, size_t count)
+static ssize_t atxp1_storegpio1(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+				size_t count)
 {
 	struct atxp1_data *data = atxp1_update_device(dev);
 	struct i2c_client *client = data->client;
@@ -181,7 +191,7 @@ static ssize_t gpio1_store(struct device *dev, struct device_attribute *attr,
 
 		i2c_smbus_write_byte_data(client, ATXP1_GPIO1, value);
 
-		data->valid = false;
+		data->valid = 0;
 	}
 
 	return count;
@@ -191,11 +201,11 @@ static ssize_t gpio1_store(struct device *dev, struct device_attribute *attr,
  * GPIO1 data register
  * unit: Four bit as hex (e.g. 0x0f)
  */
-static DEVICE_ATTR_RW(gpio1);
+static DEVICE_ATTR(gpio1, S_IRUGO | S_IWUSR, atxp1_showgpio1, atxp1_storegpio1);
 
 /* sys file functions for GPIO2 */
-static ssize_t gpio2_show(struct device *dev, struct device_attribute *attr,
-			  char *buf)
+static ssize_t atxp1_showgpio2(struct device *dev,
+			       struct device_attribute *attr, char *buf)
 {
 	int size;
 	struct atxp1_data *data;
@@ -207,8 +217,9 @@ static ssize_t gpio2_show(struct device *dev, struct device_attribute *attr,
 	return size;
 }
 
-static ssize_t gpio2_store(struct device *dev, struct device_attribute *attr,
-			   const char *buf, size_t count)
+static ssize_t atxp1_storegpio2(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
 	struct atxp1_data *data = atxp1_update_device(dev);
 	struct i2c_client *client = data->client;
@@ -225,7 +236,7 @@ static ssize_t gpio2_store(struct device *dev, struct device_attribute *attr,
 
 		i2c_smbus_write_byte_data(client, ATXP1_GPIO2, value);
 
-		data->valid = false;
+		data->valid = 0;
 	}
 
 	return count;
@@ -235,7 +246,7 @@ static ssize_t gpio2_store(struct device *dev, struct device_attribute *attr,
  * GPIO2 data register
  * unit: Eight bit as hex (e.g. 0xff)
  */
-static DEVICE_ATTR_RW(gpio2);
+static DEVICE_ATTR(gpio2, S_IRUGO | S_IWUSR, atxp1_showgpio2, atxp1_storegpio2);
 
 static struct attribute *atxp1_attrs[] = {
 	&dev_attr_gpio1.attr,
@@ -245,7 +256,8 @@ static struct attribute *atxp1_attrs[] = {
 };
 ATTRIBUTE_GROUPS(atxp1);
 
-static int atxp1_probe(struct i2c_client *client)
+static int atxp1_probe(struct i2c_client *client,
+		       const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct atxp1_data *data;

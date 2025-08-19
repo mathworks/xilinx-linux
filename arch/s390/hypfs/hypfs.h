@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *    Hypervisor filesystem for Linux on s390.
  *
@@ -43,17 +42,8 @@ int hypfs_diag0c_init(void);
 void hypfs_diag0c_exit(void);
 
 /* Set Partition-Resource Parameter */
-void hypfs_sprp_init(void);
+int hypfs_sprp_init(void);
 void hypfs_sprp_exit(void);
-
-int __hypfs_fs_init(void);
-
-static inline int hypfs_fs_init(void)
-{
-	if (IS_ENABLED(CONFIG_S390_HYPFS_FS))
-		return __hypfs_fs_init();
-	return 0;
-}
 
 /* debugfs interface */
 struct hypfs_dbfs_file;
@@ -78,8 +68,9 @@ struct hypfs_dbfs_file {
 	struct dentry		*dentry;
 };
 
+extern int hypfs_dbfs_init(void);
 extern void hypfs_dbfs_exit(void);
-extern void hypfs_dbfs_create_file(struct hypfs_dbfs_file *df);
+extern int hypfs_dbfs_create_file(struct hypfs_dbfs_file *df);
 extern void hypfs_dbfs_remove_file(struct hypfs_dbfs_file *df);
 
 #endif /* _HYPFS_H_ */

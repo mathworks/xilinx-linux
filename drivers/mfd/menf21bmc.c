@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  MEN 14F021P00 Board Management Controller (BMC) MFD Core Driver.
  *
  *  Copyright (C) 2014 MEN Mikro Elektronik Nuernberg GmbH
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -49,7 +53,7 @@ static int menf21bmc_wdt_exit_prod_mode(struct i2c_client *client)
 }
 
 static int
-menf21bmc_probe(struct i2c_client *client)
+menf21bmc_probe(struct i2c_client *client, const struct i2c_device_id *ids)
 {
 	int rev_major, rev_minor, rev_main;
 	int ret;

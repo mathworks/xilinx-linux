@@ -1,21 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Copyright 2012 Freescale Semiconductor, Inc.
+/*
+ * Copyright 2012 Freescale Semiconductor, Inc.
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
+ */
 
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/platform_device.h>
-#include <linux/seq_file.h>
-#include <linux/slab.h>
-
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-
+#include <linux/platform_device.h>
+#include <linux/slab.h>
 #include "../core.h"
 #include "pinctrl-mxs.h"
 
@@ -92,7 +96,7 @@ static int mxs_dt_node_to_map(struct pinctrl_dev *pctldev,
 	if (!purecfg && config)
 		new_num = 2;
 
-	new_map = kcalloc(new_num, sizeof(*new_map), GFP_KERNEL);
+	new_map = kzalloc(sizeof(*new_map) * new_num, GFP_KERNEL);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -190,16 +194,6 @@ static int mxs_pinctrl_get_func_groups(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static void mxs_pinctrl_rmwl(u32 value, u32 mask, u8 shift, void __iomem *reg)
-{
-	u32 tmp;
-
-	tmp = readl(reg);
-	tmp &= ~(mask << shift);
-	tmp |= value << shift;
-	writel(tmp, reg);
-}
-
 static int mxs_pinctrl_set_mux(struct pinctrl_dev *pctldev, unsigned selector,
 			       unsigned group)
 {
@@ -217,7 +211,8 @@ static int mxs_pinctrl_set_mux(struct pinctrl_dev *pctldev, unsigned selector,
 		reg += bank * 0x20 + pin / 16 * 0x10;
 		shift = pin % 16 * 2;
 
-		mxs_pinctrl_rmwl(g->muxsel[i], 0x3, shift, reg);
+		writel(0x3 << shift, reg + CLR);
+		writel(g->muxsel[i] << shift, reg + SET);
 	}
 
 	return 0;
@@ -269,9 +264,9 @@ static int mxs_pinconf_group_set(struct pinctrl_dev *pctldev,
 	for (n = 0; n < num_configs; n++) {
 		config = configs[n];
 
-		ma = PIN_CONFIG_TO_MA(config);
-		vol = PIN_CONFIG_TO_VOL(config);
-		pull = PIN_CONFIG_TO_PULL(config);
+		ma = CONFIG_TO_MA(config);
+		vol = CONFIG_TO_VOL(config);
+		pull = CONFIG_TO_PULL(config);
 
 		for (i = 0; i < g->npins; i++) {
 			bank = PINID_TO_BANK(g->pins[i]);
@@ -284,7 +279,8 @@ static int mxs_pinconf_group_set(struct pinctrl_dev *pctldev,
 			/* mA */
 			if (config & MA_PRESENT) {
 				shift = pin % 8 * 4;
-				mxs_pinctrl_rmwl(ma, 0x3, shift, reg);
+				writel(0x3 << shift, reg + CLR);
+				writel(ma << shift, reg + SET);
 			}
 
 			/* vol */
@@ -373,12 +369,12 @@ static int mxs_pinctrl_parse_group(struct platform_device *pdev,
 		return -EINVAL;
 	g->npins = length / sizeof(u32);
 
-	g->pins = devm_kcalloc(&pdev->dev, g->npins, sizeof(*g->pins),
+	g->pins = devm_kzalloc(&pdev->dev, g->npins * sizeof(*g->pins),
 			       GFP_KERNEL);
 	if (!g->pins)
 		return -ENOMEM;
 
-	g->muxsel = devm_kcalloc(&pdev->dev, g->npins, sizeof(*g->muxsel),
+	g->muxsel = devm_kzalloc(&pdev->dev, g->npins * sizeof(*g->muxsel),
 				 GFP_KERNEL);
 	if (!g->muxsel)
 		return -ENOMEM;
@@ -429,16 +425,13 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 		}
 	}
 
-	soc->functions = devm_kcalloc(&pdev->dev,
-				      soc->nfunctions,
-				      sizeof(*soc->functions),
-				      GFP_KERNEL);
+	soc->functions = devm_kzalloc(&pdev->dev, soc->nfunctions *
+				      sizeof(*soc->functions), GFP_KERNEL);
 	if (!soc->functions)
 		return -ENOMEM;
 
-	soc->groups = devm_kcalloc(&pdev->dev,
-				   soc->ngroups, sizeof(*soc->groups),
-				   GFP_KERNEL);
+	soc->groups = devm_kzalloc(&pdev->dev, soc->ngroups *
+				   sizeof(*soc->groups), GFP_KERNEL);
 	if (!soc->groups)
 		return -ENOMEM;
 
@@ -491,32 +484,25 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 		if (of_property_read_u32(child, "reg", &val)) {
 			ret = mxs_pinctrl_parse_group(pdev, child,
 						      idxg++, NULL);
-			if (ret) {
-				of_node_put(child);
+			if (ret)
 				return ret;
-			}
 			continue;
 		}
 
 		if (strcmp(fn, child->name)) {
 			f = &soc->functions[idxf++];
-			f->groups = devm_kcalloc(&pdev->dev,
-						 f->ngroups,
+			f->groups = devm_kzalloc(&pdev->dev, f->ngroups *
 						 sizeof(*f->groups),
 						 GFP_KERNEL);
-			if (!f->groups) {
-				of_node_put(child);
+			if (!f->groups)
 				return -ENOMEM;
-			}
 			fn = child->name;
 			i = 0;
 		}
 		ret = mxs_pinctrl_parse_group(pdev, child, idxg++,
 					      &f->groups[i++]);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return ret;
-		}
 	}
 
 	return 0;
@@ -565,3 +551,4 @@ err:
 	iounmap(d->base);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mxs_pinctrl_probe);

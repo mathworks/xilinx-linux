@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * IPWireless 3G PCMCIA Network Driver
  *
@@ -117,7 +116,7 @@ static int ipwireless_ppp_start_xmit(struct ppp_channel *ppp_channel,
 					       skb->len,
 					       notify_packet_sent,
 					       network);
-			if (ret < 0) {
+			if (ret == -1) {
 				skb_pull(skb, 2);
 				return 0;
 			}
@@ -134,7 +133,7 @@ static int ipwireless_ppp_start_xmit(struct ppp_channel *ppp_channel,
 					       notify_packet_sent,
 					       network);
 			kfree(buf);
-			if (ret < 0)
+			if (ret == -1)
 				return 0;
 		}
 		kfree_skb(skb);
@@ -356,7 +355,7 @@ static struct sk_buff *ipw_packet_received_skb(unsigned char *data,
 	if (skb == NULL)
 		return NULL;
 	skb_reserve(skb, 2);
-	skb_put_data(skb, data, length);
+	memcpy(skb_put(skb, length), data, length);
 
 	return skb;
 }
@@ -416,7 +415,7 @@ void ipwireless_network_packet_received(struct ipw_network *network,
 struct ipw_network *ipwireless_network_create(struct ipw_hardware *hw)
 {
 	struct ipw_network *network =
-		kzalloc(sizeof(struct ipw_network), GFP_KERNEL);
+		kzalloc(sizeof(struct ipw_network), GFP_ATOMIC);
 
 	if (!network)
 		return NULL;

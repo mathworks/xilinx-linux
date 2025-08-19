@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* atm_tcp.h - Driver-specific declarations of the ATMTCP driver (for use by
 	       driver-specific utilities) */
 
@@ -9,8 +8,6 @@
 
 #include <uapi/linux/atm_tcp.h>
 
-struct atm_vcc;
-struct module;
 
 struct atm_tcp_ops {
 	int (*attach)(struct atm_vcc *vcc,int itf);

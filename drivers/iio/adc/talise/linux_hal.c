@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
@@ -67,7 +66,7 @@ adiHalErr_t ADIHAL_resetHw(void *devHalInfo)
 		return (ADIHAL_GEN_SW);
 	}
 
-	dev_info(&devHalData->spi->dev, "ADIHAL_resetHw");
+	dev_err(&devHalData->spi->dev, "ADIHAL_resetHw at index");
 
 	gpiod_set_value(devHalData->reset_gpio, 0);
 	mdelay(1);

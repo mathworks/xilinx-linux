@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * I2C link layer for the NXP NCI driver
  *
@@ -10,16 +9,34 @@
  *
  * Derived from PN544 device driver:
  * Copyright (C) 2012  Intel Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/nfc.h>
 #include <linux/gpio/consumer.h>
-#include <asm/unaligned.h>
+#include <linux/of_gpio.h>
+#include <linux/of_irq.h>
+#include <linux/platform_data/nxp-nci.h>
+#include <linux/unaligned/access_ok.h>
 
 #include <net/nfc/nfc.h>
 
@@ -33,8 +50,8 @@ struct nxp_nci_i2c_phy {
 	struct i2c_client *i2c_dev;
 	struct nci_dev *ndev;
 
-	struct gpio_desc *gpiod_en;
-	struct gpio_desc *gpiod_fw;
+	unsigned int gpio_en;
+	unsigned int gpio_fw;
 
 	int hard_fault; /*
 			 * < 0 if hardware error occurred (e.g. i2c err)
@@ -47,8 +64,8 @@ static int nxp_nci_i2c_set_mode(void *phy_id,
 {
 	struct nxp_nci_i2c_phy *phy = (struct nxp_nci_i2c_phy *) phy_id;
 
-	gpiod_set_value(phy->gpiod_fw, (mode == NXP_NCI_MODE_FW) ? 1 : 0);
-	gpiod_set_value(phy->gpiod_en, (mode != NXP_NCI_MODE_COLD) ? 1 : 0);
+	gpio_set_value(phy->gpio_fw, (mode == NXP_NCI_MODE_FW) ? 1 : 0);
+	gpio_set_value(phy->gpio_en, (mode != NXP_NCI_MODE_COLD) ? 1 : 0);
 	usleep_range(10000, 15000);
 
 	if (mode == NXP_NCI_MODE_COLD)
@@ -69,7 +86,7 @@ static int nxp_nci_i2c_write(void *phy_id, struct sk_buff *skb)
 	r = i2c_master_send(client, skb->data, skb->len);
 	if (r < 0) {
 		/* Retry, chip was in standby */
-		msleep(110);
+		usleep_range(110000, 120000);
 		r = i2c_master_send(client, skb->data, skb->len);
 	}
 
@@ -97,8 +114,8 @@ static int nxp_nci_i2c_fw_read(struct nxp_nci_i2c_phy *phy,
 			       struct sk_buff **skb)
 {
 	struct i2c_client *client = phy->i2c_dev;
+	u16 header;
 	size_t frame_len;
-	__be16 header;
 	int r;
 
 	r = i2c_master_recv(client, (u8 *) &header, NXP_NCI_FW_HDR_LEN);
@@ -110,7 +127,7 @@ static int nxp_nci_i2c_fw_read(struct nxp_nci_i2c_phy *phy,
 		goto fw_read_exit;
 	}
 
-	frame_len = (be16_to_cpu(header) & NXP_NCI_FW_FRAME_LEN_MASK) +
+	frame_len = (get_unaligned_be16(&header) & NXP_NCI_FW_FRAME_LEN_MASK) +
 		    NXP_NCI_FW_CRC_LEN;
 
 	*skb = alloc_skb(NXP_NCI_FW_HDR_LEN + frame_len, GFP_KERNEL);
@@ -119,12 +136,10 @@ static int nxp_nci_i2c_fw_read(struct nxp_nci_i2c_phy *phy,
 		goto fw_read_exit;
 	}
 
-	skb_put_data(*skb, &header, NXP_NCI_FW_HDR_LEN);
+	memcpy(skb_put(*skb, NXP_NCI_FW_HDR_LEN), &header, NXP_NCI_FW_HDR_LEN);
 
 	r = i2c_master_recv(client, skb_put(*skb, frame_len), frame_len);
-	if (r < 0) {
-		goto fw_read_exit_free_skb;
-	} else if (r != frame_len) {
+	if (r != frame_len) {
 		nfc_err(&client->dev,
 			"Invalid frame length: %u (expected %zu)\n",
 			r, frame_len);
@@ -162,15 +177,11 @@ static int nxp_nci_i2c_nci_read(struct nxp_nci_i2c_phy *phy,
 		goto nci_read_exit;
 	}
 
-	skb_put_data(*skb, (void *)&header, NCI_CTRL_HDR_SIZE);
-
-	if (!header.plen)
-		return 0;
+	memcpy(skb_put(*skb, NCI_CTRL_HDR_SIZE), (void *) &header,
+	       NCI_CTRL_HDR_SIZE);
 
 	r = i2c_master_recv(client, skb_put(*skb, header.plen), header.plen);
-	if (r < 0) {
-		goto nci_read_exit_free_skb;
-	} else if (r != header.plen) {
+	if (r != header.plen) {
 		nfc_err(&client->dev,
 			"Invalid frame payload length: %u (expected %u)\n",
 			r, header.plen);
@@ -227,10 +238,8 @@ static irqreturn_t nxp_nci_i2c_irq_thread_fn(int irq, void *phy_id)
 
 	if (r == -EREMOTEIO) {
 		phy->hard_fault = r;
-		if (info->mode == NXP_NCI_MODE_FW)
-			nxp_nci_fw_recv_frame(phy->ndev, NULL);
-	}
-	if (r < 0) {
+		skb = NULL;
+	} else if (r < 0) {
 		nfc_err(&client->dev, "Read failed with error %d\n", r);
 		goto exit_irq_handled;
 	}
@@ -254,54 +263,116 @@ exit_irq_none:
 	return IRQ_NONE;
 }
 
-static const struct acpi_gpio_params firmware_gpios = { 1, 0, false };
-static const struct acpi_gpio_params enable_gpios = { 2, 0, false };
-
-static const struct acpi_gpio_mapping acpi_nxp_nci_gpios[] = {
-	{ "enable-gpios", &enable_gpios, 1 },
-	{ "firmware-gpios", &firmware_gpios, 1 },
-	{ }
-};
-
-static int nxp_nci_i2c_probe(struct i2c_client *client)
+static int nxp_nci_i2c_parse_devtree(struct i2c_client *client)
 {
-	struct device *dev = &client->dev;
+	struct nxp_nci_i2c_phy *phy = i2c_get_clientdata(client);
+	struct device_node *pp;
+	int r;
+
+	pp = client->dev.of_node;
+	if (!pp)
+		return -ENODEV;
+
+	r = of_get_named_gpio(pp, "enable-gpios", 0);
+	if (r == -EPROBE_DEFER)
+		r = of_get_named_gpio(pp, "enable-gpios", 0);
+	if (r < 0) {
+		nfc_err(&client->dev, "Failed to get EN gpio, error: %d\n", r);
+		return r;
+	}
+	phy->gpio_en = r;
+
+	r = of_get_named_gpio(pp, "firmware-gpios", 0);
+	if (r == -EPROBE_DEFER)
+		r = of_get_named_gpio(pp, "firmware-gpios", 0);
+	if (r < 0) {
+		nfc_err(&client->dev, "Failed to get FW gpio, error: %d\n", r);
+		return r;
+	}
+	phy->gpio_fw = r;
+
+	return 0;
+}
+
+static int nxp_nci_i2c_acpi_config(struct nxp_nci_i2c_phy *phy)
+{
+	struct i2c_client *client = phy->i2c_dev;
+	struct gpio_desc *gpiod_en, *gpiod_fw;
+
+	gpiod_en = devm_gpiod_get_index(&client->dev, NULL, 2, GPIOD_OUT_LOW);
+	gpiod_fw = devm_gpiod_get_index(&client->dev, NULL, 1, GPIOD_OUT_LOW);
+
+	if (IS_ERR(gpiod_en) || IS_ERR(gpiod_fw)) {
+		nfc_err(&client->dev, "No GPIOs\n");
+		return -EINVAL;
+	}
+
+	phy->gpio_en = desc_to_gpio(gpiod_en);
+	phy->gpio_fw = desc_to_gpio(gpiod_fw);
+
+	return 0;
+}
+
+static int nxp_nci_i2c_probe(struct i2c_client *client,
+			    const struct i2c_device_id *id)
+{
 	struct nxp_nci_i2c_phy *phy;
+	struct nxp_nci_nfc_platform_data *pdata;
 	int r;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		nfc_err(&client->dev, "Need I2C_FUNC_I2C\n");
-		return -ENODEV;
+		r = -ENODEV;
+		goto probe_exit;
 	}
 
 	phy = devm_kzalloc(&client->dev, sizeof(struct nxp_nci_i2c_phy),
 			   GFP_KERNEL);
-	if (!phy)
-		return -ENOMEM;
+	if (!phy) {
+		r = -ENOMEM;
+		goto probe_exit;
+	}
 
 	phy->i2c_dev = client;
 	i2c_set_clientdata(client, phy);
 
-	r = devm_acpi_dev_add_driver_gpios(dev, acpi_nxp_nci_gpios);
-	if (r)
-		dev_dbg(dev, "Unable to add GPIO mapping table\n");
+	pdata = client->dev.platform_data;
 
-	phy->gpiod_en = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
-	if (IS_ERR(phy->gpiod_en)) {
-		nfc_err(dev, "Failed to get EN gpio\n");
-		return PTR_ERR(phy->gpiod_en);
+	if (!pdata && client->dev.of_node) {
+		r = nxp_nci_i2c_parse_devtree(client);
+		if (r < 0) {
+			nfc_err(&client->dev, "Failed to get DT data\n");
+			goto probe_exit;
+		}
+	} else if (pdata) {
+		phy->gpio_en = pdata->gpio_en;
+		phy->gpio_fw = pdata->gpio_fw;
+	} else if (ACPI_HANDLE(&client->dev)) {
+		r = nxp_nci_i2c_acpi_config(phy);
+		if (r < 0)
+			goto probe_exit;
+		goto nci_probe;
+	} else {
+		nfc_err(&client->dev, "No platform data\n");
+		r = -EINVAL;
+		goto probe_exit;
 	}
 
-	phy->gpiod_fw = devm_gpiod_get_optional(dev, "firmware", GPIOD_OUT_LOW);
-	if (IS_ERR(phy->gpiod_fw)) {
-		nfc_err(dev, "Failed to get FW gpio\n");
-		return PTR_ERR(phy->gpiod_fw);
-	}
+	r = devm_gpio_request_one(&phy->i2c_dev->dev, phy->gpio_en,
+				  GPIOF_OUT_INIT_LOW, "nxp_nci_en");
+	if (r < 0)
+		goto probe_exit;
 
+	r = devm_gpio_request_one(&phy->i2c_dev->dev, phy->gpio_fw,
+				  GPIOF_OUT_INIT_LOW, "nxp_nci_fw");
+	if (r < 0)
+		goto probe_exit;
+
+nci_probe:
 	r = nxp_nci_probe(phy, &client->dev, &i2c_phy_ops,
 			  NXP_NCI_I2C_MAX_PAYLOAD, &phy->ndev);
 	if (r < 0)
-		return r;
+		goto probe_exit;
 
 	r = request_threaded_irq(client->irq, NULL,
 				 nxp_nci_i2c_irq_thread_fn,
@@ -310,18 +381,21 @@ static int nxp_nci_i2c_probe(struct i2c_client *client)
 	if (r < 0)
 		nfc_err(&client->dev, "Unable to register IRQ handler\n");
 
+probe_exit:
 	return r;
 }
 
-static void nxp_nci_i2c_remove(struct i2c_client *client)
+static int nxp_nci_i2c_remove(struct i2c_client *client)
 {
 	struct nxp_nci_i2c_phy *phy = i2c_get_clientdata(client);
 
 	nxp_nci_remove(phy->ndev);
 	free_irq(client->irq, phy);
+
+	return 0;
 }
 
-static const struct i2c_device_id nxp_nci_i2c_id_table[] = {
+static struct i2c_device_id nxp_nci_i2c_id_table[] = {
 	{"nxp-nci_i2c", 0},
 	{}
 };
@@ -329,16 +403,14 @@ MODULE_DEVICE_TABLE(i2c, nxp_nci_i2c_id_table);
 
 static const struct of_device_id of_nxp_nci_i2c_match[] = {
 	{ .compatible = "nxp,nxp-nci-i2c", },
-	{}
+	{},
 };
 MODULE_DEVICE_TABLE(of, of_nxp_nci_i2c_match);
 
 #ifdef CONFIG_ACPI
-static const struct acpi_device_id acpi_id[] = {
-	{ "NXP1001" },
-	{ "NXP1002" },
+static struct acpi_device_id acpi_id[] = {
 	{ "NXP7471" },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, acpi_id);
 #endif
@@ -347,7 +419,7 @@ static struct i2c_driver nxp_nci_i2c_driver = {
 	.driver = {
 		   .name = NXP_NCI_I2C_DRIVER_NAME,
 		   .acpi_match_table = ACPI_PTR(acpi_id),
-		   .of_match_table = of_nxp_nci_i2c_match,
+		   .of_match_table = of_match_ptr(of_nxp_nci_i2c_match),
 		  },
 	.probe = nxp_nci_i2c_probe,
 	.id_table = nxp_nci_i2c_id_table,

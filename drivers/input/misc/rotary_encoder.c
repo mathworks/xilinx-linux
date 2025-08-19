@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rotary_encoder.c
  *
@@ -8,7 +7,11 @@
  * state machine code inspired by code from Tim Ruetz
  *
  * A generic driver for rotary encoders connected to GPIO lines.
- * See file:Documentation/input/devices/rotary-encoder.rst for more information
+ * See file:Documentation/input/rotary-encoder.txt for more information
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -236,8 +239,10 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 		device_property_read_bool(dev, "rotary-encoder,relative-axis");
 
 	encoder->gpios = devm_gpiod_get_array(dev, NULL, GPIOD_IN);
-	if (IS_ERR(encoder->gpios))
-		return dev_err_probe(dev, PTR_ERR(encoder->gpios), "unable to get gpios\n");
+	if (IS_ERR(encoder->gpios)) {
+		dev_err(dev, "unable to get gpios\n");
+		return PTR_ERR(encoder->gpios);
+	}
 	if (encoder->gpios->ndescs < 2) {
 		dev_err(dev, "not enough gpios found\n");
 		return -EINVAL;
@@ -251,6 +256,7 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 
 	input->name = pdev->name;
 	input->id.bustype = BUS_HOST;
+	input->dev.parent = dev;
 
 	if (encoder->relative_axis)
 		input_set_capability(input, EV_REL, encoder->axis);
@@ -277,8 +283,8 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 	}
 
 	encoder->irq =
-		devm_kcalloc(dev,
-			     encoder->gpios->ndescs, sizeof(*encoder->irq),
+		devm_kzalloc(dev,
+			     sizeof(*encoder->irq) * encoder->gpios->ndescs,
 			     GFP_KERNEL);
 	if (!encoder->irq)
 		return -ENOMEM;
@@ -312,7 +318,7 @@ static int rotary_encoder_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rotary_encoder_suspend(struct device *dev)
+static int __maybe_unused rotary_encoder_suspend(struct device *dev)
 {
 	struct rotary_encoder *encoder = dev_get_drvdata(dev);
 	unsigned int i;
@@ -325,7 +331,7 @@ static int rotary_encoder_suspend(struct device *dev)
 	return 0;
 }
 
-static int rotary_encoder_resume(struct device *dev)
+static int __maybe_unused rotary_encoder_resume(struct device *dev)
 {
 	struct rotary_encoder *encoder = dev_get_drvdata(dev);
 	unsigned int i;
@@ -338,8 +344,8 @@ static int rotary_encoder_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(rotary_encoder_pm_ops,
-				rotary_encoder_suspend, rotary_encoder_resume);
+static SIMPLE_DEV_PM_OPS(rotary_encoder_pm_ops,
+			 rotary_encoder_suspend, rotary_encoder_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id rotary_encoder_of_match[] = {
@@ -353,7 +359,7 @@ static struct platform_driver rotary_encoder_driver = {
 	.probe		= rotary_encoder_probe,
 	.driver		= {
 		.name	= DRV_NAME,
-		.pm	= pm_sleep_ptr(&rotary_encoder_pm_ops),
+		.pm	= &rotary_encoder_pm_ops,
 		.of_match_table = of_match_ptr(rotary_encoder_of_match),
 	}
 };

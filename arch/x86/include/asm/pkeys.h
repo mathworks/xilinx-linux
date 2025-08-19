@@ -1,21 +1,10 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PKEYS_H
 #define _ASM_X86_PKEYS_H
 
-/*
- * If more than 16 keys are ever supported, a thorough audit
- * will be necessary to ensure that the types that store key
- * numbers and masks have sufficient capacity.
- */
-#define arch_max_pkey() (cpu_feature_enabled(X86_FEATURE_OSPKE) ? 16 : 1)
+#define arch_max_pkey() (boot_cpu_has(X86_FEATURE_OSPKE) ? 16 : 1)
 
 extern int arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
 		unsigned long init_val);
-
-static inline bool arch_pkeys_enabled(void)
-{
-	return cpu_feature_enabled(X86_FEATURE_OSPKE);
-}
 
 /*
  * Try to dedicate one of the protection keys to be used as an
@@ -24,8 +13,8 @@ static inline bool arch_pkeys_enabled(void)
 extern int __execute_only_pkey(struct mm_struct *mm);
 static inline int execute_only_pkey(struct mm_struct *mm)
 {
-	if (!cpu_feature_enabled(X86_FEATURE_OSPKE))
-		return ARCH_DEFAULT_PKEY;
+	if (!boot_cpu_has(X86_FEATURE_OSPKE))
+		return 0;
 
 	return __execute_only_pkey(mm);
 }
@@ -35,11 +24,14 @@ extern int __arch_override_mprotect_pkey(struct vm_area_struct *vma,
 static inline int arch_override_mprotect_pkey(struct vm_area_struct *vma,
 		int prot, int pkey)
 {
-	if (!cpu_feature_enabled(X86_FEATURE_OSPKE))
+	if (!boot_cpu_has(X86_FEATURE_OSPKE))
 		return 0;
 
 	return __arch_override_mprotect_pkey(vma, prot, pkey);
 }
+
+extern int __arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
+		unsigned long init_val);
 
 #define ARCH_VM_PKEY_FLAGS (VM_PKEY_BIT0 | VM_PKEY_BIT1 | VM_PKEY_BIT2 | VM_PKEY_BIT3)
 
@@ -54,23 +46,6 @@ static inline int arch_override_mprotect_pkey(struct vm_area_struct *vma,
 static inline
 bool mm_pkey_is_allocated(struct mm_struct *mm, int pkey)
 {
-	/*
-	 * "Allocated" pkeys are those that have been returned
-	 * from pkey_alloc() or pkey 0 which is allocated
-	 * implicitly when the mm is created.
-	 */
-	if (pkey < 0)
-		return false;
-	if (pkey >= arch_max_pkey())
-		return false;
-	/*
-	 * The exec-only pkey is set in the allocation map, but
-	 * is not available to any of the user interfaces like
-	 * mprotect_pkey().
-	 */
-	if (pkey == mm->context.execute_only_pkey)
-		return false;
-
 	return mm_pkey_allocation_map(mm) & (1U << pkey);
 }
 
@@ -107,6 +82,12 @@ int mm_pkey_alloc(struct mm_struct *mm)
 static inline
 int mm_pkey_free(struct mm_struct *mm, int pkey)
 {
+	/*
+	 * pkey 0 is special, always allocated and can never
+	 * be freed.
+	 */
+	if (!pkey)
+		return -EINVAL;
 	if (!mm_pkey_is_allocated(mm, pkey))
 		return -EINVAL;
 
@@ -115,12 +96,10 @@ int mm_pkey_free(struct mm_struct *mm, int pkey)
 	return 0;
 }
 
-static inline int vma_pkey(struct vm_area_struct *vma)
-{
-	unsigned long vma_pkey_mask = VM_PKEY_BIT0 | VM_PKEY_BIT1 |
-				      VM_PKEY_BIT2 | VM_PKEY_BIT3;
-
-	return (vma->vm_flags & vma_pkey_mask) >> VM_PKEY_SHIFT;
-}
+extern int arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
+		unsigned long init_val);
+extern int __arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
+		unsigned long init_val);
+extern void copy_init_pkru_to_fpregs(void);
 
 #endif /*_ASM_X86_PKEYS_H */

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/ev67-strchr.S
  * 21264 version contributed by Rick Gorton <rick.gorton@alpha-processor.com>
@@ -16,7 +15,7 @@
  *	L	- lower subcluster; L0 - subcluster L0; L1 - subcluster L1
  * Try not to change the actual algorithm if possible for consistency.
  */
-#include <linux/export.h>
+#include <asm/export.h>
 #include <asm/regdef.h>
 
 	.set noreorder

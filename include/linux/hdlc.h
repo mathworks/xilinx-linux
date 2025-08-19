@@ -1,8 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Generic HDLC support routines for Linux
  *
  * Copyright (C) 1999-2005 Krzysztof Halasa <khc@pm.waw.pl>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License
+ * as published by the Free Software Foundation.
  */
 #ifndef __HDLC_H
 #define __HDLC_H
@@ -22,7 +25,7 @@ struct hdlc_proto {
 	void (*start)(struct net_device *dev); /* if open & DCD */
 	void (*stop)(struct net_device *dev); /* if open & !DCD */
 	void (*detach)(struct net_device *dev);
-	int (*ioctl)(struct net_device *dev, struct if_settings *ifs);
+	int (*ioctl)(struct net_device *dev, struct ifreq *ifr);
 	__be16 (*type_trans)(struct sk_buff *skb, struct net_device *dev);
 	int (*netif_rx)(struct sk_buff *skb);
 	netdev_tx_t (*xmit)(struct sk_buff *skb, struct net_device *dev);
@@ -54,7 +57,7 @@ typedef struct hdlc_device {
 /* Exported from hdlc module */
 
 /* Called by hardware driver when a user requests HDLC service */
-int hdlc_ioctl(struct net_device *dev, struct if_settings *ifs);
+int hdlc_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 
 /* Must be used by hardware driver on module startup/exit */
 #define register_hdlc_device(dev)	register_netdev(dev)
@@ -90,6 +93,8 @@ static __inline__ void debug_frame(const struct sk_buff *skb)
 int hdlc_open(struct net_device *dev);
 /* Must be called by hardware driver when HDLC device is being closed */
 void hdlc_close(struct net_device *dev);
+/* May be used by hardware driver */
+int hdlc_change_mtu(struct net_device *dev, int new_mtu);
 /* Must be pointed to by hw driver's dev->netdev_ops->ndo_start_xmit */
 netdev_tx_t hdlc_start_xmit(struct sk_buff *skb, struct net_device *dev);
 

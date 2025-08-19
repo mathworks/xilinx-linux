@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * NXP Wireless LAN device driver: Channel, Frequence and Power
+ * Marvell Wireless LAN device driver: Channel, Frequence and Power
  *
- * Copyright 2011-2020 NXP
+ * Copyright (C) 2011-2014, Marvell International Ltd.
+ *
+ * This software file (the "File") is distributed by Marvell International
+ * Ltd. under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -168,9 +180,11 @@ static struct region_code_mapping region_code_mapping_t[] = {
 u8 *mwifiex_11d_code_2_region(u8 code)
 {
 	u8 i;
+	u8 size = sizeof(region_code_mapping_t)/
+				sizeof(struct region_code_mapping);
 
 	/* Look for code in mapping table */
-	for (i = 0; i < ARRAY_SIZE(region_code_mapping_t); i++)
+	for (i = 0; i < size; i++)
 		if (region_code_mapping_t[i].code == code)
 			return region_code_mapping_t[i].region;
 
@@ -336,7 +350,7 @@ mwifiex_get_cfp(struct mwifiex_private *priv, u8 band, u16 channel, u32 freq)
 		}
 	}
 	if (i == sband->n_channels) {
-		mwifiex_dbg(priv->adapter, WARN,
+		mwifiex_dbg(priv->adapter, ERROR,
 			    "%s: cannot find cfp by band %d\t"
 			    "& channel=%d freq=%d\n",
 			    __func__, band, channel, freq);
@@ -518,9 +532,6 @@ u8 mwifiex_adjust_data_rate(struct mwifiex_private *priv,
 	else
 		rate_index = (rx_rate > MWIFIEX_RATE_INDEX_OFDM0) ?
 			      rx_rate - 1 : rx_rate;
-
-	if (rate_index >= MWIFIEX_MAX_AC_RX_RATES)
-		rate_index = MWIFIEX_MAX_AC_RX_RATES - 1;
 
 	return rate_index;
 }

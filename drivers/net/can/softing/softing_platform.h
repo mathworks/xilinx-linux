@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #include <linux/platform_device.h>
 
@@ -19,7 +18,7 @@ struct softing_platform_data {
 	 * 16bit, shared interrupt
 	 */
 	int generation;
-	int nbus; /* # buses on device */
+	int nbus; /* # busses on device */
 	unsigned int freq; /* operating frequency in Hz */
 	unsigned int max_brp;
 	unsigned int max_sjw;

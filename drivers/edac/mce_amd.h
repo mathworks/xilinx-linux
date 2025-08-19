@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _EDAC_MCE_AMD_H
 #define _EDAC_MCE_AMD_H
 
@@ -7,6 +6,7 @@
 #include <asm/mce.h>
 
 #define EC(x)				((x) & 0xffff)
+#define XEC(x, mask)			(((x) >> 16) & mask)
 
 #define LOW_SYNDROME(x)			(((x) >> 15) & 0xff)
 #define HIGH_SYNDROME(x)		(((x) >> 24) & 0xff)
@@ -76,7 +76,9 @@ struct amd_decoder_ops {
 	bool (*mc2_mce)(u16, u8);
 };
 
+void amd_report_gart_errors(bool);
 void amd_register_ecc_decoder(void (*f)(int, struct mce *));
 void amd_unregister_ecc_decoder(void (*f)(int, struct mce *));
+int amd_decode_mce(struct notifier_block *nb, unsigned long val, void *data);
 
 #endif /* _EDAC_MCE_AMD_H */

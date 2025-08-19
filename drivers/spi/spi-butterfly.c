@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * parport-to-butterfly adapter
  *
  * Copyright (C) 2005 David Brownell
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -23,7 +32,7 @@
  * with a battery powered AVR microcontroller and lots of goodies.  You
  * can use GCC to develop firmware for this.
  *
- * See Documentation/spi/butterfly.rst for information about how to build
+ * See Documentation/spi/butterfly for information about how to build
  * and use this custom parallel port cable.
  */
 
@@ -135,9 +144,9 @@ static void butterfly_chipselect(struct spi_device *spi, int value)
 
 static u32
 butterfly_txrx_word_mode0(struct spi_device *spi, unsigned nsecs, u32 word,
-			  u8 bits, unsigned flags)
+			  u8 bits)
 {
-	return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
+	return bitbang_txrx_be_cpha0(spi, nsecs, 0, 0, word, bits);
 }
 
 /*----------------------------------------------------------------------*/
@@ -178,7 +187,7 @@ static void butterfly_attach(struct parport *p)
 	struct pardevice	*pd;
 	int			status;
 	struct butterfly	*pp;
-	struct spi_controller	*host;
+	struct spi_master	*master;
 	struct device		*dev = p->physport->dev;
 	struct pardev_cb	butterfly_cb;
 
@@ -189,12 +198,12 @@ static void butterfly_attach(struct parport *p)
 	 * and no way to be selective about what it binds to.
 	 */
 
-	host = spi_alloc_host(dev, sizeof(*pp));
-	if (!host) {
+	master = spi_alloc_master(dev, sizeof(*pp));
+	if (!master) {
 		status = -ENOMEM;
 		goto done;
 	}
-	pp = spi_controller_get_devdata(host);
+	pp = spi_master_get_devdata(master);
 
 	/*
 	 * SPI and bitbang hookup
@@ -202,10 +211,10 @@ static void butterfly_attach(struct parport *p)
 	 * use default setup(), cleanup(), and transfer() methods; and
 	 * only bother implementing mode 0.  Start it later.
 	 */
-	host->bus_num = 42;
-	host->num_chipselect = 2;
+	master->bus_num = 42;
+	master->num_chipselect = 2;
 
-	pp->bitbang.master = host;
+	pp->bitbang.master = master;
 	pp->bitbang.chipselect = butterfly_chipselect;
 	pp->bitbang.txrx_word[SPI_MODE_0] = butterfly_txrx_word_mode0;
 
@@ -280,7 +289,7 @@ clean2:
 clean1:
 	parport_unregister_device(pd);
 clean0:
-	spi_controller_put(host);
+	spi_master_put(pp->bitbang.master);
 done:
 	pr_debug("%s: butterfly probe, fail %d\n", p->name, status);
 }
@@ -308,7 +317,7 @@ static void butterfly_detach(struct parport *p)
 	parport_release(pp->pd);
 	parport_unregister_device(pp->pd);
 
-	spi_controller_put(pp->bitbang.master);
+	spi_master_put(pp->bitbang.master);
 }
 
 static struct parport_driver butterfly_driver = {
@@ -317,7 +326,18 @@ static struct parport_driver butterfly_driver = {
 	.detach =	butterfly_detach,
 	.devmodel = true,
 };
-module_parport_driver(butterfly_driver);
+
+static int __init butterfly_init(void)
+{
+	return parport_register_driver(&butterfly_driver);
+}
+device_initcall(butterfly_init);
+
+static void __exit butterfly_exit(void)
+{
+	parport_unregister_driver(&butterfly_driver);
+}
+module_exit(butterfly_exit);
 
 MODULE_DESCRIPTION("Parport Adapter driver for AVR Butterfly");
 MODULE_LICENSE("GPL");

@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /*!
  * \file t_mykonos.h
  * \brief Contains type definitions for Mykonos API
  *
- * Mykonos API version: 1.5.2.3566
+ * Mykonos API version: 1.5.1.3565
  */
 
 /**
@@ -1608,8 +1607,8 @@ typedef struct
      *                     15   | PA Protection Activated
      *                     16   | Relative Threshold Violated
      *                     17   | RESERVED
-     *                     18   | Tx power too low
-     *                     19   | ORx power too low
+     *                     18   | RESERVED
+     *                     19   | RESERVED
      */
     uint32_t errorStatus;
     uint32_t trackCount;      /*!< Number of times CLGC tracking has run since last reset */

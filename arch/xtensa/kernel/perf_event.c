@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Xtensa Performance Monitor Module driver
  * See Tensilica Debug User's Guide for PMU registers documentation.
  *
  * Copyright (C) 2015 Cadence Design Systems Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/interrupt.h>
@@ -13,26 +16,17 @@
 #include <linux/perf_event.h>
 #include <linux/platform_device.h>
 
-#include <asm/core.h>
 #include <asm/processor.h>
 #include <asm/stacktrace.h>
 
-#define XTENSA_HWVERSION_RG_2015_0	260000
-
-#if XCHAL_HW_MIN_VERSION >= XTENSA_HWVERSION_RG_2015_0
-#define XTENSA_PMU_ERI_BASE		0x00101000
-#else
-#define XTENSA_PMU_ERI_BASE		0x00001000
-#endif
-
 /* Global control/status for all perf counters */
-#define XTENSA_PMU_PMG			XTENSA_PMU_ERI_BASE
+#define XTENSA_PMU_PMG			0x1000
 /* Perf counter values */
-#define XTENSA_PMU_PM(i)		(XTENSA_PMU_ERI_BASE + 0x80 + (i) * 4)
+#define XTENSA_PMU_PM(i)		(0x1080 + (i) * 4)
 /* Perf counter control registers */
-#define XTENSA_PMU_PMCTRL(i)		(XTENSA_PMU_ERI_BASE + 0x100 + (i) * 4)
+#define XTENSA_PMU_PMCTRL(i)		(0x1100 + (i) * 4)
 /* Perf counter status registers */
-#define XTENSA_PMU_PMSTAT(i)		(XTENSA_PMU_ERI_BASE + 0x180 + (i) * 4)
+#define XTENSA_PMU_PMSTAT(i)		(0x1180 + (i) * 4)
 
 #define XTENSA_PMU_PMG_PMEN		0x1
 
@@ -371,7 +365,9 @@ irqreturn_t xtensa_pmu_irq_handler(int irq, void *dev_id)
 	struct xtensa_pmu_events *ev = this_cpu_ptr(&xtensa_pmu_events);
 	unsigned i;
 
-	for_each_set_bit(i, ev->used_mask, XCHAL_NUM_PERF_COUNTERS) {
+	for (i = find_first_bit(ev->used_mask, XCHAL_NUM_PERF_COUNTERS);
+	     i < XCHAL_NUM_PERF_COUNTERS;
+	     i = find_next_bit(ev->used_mask, XCHAL_NUM_PERF_COUNTERS, i + 1)) {
 		uint32_t v = get_er(XTENSA_PMU_PMSTAT(i));
 		struct perf_event *event = ev->event[i];
 		struct hw_perf_event *hwc = &event->hw;
@@ -408,7 +404,7 @@ static struct pmu xtensa_pmu = {
 	.read = xtensa_pmu_read,
 };
 
-static int xtensa_pmu_setup(unsigned int cpu)
+static int xtensa_pmu_setup(int cpu)
 {
 	unsigned i;
 
@@ -426,7 +422,7 @@ static int __init xtensa_pmu_init(void)
 	int irq = irq_create_mapping(NULL, XCHAL_PROFILING_INTERRUPT);
 
 	ret = cpuhp_setup_state(CPUHP_AP_PERF_XTENSA_STARTING,
-				"perf/xtensa:starting", xtensa_pmu_setup,
+				"AP_PERF_XTENSA_STARTING", xtensa_pmu_setup,
 				NULL);
 	if (ret) {
 		pr_err("xtensa_pmu: failed to register CPU-hotplug.\n");

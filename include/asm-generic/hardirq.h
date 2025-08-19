@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_GENERIC_HARDIRQ_H
 #define __ASM_GENERIC_HARDIRQ_H
 
@@ -7,13 +6,9 @@
 
 typedef struct {
 	unsigned int __softirq_pending;
-#ifdef ARCH_WANTS_NMI_IRQSTAT
-	unsigned int __nmi_count;
-#endif
 } ____cacheline_aligned irq_cpustat_t;
 
-DECLARE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
-
+#include <linux/irq_cpustat.h>	/* Standard mappings for irq_cpustat_t above */
 #include <linux/irq.h>
 
 #ifndef ack_bad_irq

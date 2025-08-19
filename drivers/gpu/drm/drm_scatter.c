@@ -1,4 +1,4 @@
-/*
+/**
  * \file drm_scatter.c
  * IOCTLs to manage scatter/gather memory
  *
@@ -31,17 +31,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <linux/mm.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
-
-#include <drm/drm.h>
-#include <drm/drm_drv.h>
-#include <drm/drm_print.h>
-
+#include <linux/slab.h>
+#include <drm/drmP.h>
 #include "drm_legacy.h"
 
 #define DEBUG_SCATTER 0
+
+static inline void *drm_vmalloc_dma(unsigned long size)
+{
+#if defined(__powerpc__) && defined(CONFIG_NOT_COHERENT_CACHE)
+	return __vmalloc(size, GFP_KERNEL, pgprot_noncached_wc(PAGE_KERNEL));
+#else
+	return vmalloc_32(size);
+#endif
+}
 
 static void drm_sg_cleanup(struct drm_sg_mem * entry)
 {
@@ -85,12 +89,9 @@ int drm_legacy_sg_alloc(struct drm_device *dev, void *data,
 	DRM_DEBUG("\n");
 
 	if (!drm_core_check_feature(dev, DRIVER_LEGACY))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (!drm_core_check_feature(dev, DRIVER_SG))
-		return -EOPNOTSUPP;
-
-	if (request->size > SIZE_MAX - PAGE_SIZE)
 		return -EINVAL;
 
 	if (dev->sg)
@@ -117,7 +118,7 @@ int drm_legacy_sg_alloc(struct drm_device *dev, void *data,
 		return -ENOMEM;
 	}
 
-	entry->virtual = vmalloc_32(pages << PAGE_SHIFT);
+	entry->virtual = drm_vmalloc_dma(pages << PAGE_SHIFT);
 	if (!entry->virtual) {
 		kfree(entry->busaddr);
 		kfree(entry->pagelist);
@@ -201,10 +202,10 @@ int drm_legacy_sg_free(struct drm_device *dev, void *data,
 	struct drm_sg_mem *entry;
 
 	if (!drm_core_check_feature(dev, DRIVER_LEGACY))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (!drm_core_check_feature(dev, DRIVER_SG))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	entry = dev->sg;
 	dev->sg = NULL;

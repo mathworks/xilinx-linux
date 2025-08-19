@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  CPU frequency scaling for OMAP using OPP information
  *
@@ -9,6 +8,10 @@
  *
  * Copyright (C) 2007-2011 Texas Instruments, Inc.
  * - OMAP3/4 support by Rajendra Nayak, Santosh Shilimkar
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -60,14 +63,16 @@ static int omap_target(struct cpufreq_policy *policy, unsigned int index)
 	freq = ret;
 
 	if (mpu_reg) {
+		rcu_read_lock();
 		opp = dev_pm_opp_find_freq_ceil(mpu_dev, &freq);
 		if (IS_ERR(opp)) {
+			rcu_read_unlock();
 			dev_err(mpu_dev, "%s: unable to find MPU OPP for %d\n",
 				__func__, new_freq);
 			return -EINVAL;
 		}
 		volt = dev_pm_opp_get_voltage(opp);
-		dev_pm_opp_put(opp);
+		rcu_read_unlock();
 		tol = volt * OPP_TOLERANCE / 100;
 		volt_old = regulator_get_voltage(mpu_reg);
 	}
@@ -122,17 +127,21 @@ static int omap_cpu_init(struct cpufreq_policy *policy)
 			dev_err(mpu_dev,
 				"%s: cpu%d: failed creating freq table[%d]\n",
 				__func__, policy->cpu, result);
-			clk_put(policy->clk);
-			return result;
+			goto fail;
 		}
 	}
 
 	atomic_inc_return(&freq_table_users);
 
 	/* FIXME: what's the actual transition time? */
-	cpufreq_generic_init(policy, freq_table, 300 * 1000);
+	result = cpufreq_generic_init(policy, freq_table, 300 * 1000);
+	if (!result)
+		return 0;
 
-	return 0;
+	freq_table_free();
+fail:
+	clk_put(policy->clk);
+	return result;
 }
 
 static int omap_cpu_exit(struct cpufreq_policy *policy)
@@ -143,13 +152,12 @@ static int omap_cpu_exit(struct cpufreq_policy *policy)
 }
 
 static struct cpufreq_driver omap_driver = {
-	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK,
+	.flags		= CPUFREQ_STICKY | CPUFREQ_NEED_INITIAL_FREQ_CHECK,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= omap_target,
 	.get		= cpufreq_generic_get,
 	.init		= omap_cpu_init,
 	.exit		= omap_cpu_exit,
-	.register_em	= cpufreq_register_em_with_opp,
 	.name		= "omap",
 	.attr		= cpufreq_generic_attr,
 };
@@ -182,9 +190,9 @@ static int omap_cpufreq_probe(struct platform_device *pdev)
 	return cpufreq_register_driver(&omap_driver);
 }
 
-static void omap_cpufreq_remove(struct platform_device *pdev)
+static int omap_cpufreq_remove(struct platform_device *pdev)
 {
-	cpufreq_unregister_driver(&omap_driver);
+	return cpufreq_unregister_driver(&omap_driver);
 }
 
 static struct platform_driver omap_cpufreq_platdrv = {
@@ -192,7 +200,7 @@ static struct platform_driver omap_cpufreq_platdrv = {
 		.name	= "omap-cpufreq",
 	},
 	.probe		= omap_cpufreq_probe,
-	.remove_new	= omap_cpufreq_remove,
+	.remove		= omap_cpufreq_remove,
 };
 module_platform_driver(omap_cpufreq_platdrv);
 

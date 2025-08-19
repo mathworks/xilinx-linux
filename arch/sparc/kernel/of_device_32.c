@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
@@ -7,9 +6,8 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/irq.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
-#include <linux/dma-mapping.h>
 #include <asm/leon.h>
 #include <asm/leon_amba.h>
 
@@ -22,14 +20,14 @@
 
 static int of_bus_pci_match(struct device_node *np)
 {
-	if (of_node_is_type(np, "pci") || of_node_is_type(np, "pciex")) {
+	if (!strcmp(np->type, "pci") || !strcmp(np->type, "pciex")) {
 		/* Do not do PCI specific frobbing if the
 		 * PCI bridge lacks a ranges property.  We
 		 * want to pass it through up to the next
 		 * parent as-is, not with the PCI translate
 		 * method which chops off the top address cell.
 		 */
-		if (!of_property_present(np, "ranges"))
+		if (!of_find_property(np, "ranges", NULL))
 			return 0;
 
 		return 1;
@@ -107,7 +105,7 @@ static unsigned long of_bus_sbus_get_flags(const u32 *addr, unsigned long flags)
 
 static int of_bus_ambapp_match(struct device_node *np)
 {
-	return of_node_is_type(np, "ambapp");
+	return !strcmp(np->type, "ambapp");
 }
 
 static void of_bus_ambapp_count_cells(struct device_node *child,
@@ -223,7 +221,7 @@ static int __init build_one_resource(struct device_node *parent,
 static int __init use_1to1_mapping(struct device_node *pp)
 {
 	/* If we have a ranges property in the parent, use it.  */
-	if (of_property_present(pp, "ranges"))
+	if (of_find_property(pp, "ranges", NULL) != NULL)
 		return 0;
 
 	/* Some SBUS devices use intermediate nodes to express
@@ -232,10 +230,10 @@ static int __init use_1to1_mapping(struct device_node *pp)
 	 * But, we should still pass the translation work up
 	 * to the SBUS itself.
 	 */
-	if (of_node_name_eq(pp, "dma") ||
-	    of_node_name_eq(pp, "espdma") ||
-	    of_node_name_eq(pp, "ledma") ||
-	    of_node_name_eq(pp, "lebuffer"))
+	if (!strcmp(pp->name, "dma") ||
+	    !strcmp(pp->name, "espdma") ||
+	    !strcmp(pp->name, "ledma") ||
+	    !strcmp(pp->name, "lebuffer"))
 		return 0;
 
 	return 1;
@@ -324,8 +322,8 @@ static void __init build_device_resources(struct platform_device *op,
 		memset(r, 0, sizeof(*r));
 
 		if (of_resource_verbose)
-			printk("%pOF reg[%d] -> %llx\n",
-			       op->dev.of_node, index,
+			printk("%s reg[%d] -> %llx\n",
+			       op->dev.of_node->full_name, index,
 			       result);
 
 		if (result != OF_BAD_ADDR) {
@@ -333,7 +331,7 @@ static void __init build_device_resources(struct platform_device *op,
 			r->end = result + size - 1;
 			r->flags = flags | ((result >> 32ULL) & 0xffUL);
 		}
-		r->name = op->dev.of_node->full_name;
+		r->name = op->dev.of_node->name;
 	}
 }
 
@@ -382,11 +380,9 @@ static struct platform_device * __init scan_one_device(struct device_node *dp,
 	else
 		dev_set_name(&op->dev, "%08x", dp->phandle);
 
-	op->dev.coherent_dma_mask = DMA_BIT_MASK(32);
-	op->dev.dma_mask = &op->dev.coherent_dma_mask;
-
 	if (of_device_register(op)) {
-		printk("%pOF: Could not register of device.\n", dp);
+		printk("%s: Could not register of device.\n",
+		       dp->full_name);
 		kfree(op);
 		op = NULL;
 	}

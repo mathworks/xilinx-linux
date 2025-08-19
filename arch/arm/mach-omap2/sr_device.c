@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP3/OMAP4 smartreflex device file
  *
@@ -13,6 +12,10 @@
  *
  * Copyright (C) 2007 Texas Instruments, Inc.
  * Lesly A M <x0080970@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #include <linux/power/smartreflex.h>
 
@@ -25,6 +28,8 @@
 #include "voltage.h"
 #include "control.h"
 #include "pm.h"
+
+static bool sr_enable_on_init;
 
 /* Read EFUSE values from control registers for OMAP3430 */
 static void __init sr_set_nvalues(struct omap_volt_data *volt_data,
@@ -39,9 +44,13 @@ static void __init sr_set_nvalues(struct omap_volt_data *volt_data,
 	while (volt_data[count].volt_nominal)
 		count++;
 
-	nvalue_table = kcalloc(count, sizeof(*nvalue_table), GFP_KERNEL);
-	if (!nvalue_table)
+	nvalue_table = kzalloc(sizeof(struct omap_sr_nvalue_table)*count,
+			GFP_KERNEL);
+
+	if (!nvalue_table) {
+		pr_err("OMAP: SmartReflex: cannot allocate memory for n-value table\n");
 		return;
+	}
 
 	for (i = 0, j = 0; i < count; i++) {
 		u32 v;
@@ -84,32 +93,31 @@ static void __init sr_set_nvalues(struct omap_volt_data *volt_data,
 	sr_data->nvalue_count = j;
 }
 
-extern struct omap_sr_data omap_sr_pdata[];
-
-static int __init sr_init_by_name(const char *name, const char *voltdm)
+static int __init sr_dev_init(struct omap_hwmod *oh, void *user)
 {
-	struct omap_sr_data *sr_data = NULL;
+	struct omap_sr_data *sr_data;
+	struct platform_device *pdev;
 	struct omap_volt_data *volt_data;
+	struct omap_smartreflex_dev_attr *sr_dev_attr;
+	char *name = "smartreflex";
 	static int i;
 
-	if (!strncmp(name, "smartreflex_mpu_iva", 20) ||
-	    !strncmp(name, "smartreflex_mpu", 16))
-		sr_data = &omap_sr_pdata[OMAP_SR_MPU];
-	else if (!strncmp(name, "smartreflex_core", 17))
-		sr_data = &omap_sr_pdata[OMAP_SR_CORE];
-	else if (!strncmp(name, "smartreflex_iva", 16))
-		sr_data = &omap_sr_pdata[OMAP_SR_IVA];
-
+	sr_data = kzalloc(sizeof(struct omap_sr_data), GFP_KERNEL);
 	if (!sr_data) {
-		pr_err("%s: Unknown instance %s\n", __func__, name);
-		return -EINVAL;
+		pr_err("%s: Unable to allocate memory for %s sr_data\n",
+		       __func__, oh->name);
+		return -ENOMEM;
 	}
 
-	sr_data->name = name;
-	if (cpu_is_omap343x())
-		sr_data->ip_type = 1;
-	else
-		sr_data->ip_type = 2;
+	sr_dev_attr = (struct omap_smartreflex_dev_attr *)oh->dev_attr;
+	if (!sr_dev_attr || !sr_dev_attr->sensor_voltdm_name) {
+		pr_err("%s: No voltage domain specified for %s. Cannot initialize\n",
+		       __func__, oh->name);
+		goto exit;
+	}
+
+	sr_data->name = oh->name;
+	sr_data->ip_type = oh->class->rev;
 	sr_data->senn_mod = 0x1;
 	sr_data->senp_mod = 0x1;
 
@@ -126,10 +134,10 @@ static int __init sr_init_by_name(const char *name, const char *voltdm)
 		}
 	}
 
-	sr_data->voltdm = voltdm_lookup(voltdm);
+	sr_data->voltdm = voltdm_lookup(sr_dev_attr->sensor_voltdm_name);
 	if (!sr_data->voltdm) {
 		pr_err("%s: Unable to get voltage domain pointer for VDD %s\n",
-			__func__, voltdm);
+			__func__, sr_dev_attr->sensor_voltdm_name);
 		goto exit;
 	}
 
@@ -142,69 +150,28 @@ static int __init sr_init_by_name(const char *name, const char *voltdm)
 
 	sr_set_nvalues(volt_data, sr_data);
 
+	sr_data->enable_on_init = sr_enable_on_init;
+
+	pdev = omap_device_build(name, i, oh, sr_data, sizeof(*sr_data));
+	if (IS_ERR(pdev))
+		pr_warn("%s: Could not build omap_device for %s: %s\n",
+			__func__, name, oh->name);
 exit:
 	i++;
-
+	kfree(sr_data);
 	return 0;
 }
 
-#ifdef CONFIG_OMAP_HWMOD
-static int __init sr_dev_init(struct omap_hwmod *oh, void *user)
+/*
+ * API to be called from board files to enable smartreflex
+ * autocompensation at init.
+ */
+void __init omap_enable_smartreflex_on_init(void)
 {
-	struct omap_smartreflex_dev_attr *sr_dev_attr;
-
-	sr_dev_attr = (struct omap_smartreflex_dev_attr *)oh->dev_attr;
-	if (!sr_dev_attr || !sr_dev_attr->sensor_voltdm_name) {
-		pr_err("%s: No voltage domain specified for %s. Cannot initialize\n",
-		       __func__, oh->name);
-		return 0;
-	}
-
-	return sr_init_by_name(oh->name, sr_dev_attr->sensor_voltdm_name);
+	sr_enable_on_init = true;
 }
-#else
-static int __init sr_dev_init(struct omap_hwmod *oh, void *user)
-{
-	return -EINVAL;
-}
-#endif
-
-static const char * const omap4_sr_instances[] = {
-	"mpu",
-	"iva",
-	"core",
-};
-
-static const char * const dra7_sr_instances[] = {
-	"mpu",
-	"core",
-};
 
 int __init omap_devinit_smartreflex(void)
 {
-	const char * const *sr_inst = NULL;
-	int i, nr_sr = 0;
-
-	if (soc_is_omap44xx()) {
-		sr_inst = omap4_sr_instances;
-		nr_sr = ARRAY_SIZE(omap4_sr_instances);
-
-	} else if (soc_is_dra7xx()) {
-		sr_inst = dra7_sr_instances;
-		nr_sr = ARRAY_SIZE(dra7_sr_instances);
-	}
-
-	if (nr_sr) {
-		const char *name, *voltdm;
-
-		for (i = 0; i < nr_sr; i++) {
-			name = kasprintf(GFP_KERNEL, "smartreflex_%s", sr_inst[i]);
-			voltdm = sr_inst[i];
-			sr_init_by_name(name, voltdm);
-		}
-
-		return 0;
-	}
-
 	return omap_hwmod_for_each_by_class("smartreflex", sr_dev_init, NULL);
 }

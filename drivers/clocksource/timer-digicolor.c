@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Conexant Digicolor timer driver
  *
@@ -12,6 +11,10 @@
  * Copyright (C) 2013 Maxime Ripard
  *
  * Maxime Ripard <maxime.ripard@free-electrons.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2.  This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 /*
@@ -28,7 +31,6 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqreturn.h>
-#include <linux/sched/clock.h>
 #include <linux/sched_clock.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -158,19 +160,19 @@ static int __init digicolor_timer_init(struct device_node *node)
 	 */
 	dc_timer_dev.base = of_iomap(node, 0);
 	if (!dc_timer_dev.base) {
-		pr_err("Can't map registers\n");
+		pr_err("Can't map registers");
 		return -ENXIO;
 	}
 
 	irq = irq_of_parse_and_map(node, dc_timer_dev.timer_id);
 	if (irq <= 0) {
-		pr_err("Can't parse IRQ\n");
+		pr_err("Can't parse IRQ");
 		return -EINVAL;
 	}
 
 	clk = of_clk_get(node, 0);
 	if (IS_ERR(clk)) {
-		pr_err("Can't get timer clock\n");
+		pr_err("Can't get timer clock");
 		return PTR_ERR(clk);
 	}
 	clk_prepare_enable(clk);
@@ -200,5 +202,5 @@ static int __init digicolor_timer_init(struct device_node *node)
 
 	return 0;
 }
-TIMER_OF_DECLARE(conexant_digicolor, "cnxt,cx92755-timer",
+CLOCKSOURCE_OF_DECLARE(conexant_digicolor, "cnxt,cx92755-timer",
 		       digicolor_timer_init);

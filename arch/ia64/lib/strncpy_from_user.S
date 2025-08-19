@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Just like strncpy() except that if a fault occurs during copying,
  * -EFAULT is returned.
@@ -17,8 +16,8 @@
  *			 by Andreas Schwab <schwab@suse.de>).
  */
 
-#include <linux/export.h>
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 GLOBAL_ENTRY(__strncpy_from_user)
 	alloc r2=ar.pfs,3,0,0,0

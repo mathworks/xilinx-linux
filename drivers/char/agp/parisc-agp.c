@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HP Quicksilver AGP GART routines
  *
@@ -7,6 +6,11 @@
  * Based on drivers/char/agpgart/hp-agp.c which is
  * (c) Copyright 2002, 2003 Hewlett-Packard Development Company, L.P.
  *	Bjorn Helgaas <bjorn.helgaas@hp.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  */
 
 #include <linux/module.h>
@@ -90,9 +94,6 @@ parisc_agp_tlbflush(struct agp_memory *mem)
 {
 	struct _parisc_agp_info *info = &parisc_agp_info;
 
-	/* force fdc ops to be visible to IOMMU */
-	asm_io_sync();
-
 	writeq(info->gart_base | ilog2(info->gart_size), info->ioc_regs+IOC_PCOM);
 	readq(info->ioc_regs+IOC_PCOM);	/* flush */
 }
@@ -161,7 +162,6 @@ parisc_agp_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 			info->gatt[j] =
 				parisc_agp_mask_memory(agp_bridge,
 					paddr, type);
-			asm_io_fdc(&info->gatt[j]);
 		}
 	}
 
@@ -195,16 +195,7 @@ static unsigned long
 parisc_agp_mask_memory(struct agp_bridge_data *bridge, dma_addr_t addr,
 		       int type)
 {
-	unsigned ci;			/* coherent index */
-	dma_addr_t pa;
-
-	pa = addr & IOVP_MASK;
-	asm("lci 0(%1), %0" : "=r" (ci) : "r" (phys_to_virt(pa)));
-
-	pa |= (ci >> PAGE_SHIFT) & 0xff;/* move CI (8 bits) into lowest byte */
-	pa |= SBA_PDIR_VALID_BIT;	/* set "valid" bit */
-
-	return cpu_to_le64(pa);
+	return SBA_PDIR_VALID_BIT | addr;
 }
 
 static void
@@ -294,7 +285,7 @@ agp_ioc_init(void __iomem *ioc_regs)
         return 0;
 }
 
-static int __init
+static int
 lba_find_capability(int cap)
 {
 	struct _parisc_agp_info *info = &parisc_agp_info;
@@ -379,7 +370,7 @@ fail:
 	return error;
 }
 
-static int __init
+static int
 find_quicksilver(struct device *dev, void *data)
 {
 	struct parisc_device **lba = data;
@@ -391,9 +382,11 @@ find_quicksilver(struct device *dev, void *data)
 	return 0;
 }
 
-static int __init
+static int
 parisc_agp_init(void)
 {
+	extern struct sba_device *sba_list;
+
 	int err = -1;
 	struct parisc_device *sba = NULL, *lba = NULL;
 	struct lba_device *lbadev = NULL;

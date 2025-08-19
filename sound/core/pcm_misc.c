@@ -23,9 +23,6 @@
 #include <linux/export.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
-
-#include "pcm_local.h"
-
 #define SND_PCM_FORMAT_UNKNOWN (-1)
 
 /* NOTE: "signed" prefix must be given below since the default char is
@@ -42,12 +39,7 @@ struct pcm_format_data {
 /* we do lots of calculations on snd_pcm_format_t; shut up sparse */
 #define INT	__force int
 
-static bool valid_format(snd_pcm_format_t format)
-{
-	return (INT)format >= 0 && (INT)format <= (INT)SNDRV_PCM_FORMAT_LAST;
-}
-
-static const struct pcm_format_data pcm_formats[(INT)SNDRV_PCM_FORMAT_LAST+1] = {
+static struct pcm_format_data pcm_formats[(INT)SNDRV_PCM_FORMAT_LAST+1] = {
 	[SNDRV_PCM_FORMAT_S8] = {
 		.width = 8, .phys = 8, .le = -1, .signd = 1,
 		.silence = {},
@@ -168,30 +160,13 @@ static const struct pcm_format_data pcm_formats[(INT)SNDRV_PCM_FORMAT_LAST+1] = 
 		.width = 32, .phys = 32, .le = 0, .signd = 0,
 		.silence = { 0x69, 0x69, 0x69, 0x69 },
 	},
-	/* FIXME: the following two formats are not defined properly yet */
+	/* FIXME: the following three formats are not defined properly yet */
 	[SNDRV_PCM_FORMAT_MPEG] = {
 		.le = -1, .signd = -1,
 	},
 	[SNDRV_PCM_FORMAT_GSM] = {
 		.le = -1, .signd = -1,
 	},
-	[SNDRV_PCM_FORMAT_S20_LE] = {
-		.width = 20, .phys = 32, .le = 1, .signd = 1,
-		.silence = {},
-	},
-	[SNDRV_PCM_FORMAT_S20_BE] = {
-		.width = 20, .phys = 32, .le = 0, .signd = 1,
-		.silence = {},
-	},
-	[SNDRV_PCM_FORMAT_U20_LE] = {
-		.width = 20, .phys = 32, .le = 1, .signd = 0,
-		.silence = { 0x00, 0x00, 0x08, 0x00 },
-	},
-	[SNDRV_PCM_FORMAT_U20_BE] = {
-		.width = 20, .phys = 32, .le = 0, .signd = 0,
-		.silence = { 0x00, 0x08, 0x00, 0x00 },
-	},
-	/* FIXME: the following format is not defined properly yet */
 	[SNDRV_PCM_FORMAT_SPECIAL] = {
 		.le = -1, .signd = -1,
 	},
@@ -264,13 +239,13 @@ static const struct pcm_format_data pcm_formats[(INT)SNDRV_PCM_FORMAT_LAST+1] = 
 int snd_pcm_format_signed(snd_pcm_format_t format)
 {
 	int val;
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return -EINVAL;
-	val = pcm_formats[(INT)format].signd;
-	if (val < 0)
+	if ((val = pcm_formats[(INT)format].signd) < 0)
 		return -EINVAL;
 	return val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_signed);
 
 /**
@@ -289,6 +264,7 @@ int snd_pcm_format_unsigned(snd_pcm_format_t format)
 		return val;
 	return !val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_unsigned);
 
 /**
@@ -301,6 +277,7 @@ int snd_pcm_format_linear(snd_pcm_format_t format)
 {
 	return snd_pcm_format_signed(format) >= 0;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_linear);
 
 /**
@@ -313,13 +290,13 @@ EXPORT_SYMBOL(snd_pcm_format_linear);
 int snd_pcm_format_little_endian(snd_pcm_format_t format)
 {
 	int val;
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return -EINVAL;
-	val = pcm_formats[(INT)format].le;
-	if (val < 0)
+	if ((val = pcm_formats[(INT)format].le) < 0)
 		return -EINVAL;
 	return val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_little_endian);
 
 /**
@@ -338,6 +315,7 @@ int snd_pcm_format_big_endian(snd_pcm_format_t format)
 		return val;
 	return !val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_big_endian);
 
 /**
@@ -350,13 +328,13 @@ EXPORT_SYMBOL(snd_pcm_format_big_endian);
 int snd_pcm_format_width(snd_pcm_format_t format)
 {
 	int val;
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return -EINVAL;
-	val = pcm_formats[(INT)format].width;
-	if (!val)
+	if ((val = pcm_formats[(INT)format].width) == 0)
 		return -EINVAL;
 	return val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_width);
 
 /**
@@ -369,13 +347,13 @@ EXPORT_SYMBOL(snd_pcm_format_width);
 int snd_pcm_format_physical_width(snd_pcm_format_t format)
 {
 	int val;
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return -EINVAL;
-	val = pcm_formats[(INT)format].phys;
-	if (!val)
+	if ((val = pcm_formats[(INT)format].phys) == 0)
 		return -EINVAL;
 	return val;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_physical_width);
 
 /**
@@ -393,6 +371,7 @@ ssize_t snd_pcm_format_size(snd_pcm_format_t format, size_t samples)
 		return -EINVAL;
 	return samples * phys_width / 8;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_size);
 
 /**
@@ -403,12 +382,13 @@ EXPORT_SYMBOL(snd_pcm_format_size);
  */
 const unsigned char *snd_pcm_format_silence_64(snd_pcm_format_t format)
 {
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return NULL;
 	if (! pcm_formats[(INT)format].phys)
 		return NULL;
 	return pcm_formats[(INT)format].silence;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_silence_64);
 
 /**
@@ -424,16 +404,15 @@ EXPORT_SYMBOL(snd_pcm_format_silence_64);
 int snd_pcm_format_set_silence(snd_pcm_format_t format, void *data, unsigned int samples)
 {
 	int width;
-	unsigned char *dst;
-	const unsigned char *pat;
+	unsigned char *dst, *pat;
 
-	if (!valid_format(format))
+	if ((INT)format < 0 || (INT)format > (INT)SNDRV_PCM_FORMAT_LAST)
 		return -EINVAL;
 	if (samples == 0)
 		return 0;
 	width = pcm_formats[(INT)format].phys; /* physical width */
 	pat = pcm_formats[(INT)format].silence;
-	if (!width || !pat)
+	if (! width)
 		return -EINVAL;
 	/* signed or 1 byte data */
 	if (pcm_formats[(INT)format].signd == 1 || width <= 8) {
@@ -480,35 +459,37 @@ int snd_pcm_format_set_silence(snd_pcm_format_t format, void *data, unsigned int
 #endif
 	return 0;
 }
+
 EXPORT_SYMBOL(snd_pcm_format_set_silence);
 
 /**
- * snd_pcm_hw_limit_rates - determine rate_min/rate_max fields
- * @hw: the pcm hw instance
+ * snd_pcm_limit_hw_rates - determine rate_min/rate_max fields
+ * @runtime: the runtime instance
  *
  * Determines the rate_min and rate_max fields from the rates bits of
- * the given hw.
+ * the given runtime->hw.
  *
  * Return: Zero if successful.
  */
-int snd_pcm_hw_limit_rates(struct snd_pcm_hardware *hw)
+int snd_pcm_limit_hw_rates(struct snd_pcm_runtime *runtime)
 {
 	int i;
 	for (i = 0; i < (int)snd_pcm_known_rates.count; i++) {
-		if (hw->rates & (1 << i)) {
-			hw->rate_min = snd_pcm_known_rates.list[i];
+		if (runtime->hw.rates & (1 << i)) {
+			runtime->hw.rate_min = snd_pcm_known_rates.list[i];
 			break;
 		}
 	}
 	for (i = (int)snd_pcm_known_rates.count - 1; i >= 0; i--) {
-		if (hw->rates & (1 << i)) {
-			hw->rate_max = snd_pcm_known_rates.list[i];
+		if (runtime->hw.rates & (1 << i)) {
+			runtime->hw.rate_max = snd_pcm_known_rates.list[i];
 			break;
 		}
 	}
 	return 0;
 }
-EXPORT_SYMBOL(snd_pcm_hw_limit_rates);
+
+EXPORT_SYMBOL(snd_pcm_limit_hw_rates);
 
 /**
  * snd_pcm_rate_to_rate_bit - converts sample rate to SNDRV_PCM_RATE_xxx bit

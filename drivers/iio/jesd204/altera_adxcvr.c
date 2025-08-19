@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/jesd204/jesd204.h>
 
 /* Registers Description */
 
@@ -88,7 +87,6 @@ struct adxcvr_state {
 	void __iomem		*adxcvr_regs;
 	void __iomem		*atx_pll_regs;
 	void __iomem		*adxcfg_regs[32];
-	struct jesd204_dev	*jdev;
 	unsigned int 		version;
 	bool			is_transmit;
 	u32			lanes_per_link;
@@ -431,9 +429,6 @@ static void adxcvr_link_clk_work(struct work_struct *work)
 
 	link_rate = READ_ONCE(st->lane_rate) * (1000 / 40);
 
-	if (__clk_is_enabled(st->link_clk))
-		clk_disable_unprepare(st->link_clk);
-
 	/*
 	 * Due to rounding errors link_rate might not contain the exact rate.
 	 * Using clk_round_rate() to compute the exact rate first before calling
@@ -444,6 +439,8 @@ static void adxcvr_link_clk_work(struct work_struct *work)
 
 	dev_info(st->dev, "Setting link rate to %u (lane rate: %u)\n",
 		link_rate, st->lane_rate);
+
+	clk_disable_unprepare(st->link_clk);
 
 	ret = clk_set_rate(st->link_clk, link_rate);
 	if (ret < 0)
@@ -521,9 +518,6 @@ static int adxcvr_register_lane_clk(struct adxcvr_state *st)
 		clk);
 }
 
-static const struct jesd204_dev_data adxcvr_jesd204_data = {
-};
-
 static int adxcvr_probe(struct platform_device *pdev)
 {
 	struct resource *mem_adxcvr;
@@ -538,10 +532,6 @@ static int adxcvr_probe(struct platform_device *pdev)
 	st = devm_kzalloc(&pdev->dev, sizeof(*st), GFP_KERNEL);
 	if (!st)
 		return -ENOMEM;
-
-	st->jdev = devm_jesd204_dev_register(&pdev->dev, &adxcvr_jesd204_data);
-	if (IS_ERR(st->jdev))
-		return PTR_ERR(st->jdev);
 
 	st->ref_clk = devm_clk_get(&pdev->dev, "ref");
 	if (IS_ERR(st->ref_clk))
@@ -602,19 +592,13 @@ static int adxcvr_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (!IS_ERR(st->link_clk)) {
-		ret = clk_prepare_enable(st->link_clk);
-		if (ret)
-			return ret;
-	}
+	ret = clk_prepare_enable(st->link_clk);
+	if (ret)
+		return ret;
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &adxcvr_sysfs_group);
 	if (ret)
 		dev_err(&pdev->dev, "Can't create the sysfs group\n");
-
-	ret = jesd204_fsm_start(st->jdev, JESD204_LINKS_ALL);
-	if (ret)
-		return ret;
 
 	dev_info(&pdev->dev, "Altera ADXCVR (%d.%.2d.%c) probed\n",
 			VERSION_MAJOR(st->version),

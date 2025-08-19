@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * genelf_debug.c
  * Copyright (C) 2015, Google, Inc
@@ -6,12 +5,12 @@
  * Contributed by:
  * 	Stephane Eranian <eranian@google.com>
  *
+ * Released under the GPL v2.
+ *
  * based on GPLv2 source code from Oprofile
  * @remark Copyright 2007 OProfile authors
  * @author Philippe Elie
  */
-#include <linux/compiler.h>
-#include <linux/zalloc.h>
 #include <sys/types.h>
 #include <stdio.h>
 #include <getopt.h>
@@ -25,6 +24,7 @@
 #include <err.h>
 #include <dwarf.h>
 
+#include "perf.h"
 #include "genelf.h"
 #include "../util/jitdump.h"
 
@@ -88,12 +88,6 @@ buffer_ext_init(struct buffer_ext *be)
 	be->max_sz = 0;
 }
 
-static void
-buffer_ext_exit(struct buffer_ext *be)
-{
-	zfree(&be->data);
-}
-
 static inline size_t
 buffer_ext_size(struct buffer_ext *be)
 {
@@ -131,7 +125,7 @@ struct debug_line_header {
 	 * and filesize, last entry is followed by en empty string.
 	 */
 	/* follow the first program statement */
-} __packed;
+} __attribute__((packed));
 
 /* DWARF 2 spec talk only about one possible compilation unit header while
  * binutils can handle two flavours of dwarf 2, 32 and 64 bits, this is not
@@ -144,7 +138,7 @@ struct compilation_unit_header {
 	uhalf version;
 	uword debug_abbrev_offset;
 	ubyte pointer_size;
-} __packed;
+} __attribute__((packed));
 
 #define DW_LNS_num_opcode (DW_LNS_set_isa + 1)
 
@@ -337,9 +331,6 @@ static void emit_lineno_info(struct buffer_ext *be,
 {
 	size_t i;
 
-	/* as described in the jitdump format */
-	const char repeated_name_marker[] = {'\xff', '\0'};
-
 	/*
 	 * Machine state at start of a statement program
 	 * address = 0
@@ -352,7 +343,7 @@ static void emit_lineno_info(struct buffer_ext *be,
 	 */
 
 	/* start state of the state machine we take care of */
-	unsigned long last_vma = 0;
+	unsigned long last_vma = code_addr;
 	char const  *cur_filename = NULL;
 	unsigned long cur_file_idx = 0;
 	int last_line = 1;
@@ -366,8 +357,7 @@ static void emit_lineno_info(struct buffer_ext *be,
 		/*
 		 * check if filename changed, if so add it
 		 */
-		if ((!cur_filename || strcmp(cur_filename, ent->name)) &&
-			strcmp(repeated_name_marker, ent->name)) {
+		if (!cur_filename || strcmp(cur_filename, ent->name)) {
 			emit_lne_define_filename(be, ent->name);
 			cur_filename = ent->name;
 			emit_set_file(be, ++cur_file_idx);
@@ -484,7 +474,7 @@ jit_process_debug_info(uint64_t code_addr,
 		ent = debug_entry_next(ent);
 	}
 	add_compilation_unit(di, buffer_ext_size(dl));
-	add_debug_line(dl, debug, nr_debug_entries, GEN_ELF_TEXT_OFFSET);
+	add_debug_line(dl, debug, nr_debug_entries, 0);
 	add_debug_abbrev(da);
 	if (0) buffer_ext_dump(da, "abbrev");
 
@@ -498,28 +488,28 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	Elf_Scn *scn;
 	Elf_Shdr *shdr;
 	struct buffer_ext dl, di, da;
-	int ret = -1;
+	int ret;
 
 	buffer_ext_init(&dl);
 	buffer_ext_init(&di);
 	buffer_ext_init(&da);
 
-	if (jit_process_debug_info(code_addr, debug, nr_debug_entries, &dl, &da, &di))
-		goto out;
-
+	ret = jit_process_debug_info(code_addr, debug, nr_debug_entries, &dl, &da, &di);
+	if (ret)
+		return -1;
 	/*
 	 * setup .debug_line section
 	 */
 	scn = elf_newscn(e);
 	if (!scn) {
 		warnx("cannot create section");
-		goto out;
+		return -1;
 	}
 
 	d = elf_newdata(scn);
 	if (!d) {
 		warnx("cannot get new data");
-		goto out;
+		return -1;
 	}
 
 	d->d_align = 1;
@@ -532,7 +522,7 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	shdr = elf_getshdr(scn);
 	if (!shdr) {
 		warnx("cannot get section header");
-		goto out;
+		return -1;
 	}
 
 	shdr->sh_name = 52; /* .debug_line */
@@ -547,13 +537,13 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	scn = elf_newscn(e);
 	if (!scn) {
 		warnx("cannot create section");
-		goto out;
+		return -1;
 	}
 
 	d = elf_newdata(scn);
 	if (!d) {
 		warnx("cannot get new data");
-		goto out;
+		return -1;
 	}
 
 	d->d_align = 1;
@@ -566,7 +556,7 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	shdr = elf_getshdr(scn);
 	if (!shdr) {
 		warnx("cannot get section header");
-		goto out;
+		return -1;
 	}
 
 	shdr->sh_name = 64; /* .debug_info */
@@ -581,13 +571,13 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	scn = elf_newscn(e);
 	if (!scn) {
 		warnx("cannot create section");
-		goto out;
+		return -1;
 	}
 
 	d = elf_newdata(scn);
 	if (!d) {
 		warnx("cannot get new data");
-		goto out;
+		return -1;
 	}
 
 	d->d_align = 1;
@@ -600,7 +590,7 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	shdr = elf_getshdr(scn);
 	if (!shdr) {
 		warnx("cannot get section header");
-		goto out;
+		return -1;
 	}
 
 	shdr->sh_name = 76; /* .debug_info */
@@ -612,14 +602,9 @@ jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries
 	/*
 	 * now we update the ELF image with all the sections
 	 */
-	if (elf_update(e, ELF_C_WRITE) < 0)
+	if (elf_update(e, ELF_C_WRITE) < 0) {
 		warnx("elf_update debug failed");
-	else
-		ret = 0;
-
-out:
-	buffer_ext_exit(&dl);
-	buffer_ext_exit(&di);
-	buffer_ext_exit(&da);
-	return ret;
+		return -1;
+	}
+	return 0;
 }

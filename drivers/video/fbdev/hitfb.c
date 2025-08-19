@@ -22,7 +22,8 @@
 #include <linux/fb.h>
 
 #include <asm/machvec.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
+#include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/hd64461.h>
 #include <cpu/dac.h>
@@ -42,33 +43,17 @@ static struct fb_fix_screeninfo hitfb_fix = {
 	.accel		= FB_ACCEL_NONE,
 };
 
-static volatile void __iomem *hitfb_offset_to_addr(unsigned int offset)
-{
-	return (__force volatile void __iomem *)(uintptr_t)offset;
-}
-
-static u16 hitfb_readw(unsigned int offset)
-{
-	return fb_readw(hitfb_offset_to_addr(offset));
-}
-
-static void hitfb_writew(u16 value, unsigned int offset)
-{
-	fb_writew(value, hitfb_offset_to_addr(offset));
-}
-
 static inline void hitfb_accel_wait(void)
 {
-	while (hitfb_readw(HD64461_GRCFGR) & HD64461_GRCFGR_ACCSTATUS)
-		;
+	while (fb_readw(HD64461_GRCFGR) & HD64461_GRCFGR_ACCSTATUS) ;
 }
 
 static inline void hitfb_accel_start(int truecolor)
 {
 	if (truecolor) {
-		hitfb_writew(6, HD64461_GRCFGR);
+		fb_writew(6, HD64461_GRCFGR);
 	} else {
-		hitfb_writew(7, HD64461_GRCFGR);
+		fb_writew(7, HD64461_GRCFGR);
 	}
 }
 
@@ -79,11 +64,11 @@ static inline void hitfb_accel_set_dest(int truecolor, u16 dx, u16 dy,
 	if (truecolor)
 		saddr <<= 1;
 
-	hitfb_writew(width-1, HD64461_BBTDWR);
-	hitfb_writew(height-1, HD64461_BBTDHR);
+	fb_writew(width-1, HD64461_BBTDWR);
+	fb_writew(height-1, HD64461_BBTDHR);
 
-	hitfb_writew(saddr & 0xffff, HD64461_BBTDSARL);
-	hitfb_writew(saddr >> 16, HD64461_BBTDSARH);
+	fb_writew(saddr & 0xffff, HD64461_BBTDSARL);
+	fb_writew(saddr >> 16, HD64461_BBTDSARH);
 
 }
 
@@ -96,7 +81,7 @@ static inline void hitfb_accel_bitblt(int truecolor, u16 sx, u16 sy, u16 dx,
 
 	height--;
 	width--;
-	hitfb_writew(rop, HD64461_BBTROPR);
+	fb_writew(rop, HD64461_BBTROPR);
 	if ((sy < dy) || ((sy == dy) && (sx <= dx))) {
 		saddr = WIDTH * (sy + height) + sx + width;
 		daddr = WIDTH * (dy + height) + dx + width;
@@ -107,32 +92,32 @@ static inline void hitfb_accel_bitblt(int truecolor, u16 sx, u16 sy, u16 dx,
 				maddr =
 				    (((width >> 4) + 1) * (height + 1) - 1) * 2;
 
-			hitfb_writew((1 << 5) | 1, HD64461_BBTMDR);
+			fb_writew((1 << 5) | 1, HD64461_BBTMDR);
 		} else
-			hitfb_writew(1, HD64461_BBTMDR);
+			fb_writew(1, HD64461_BBTMDR);
 	} else {
 		saddr = WIDTH * sy + sx;
 		daddr = WIDTH * dy + dx;
 		if (mask_addr) {
-			hitfb_writew((1 << 5), HD64461_BBTMDR);
+			fb_writew((1 << 5), HD64461_BBTMDR);
 		} else {
-			hitfb_writew(0, HD64461_BBTMDR);
+			fb_writew(0, HD64461_BBTMDR);
 		}
 	}
 	if (truecolor) {
 		saddr <<= 1;
 		daddr <<= 1;
 	}
-	hitfb_writew(width, HD64461_BBTDWR);
-	hitfb_writew(height, HD64461_BBTDHR);
-	hitfb_writew(saddr & 0xffff, HD64461_BBTSSARL);
-	hitfb_writew(saddr >> 16, HD64461_BBTSSARH);
-	hitfb_writew(daddr & 0xffff, HD64461_BBTDSARL);
-	hitfb_writew(daddr >> 16, HD64461_BBTDSARH);
+	fb_writew(width, HD64461_BBTDWR);
+	fb_writew(height, HD64461_BBTDHR);
+	fb_writew(saddr & 0xffff, HD64461_BBTSSARL);
+	fb_writew(saddr >> 16, HD64461_BBTSSARH);
+	fb_writew(daddr & 0xffff, HD64461_BBTDSARL);
+	fb_writew(daddr >> 16, HD64461_BBTDSARH);
 	if (mask_addr) {
 		maddr += mask_addr;
-		hitfb_writew(maddr & 0xffff, HD64461_BBTMARL);
-		hitfb_writew(maddr >> 16, HD64461_BBTMARH);
+		fb_writew(maddr & 0xffff, HD64461_BBTMARL);
+		fb_writew(maddr >> 16, HD64461_BBTMARH);
 	}
 	hitfb_accel_start(truecolor);
 }
@@ -143,17 +128,17 @@ static void hitfb_fillrect(struct fb_info *p, const struct fb_fillrect *rect)
 		cfb_fillrect(p, rect);
 	else {
 		hitfb_accel_wait();
-		hitfb_writew(0x00f0, HD64461_BBTROPR);
-		hitfb_writew(16, HD64461_BBTMDR);
+		fb_writew(0x00f0, HD64461_BBTROPR);
+		fb_writew(16, HD64461_BBTMDR);
 
 		if (p->var.bits_per_pixel == 16) {
-			hitfb_writew(((u32 *) (p->pseudo_palette))[rect->color],
+			fb_writew(((u32 *) (p->pseudo_palette))[rect->color],
 				  HD64461_GRSCR);
 			hitfb_accel_set_dest(1, rect->dx, rect->dy, rect->width,
 					     rect->height);
 			hitfb_accel_start(1);
 		} else {
-			hitfb_writew(rect->color, HD64461_GRSCR);
+			fb_writew(rect->color, HD64461_GRSCR);
 			hitfb_accel_set_dest(0, rect->dx, rect->dy, rect->width,
 					     rect->height);
 			hitfb_accel_start(0);
@@ -178,43 +163,43 @@ static int hitfb_pan_display(struct fb_var_screeninfo *var,
 	if (xoffset != 0)
 		return -EINVAL;
 
-	hitfb_writew((yoffset*info->fix.line_length)>>10, HD64461_LCDCBAR);
+	fb_writew((yoffset*info->fix.line_length)>>10, HD64461_LCDCBAR);
 
 	return 0;
 }
 
-static int hitfb_blank(int blank_mode, struct fb_info *info)
+int hitfb_blank(int blank_mode, struct fb_info *info)
 {
 	unsigned short v;
 
 	if (blank_mode) {
-		v = hitfb_readw(HD64461_LDR1);
+		v = fb_readw(HD64461_LDR1);
 		v &= ~HD64461_LDR1_DON;
-		hitfb_writew(v, HD64461_LDR1);
+		fb_writew(v, HD64461_LDR1);
 
-		v = hitfb_readw(HD64461_LCDCCR);
+		v = fb_readw(HD64461_LCDCCR);
 		v |= HD64461_LCDCCR_MOFF;
-		hitfb_writew(v, HD64461_LCDCCR);
+		fb_writew(v, HD64461_LCDCCR);
 
-		v = hitfb_readw(HD64461_STBCR);
+		v = fb_readw(HD64461_STBCR);
 		v |= HD64461_STBCR_SLCDST;
-		hitfb_writew(v, HD64461_STBCR);
+		fb_writew(v, HD64461_STBCR);
 	} else {
-		v = hitfb_readw(HD64461_STBCR);
+		v = fb_readw(HD64461_STBCR);
 		v &= ~HD64461_STBCR_SLCDST;
-		hitfb_writew(v, HD64461_STBCR);
+		fb_writew(v, HD64461_STBCR);
 
-		v = hitfb_readw(HD64461_LCDCCR);
+		v = fb_readw(HD64461_LCDCCR);
 		v &= ~(HD64461_LCDCCR_MOFF | HD64461_LCDCCR_STREQ);
-		hitfb_writew(v, HD64461_LCDCCR);
+		fb_writew(v, HD64461_LCDCCR);
 
 		do {
-		    v = hitfb_readw(HD64461_LCDCCR);
+		    v = fb_readw(HD64461_LCDCCR);
 		} while(v&HD64461_LCDCCR_STBACK);
 
-		v = hitfb_readw(HD64461_LDR1);
+		v = fb_readw(HD64461_LDR1);
 		v |= HD64461_LDR1_DON;
-		hitfb_writew(v, HD64461_LDR1);
+		fb_writew(v, HD64461_LDR1);
 	}
 	return 0;
 }
@@ -227,10 +212,10 @@ static int hitfb_setcolreg(unsigned regno, unsigned red, unsigned green,
 
 	switch (info->var.bits_per_pixel) {
 	case 8:
-		hitfb_writew(regno << 8, HD64461_CPTWAR);
-		hitfb_writew(red >> 10, HD64461_CPTWDR);
-		hitfb_writew(green >> 10, HD64461_CPTWDR);
-		hitfb_writew(blue >> 10, HD64461_CPTWDR);
+		fb_writew(regno << 8, HD64461_CPTWAR);
+		fb_writew(red >> 10, HD64461_CPTWDR);
+		fb_writew(green >> 10, HD64461_CPTWDR);
+		fb_writew(blue >> 10, HD64461_CPTWDR);
 		break;
 	case 16:
 		if (regno >= 16)
@@ -318,15 +303,15 @@ static int hitfb_set_par(struct fb_info *info)
 		break;
 	}
 
-	hitfb_writew(info->fix.line_length, HD64461_LCDCLOR);
-	ldr3 = hitfb_readw(HD64461_LDR3);
+	fb_writew(info->fix.line_length, HD64461_LCDCLOR);
+	ldr3 = fb_readw(HD64461_LDR3);
 	ldr3 &= ~15;
 	ldr3 |= (info->var.bits_per_pixel == 8) ? 4 : 8;
-	hitfb_writew(ldr3, HD64461_LDR3);
+	fb_writew(ldr3, HD64461_LDR3);
 	return 0;
 }
 
-static const struct fb_ops hitfb_ops = {
+static struct fb_ops hitfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= hitfb_check_var,
 	.fb_set_par		= hitfb_set_par,
@@ -353,9 +338,9 @@ static int hitfb_probe(struct platform_device *dev)
 	hitfb_fix.smem_start = HD64461_IO_OFFSET(0x02000000);
 	hitfb_fix.smem_len = 512 * 1024;
 
-	lcdclor = hitfb_readw(HD64461_LCDCLOR);
-	ldvndr = hitfb_readw(HD64461_LDVNDR);
-	ldr3 = hitfb_readw(HD64461_LDR3);
+	lcdclor = fb_readw(HD64461_LCDCLOR);
+	ldvndr = fb_readw(HD64461_LDVNDR);
+	ldr3 = fb_readw(HD64461_LDR3);
 
 	switch (ldr3 & 15) {
 	default:
@@ -405,10 +390,10 @@ static int hitfb_probe(struct platform_device *dev)
 	info->var = hitfb_var;
 	info->fix = hitfb_fix;
 	info->pseudo_palette = info->par;
-	info->flags = FBINFO_HWACCEL_YPAN |
+	info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN |
 		FBINFO_HWACCEL_FILLRECT | FBINFO_HWACCEL_COPYAREA;
 
-	info->screen_base = (char __iomem *)(uintptr_t)hitfb_fix.smem_start;
+	info->screen_base = (void *)hitfb_fix.smem_start;
 
 	ret = fb_alloc_cmap(&info->cmap, 256, 0);
 	if (unlikely(ret < 0))
@@ -431,23 +416,25 @@ err_fb:
 	return ret;
 }
 
-static void hitfb_remove(struct platform_device *dev)
+static int hitfb_remove(struct platform_device *dev)
 {
 	struct fb_info *info = platform_get_drvdata(dev);
 
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static int hitfb_suspend(struct device *dev)
 {
 	u16 v;
 
-	hitfb_blank(1, NULL);
-	v = hitfb_readw(HD64461_STBCR);
+	hitfb_blank(1,0);
+	v = fb_readw(HD64461_STBCR);
 	v |= HD64461_STBCR_SLCKE_IST;
-	hitfb_writew(v, HD64461_STBCR);
+	fb_writew(v, HD64461_STBCR);
 
 	return 0;
 }
@@ -456,13 +443,13 @@ static int hitfb_resume(struct device *dev)
 {
 	u16 v;
 
-	v = hitfb_readw(HD64461_STBCR);
+	v = fb_readw(HD64461_STBCR);
 	v &= ~HD64461_STBCR_SLCKE_OST;
 	msleep(100);
-	v = hitfb_readw(HD64461_STBCR);
+	v = fb_readw(HD64461_STBCR);
 	v &= ~HD64461_STBCR_SLCKE_IST;
-	hitfb_writew(v, HD64461_STBCR);
-	hitfb_blank(0, NULL);
+	fb_writew(v, HD64461_STBCR);
+	hitfb_blank(0,0);
 
 	return 0;
 }
@@ -474,7 +461,7 @@ static const struct dev_pm_ops hitfb_dev_pm_ops = {
 
 static struct platform_driver hitfb_driver = {
 	.probe		= hitfb_probe,
-	.remove_new	= hitfb_remove,
+	.remove		= hitfb_remove,
 	.driver		= {
 		.name	= "hitfb",
 		.pm	= &hitfb_dev_pm_ops,

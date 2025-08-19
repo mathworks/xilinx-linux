@@ -20,7 +20,6 @@
 #include <asm/cpm1.h>
 
 #include "mpc8xx.h"
-#include "pic.h"
 
 struct cpm_pin {
 	int port, pin, flags;
@@ -142,6 +141,11 @@ static void __init ep88xc_setup_arch(void)
 	                          BCSR8_PHY2_ENABLE | BCSR8_PHY2_POWER);
 }
 
+static int __init ep88xc_probe(void)
+{
+	return of_machine_is_compatible("fsl,ep88xc");
+}
+
 static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .name = "soc", },
 	{ .name = "cpm", },
@@ -160,11 +164,13 @@ machine_device_initcall(ep88xc, declare_of_platform_devices);
 
 define_machine(ep88xc) {
 	.name = "Embedded Planet EP88xC",
-	.compatible = "fsl,ep88xc",
+	.probe = ep88xc_probe,
 	.setup_arch = ep88xc_setup_arch,
-	.init_IRQ = mpc8xx_pic_init,
+	.init_IRQ = mpc8xx_pics_init,
 	.get_irq	= mpc8xx_get_irq,
 	.restart = mpc8xx_restart,
 	.calibrate_decr = mpc8xx_calibrate_decr,
+	.set_rtc_time = mpc8xx_set_rtc_time,
+	.get_rtc_time = mpc8xx_get_rtc_time,
 	.progress = udbg_progress,
 };

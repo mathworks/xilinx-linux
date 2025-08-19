@@ -1,8 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- *	w1_ds28e04.c - w1 family 1C (DS28E04-100) driver
+ *	w1_ds28e04.c - w1 family 1C (DS28E04) driver
  *
  * Copyright (c) 2012 Markus Franke <franke.m@sebakmt.com>
+ *
+ * This source code is licensed under the GNU General Public License,
+ * Version 2. See the file COPYING for more details.
  */
 
 #include <linux/kernel.h>
@@ -18,9 +20,14 @@
 #define CRC16_INIT		0
 #define CRC16_VALID		0xb001
 
-#include <linux/w1.h>
+#include "../w1.h"
+#include "../w1_int.h"
+#include "../w1_family.h"
 
-#define W1_FAMILY_DS28E04	0x1C
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Markus Franke <franke.m@sebakmt.com>, <franm@hrz.tu-chemnitz.de>");
+MODULE_DESCRIPTION("w1 family 1C driver for DS28E04, 4kb EEPROM and PIO");
+MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS28E04));
 
 /* Allow the strong pullup to be disabled, but default to enabled.
  * If it was disabled a parasite powered device might not get the required
@@ -32,7 +39,7 @@ static int w1_strong_pullup = 1;
 module_param_named(strong_pullup, w1_strong_pullup, int, 0);
 
 /* enable/disable CRC checking on DS28E04-100 memory accesses */
-static bool w1_enable_crccheck = true;
+static char w1_enable_crccheck = 1;
 
 #define W1_EEPROM_SIZE		512
 #define W1_PAGE_COUNT		16
@@ -53,7 +60,7 @@ struct w1_f1C_data {
 	u32	validcrc;
 };
 
-/*
+/**
  * Check the file size bounds and adjusts count as needed.
  * This would not be needed if the file size didn't reset to 0 after a write.
  */
@@ -146,17 +153,16 @@ out_up:
 }
 
 /**
- * w1_f1C_write() - Writes to the scratchpad and reads it back for verification.
- * @sl:		The slave structure
- * @addr:	Address for the write
- * @len:	length must be <= (W1_PAGE_SIZE - (addr & W1_PAGE_MASK))
- * @data:	The data to write
- *
+ * Writes to the scratchpad and reads it back for verification.
  * Then copies the scratchpad to EEPROM.
  * The data must be on one page.
  * The master must be locked.
  *
- * Return:	0=Success, -1=failure
+ * @param sl	The slave structure
+ * @param addr	Address for the write
+ * @param len   length must be <= (W1_PAGE_SIZE - (addr & W1_PAGE_MASK))
+ * @param data	The data to write
+ * @return	0=Success -1=failure
  */
 static int w1_f1C_write(struct w1_slave *sl, int addr, int len, const u8 *data)
 {
@@ -198,10 +204,8 @@ static int w1_f1C_write(struct w1_slave *sl, int addr, int len, const u8 *data)
 	wrbuf[3] = es;
 
 	for (i = 0; i < sizeof(wrbuf); ++i) {
-		/*
-		 * issue 10ms strong pullup (or delay) on the last byte
-		 * for writing the data from the scratchpad to EEPROM
-		 */
+		/* issue 10ms strong pullup (or delay) on the last byte
+		   for writing the data from the scratchpad to EEPROM */
 		if (w1_strong_pullup && i == sizeof(wrbuf)-1)
 			w1_next_pullup(sl->master, tm);
 
@@ -342,18 +346,32 @@ static BIN_ATTR_RW(pio, 1);
 static ssize_t crccheck_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
-	return sysfs_emit(buf, "%d\n", w1_enable_crccheck);
+	if (put_user(w1_enable_crccheck + 0x30, buf))
+		return -EFAULT;
+
+	return sizeof(w1_enable_crccheck);
 }
 
 static ssize_t crccheck_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
-	int err = kstrtobool(buf, &w1_enable_crccheck);
+	char val;
 
-	if (err)
-		return err;
+	if (count != 1 || !buf)
+		return -EINVAL;
 
-	return count;
+	if (get_user(val, buf))
+		return -EFAULT;
+
+	/* convert to decimal */
+	val = val - 0x30;
+	if (val != 0 && val != 1)
+		return -EINVAL;
+
+	/* set the new value */
+	w1_enable_crccheck = val;
+
+	return sizeof(w1_enable_crccheck);
 }
 
 static DEVICE_ATTR_RW(crccheck);
@@ -399,7 +417,7 @@ static void w1_f1C_remove_slave(struct w1_slave *sl)
 	sl->family_data = NULL;
 }
 
-static const struct w1_family_ops w1_f1C_fops = {
+static struct w1_family_ops w1_f1C_fops = {
 	.add_slave      = w1_f1C_add_slave,
 	.remove_slave   = w1_f1C_remove_slave,
 	.groups		= w1_f1C_groups,
@@ -410,8 +428,3 @@ static struct w1_family w1_family_1C = {
 	.fops = &w1_f1C_fops,
 };
 module_w1_family(w1_family_1C);
-
-MODULE_AUTHOR("Markus Franke <franke.m@sebakmt.com>, <franm@hrz.tu-chemnitz.de>");
-MODULE_DESCRIPTION("w1 family 1C driver for DS28E04, 4kb EEPROM and PIO");
-MODULE_LICENSE("GPL");
-MODULE_ALIAS("w1-family-" __stringify(W1_FAMILY_DS28E04));

@@ -1,5 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -12,6 +20,7 @@
 #include <linux/regmap.h>
 #include <linux/log2.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 
 #define PON_CNTL_1 0x1C
 #define PON_CNTL_PULL_UP BIT(7)
@@ -99,7 +108,7 @@ static irqreturn_t pwrkey_release_irq(int irq, void *_pwr)
 	return IRQ_HANDLED;
 }
 
-static int pmic8xxx_pwrkey_suspend(struct device *dev)
+static int __maybe_unused pmic8xxx_pwrkey_suspend(struct device *dev)
 {
 	struct pmic8xxx_pwrkey *pwrkey = dev_get_drvdata(dev);
 
@@ -109,7 +118,7 @@ static int pmic8xxx_pwrkey_suspend(struct device *dev)
 	return 0;
 }
 
-static int pmic8xxx_pwrkey_resume(struct device *dev)
+static int __maybe_unused pmic8xxx_pwrkey_resume(struct device *dev)
 {
 	struct pmic8xxx_pwrkey *pwrkey = dev_get_drvdata(dev);
 
@@ -119,7 +128,7 @@ static int pmic8xxx_pwrkey_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(pm8xxx_pwr_key_pm_ops,
+static SIMPLE_DEV_PM_OPS(pm8xxx_pwr_key_pm_ops,
 		pmic8xxx_pwrkey_suspend, pmic8xxx_pwrkey_resume);
 
 static void pmic8xxx_pwrkey_shutdown(struct platform_device *pdev)
@@ -429,6 +438,13 @@ static int pmic8xxx_pwrkey_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int pmic8xxx_pwrkey_remove(struct platform_device *pdev)
+{
+	device_init_wakeup(&pdev->dev, 0);
+
+	return 0;
+}
+
 static const struct of_device_id pm8xxx_pwr_key_id_table[] = {
 	{ .compatible = "qcom,pm8058-pwrkey", .data = &pm8058_pwrkey_shutdown },
 	{ .compatible = "qcom,pm8921-pwrkey", .data = &pm8921_pwrkey_shutdown },
@@ -438,10 +454,11 @@ MODULE_DEVICE_TABLE(of, pm8xxx_pwr_key_id_table);
 
 static struct platform_driver pmic8xxx_pwrkey_driver = {
 	.probe		= pmic8xxx_pwrkey_probe,
+	.remove		= pmic8xxx_pwrkey_remove,
 	.shutdown	= pmic8xxx_pwrkey_shutdown,
 	.driver		= {
 		.name	= "pm8xxx-pwrkey",
-		.pm	= pm_sleep_ptr(&pm8xxx_pwr_key_pm_ops),
+		.pm	= &pm8xxx_pwr_key_pm_ops,
 		.of_match_table = pm8xxx_pwr_key_id_table,
 	},
 };

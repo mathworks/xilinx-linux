@@ -1,11 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap1/serial.c
  *
  * OMAP1 serial support.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
-#include <linux/gpio/machine.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -20,9 +22,8 @@
 
 #include <asm/mach-types.h>
 
-#include "common.h"
-#include "serial.h"
-#include "mux.h"
+#include <mach/mux.h>
+
 #include "pm.h"
 #include "soc.h"
 
@@ -108,6 +109,13 @@ void __init omap_serial_init(void)
 {
 	int i;
 
+	if (cpu_is_omap7xx()) {
+		serial_platform_data[0].regshift = 0;
+		serial_platform_data[1].regshift = 0;
+		serial_platform_data[0].irq = INT_7XX_UART_MODEM_1;
+		serial_platform_data[1].irq = INT_7XX_UART_MODEM_IRDA_2;
+	}
+
 	if (cpu_is_omap15xx()) {
 		serial_platform_data[0].uartclk = OMAP1510_BASE_BAUD * 16;
 		serial_platform_data[1].uartclk = OMAP1510_BASE_BAUD * 16;
@@ -115,6 +123,14 @@ void __init omap_serial_init(void)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(serial_platform_data) - 1; i++) {
+
+		/* Don't look at UARTs higher than 2 for omap7xx */
+		if (cpu_is_omap7xx() && i > 1) {
+			serial_platform_data[i].membase = NULL;
+			serial_platform_data[i].mapbase = 0;
+			continue;
+		}
+
 		/* Static mapping, never released */
 		serial_platform_data[i].membase =
 			ioremap(serial_platform_data[i].mapbase, SZ_2K);
@@ -128,7 +144,7 @@ void __init omap_serial_init(void)
 			if (IS_ERR(uart1_ck))
 				printk("Could not get uart1_ck\n");
 			else {
-				clk_prepare_enable(uart1_ck);
+				clk_enable(uart1_ck);
 				if (cpu_is_omap15xx())
 					clk_set_rate(uart1_ck, 12000000);
 			}
@@ -138,7 +154,7 @@ void __init omap_serial_init(void)
 			if (IS_ERR(uart2_ck))
 				printk("Could not get uart2_ck\n");
 			else {
-				clk_prepare_enable(uart2_ck);
+				clk_enable(uart2_ck);
 				if (cpu_is_omap15xx())
 					clk_set_rate(uart2_ck, 12000000);
 				else
@@ -150,7 +166,7 @@ void __init omap_serial_init(void)
 			if (IS_ERR(uart3_ck))
 				printk("Could not get uart3_ck\n");
 			else {
-				clk_prepare_enable(uart3_ck);
+				clk_enable(uart3_ck);
 				if (cpu_is_omap15xx())
 					clk_set_rate(uart3_ck, 12000000);
 			}
@@ -198,26 +214,27 @@ void omap_serial_wake_trigger(int enable)
 	}
 }
 
-static void __init omap_serial_set_port_wakeup(int idx)
+static void __init omap_serial_set_port_wakeup(int gpio_nr)
 {
-	struct gpio_desc *d;
 	int ret;
 
-	d = gpiod_get_index(NULL, "wakeup", idx, GPIOD_IN);
-	if (IS_ERR(d)) {
-		pr_err("Unable to get UART wakeup GPIO descriptor\n");
+	ret = gpio_request(gpio_nr, "UART wake");
+	if (ret < 0) {
+		printk(KERN_ERR "Could not request UART wake GPIO: %i\n",
+		       gpio_nr);
 		return;
 	}
-	ret = request_irq(gpiod_to_irq(d), &omap_serial_wake_interrupt,
+	gpio_direction_input(gpio_nr);
+	ret = request_irq(gpio_to_irq(gpio_nr), &omap_serial_wake_interrupt,
 			  IRQF_TRIGGER_RISING, "serial wakeup", NULL);
 	if (ret) {
-		gpiod_put(d);
-		pr_err("No interrupt for UART%d wake GPIO\n", idx + 1);
+		gpio_free(gpio_nr);
+		printk(KERN_ERR "No interrupt for UART wake GPIO: %i\n",
+		       gpio_nr);
 		return;
 	}
-	enable_irq_wake(gpiod_to_irq(d));
+	enable_irq_wake(gpio_to_irq(gpio_nr));
 }
-
 
 int __init omap_serial_wakeup_init(void)
 {
@@ -225,11 +242,11 @@ int __init omap_serial_wakeup_init(void)
 		return 0;
 
 	if (uart1_ck != NULL)
-		omap_serial_set_port_wakeup(0);
+		omap_serial_set_port_wakeup(37);
 	if (uart2_ck != NULL)
-		omap_serial_set_port_wakeup(1);
+		omap_serial_set_port_wakeup(18);
 	if (uart3_ck != NULL)
-		omap_serial_set_port_wakeup(2);
+		omap_serial_set_port_wakeup(49);
 
 	return 0;
 }

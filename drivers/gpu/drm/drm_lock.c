@@ -1,4 +1,4 @@
-/*
+/**
  * \file drm_lock.c
  * IOCTLs for locking
  *
@@ -34,19 +34,13 @@
  */
 
 #include <linux/export.h>
-#include <linux/sched/signal.h>
-
-#include <drm/drm.h>
-#include <drm/drm_drv.h>
-#include <drm/drm_file.h>
-#include <drm/drm_print.h>
-
-#include "drm_internal.h"
+#include <drm/drmP.h>
 #include "drm_legacy.h"
+#include "drm_internal.h"
 
 static int drm_lock_take(struct drm_lock_data *lock_data, unsigned int context);
 
-/*
+/**
  * Take the heavyweight lock.
  *
  * \param lock lock pointer.
@@ -93,7 +87,7 @@ int drm_lock_take(struct drm_lock_data *lock_data,
 	return 0;
 }
 
-/*
+/**
  * This takes a lock forcibly and hands it to context.	Should ONLY be used
  * inside *_unlock to give lock to kernel before calling *_dma_schedule.
  *
@@ -150,7 +144,7 @@ static int drm_legacy_lock_free(struct drm_lock_data *lock_data,
 	return 0;
 }
 
-/*
+/**
  * Lock ioctl.
  *
  * \param inode device inode.
@@ -170,7 +164,7 @@ int drm_legacy_lock(struct drm_device *dev, void *data,
 	int ret = 0;
 
 	if (!drm_core_check_feature(dev, DRIVER_LEGACY))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	++file_priv->lock_count;
 
@@ -182,8 +176,7 @@ int drm_legacy_lock(struct drm_device *dev, void *data,
 
 	DRM_DEBUG("%d (pid %d) requests lock (0x%08x), flags = 0x%08x\n",
 		  lock->context, task_pid_nr(current),
-		  master->lock.hw_lock ? master->lock.hw_lock->lock : -1,
-		  lock->flags);
+		  master->lock.hw_lock->lock, lock->flags);
 
 	add_wait_queue(&master->lock.lock_queue, &entry);
 	spin_lock_bh(&master->lock.spinlock);
@@ -243,7 +236,7 @@ int drm_legacy_lock(struct drm_device *dev, void *data,
 	return 0;
 }
 
-/*
+/**
  * Unlock ioctl.
  *
  * \param inode device inode.
@@ -260,7 +253,7 @@ int drm_legacy_unlock(struct drm_device *dev, void *data, struct drm_file *file_
 	struct drm_master *master = file_priv->master;
 
 	if (!drm_core_check_feature(dev, DRIVER_LEGACY))
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (lock->context == DRM_KERNEL_CONTEXT) {
 		DRM_ERROR("Process %d using kernel context %d\n",
@@ -275,7 +268,7 @@ int drm_legacy_unlock(struct drm_device *dev, void *data, struct drm_file *file_
 	return 0;
 }
 
-/*
+/**
  * This function returns immediately and takes the hw lock
  * with the kernel context if it is free, otherwise it gets the highest priority when and if
  * it is eventually released.
@@ -287,6 +280,7 @@ int drm_legacy_unlock(struct drm_device *dev, void *data, struct drm_file *file_
  * This should be sufficient to wait for GPU idle without
  * having to worry about starvation.
  */
+
 void drm_legacy_idlelock_take(struct drm_lock_data *lock_data)
 {
 	int ret;
@@ -330,7 +324,6 @@ static int drm_legacy_i_have_hw_lock(struct drm_device *dev,
 				     struct drm_file *file_priv)
 {
 	struct drm_master *master = file_priv->master;
-
 	return (file_priv->lock_count && master->lock.hw_lock &&
 		_DRM_LOCK_IS_HELD(master->lock.hw_lock->lock) &&
 		master->lock.file_priv == file_priv);
@@ -350,24 +343,4 @@ void drm_legacy_lock_release(struct drm_device *dev, struct file *filp)
 		drm_legacy_lock_free(&file_priv->master->lock,
 				     _DRM_LOCKING_CONTEXT(file_priv->master->lock.hw_lock->lock));
 	}
-}
-
-void drm_legacy_lock_master_cleanup(struct drm_device *dev, struct drm_master *master)
-{
-	if (!drm_core_check_feature(dev, DRIVER_LEGACY))
-		return;
-
-	/*
-	 * Since the master is disappearing, so is the
-	 * possibility to lock.
-	 */
-	mutex_lock(&dev->struct_mutex);
-	if (master->lock.hw_lock) {
-		if (dev->sigdata.lock == master->lock.hw_lock)
-			dev->sigdata.lock = NULL;
-		master->lock.hw_lock = NULL;
-		master->lock.file_priv = NULL;
-		wake_up_interruptible_all(&master->lock.lock_queue);
-	}
-	mutex_unlock(&dev->struct_mutex);
 }

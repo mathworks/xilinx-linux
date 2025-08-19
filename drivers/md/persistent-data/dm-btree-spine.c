@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -16,6 +15,10 @@
 
 #define BTREE_CSUM_XOR 121107
 
+static int node_check(struct dm_block_validator *v,
+		      struct dm_block *b,
+		      size_t block_size);
+
 static void node_prepare_for_write(struct dm_block_validator *v,
 				   struct dm_block *b,
 				   size_t block_size)
@@ -27,6 +30,8 @@ static void node_prepare_for_write(struct dm_block_validator *v,
 	h->csum = cpu_to_le32(dm_bm_checksum(&h->flags,
 					     block_size - sizeof(__le32),
 					     BTREE_CSUM_XOR));
+
+	BUG_ON(node_check(v, b, 4096));
 }
 
 static int node_check(struct dm_block_validator *v,
@@ -37,10 +42,10 @@ static int node_check(struct dm_block_validator *v,
 	struct node_header *h = &n->header;
 	size_t value_size;
 	__le32 csum_disk;
-	uint32_t flags, nr_entries, max_entries;
+	uint32_t flags;
 
 	if (dm_block_location(b) != le64_to_cpu(h->blocknr)) {
-		DMERR_LIMIT("%s failed: blocknr %llu != wanted %llu", __func__,
+		DMERR_LIMIT("node_check failed: blocknr %llu != wanted %llu",
 			    le64_to_cpu(h->blocknr), dm_block_location(b));
 		return -ENOTBLK;
 	}
@@ -49,23 +54,21 @@ static int node_check(struct dm_block_validator *v,
 					       block_size - sizeof(__le32),
 					       BTREE_CSUM_XOR));
 	if (csum_disk != h->csum) {
-		DMERR_LIMIT("%s failed: csum %u != wanted %u", __func__,
+		DMERR_LIMIT("node_check failed: csum %u != wanted %u",
 			    le32_to_cpu(csum_disk), le32_to_cpu(h->csum));
 		return -EILSEQ;
 	}
 
-	nr_entries = le32_to_cpu(h->nr_entries);
-	max_entries = le32_to_cpu(h->max_entries);
 	value_size = le32_to_cpu(h->value_size);
 
 	if (sizeof(struct node_header) +
-	    (sizeof(__le64) + value_size) * max_entries > block_size) {
-		DMERR_LIMIT("%s failed: max_entries too large", __func__);
+	    (sizeof(__le64) + value_size) * le32_to_cpu(h->max_entries) > block_size) {
+		DMERR_LIMIT("node_check failed: max_entries too large");
 		return -EILSEQ;
 	}
 
-	if (nr_entries > max_entries) {
-		DMERR_LIMIT("%s failed: too many entries", __func__);
+	if (le32_to_cpu(h->nr_entries) > le32_to_cpu(h->max_entries)) {
+		DMERR_LIMIT("node_check failed: too many entries");
 		return -EILSEQ;
 	}
 
@@ -74,7 +77,7 @@ static int node_check(struct dm_block_validator *v,
 	 */
 	flags = le32_to_cpu(h->flags);
 	if (!(flags & INTERNAL_NODE) && !(flags & LEAF_NODE)) {
-		DMERR_LIMIT("%s failed: node is neither INTERNAL or LEAF", __func__);
+		DMERR_LIMIT("node_check failed: node is neither INTERNAL or LEAF");
 		return -EILSEQ;
 	}
 
@@ -129,12 +132,15 @@ void init_ro_spine(struct ro_spine *s, struct dm_btree_info *info)
 	s->nodes[1] = NULL;
 }
 
-void exit_ro_spine(struct ro_spine *s)
+int exit_ro_spine(struct ro_spine *s)
 {
-	int i;
+	int r = 0, i;
 
-	for (i = 0; i < s->count; i++)
+	for (i = 0; i < s->count; i++) {
 		unlock_block(s->info, s->nodes[i]);
+	}
+
+	return r;
 }
 
 int ro_step(struct ro_spine *s, dm_block_t new_child)
@@ -179,12 +185,15 @@ void init_shadow_spine(struct shadow_spine *s, struct dm_btree_info *info)
 	s->count = 0;
 }
 
-void exit_shadow_spine(struct shadow_spine *s)
+int exit_shadow_spine(struct shadow_spine *s)
 {
-	int i;
+	int r = 0, i;
 
-	for (i = 0; i < s->count; i++)
+	for (i = 0; i < s->count; i++) {
 		unlock_block(s->info, s->nodes[i]);
+	}
+
+	return r;
 }
 
 int shadow_step(struct shadow_spine *s, dm_block_t b,
@@ -228,19 +237,27 @@ int shadow_has_parent(struct shadow_spine *s)
 	return s->count >= 2;
 }
 
-dm_block_t shadow_root(struct shadow_spine *s)
+int shadow_root(struct shadow_spine *s)
 {
 	return s->root;
 }
 
-static void le64_inc(void *context, const void *value_le, unsigned int count)
+static void le64_inc(void *context, const void *value_le)
 {
-	dm_tm_with_runs(context, value_le, count, dm_tm_inc_range);
+	struct dm_transaction_manager *tm = context;
+	__le64 v_le;
+
+	memcpy(&v_le, value_le, sizeof(v_le));
+	dm_tm_inc(tm, le64_to_cpu(v_le));
 }
 
-static void le64_dec(void *context, const void *value_le, unsigned int count)
+static void le64_dec(void *context, const void *value_le)
 {
-	dm_tm_with_runs(context, value_le, count, dm_tm_dec_range);
+	struct dm_transaction_manager *tm = context;
+	__le64 v_le;
+
+	memcpy(&v_le, value_le, sizeof(v_le));
+	dm_tm_dec(tm, le64_to_cpu(v_le));
 }
 
 static int le64_equal(void *context, const void *value1_le, const void *value2_le)

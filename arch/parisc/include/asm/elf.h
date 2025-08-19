@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMPARISC_ELF_H
 #define __ASMPARISC_ELF_H
 
@@ -6,7 +5,7 @@
  * ELF register definitions..
  */
 
-#include <linux/types.h>
+#include <asm/ptrace.h>
 
 #define EM_PARISC 15
 
@@ -152,7 +151,7 @@
 /* The following are PA function descriptors 
  *
  * addr:	the absolute address of the function
- * gp:		either the data pointer (r27) for non-PIC code or
+ * gp:		either the data pointer (r27) for non-PIC code or the
  *		the PLT pointer (r19) for PIC code */
 
 /* Format for the Elf32 Function descriptor */
@@ -163,16 +162,21 @@ typedef struct elf32_fdesc {
 
 /* Format for the Elf64 Function descriptor */
 typedef struct elf64_fdesc {
-	__u64	dummy[2]; /* used by 64-bit eBPF and tracing functions */
+	__u64	dummy[2]; /* FIXME: nothing uses these, why waste
+			   * the space */
 	__u64	addr;
 	__u64	gp;
 } Elf64_Fdesc;
+
+#ifdef __KERNEL__
 
 #ifdef CONFIG_64BIT
 #define Elf_Fdesc	Elf64_Fdesc
 #else
 #define Elf_Fdesc	Elf32_Fdesc
 #endif /*CONFIG_64BIT*/
+
+#endif /*__KERNEL__*/
 
 /* Legal values for p_type field of Elf32_Phdr/Elf64_Phdr.  */
 
@@ -208,47 +212,44 @@ typedef struct elf64_fdesc {
 #define PF_HP_SBP		0x08000000
 
 /*
- * This yields a string that ld.so will use to load implementation
- * specific libraries for optimization.  This is more specific in
- * intent than poking at uname or /proc/cpuinfo.
- */
-
-#define ELF_PLATFORM  ("PARISC")
-
-/*
  * The following definitions are those for 32-bit ELF binaries on a 32-bit
  * kernel and for 64-bit binaries on a 64-bit kernel.  To run 32-bit binaries
- * on a 64-bit kernel, fs/compat_binfmt_elf.c defines ELF_CLASS and then
- * #includes binfmt_elf.c, which then includes this file.
+ * on a 64-bit kernel, arch/parisc/kernel/binfmt_elf32.c defines these
+ * macros appropriately and then #includes binfmt_elf.c, which then includes
+ * this file.
  */
 #ifndef ELF_CLASS
 
+/*
+ * This is used to ensure we don't load something for the wrong architecture.
+ *
+ * Note that this header file is used by default in fs/binfmt_elf.c. So
+ * the following macros are for the default case. However, for the 64
+ * bit kernel we also support 32 bit parisc binaries. To do that
+ * arch/parisc/kernel/binfmt_elf32.c defines its own set of these
+ * macros, and then it includes fs/binfmt_elf.c to provide an alternate
+ * elf binary handler for 32 bit binaries (on the 64 bit kernel).
+ */
 #ifdef CONFIG_64BIT
-#define ELF_CLASS	ELFCLASS64
+#define ELF_CLASS   ELFCLASS64
 #else
 #define ELF_CLASS	ELFCLASS32
 #endif
 
 typedef unsigned long elf_greg_t;
 
+/*
+ * This yields a string that ld.so will use to load implementation
+ * specific libraries for optimization.  This is more specific in
+ * intent than poking at uname or /proc/cpuinfo.
+ */
+
+#define ELF_PLATFORM  ("PARISC\0")
+
 #define SET_PERSONALITY(ex) \
-({	\
 	set_personality((current->personality & ~PER_MASK) | PER_LINUX); \
-	clear_thread_flag(TIF_32BIT); \
 	current->thread.map_base = DEFAULT_MAP_BASE; \
-	current->thread.task_size = DEFAULT_TASK_SIZE; \
- })
-
-#endif /* ! ELF_CLASS */
-
-#define COMPAT_SET_PERSONALITY(ex) \
-({	\
-	if ((ex).e_ident[EI_CLASS] == ELFCLASS32) { \
-		set_thread_flag(TIF_32BIT); \
-		current->thread.map_base = DEFAULT_MAP_BASE32; \
-		current->thread.task_size = DEFAULT_TASK_SIZE32; \
-	} else clear_thread_flag(TIF_32BIT); \
- })
+	current->thread.task_size = DEFAULT_TASK_SIZE \
 
 /*
  * Fill in general registers in a core dump.  This saves pretty
@@ -275,12 +276,10 @@ typedef unsigned long elf_greg_t;
 
 #define ELF_CORE_COPY_REGS(dst, pt)	\
 	memset(dst, 0, sizeof(dst));	/* don't leak any "random" bits */ \
-	{	int i; \
-		for (i = 0; i < 32; i++) dst[i] = pt->gr[i]; \
-		for (i = 0; i < 8; i++) dst[32 + i] = pt->sr[i]; \
-	} \
-	dst[40] = pt->iaoq[0]; dst[41] = pt->iaoq[1]; \
-	dst[42] = pt->iasq[0]; dst[43] = pt->iasq[1]; \
+	memcpy(dst + 0, pt->gr, 32 * sizeof(elf_greg_t)); \
+	memcpy(dst + 32, pt->sr, 8 * sizeof(elf_greg_t)); \
+	memcpy(dst + 40, pt->iaoq, 2 * sizeof(elf_greg_t)); \
+	memcpy(dst + 42, pt->iasq, 2 * sizeof(elf_greg_t)); \
 	dst[44] = pt->sar;   dst[45] = pt->iir; \
 	dst[46] = pt->isr;   dst[47] = pt->ior; \
 	dst[48] = mfctl(22); dst[49] = mfctl(0); \
@@ -292,7 +291,7 @@ typedef unsigned long elf_greg_t;
 	dst[60] = mfctl(12); dst[61] = mfctl(13); \
 	dst[62] = mfctl(10); dst[63] = mfctl(15);
 
-#define CORE_DUMP_USE_REGSET
+#endif /* ! ELF_CLASS */
 
 #define ELF_NGREG 80	/* We only need 64 at present, but leave space
 			   for expansion. */
@@ -304,13 +303,13 @@ typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
 
 struct task_struct;
 
+extern int dump_task_fpu (struct task_struct *, elf_fpregset_t *);
+#define ELF_CORE_COPY_FPREGS(tsk, elf_fpregs) dump_task_fpu(tsk, elf_fpregs)
+
 struct pt_regs;	/* forward declaration... */
 
 
-#define elf_check_arch(x)		\
-	((x)->e_machine == EM_PARISC && (x)->e_ident[EI_CLASS] == ELF_CLASS)
-#define compat_elf_check_arch(x)	\
-	((x)->e_machine == EM_PARISC && (x)->e_ident[EI_CLASS] == ELFCLASS32)
+#define elf_check_arch(x) ((x)->e_machine == EM_PARISC && (x)->e_ident[EI_CLASS] == ELF_CLASS)
 
 /*
  * These are used to set parameters in the core dumps.
@@ -349,28 +348,12 @@ struct pt_regs;	/* forward declaration... */
 
 #define ELF_HWCAP	0
 
-/* Masks for stack and mmap randomization */
-#define BRK_RND_MASK	(is_32bit_task() ? 0x07ffUL : 0x3ffffUL)
-#define MMAP_RND_MASK	(is_32bit_task() ? 0x1fffUL : 0x3ffffUL)
-#define STACK_RND_MASK	MMAP_RND_MASK
+#define STACK_RND_MASK	(is_32bit_task() ? \
+				0x7ff >> (PAGE_SHIFT - 12) : \
+				0x3ffff >> (PAGE_SHIFT - 12))
 
 struct mm_struct;
 extern unsigned long arch_randomize_brk(struct mm_struct *);
 #define arch_randomize_brk arch_randomize_brk
-
-
-#define ARCH_HAS_SETUP_ADDITIONAL_PAGES 1
-struct linux_binprm;
-extern int arch_setup_additional_pages(struct linux_binprm *bprm,
-					int executable_stack);
-#define VDSO_AUX_ENT(a, b) NEW_AUX_ENT(a, b)
-#define VDSO_CURRENT_BASE current->mm->context.vdso_base
-
-#define ARCH_DLINFO						\
-do {								\
-	if (VDSO_CURRENT_BASE) {				\
-		NEW_AUX_ENT(AT_SYSINFO_EHDR, VDSO_CURRENT_BASE);\
-	}							\
-} while (0)
 
 #endif

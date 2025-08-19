@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * sched-messaging.c
@@ -10,7 +9,10 @@
  *
  */
 
+#include "../perf.h"
+#include "../util/util.h"
 #include <subcmd/parse-options.h>
+#include "../builtin.h"
 #include "bench.h"
 
 /* Test groups of 20 processes spraying to 20 receivers */
@@ -27,7 +29,6 @@
 #include <poll.h>
 #include <limits.h>
 #include <err.h>
-#include <linux/list.h>
 #include <linux/time64.h>
 
 #define DATASIZE 100
@@ -36,19 +37,15 @@ static bool use_pipes = false;
 static unsigned int nr_loops = 100;
 static bool thread_mode = false;
 static unsigned int num_groups = 10;
-static struct list_head sender_contexts = LIST_HEAD_INIT(sender_contexts);
-static struct list_head receiver_contexts = LIST_HEAD_INIT(receiver_contexts);
 
 struct sender_context {
-	struct list_head list;
 	unsigned int num_fds;
 	int ready_out;
 	int wakefd;
-	int out_fds[];
+	int out_fds[0];
 };
 
 struct receiver_context {
-	struct list_head list;
 	unsigned int num_packets;
 	int in_fds[2];
 	int ready_out;
@@ -71,10 +68,11 @@ static void fdpair(int fds[2])
 /* Block until we're ready to go */
 static void ready(int ready_out, int wakefd)
 {
+	char dummy;
 	struct pollfd pollfd = { .fd = wakefd, .events = POLLIN };
 
 	/* Tell them we're ready. */
-	if (write(ready_out, "R", 1) != 1)
+	if (write(ready_out, &dummy, 1) != 1)
 		err(EXIT_FAILURE, "CLIENT: ready write");
 
 	/* Wait for "GO" signal */
@@ -89,7 +87,6 @@ static void *sender(struct sender_context *ctx)
 	unsigned int i, j;
 
 	ready(ctx->ready_out, ctx->wakefd);
-	memset(data, 'S', sizeof(data));
 
 	/* Now pump to every receiver. */
 	for (i = 0; i < nr_loops; i++) {
@@ -175,7 +172,6 @@ static pthread_t create_worker(void *ctx, void *(*func)(void *))
 	if (ret != 0)
 		err(EXIT_FAILURE, "pthread_create failed");
 
-	pthread_attr_destroy(&attr);
 	return childid;
 }
 
@@ -207,7 +203,6 @@ static unsigned int group(pthread_t *pth,
 	if (!snd_ctx)
 		err(EXIT_FAILURE, "malloc()");
 
-	list_add(&snd_ctx->list, &sender_contexts);
 	for (i = 0; i < num_fds; i++) {
 		int fds[2];
 		struct receiver_context *ctx = malloc(sizeof(*ctx));
@@ -215,7 +210,6 @@ static unsigned int group(pthread_t *pth,
 		if (!ctx)
 			err(EXIT_FAILURE, "malloc()");
 
-		list_add(&ctx->list, &receiver_contexts);
 
 		/* Create the pipe between client and server */
 		fdpair(fds);
@@ -266,7 +260,8 @@ static const char * const bench_sched_message_usage[] = {
 	NULL
 };
 
-int bench_sched_messaging(int argc, const char **argv)
+int bench_sched_messaging(int argc, const char **argv,
+		    const char *prefix __maybe_unused)
 {
 	unsigned int i, total_children;
 	struct timeval start, stop, diff;
@@ -274,7 +269,6 @@ int bench_sched_messaging(int argc, const char **argv)
 	int readyfds[2], wakefds[2];
 	char dummy;
 	pthread_t *pth_tab;
-	struct sender_context *pos, *n;
 
 	argc = parse_options(argc, argv, options,
 			     bench_sched_message_usage, 0);
@@ -318,11 +312,11 @@ int bench_sched_messaging(int argc, const char **argv)
 		       num_groups, num_groups * 2 * num_fds,
 		       thread_mode ? "threads" : "processes");
 		printf(" %14s: %lu.%03lu [sec]\n", "Total time",
-		       (unsigned long) diff.tv_sec,
+		       diff.tv_sec,
 		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 		break;
 	case BENCH_FORMAT_SIMPLE:
-		printf("%lu.%03lu\n", (unsigned long) diff.tv_sec,
+		printf("%lu.%03lu\n", diff.tv_sec,
 		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 		break;
 	default:
@@ -333,13 +327,6 @@ int bench_sched_messaging(int argc, const char **argv)
 	}
 
 	free(pth_tab);
-	list_for_each_entry_safe(pos, n, &sender_contexts, list) {
-		list_del_init(&pos->list);
-		free(pos);
-	}
-	list_for_each_entry_safe(pos, n, &receiver_contexts, list) {
-		list_del_init(&pos->list);
-		free(pos);
-	}
+
 	return 0;
 }

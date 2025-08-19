@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_FS_STACK_H
 #define _LINUX_FS_STACK_H
 
@@ -24,7 +23,7 @@ static inline void fsstack_copy_attr_times(struct inode *dest,
 {
 	dest->i_atime = src->i_atime;
 	dest->i_mtime = src->i_mtime;
-	inode_set_ctime_to_ts(dest, inode_get_ctime(src));
+	dest->i_ctime = src->i_ctime;
 }
 
 #endif /* _LINUX_FS_STACK_H */

@@ -1,6 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2015 Altera Corporation. All rights reserved
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/slab.h>
 #include <linux/clk-provider.h>
@@ -58,16 +69,16 @@ static u8 clk_pll_get_parent(struct clk_hw *hwclk)
 		CLK_MGR_PLL_CLK_SRC_MASK;
 }
 
-static const struct clk_ops clk_pll_ops = {
+static struct clk_ops clk_pll_ops = {
 	.recalc_rate = clk_pll_recalc_rate,
 	.get_parent = clk_pll_get_parent,
 };
 
-static void __init __socfpga_pll_init(struct device_node *node,
-				      const struct clk_ops *ops)
+static struct clk * __init __socfpga_pll_init(struct device_node *node,
+	const struct clk_ops *ops)
 {
 	u32 reg;
-	struct clk_hw *hw_clk;
+	struct clk *clk;
 	struct socfpga_pll *pll_clk;
 	const char *clk_name = node->name;
 	const char *parent_name[SOCFGPA_MAX_PARENTS];
@@ -80,11 +91,10 @@ static void __init __socfpga_pll_init(struct device_node *node,
 
 	pll_clk = kzalloc(sizeof(*pll_clk), GFP_KERNEL);
 	if (WARN_ON(!pll_clk))
-		return;
+		return NULL;
 
 	clkmgr_np = of_find_compatible_node(NULL, NULL, "altr,clk-mgr");
 	clk_mgr_a10_base_addr = of_iomap(clkmgr_np, 0);
-	of_node_put(clkmgr_np);
 	BUG_ON(!clk_mgr_a10_base_addr);
 	pll_clk->hw.reg = clk_mgr_a10_base_addr + reg;
 
@@ -102,27 +112,16 @@ static void __init __socfpga_pll_init(struct device_node *node,
 	pll_clk->hw.hw.init = &init;
 
 	pll_clk->hw.bit_idx = SOCFPGA_PLL_EXT_ENA;
-	hw_clk = &pll_clk->hw.hw;
+	clk_pll_ops.enable = clk_gate_ops.enable;
+	clk_pll_ops.disable = clk_gate_ops.disable;
 
-	rc = clk_hw_register(NULL, hw_clk);
-	if (rc) {
-		pr_err("Could not register clock:%s\n", clk_name);
-		goto err_clk_hw_register;
+	clk = clk_register(NULL, &pll_clk->hw.hw);
+	if (WARN_ON(IS_ERR(clk))) {
+		kfree(pll_clk);
+		return NULL;
 	}
-
-	rc = of_clk_add_hw_provider(node, of_clk_hw_simple_get, hw_clk);
-	if (rc) {
-		pr_err("Could not register clock provider for node:%s\n",
-		       clk_name);
-		goto err_of_clk_add_hw_provider;
-	}
-
-	return;
-
-err_of_clk_add_hw_provider:
-	clk_hw_unregister(hw_clk);
-err_clk_hw_register:
-	kfree(pll_clk);
+	rc = of_clk_add_provider(node, of_clk_src_simple_get, clk);
+	return clk;
 }
 
 void __init socfpga_a10_pll_init(struct device_node *node)

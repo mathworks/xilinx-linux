@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Power Management Service Unit(PMSU) support for Armada 370/XP platforms.
  *
@@ -7,6 +6,10 @@
  * Yehuda Yitschak <yehuday@marvell.com>
  * Gregory Clement <gregory.clement@free-electrons.com>
  * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2.  This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  *
  * The Armada 370 and Armada XP SOCs have a power management service
  * unit which is responsible for powering down and waking up CPUs and
@@ -23,8 +26,8 @@
 #include <linux/kernel.h>
 #include <linux/mbus.h>
 #include <linux/mvebu-pmsu.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/resource.h>
 #include <linux/slab.h>
@@ -109,12 +112,12 @@ static const struct of_device_id of_pmsu_table[] = {
 
 void mvebu_pmsu_set_cpu_boot_addr(int hw_cpu, void *boot_addr)
 {
-	writel(__pa_symbol(boot_addr), pmsu_mp_base +
+	writel(virt_to_phys(boot_addr), pmsu_mp_base +
 		PMSU_BOOT_ADDR_REDIRECT_OFFSET(hw_cpu));
 }
 
-extern unsigned char mvebu_boot_wa_start[];
-extern unsigned char mvebu_boot_wa_end[];
+extern unsigned char mvebu_boot_wa_start;
+extern unsigned char mvebu_boot_wa_end;
 
 /*
  * This function sets up the boot address workaround needed for SMP
@@ -127,7 +130,7 @@ int mvebu_setup_boot_addr_wa(unsigned int crypto_eng_target,
 			     phys_addr_t resume_addr_reg)
 {
 	void __iomem *sram_virt_base;
-	u32 code_len = mvebu_boot_wa_end - mvebu_boot_wa_start;
+	u32 code_len = &mvebu_boot_wa_end - &mvebu_boot_wa_start;
 
 	mvebu_mbus_del_window(BOOTROM_BASE, BOOTROM_SIZE);
 	mvebu_mbus_add_window_by_id(crypto_eng_target, crypto_eng_attribute,
@@ -291,7 +294,6 @@ int armada_370_xp_pmsu_idle_enter(unsigned long deepidle)
 
 	/* Test the CR_C bit and set it if it was cleared */
 	asm volatile(
-	".arch	armv7-a\n\t"
 	"mrc	p15, 0, r0, c1, c0, 0 \n\t"
 	"tst	r0, %0 \n\t"
 	"orreq	r0, r0, #(1 << 2) \n\t"

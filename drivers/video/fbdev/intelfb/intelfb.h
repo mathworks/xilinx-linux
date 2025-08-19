@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _INTELFB_H
 #define _INTELFB_H
 
@@ -273,7 +272,7 @@ struct intelfb_vsync {
 
 struct intelfb_info {
 	struct fb_info *info;
-	const struct fb_ops *fbops;
+	struct fb_ops  *fbops;
 	struct pci_dev *pdev;
 
 	struct intelfb_hwstate save_state;

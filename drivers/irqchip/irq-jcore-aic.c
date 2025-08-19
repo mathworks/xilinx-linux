@@ -68,7 +68,6 @@ static int __init aic_irq_of_init(struct device_node *node,
 	unsigned min_irq = JCORE_AIC2_MIN_HWIRQ;
 	unsigned dom_sz = JCORE_AIC_MAX_HWIRQ+1;
 	struct irq_domain *domain;
-	int ret;
 
 	pr_info("Initializing J-Core AIC\n");
 
@@ -101,17 +100,11 @@ static int __init aic_irq_of_init(struct device_node *node,
 	jcore_aic.irq_unmask = noop;
 	jcore_aic.name = "AIC";
 
-	ret = irq_alloc_descs(-1, min_irq, dom_sz - min_irq,
-			      of_node_to_nid(node));
-
-	if (ret < 0)
-		return ret;
-
-	domain = irq_domain_add_legacy(node, dom_sz - min_irq, min_irq, min_irq,
-				       &jcore_aic_irqdomain_ops,
+	domain = irq_domain_add_linear(node, dom_sz, &jcore_aic_irqdomain_ops,
 				       &jcore_aic);
 	if (!domain)
 		return -ENOMEM;
+	irq_create_strict_mappings(domain, min_irq, min_irq, dom_sz - min_irq);
 
 	return 0;
 }

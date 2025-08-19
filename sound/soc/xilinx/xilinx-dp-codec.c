@@ -19,38 +19,15 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/mfd/syscon.h>
-#include <linux/regmap.h>
 
 #include <sound/soc.h>
-
-#define ZYNQMP_DISP_AUD_CH_STATUS		0x8
-#define ZYNQMP_DISP_AUD_CH_STATUS_44K		0x0
-#define ZYNQMP_DISP_AUD_CH_STATUS_48K		0x2000000
-#define ZYNQMP_DISP_AUD_SMPL_RATE_44K		44100
-#define ZYNQMP_DISP_AUD_SMPL_RATE_48K		48000
-#define ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK	512
-
-#define ZYNQMP_DP_TX_AUDIO_MAX_CHAN		2
-#define ZYNQMP_DP_TX_AUDIO_CONTROL		0x300
-#define ZYNQMP_DP_TX_AUDIO_M_AUD		0x328
 
 /**
  * struct xilinx_dp_codec - DisplayPort codec
  * @aud_clk: audio clock
- * @dp_iomem: base address for DP
- * @aud_base: base address for DP audio
- * @dev: DP audio device
- * @chan_active: channel status
- * @lock: exclusive access to audio control
  */
 struct xilinx_dp_codec {
 	struct clk *aud_clk;
-	void __iomem *dp_iomem;
-	struct regmap *aud_base;
-	struct device *dev;
-	bool chan_active[ZYNQMP_DP_TX_AUDIO_MAX_CHAN];
-	spinlock_t lock;	/* exclusive access to audio control */
 };
 
 struct xilinx_dp_codec_fmt {
@@ -58,135 +35,28 @@ struct xilinx_dp_codec_fmt {
 	unsigned int snd_rate;
 };
 
-static int dp_codec_hw_params(struct snd_pcm_substream *substream,
-			      struct snd_pcm_hw_params *params,
-			      struct snd_soc_dai *socdai)
-{
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct xilinx_dp_codec *codec =
-		snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
-	unsigned long rate;
-	int ret;
-
-	u32 sample_rate = params_rate(params);
-
-	if (sample_rate != ZYNQMP_DISP_AUD_SMPL_RATE_48K &&
-	    sample_rate != ZYNQMP_DISP_AUD_SMPL_RATE_44K)
-		return -EINVAL;
-
-	clk_disable_unprepare(codec->aud_clk);
-	ret = clk_set_rate(codec->aud_clk,
-			   sample_rate * ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK);
-	if (ret) {
-		dev_err(codec->dev, "can't set aud_clk to %u err:%d\n",
-			sample_rate * ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK, ret);
-		return ret;
-	}
-	clk_prepare_enable(codec->aud_clk);
-	rate = clk_get_rate(codec->aud_clk);
-
-	/* Ignore some offset +- 10 */
-	if (abs(sample_rate * ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK - rate) > 10) {
-		dev_err(codec->dev, "aud_clk offset is higher: %ld\n",
-			sample_rate * ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK - rate);
-		ret = -EINVAL;
-		goto err_clk;
-	}
-
-	writel(rate / 1000, codec->dp_iomem + ZYNQMP_DP_TX_AUDIO_M_AUD);
-
-	if (sample_rate == ZYNQMP_DISP_AUD_SMPL_RATE_48K)
-		regmap_write(codec->aud_base, ZYNQMP_DISP_AUD_CH_STATUS,
-			     ZYNQMP_DISP_AUD_CH_STATUS_48K);
-	else
-		regmap_write(codec->aud_base, ZYNQMP_DISP_AUD_CH_STATUS,
-			     ZYNQMP_DISP_AUD_CH_STATUS_44K);
-
-	return 0;
-
-err_clk:
-	clk_disable_unprepare(codec->aud_clk);
-	return ret;
-}
-
-static int dp_codec_startup(struct snd_pcm_substream *substream,
-			    struct snd_soc_dai *socdai)
-{
-	u32 reg_val;
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct xilinx_dp_codec *codec =
-		snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
-
-	spin_lock(&codec->lock);
-	if (strncmp(substream->pcm->name, rtd->card->dai_link[0].name,
-		    strlen(rtd->card->dai_link[0].name)) == 0)
-		codec->chan_active[0] = true;
-	else if (strncmp(substream->pcm->name, rtd->card->dai_link[1].name,
-			 strlen(rtd->card->dai_link[1].name)) == 0)
-		codec->chan_active[1] = true;
-
-	reg_val = readl(codec->dp_iomem + ZYNQMP_DP_TX_AUDIO_CONTROL);
-	if (codec->aud_clk && !reg_val)
-		writel(1, codec->dp_iomem + ZYNQMP_DP_TX_AUDIO_CONTROL);
-	spin_unlock(&codec->lock);
-
-	return 0;
-}
-
-static void dp_codec_shutdown(struct snd_pcm_substream *substream,
-			      struct snd_soc_dai *socdai)
-{
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
-	struct xilinx_dp_codec *codec =
-		snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
-
-	spin_lock(&codec->lock);
-	if (strncmp(substream->pcm->name, rtd->card->dai_link[0].name,
-		    strlen(rtd->card->dai_link[0].name)) == 0)
-		codec->chan_active[0] = false;
-	else if (strncmp(substream->pcm->name, rtd->card->dai_link[1].name,
-			 strlen(rtd->card->dai_link[1].name)) == 0)
-		codec->chan_active[1] = false;
-
-	if (codec->aud_clk && !codec->chan_active[0] && !codec->chan_active[1])
-		writel(0, codec->dp_iomem + ZYNQMP_DP_TX_AUDIO_CONTROL);
-	spin_unlock(&codec->lock);
-}
-
-static const struct snd_soc_dai_ops dp_codec_dai_ops = {
-	.hw_params	= dp_codec_hw_params,
-	.shutdown	= dp_codec_shutdown,
-	.startup	= dp_codec_startup,
-};
-
 static struct snd_soc_dai_driver xilinx_dp_codec_dai = {
 	.name		= "xilinx-dp-snd-codec-dai",
-	.ops		= &dp_codec_dai_ops,
 	.playback	= {
 		.channels_min	= 2,
 		.channels_max	= 2,
-		.rates		= SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000,
+		.rates		= SNDRV_PCM_RATE_44100,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
 	},
 };
 
 static const struct xilinx_dp_codec_fmt rates[] = {
 	{
-		.rate	= ZYNQMP_DISP_AUD_SMPL_RATE_48K *
-			  ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK,
+		.rate	= 48000 * 512,
 		.snd_rate = SNDRV_PCM_RATE_48000
 	},
 	{
-		.rate	= ZYNQMP_DISP_AUD_SMPL_RATE_44K *
-			  ZYNQMP_DISP_AUD_SMPL_RATE_TO_CLK,
+		.rate	= 44100 * 512,
 		.snd_rate = SNDRV_PCM_RATE_44100
 	}
 };
 
-static const struct snd_soc_component_driver xilinx_dp_component_driver = {
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
+static const struct snd_soc_codec_driver xilinx_dp_codec_codec_driver = {
 };
 
 static int xilinx_dp_codec_probe(struct platform_device *pdev)
@@ -210,16 +80,6 @@ static int xilinx_dp_codec_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	codec->aud_base =
-		syscon_regmap_lookup_by_phandle(pdev->dev.parent->of_node,
-						"xlnx,dpaud-reg");
-	if (IS_ERR(codec->aud_base))
-		return PTR_ERR(codec->aud_base);
-
-	codec->dev = &pdev->dev;
-	codec->dp_iomem = (void __iomem *)codec->dev->parent->platform_data;
-	spin_lock_init(&codec->lock);
-
 	for (i = 0; i < ARRAY_SIZE(rates); i++) {
 		clk_disable_unprepare(codec->aud_clk);
 		ret = clk_set_rate(codec->aud_clk, rates[i].rate);
@@ -229,8 +89,10 @@ static int xilinx_dp_codec_probe(struct platform_device *pdev)
 
 		rate = clk_get_rate(codec->aud_clk);
 		/* Ignore some offset +- 10 */
-		if (abs(rates[i].rate - rate) < 10)
+		if (abs(rates[i].rate - rate) < 10) {
+			xilinx_dp_codec_dai.playback.rates = rates[i].snd_rate;
 			break;
+		}
 		ret = -EINVAL;
 	}
 
@@ -239,14 +101,12 @@ static int xilinx_dp_codec_probe(struct platform_device *pdev)
 		goto error_clk;
 	}
 
-	ret = devm_snd_soc_register_component(&pdev->dev,
-					      &xilinx_dp_component_driver,
-					      &xilinx_dp_codec_dai, 1);
+	ret = snd_soc_register_codec(&pdev->dev, &xilinx_dp_codec_codec_driver,
+				     &xilinx_dp_codec_dai, 1);
 	if (ret)
 		goto error_clk;
 
 	platform_set_drvdata(pdev, codec);
-	dev_set_drvdata(&pdev->dev, codec);
 
 	dev_info(&pdev->dev, "Xilinx DisplayPort Sound Codec probed\n");
 
@@ -261,6 +121,7 @@ static int xilinx_dp_codec_dev_remove(struct platform_device *pdev)
 {
 	struct xilinx_dp_codec *codec = platform_get_drvdata(pdev);
 
+	snd_soc_unregister_codec(&pdev->dev);
 	clk_disable_unprepare(codec->aud_clk);
 
 	return 0;
@@ -310,4 +171,4 @@ static struct platform_driver xilinx_dp_codec_driver = {
 module_platform_driver(xilinx_dp_codec_driver);
 
 MODULE_DESCRIPTION("Xilinx DisplayPort Sound Codec module");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

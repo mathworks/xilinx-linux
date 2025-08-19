@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Backlight control code for Sharp Zaurus SL-5500
  *
  * Copyright 2005 John Lenz <lenz@cs.wisc.edu>
  * Maintainer: Pavel Machek <pavel@ucw.cz> (unless John wants to :-)
+ * GPL v2
  *
  * This driver assumes single CPU. That's okay, because collie is
  * slightly old hardware, and no one is going to retrofit second CPU to
@@ -95,6 +95,8 @@ void locomolcd_power(int on)
 	/* read comadj */
 	if (comadj == -1 && machine_is_collie())
 		comadj = 128;
+	if (comadj == -1 && machine_is_poodle())
+		comadj = 118;
 
 	if (on)
 		locomolcd_on(comadj);
@@ -109,8 +111,12 @@ static int current_intensity;
 
 static int locomolcd_set_intensity(struct backlight_device *bd)
 {
-	int intensity = backlight_get_brightness(bd);
+	int intensity = bd->props.brightness;
 
+	if (bd->props.power != FB_BLANK_UNBLANK)
+		intensity = 0;
+	if (bd->props.fb_blank != FB_BLANK_UNBLANK)
+		intensity = 0;
 	if (locomolcd_flags & LOCOMOLCD_SUSPENDED)
 		intensity = 0;
 
@@ -179,6 +185,14 @@ static int locomolcd_probe(struct locomo_dev *ldev)
 
 	locomo_gpio_set_dir(ldev->dev.parent, LOCOMO_GPIO_FL_VR, 0);
 
+	/*
+	 * the poodle_lcd_power function is called for the first time
+	 * from fs_initcall, which is before locomo is activated.
+	 * We need to recall poodle_lcd_power here
+	 */
+	if (machine_is_poodle())
+		locomolcd_power(1);
+
 	local_irq_restore(flags);
 
 	memset(&props, 0, sizeof(struct backlight_properties));
@@ -198,7 +212,7 @@ static int locomolcd_probe(struct locomo_dev *ldev)
 	return 0;
 }
 
-static void locomolcd_remove(struct locomo_dev *dev)
+static int locomolcd_remove(struct locomo_dev *dev)
 {
 	unsigned long flags;
 
@@ -210,6 +224,7 @@ static void locomolcd_remove(struct locomo_dev *dev)
 	local_irq_save(flags);
 	locomolcd_dev = NULL;
 	local_irq_restore(flags);
+	return 0;
 }
 
 static struct locomo_driver poodle_lcd_driver = {

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/alpha/boot/main.c
  *
@@ -14,8 +13,9 @@
 
 #include <asm/console.h>
 #include <asm/hwrpb.h>
+#include <asm/pgtable.h>
 
-#include <linux/stdarg.h>
+#include <stdarg.h>
 
 #include "ksize.h"
 

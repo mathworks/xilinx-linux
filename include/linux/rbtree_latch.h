@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Latched RB-trees
  *
@@ -35,15 +34,14 @@
 
 #include <linux/rbtree.h>
 #include <linux/seqlock.h>
-#include <linux/rcupdate.h>
 
 struct latch_tree_node {
 	struct rb_node node[2];
 };
 
 struct latch_tree_root {
-	seqcount_latch_t	seq;
-	struct rb_root		tree[2];
+	seqcount_t	seq;
+	struct rb_root	tree[2];
 };
 
 /**
@@ -206,7 +204,7 @@ latch_tree_find(void *key, struct latch_tree_root *root,
 	do {
 		seq = raw_read_seqcount_latch(&root->seq);
 		node = __lt_find(key, root, seq & 1, ops->comp);
-	} while (raw_read_seqcount_latch_retry(&root->seq, seq));
+	} while (read_seqcount_retry(&root->seq, seq));
 
 	return node;
 }

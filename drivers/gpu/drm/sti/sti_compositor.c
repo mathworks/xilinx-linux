@@ -1,21 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) STMicroelectronics SA 2014
  * Authors: Benjamin Gaignard <benjamin.gaignard@st.com>
  *          Fabien Dessenne <fabien.dessenne@st.com>
  *          for STMicroelectronics.
+ * License terms:  GNU General Public License (GPL), version 2
  */
 
 #include <linux/component.h>
-#include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 
-#include <drm/drm_device.h>
-#include <drm/drm_print.h>
-#include <drm/drm_vblank.h>
+#include <drm/drmP.h>
 
 #include "sti_compositor.h"
 #include "sti_crtc.h"
@@ -43,8 +39,8 @@ static const struct sti_compositor_data stih407_compositor_data = {
 	},
 };
 
-void sti_compositor_debugfs_init(struct sti_compositor *compo,
-				 struct drm_minor *minor)
+int sti_compositor_debugfs_init(struct sti_compositor *compo,
+				struct drm_minor *minor)
 {
 	unsigned int i;
 
@@ -55,6 +51,8 @@ void sti_compositor_debugfs_init(struct sti_compositor *compo,
 	for (i = 0; i < STI_MAX_MIXER; i++)
 		if (compo->mixer[i])
 			sti_mixer_debugfs_init(compo->mixer[i], minor);
+
+	return 0;
 }
 
 static int sti_compositor_bind(struct device *dev,
@@ -91,7 +89,7 @@ static int sti_compositor_bind(struct device *dev,
 			/* Nothing to do, wait for the second round */
 			break;
 		default:
-			DRM_ERROR("Unknown subdev component type\n");
+			DRM_ERROR("Unknow subdev compoment type\n");
 			return 1;
 		}
 	}
@@ -131,7 +129,7 @@ static int sti_compositor_bind(struct device *dev,
 			}
 			break;
 		default:
-			DRM_ERROR("Unknown subdev component type\n");
+			DRM_ERROR("Unknown subdev compoment type\n");
 			return 1;
 		}
 
@@ -146,6 +144,8 @@ static int sti_compositor_bind(struct device *dev,
 	}
 
 	drm_vblank_init(drm_dev, crtc_id);
+	/* Allow usage of vblank without having to call drm_irq_install */
+	drm_dev->irq_enabled = 1;
 
 	return 0;
 }
@@ -258,9 +258,10 @@ static int sti_compositor_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sti_compositor_ops);
 }
 
-static void sti_compositor_remove(struct platform_device *pdev)
+static int sti_compositor_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sti_compositor_ops);
+	return 0;
 }
 
 struct platform_driver sti_compositor_driver = {
@@ -269,7 +270,7 @@ struct platform_driver sti_compositor_driver = {
 		.of_match_table = compositor_of_match,
 	},
 	.probe = sti_compositor_probe,
-	.remove_new = sti_compositor_remove,
+	.remove = sti_compositor_remove,
 };
 
 MODULE_AUTHOR("Benjamin Gaignard <benjamin.gaignard@st.com>");

@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # This is a simple wrapper Makefile that calls the main Makefile.perf
 # with a -j option to do parallel builds
@@ -25,7 +24,7 @@ unexport MAKEFLAGS
 # (To override it, run 'make JOBS=1' and similar.)
 #
 ifeq ($(JOBS),)
-  JOBS := $(shell (getconf _NPROCESSORS_ONLN || grep -E -c '^processor|^CPU[0-9]' /proc/cpuinfo) 2>/dev/null)
+  JOBS := $(shell (getconf _NPROCESSORS_ONLN || egrep -c '^processor|^CPU[0-9]' /proc/cpuinfo) 2>/dev/null)
   ifeq ($(JOBS),0)
     JOBS := 1
   endif
@@ -35,7 +34,7 @@ endif
 # Only pass canonical directory names as the output directory:
 #
 ifneq ($(O),)
-  FULL_O := $(shell cd $(PWD); readlink -f $(O) || echo $(O))
+  FULL_O := $(shell readlink -f $(O) || echo $(O))
 endif
 
 #
@@ -84,10 +83,10 @@ endif # has_clean
 endif # MAKECMDGOALS
 
 #
-# Explicitly disable parallelism for the clean target.
+# The clean target is not really parallel, don't print the jobs info:
 #
 clean:
-	$(make) -j1
+	$(make)
 
 #
 # The build-test target is not really parallel, don't print the jobs info,
@@ -100,10 +99,7 @@ clean:
 # make -C tools/perf -f tests/make
 #
 build-test:
-	@$(MAKE) SHUF=1 -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory tarpkg make_static make_with_gtk2 out
-
-build-test-tarball:
-	@$(MAKE) -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory out
+	@$(MAKE) SHUF=1 -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory tarpkg out
 
 #
 # All other targets get passed through:

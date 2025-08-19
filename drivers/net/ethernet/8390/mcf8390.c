@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Support for ColdFire CPU based boards using a NS8390 Ethernet device.
  *
@@ -6,6 +5,9 @@
  *
  *  (C) Copyright 2012,  Greg Ungerer <gerg@uclinux.org>
  *
+ *  This file is subject to the terms and conditions of the GNU General Public
+ *  License.  See the file COPYING in the main directory of the Linux
+ *  distribution for more details.
  */
 
 #include <linux/module.h>
@@ -36,6 +38,7 @@ static const char version[] =
 
 #define NESM_START_PG	0x40	/* First page of TX buffer */
 #define NESM_STOP_PG	0x80	/* Last page +1 of RX ring */
+static u32 mcf8390_msg_enable;
 
 #ifdef NE2000_ODDOFFSET
 /*
@@ -305,6 +308,7 @@ static const struct net_device_ops mcf8390_netdev_ops = {
 	.ndo_set_rx_mode	= __ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= __ei_poll,
 #endif
@@ -372,7 +376,8 @@ static int mcf8390_init(struct net_device *dev)
 	if (ret)
 		return ret;
 
-	eth_hw_addr_set(dev, SA_prom);
+	for (i = 0; i < ETH_ALEN; i++)
+		dev->dev_addr[i] = SA_prom[i];
 
 	netdev_dbg(dev, "Found ethernet address: %pM\n", dev->dev_addr);
 
@@ -403,13 +408,16 @@ static int mcf8390_init(struct net_device *dev)
 static int mcf8390_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
-	struct resource *mem;
+	struct ei_device *ei_local;
+	struct resource *mem, *irq;
 	resource_size_t msize;
-	int ret, irq;
+	int ret;
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
+	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (irq == NULL) {
+		dev_err(&pdev->dev, "no IRQ specified?\n");
 		return -ENXIO;
+	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (mem == NULL) {
@@ -428,8 +436,10 @@ static int mcf8390_probe(struct platform_device *pdev)
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	platform_set_drvdata(pdev, dev);
+	ei_local = netdev_priv(dev);
+	ei_local->msg_enable = mcf8390_msg_enable;
 
-	dev->irq = irq;
+	dev->irq = irq->start;
 	dev->base_addr = mem->start;
 
 	ret = mcf8390_init(dev);
@@ -448,7 +458,8 @@ static int mcf8390_remove(struct platform_device *pdev)
 
 	unregister_netdev(dev);
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(mem->start, resource_size(mem));
+	if (mem)
+		release_mem_region(mem->start, resource_size(mem));
 	free_netdev(dev);
 	return 0;
 }

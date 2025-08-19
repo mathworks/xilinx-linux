@@ -1,8 +1,23 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Camellia Cipher Algorithm (x86_64)
  *
  * Copyright (C) 2012 Jussi Kivilinna <jussi.kivilinna@mbnet.fi>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
+ * USA
+ *
  */
 
 #include <linux/linkage.h>
@@ -60,30 +75,28 @@
 #define RCD1bh %dh
 
 #define RT0 %rsi
-#define RT1 %r12
+#define RT1 %rbp
 #define RT2 %r8
 
 #define RT0d %esi
-#define RT1d %r12d
+#define RT1d %ebp
 #define RT2d %r8d
 
 #define RT2bl %r8b
 
 #define RXOR %r9
-#define RR12 %r10
+#define RRBP %r10
 #define RDST %r11
 
 #define RXORd %r9d
 #define RXORbl %r9b
 
 #define xor2ror16(T0, T1, tmp1, tmp2, ab, dst) \
-	leaq T0(%rip), 			tmp1; \
 	movzbl ab ## bl,		tmp2 ## d; \
-	xorq (tmp1, tmp2, 8),		dst; \
-	leaq T1(%rip), 			tmp2; \
 	movzbl ab ## bh,		tmp1 ## d; \
 	rorq $16,			ab; \
-	xorq (tmp2, tmp1, 8),		dst;
+	xorq T0(, tmp2, 8),		dst; \
+	xorq T1(, tmp1, 8),		dst;
 
 /**********************************************************************
   1-way camellia
@@ -177,14 +190,14 @@
 	bswapq				RAB0; \
 	movq RAB0,			4*2(RIO);
 
-SYM_FUNC_START(__camellia_enc_blk)
+ENTRY(__camellia_enc_blk)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
 	 *	%rdx: src
 	 *	%rcx: bool xor
 	 */
-	movq %r12, RR12;
+	movq %rbp, RRBP;
 
 	movq %rcx, RXOR;
 	movq %rsi, RDST;
@@ -214,17 +227,17 @@ SYM_FUNC_START(__camellia_enc_blk)
 
 	enc_outunpack(mov, RT1);
 
-	movq RR12, %r12;
-	RET;
+	movq RRBP, %rbp;
+	ret;
 
 .L__enc_xor:
 	enc_outunpack(xor, RT1);
 
-	movq RR12, %r12;
-	RET;
-SYM_FUNC_END(__camellia_enc_blk)
+	movq RRBP, %rbp;
+	ret;
+ENDPROC(__camellia_enc_blk)
 
-SYM_FUNC_START(camellia_dec_blk)
+ENTRY(camellia_dec_blk)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -235,7 +248,7 @@ SYM_FUNC_START(camellia_dec_blk)
 	movl $24, RXORd;
 	cmovel RXORd, RT2d; /* max */
 
-	movq %r12, RR12;
+	movq %rbp, RRBP;
 	movq %rsi, RDST;
 	movq %rdx, RIO;
 
@@ -258,9 +271,9 @@ SYM_FUNC_START(camellia_dec_blk)
 
 	dec_outunpack();
 
-	movq RR12, %r12;
-	RET;
-SYM_FUNC_END(camellia_dec_blk)
+	movq RRBP, %rbp;
+	ret;
+ENDPROC(camellia_dec_blk)
 
 /**********************************************************************
   2-way camellia
@@ -411,7 +424,7 @@ SYM_FUNC_END(camellia_dec_blk)
 		bswapq				RAB1; \
 		movq RAB1,			12*2(RIO);
 
-SYM_FUNC_START(__camellia_enc_blk_2way)
+ENTRY(__camellia_enc_blk_2way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -420,7 +433,7 @@ SYM_FUNC_START(__camellia_enc_blk_2way)
 	 */
 	pushq %rbx;
 
-	movq %r12, RR12;
+	movq %rbp, RRBP;
 	movq %rcx, RXOR;
 	movq %rsi, RDST;
 	movq %rdx, RIO;
@@ -448,19 +461,19 @@ SYM_FUNC_START(__camellia_enc_blk_2way)
 
 	enc_outunpack2(mov, RT2);
 
-	movq RR12, %r12;
+	movq RRBP, %rbp;
 	popq %rbx;
-	RET;
+	ret;
 
 .L__enc2_xor:
 	enc_outunpack2(xor, RT2);
 
-	movq RR12, %r12;
+	movq RRBP, %rbp;
 	popq %rbx;
-	RET;
-SYM_FUNC_END(__camellia_enc_blk_2way)
+	ret;
+ENDPROC(__camellia_enc_blk_2way)
 
-SYM_FUNC_START(camellia_dec_blk_2way)
+ENTRY(camellia_dec_blk_2way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -472,7 +485,7 @@ SYM_FUNC_START(camellia_dec_blk_2way)
 	cmovel RXORd, RT2d; /* max */
 
 	movq %rbx, RXOR;
-	movq %r12, RR12;
+	movq %rbp, RRBP;
 	movq %rsi, RDST;
 	movq %rdx, RIO;
 
@@ -495,7 +508,7 @@ SYM_FUNC_START(camellia_dec_blk_2way)
 
 	dec_outunpack2();
 
-	movq RR12, %r12;
+	movq RRBP, %rbp;
 	movq RXOR, %rbx;
-	RET;
-SYM_FUNC_END(camellia_dec_blk_2way)
+	ret;
+ENDPROC(camellia_dec_blk_2way)

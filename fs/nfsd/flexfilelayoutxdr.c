@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2016 Tom Haynes <loghyr@primarydata.com>
  */
@@ -84,15 +83,6 @@ nfsd4_ff_encode_getdeviceinfo(struct xdr_stream *xdr,
 	int ver_len;
 	int addr_len;
 	__be32 *p;
-
-	/*
-	 * See paragraph 5 of RFC 8881 S18.40.3.
-	 */
-	if (!gdp->gd_maxcount) {
-		if (xdr_stream_encode_u32(xdr, 0) != XDR_UNIT)
-			return nfserr_resource;
-		return nfs_ok;
-	}
 
 	/* len + padding for two strings */
 	addr_len = 16 + da->netaddr.netid_len + da->netaddr.addr_len;

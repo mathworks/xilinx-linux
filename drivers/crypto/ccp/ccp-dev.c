@@ -1,11 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AMD Cryptographic Coprocessor (CCP) driver
  *
- * Copyright (C) 2013,2019 Advanced Micro Devices, Inc.
+ * Copyright (C) 2013,2016 Advanced Micro Devices, Inc.
  *
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
  * Author: Gary R Hook <gary.hook@amd.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -20,7 +23,6 @@
 #include <linux/delay.h>
 #include <linux/hw_random.h>
 #include <linux/cpu.h>
-#include <linux/atomic.h>
 #ifdef CONFIG_X86
 #include <asm/cpu_device_id.h>
 #endif
@@ -28,18 +30,10 @@
 
 #include "ccp-dev.h"
 
-#define MAX_CCPS 32
-
-/* Limit CCP use to a specifed number of queues per device */
-static unsigned int nqueues;
-module_param(nqueues, uint, 0444);
-MODULE_PARM_DESC(nqueues, "Number of queues per CCP (minimum 1; default: all available)");
-
-/* Limit the maximum number of configured CCPs */
-static atomic_t dev_count = ATOMIC_INIT(0);
-static unsigned int max_devs = MAX_CCPS;
-module_param(max_devs, uint, 0444);
-MODULE_PARM_DESC(max_devs, "Maximum number of CCPs to enable (default: all; 0 disables all CCPs)");
+MODULE_AUTHOR("Tom Lendacky <thomas.lendacky@amd.com>");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("1.0.0");
+MODULE_DESCRIPTION("AMD Cryptographic Coprocessor driver");
 
 struct ccp_tasklet_data {
 	struct completion completion;
@@ -47,62 +41,56 @@ struct ccp_tasklet_data {
 };
 
 /* Human-readable error strings */
-#define CCP_MAX_ERROR_CODE	64
-static char *ccp_error_codes[] = {
+char *ccp_error_codes[] = {
 	"",
-	"ILLEGAL_ENGINE",
-	"ILLEGAL_KEY_ID",
-	"ILLEGAL_FUNCTION_TYPE",
-	"ILLEGAL_FUNCTION_MODE",
-	"ILLEGAL_FUNCTION_ENCRYPT",
-	"ILLEGAL_FUNCTION_SIZE",
-	"Zlib_MISSING_INIT_EOM",
-	"ILLEGAL_FUNCTION_RSVD",
-	"ILLEGAL_BUFFER_LENGTH",
-	"VLSB_FAULT",
-	"ILLEGAL_MEM_ADDR",
-	"ILLEGAL_MEM_SEL",
-	"ILLEGAL_CONTEXT_ID",
-	"ILLEGAL_KEY_ADDR",
-	"0xF Reserved",
-	"Zlib_ILLEGAL_MULTI_QUEUE",
-	"Zlib_ILLEGAL_JOBID_CHANGE",
-	"CMD_TIMEOUT",
-	"IDMA0_AXI_SLVERR",
-	"IDMA0_AXI_DECERR",
-	"0x15 Reserved",
-	"IDMA1_AXI_SLAVE_FAULT",
-	"IDMA1_AIXI_DECERR",
-	"0x18 Reserved",
-	"ZLIBVHB_AXI_SLVERR",
-	"ZLIBVHB_AXI_DECERR",
-	"0x1B Reserved",
-	"ZLIB_UNEXPECTED_EOM",
-	"ZLIB_EXTRA_DATA",
-	"ZLIB_BTYPE",
-	"ZLIB_UNDEFINED_SYMBOL",
-	"ZLIB_UNDEFINED_DISTANCE_S",
-	"ZLIB_CODE_LENGTH_SYMBOL",
-	"ZLIB _VHB_ILLEGAL_FETCH",
-	"ZLIB_UNCOMPRESSED_LEN",
-	"ZLIB_LIMIT_REACHED",
-	"ZLIB_CHECKSUM_MISMATCH0",
-	"ODMA0_AXI_SLVERR",
-	"ODMA0_AXI_DECERR",
-	"0x28 Reserved",
-	"ODMA1_AXI_SLVERR",
-	"ODMA1_AXI_DECERR",
+	"ERR 01: ILLEGAL_ENGINE",
+	"ERR 02: ILLEGAL_KEY_ID",
+	"ERR 03: ILLEGAL_FUNCTION_TYPE",
+	"ERR 04: ILLEGAL_FUNCTION_MODE",
+	"ERR 05: ILLEGAL_FUNCTION_ENCRYPT",
+	"ERR 06: ILLEGAL_FUNCTION_SIZE",
+	"ERR 07: Zlib_MISSING_INIT_EOM",
+	"ERR 08: ILLEGAL_FUNCTION_RSVD",
+	"ERR 09: ILLEGAL_BUFFER_LENGTH",
+	"ERR 10: VLSB_FAULT",
+	"ERR 11: ILLEGAL_MEM_ADDR",
+	"ERR 12: ILLEGAL_MEM_SEL",
+	"ERR 13: ILLEGAL_CONTEXT_ID",
+	"ERR 14: ILLEGAL_KEY_ADDR",
+	"ERR 15: 0xF Reserved",
+	"ERR 16: Zlib_ILLEGAL_MULTI_QUEUE",
+	"ERR 17: Zlib_ILLEGAL_JOBID_CHANGE",
+	"ERR 18: CMD_TIMEOUT",
+	"ERR 19: IDMA0_AXI_SLVERR",
+	"ERR 20: IDMA0_AXI_DECERR",
+	"ERR 21: 0x15 Reserved",
+	"ERR 22: IDMA1_AXI_SLAVE_FAULT",
+	"ERR 23: IDMA1_AIXI_DECERR",
+	"ERR 24: 0x18 Reserved",
+	"ERR 25: ZLIBVHB_AXI_SLVERR",
+	"ERR 26: ZLIBVHB_AXI_DECERR",
+	"ERR 27: 0x1B Reserved",
+	"ERR 27: ZLIB_UNEXPECTED_EOM",
+	"ERR 27: ZLIB_EXTRA_DATA",
+	"ERR 30: ZLIB_BTYPE",
+	"ERR 31: ZLIB_UNDEFINED_SYMBOL",
+	"ERR 32: ZLIB_UNDEFINED_DISTANCE_S",
+	"ERR 33: ZLIB_CODE_LENGTH_SYMBOL",
+	"ERR 34: ZLIB _VHB_ILLEGAL_FETCH",
+	"ERR 35: ZLIB_UNCOMPRESSED_LEN",
+	"ERR 36: ZLIB_LIMIT_REACHED",
+	"ERR 37: ZLIB_CHECKSUM_MISMATCH0",
+	"ERR 38: ODMA0_AXI_SLVERR",
+	"ERR 39: ODMA0_AXI_DECERR",
+	"ERR 40: 0x28 Reserved",
+	"ERR 41: ODMA1_AXI_SLVERR",
+	"ERR 42: ODMA1_AXI_DECERR",
+	"ERR 43: LSB_PARITY_ERR",
 };
 
-void ccp_log_error(struct ccp_device *d, unsigned int e)
+void ccp_log_error(struct ccp_device *d, int e)
 {
-	if (WARN_ON(e >= CCP_MAX_ERROR_CODE))
-		return;
-
-	if (e < ARRAY_SIZE(ccp_error_codes))
-		dev_err(d->dev, "CCP error %d: %s\n", e, ccp_error_codes[e]);
-	else
-		dev_err(d->dev, "CCP error %d: Unknown Error\n", e);
+	dev_err(d->dev, "CCP error: %s (0x%x)\n", ccp_error_codes[e], e);
 }
 
 /* List of CCPs, CCP count, read-write access lock, and access functions
@@ -121,6 +109,13 @@ static LIST_HEAD(ccp_units);
 /* Round-robin counter */
 static DEFINE_SPINLOCK(ccp_rr_lock);
 static struct ccp_device *ccp_rr;
+
+/* Ever-increasing value to produce unique unit numbers */
+static atomic_t ccp_unit_ordinal;
+static unsigned int ccp_increment_unit_ordinal(void)
+{
+	return atomic_inc_return(&ccp_unit_ordinal);
+}
 
 /**
  * ccp_add_device - add a CCP device to the list
@@ -288,13 +283,10 @@ EXPORT_SYMBOL_GPL(ccp_version);
  */
 int ccp_enqueue_cmd(struct ccp_cmd *cmd)
 {
-	struct ccp_device *ccp;
+	struct ccp_device *ccp = ccp_get_device();
 	unsigned long flags;
 	unsigned int i;
 	int ret;
-
-	/* Some commands might need to be sent to a specific device */
-	ccp = cmd->ccp ? cmd->ccp : ccp_get_device();
 
 	if (!ccp)
 		return -ENODEV;
@@ -310,12 +302,9 @@ int ccp_enqueue_cmd(struct ccp_cmd *cmd)
 	i = ccp->cmd_q_count;
 
 	if (ccp->cmd_count >= MAX_CMD_QLEN) {
-		if (cmd->flags & CCP_CMD_MAY_BACKLOG) {
-			ret = -EBUSY;
+		ret = -EBUSY;
+		if (cmd->flags & CCP_CMD_MAY_BACKLOG)
 			list_add_tail(&cmd->entry, &ccp->backlog);
-		} else {
-			ret = -ENOSPC;
-		}
 	} else {
 		ret = -EINPROGRESS;
 		ccp->cmd_count++;
@@ -422,7 +411,6 @@ static void ccp_do_cmd_complete(unsigned long data)
 	struct ccp_cmd *cmd = tdata->cmd;
 
 	cmd->callback(cmd->data, cmd->ret);
-
 	complete(&tdata->completion);
 }
 
@@ -470,19 +458,16 @@ int ccp_cmd_queue_thread(void *data)
 /**
  * ccp_alloc_struct - allocate and initialize the ccp_device struct
  *
- * @sp: sp_device struct of the CCP
+ * @dev: device struct of the CCP
  */
-struct ccp_device *ccp_alloc_struct(struct sp_device *sp)
+struct ccp_device *ccp_alloc_struct(struct device *dev)
 {
-	struct device *dev = sp->dev;
 	struct ccp_device *ccp;
 
 	ccp = devm_kzalloc(dev, sizeof(*ccp), GFP_KERNEL);
 	if (!ccp)
 		return NULL;
 	ccp->dev = dev;
-	ccp->sp = sp;
-	ccp->axcache = sp->axcache;
 
 	INIT_LIST_HEAD(&ccp->cmd);
 	INIT_LIST_HEAD(&ccp->backlog);
@@ -493,12 +478,9 @@ struct ccp_device *ccp_alloc_struct(struct sp_device *sp)
 	ccp->sb_count = KSB_COUNT;
 	ccp->sb_start = 0;
 
-	/* Initialize the wait queues */
-	init_waitqueue_head(&ccp->sb_queue);
-	init_waitqueue_head(&ccp->suspend_queue);
-
-	snprintf(ccp->name, MAX_CCP_NAME_LEN, "ccp-%u", sp->ord);
-	snprintf(ccp->rngname, MAX_CCP_NAME_LEN, "ccp-%u-rng", sp->ord);
+	ccp->ord = ccp_increment_unit_ordinal();
+	snprintf(ccp->name, MAX_CCP_NAME_LEN, "ccp-%u", ccp->ord);
+	snprintf(ccp->rngname, MAX_CCP_NAME_LEN, "ccp-%u-rng", ccp->ord);
 
 	return ccp;
 }
@@ -531,6 +513,7 @@ int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait)
 	return len;
 }
 
+#ifdef CONFIG_PM
 bool ccp_queues_suspended(struct ccp_device *ccp)
 {
 	unsigned int suspended = 0;
@@ -547,124 +530,55 @@ bool ccp_queues_suspended(struct ccp_device *ccp)
 
 	return ccp->cmd_q_count == suspended;
 }
+#endif
 
-void ccp_dev_suspend(struct sp_device *sp)
+static int __init ccp_mod_init(void)
 {
-	struct ccp_device *ccp = sp->ccp_data;
-	unsigned long flags;
-	unsigned int i;
-
-	/* If there's no device there's nothing to do */
-	if (!ccp)
-		return;
-
-	spin_lock_irqsave(&ccp->cmd_lock, flags);
-
-	ccp->suspending = 1;
-
-	/* Wake all the queue kthreads to prepare for suspend */
-	for (i = 0; i < ccp->cmd_q_count; i++)
-		wake_up_process(ccp->cmd_q[i].kthread);
-
-	spin_unlock_irqrestore(&ccp->cmd_lock, flags);
-
-	/* Wait for all queue kthreads to say they're done */
-	while (!ccp_queues_suspended(ccp))
-		wait_event_interruptible(ccp->suspend_queue,
-					 ccp_queues_suspended(ccp));
-}
-
-void ccp_dev_resume(struct sp_device *sp)
-{
-	struct ccp_device *ccp = sp->ccp_data;
-	unsigned long flags;
-	unsigned int i;
-
-	/* If there's no device there's nothing to do */
-	if (!ccp)
-		return;
-
-	spin_lock_irqsave(&ccp->cmd_lock, flags);
-
-	ccp->suspending = 0;
-
-	/* Wake up all the kthreads */
-	for (i = 0; i < ccp->cmd_q_count; i++) {
-		ccp->cmd_q[i].suspended = 0;
-		wake_up_process(ccp->cmd_q[i].kthread);
-	}
-
-	spin_unlock_irqrestore(&ccp->cmd_lock, flags);
-}
-
-int ccp_dev_init(struct sp_device *sp)
-{
-	struct device *dev = sp->dev;
-	struct ccp_device *ccp;
+#ifdef CONFIG_X86
 	int ret;
 
-	/*
-	 * Check how many we have so far, and stop after reaching
-	 * that number
-	 */
-	if (atomic_inc_return(&dev_count) > max_devs)
-		return 0; /* don't fail the load */
+	ret = ccp_pci_init();
+	if (ret)
+		return ret;
 
-	ret = -ENOMEM;
-	ccp = ccp_alloc_struct(sp);
-	if (!ccp)
-		goto e_err;
-	sp->ccp_data = ccp;
-
-	if (!nqueues || (nqueues > MAX_HW_QUEUES))
-		ccp->max_q_count = MAX_HW_QUEUES;
-	else
-		ccp->max_q_count = nqueues;
-
-	ccp->vdata = (struct ccp_vdata *)sp->dev_vdata->ccp_vdata;
-	if (!ccp->vdata || !ccp->vdata->version) {
-		ret = -ENODEV;
-		dev_err(dev, "missing driver data\n");
-		goto e_err;
+	/* Don't leave the driver loaded if init failed */
+	if (ccp_present() != 0) {
+		ccp_pci_exit();
+		return -ENODEV;
 	}
-
-	ccp->use_tasklet = sp->use_tasklet;
-
-	ccp->io_regs = sp->io_map + ccp->vdata->offset;
-	if (ccp->vdata->setup)
-		ccp->vdata->setup(ccp);
-
-	ret = ccp->vdata->perform->init(ccp);
-	if (ret) {
-		/* A positive number means that the device cannot be initialized,
-		 * but no additional message is required.
-		 */
-		if (ret > 0)
-			goto e_quiet;
-
-		/* An unexpected problem occurred, and should be reported in the log */
-		goto e_err;
-	}
-
-	dev_notice(dev, "ccp enabled\n");
 
 	return 0;
+#endif
 
-e_err:
-	dev_notice(dev, "ccp initialization failed\n");
+#ifdef CONFIG_ARM64
+	int ret;
 
-e_quiet:
-	sp->ccp_data = NULL;
+	ret = ccp_platform_init();
+	if (ret)
+		return ret;
 
-	return ret;
+	/* Don't leave the driver loaded if init failed */
+	if (ccp_present() != 0) {
+		ccp_platform_exit();
+		return -ENODEV;
+	}
+
+	return 0;
+#endif
+
+	return -ENODEV;
 }
 
-void ccp_dev_destroy(struct sp_device *sp)
+static void __exit ccp_mod_exit(void)
 {
-	struct ccp_device *ccp = sp->ccp_data;
+#ifdef CONFIG_X86
+	ccp_pci_exit();
+#endif
 
-	if (!ccp)
-		return;
-
-	ccp->vdata->perform->destroy(ccp);
+#ifdef CONFIG_ARM64
+	ccp_platform_exit();
+#endif
 }
+
+module_init(ccp_mod_init);
+module_exit(ccp_mod_exit);

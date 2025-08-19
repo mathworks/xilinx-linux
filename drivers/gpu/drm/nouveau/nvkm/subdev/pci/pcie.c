@@ -114,17 +114,18 @@ nvkm_pcie_init(struct nvkm_pci *pci)
 int
 nvkm_pcie_set_link(struct nvkm_pci *pci, enum nvkm_pcie_speed speed, u8 width)
 {
-	struct nvkm_subdev *subdev;
+	struct nvkm_subdev *subdev = &pci->subdev;
 	enum nvkm_pcie_speed cur_speed, max_speed;
+	struct pci_bus *pbus;
 	int ret;
 
 	if (!pci || !pci_is_pcie(pci->pdev))
 		return 0;
+	pbus = pci->pdev->bus;
 
 	if (!pci->func->pcie.set_link)
 		return -ENOSYS;
 
-	subdev = &pci->subdev;
 	nvkm_trace(subdev, "requested %s\n", nvkm_pcie_speeds[speed]);
 
 	if (pci->func->pcie.version(pci) < 2) {
@@ -133,7 +134,7 @@ nvkm_pcie_set_link(struct nvkm_pci *pci, enum nvkm_pcie_speed speed, u8 width)
 	}
 
 	cur_speed = pci->func->pcie.cur_speed(pci);
-	max_speed = min(nvkm_pcie_speed(pci->pdev->bus->max_bus_speed),
+	max_speed = min(nvkm_pcie_speed(pbus->max_bus_speed),
 			pci->func->pcie.max_speed(pci));
 
 	nvkm_trace(subdev, "current speed: %s\n", nvkm_pcie_speeds[cur_speed]);

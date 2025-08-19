@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef GENL_MAGIC_STRUCT_H
 #define GENL_MAGIC_STRUCT_H
 
@@ -14,12 +13,14 @@
 # error "you need to define GENL_MAGIC_INCLUDE_FILE before inclusion"
 #endif
 
-#include <linux/args.h>
 #include <linux/genetlink.h>
 #include <linux/types.h>
 
-extern int CONCATENATE(GENL_MAGIC_FAMILY, _genl_register)(void);
-extern void CONCATENATE(GENL_MAGIC_FAMILY, _genl_unregister)(void);
+#define CONCAT__(a,b)	a ## b
+#define CONCAT_(a,b)	CONCAT__(a,b)
+
+extern int CONCAT_(GENL_MAGIC_FAMILY, _genl_register)(void);
+extern void CONCAT_(GENL_MAGIC_FAMILY, _genl_unregister)(void);
 
 /*
  * Extension of genl attribute validation policies			{{{2
@@ -87,7 +88,7 @@ static inline int nla_put_u64_0pad(struct sk_buff *skb, int attrtype, u64 value)
 			nla_get_u64, nla_put_u64_0pad, false)
 #define __str_field(attr_nr, attr_flag, name, maxlen) \
 	__array(attr_nr, attr_flag, name, NLA_NUL_STRING, char, maxlen, \
-			nla_strscpy, nla_put, false)
+			nla_strlcpy, nla_put, false)
 #define __bin_field(attr_nr, attr_flag, name, maxlen) \
 	__array(attr_nr, attr_flag, name, NLA_BINARY, char, maxlen, \
 			nla_memcpy, nla_put, false)
@@ -189,7 +190,6 @@ static inline void ct_assert_unique_operations(void)
 {
 	switch (0) {
 #include GENL_MAGIC_INCLUDE_FILE
-	case 0:
 		;
 	}
 }
@@ -208,7 +208,6 @@ static inline void ct_assert_unique_top_level_attributes(void)
 {
 	switch (0) {
 #include GENL_MAGIC_INCLUDE_FILE
-	case 0:
 		;
 	}
 }
@@ -218,8 +217,7 @@ static inline void ct_assert_unique_top_level_attributes(void)
 static inline void ct_assert_unique_ ## s_name ## _attributes(void)	\
 {									\
 	switch (0) {							\
-	s_fields							\
-	case 0:								\
+		s_fields						\
 			;						\
 	}								\
 }
@@ -281,3 +279,4 @@ enum {									\
 
 /* }}}1 */
 #endif /* GENL_MAGIC_STRUCT_H */
+/* vim: set foldmethod=marker nofoldenable : */

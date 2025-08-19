@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *      linux/arch/alpha/kernel/irq_i8259.c
  *
@@ -82,6 +81,11 @@ struct irq_chip i8259a_irq_type = {
 void __init
 init_i8259a_irqs(void)
 {
+	static struct irqaction cascade = {
+		.handler	= no_action,
+		.name		= "cascade",
+	};
+
 	long i;
 
 	outb(0xff, 0x21);	/* mask all of 8259A-1 */
@@ -91,8 +95,7 @@ init_i8259a_irqs(void)
 		irq_set_chip_and_handler(i, &i8259a_irq_type, handle_level_irq);
 	}
 
-	if (request_irq(2, no_action, 0, "cascade", NULL))
-		pr_err("Failed to request irq 2 (cascade)\n");
+	setup_irq(2, &cascade);
 }
 
 

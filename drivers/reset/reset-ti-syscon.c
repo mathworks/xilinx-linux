@@ -1,10 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI SYSCON regmap reset driver
  *
- * Copyright (C) 2015-2016 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
  *	Suman Anna <afd@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/mfd/syscon.h>
@@ -50,8 +58,8 @@ struct ti_syscon_reset_data {
 	unsigned int nr_controls;
 };
 
-#define to_ti_syscon_reset_data(_rcdev)	\
-	container_of(_rcdev, struct ti_syscon_reset_data, rcdev)
+#define to_ti_syscon_reset_data(rcdev)	\
+	container_of(rcdev, struct ti_syscon_reset_data, rcdev)
 
 /**
  * ti_syscon_reset_assert() - assert device reset
@@ -81,7 +89,7 @@ static int ti_syscon_reset_assert(struct reset_controller_dev *rcdev,
 	mask = BIT(control->assert_bit);
 	value = (control->flags & ASSERT_SET) ? mask : 0x0;
 
-	return regmap_write_bits(data->regmap, control->assert_offset, mask, value);
+	return regmap_update_bits(data->regmap, control->assert_offset, mask, value);
 }
 
 /**
@@ -112,7 +120,7 @@ static int ti_syscon_reset_deassert(struct reset_controller_dev *rcdev,
 	mask = BIT(control->deassert_bit);
 	value = (control->flags & DEASSERT_SET) ? mask : 0x0;
 
-	return regmap_write_bits(data->regmap, control->deassert_offset, mask, value);
+	return regmap_update_bits(data->regmap, control->deassert_offset, mask, value);
 }
 
 /**
@@ -146,11 +154,11 @@ static int ti_syscon_reset_status(struct reset_controller_dev *rcdev,
 	if (ret)
 		return ret;
 
-	return !(reset_state & BIT(control->status_bit)) ==
-		!(control->flags & STATUS_SET);
+	return (reset_state & BIT(control->status_bit)) &&
+			(control->flags & STATUS_SET);
 }
 
-static const struct reset_control_ops ti_syscon_reset_ops = {
+static struct reset_control_ops ti_syscon_reset_ops = {
 	.assert		= ti_syscon_reset_assert,
 	.deassert	= ti_syscon_reset_deassert,
 	.status		= ti_syscon_reset_status,
@@ -181,8 +189,7 @@ static int ti_syscon_reset_probe(struct platform_device *pdev)
 	}
 
 	nr_controls = (size / sizeof(*list)) / 7;
-	controls = devm_kcalloc(dev, nr_controls, sizeof(*controls),
-				GFP_KERNEL);
+	controls = devm_kzalloc(dev, nr_controls * sizeof(*controls), GFP_KERNEL);
 	if (!controls)
 		return -ENOMEM;
 
@@ -203,6 +210,8 @@ static int ti_syscon_reset_probe(struct platform_device *pdev)
 	data->regmap = regmap;
 	data->controls = controls;
 	data->nr_controls = nr_controls;
+
+	platform_set_drvdata(pdev, data);
 
 	return devm_reset_controller_register(dev, &data->rcdev);
 }

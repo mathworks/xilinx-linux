@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * HID class driver for the Greybus.
  *
  * Copyright 2014 Google Inc.
  * Copyright 2014 Linaro Ltd.
+ *
+ * Released under the GPLv2 only.
  */
 
 #include <linux/bitops.h>
@@ -12,7 +13,8 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/greybus.h>
+
+#include "greybus.h"
 
 /* Greybus HID device's structure */
 struct gb_hid {
@@ -29,6 +31,8 @@ struct gb_hid {
 	unsigned int			bufsize;
 	char				*inbuf;
 };
+
+static DEFINE_MUTEX(gb_hid_open_mutex);
 
 /* Routines to get controller's information over greybus */
 
@@ -48,8 +52,8 @@ static int gb_hid_get_report_desc(struct gb_hid *ghid, char *rdesc)
 		return ret;
 
 	ret = gb_operation_sync(ghid->connection, GB_HID_TYPE_GET_REPORT_DESC,
-				NULL, 0, rdesc,
-				le16_to_cpu(ghid->hdesc.wReportDescLength));
+				 NULL, 0, rdesc,
+				 le16_to_cpu(ghid->hdesc.wReportDescLength));
 
 	gb_pm_runtime_put_autosuspend(ghid->bundle);
 
@@ -85,7 +89,7 @@ static int gb_hid_get_report(struct gb_hid *ghid, u8 report_type, u8 report_id,
 	request.report_id = report_id;
 
 	ret = gb_operation_sync(ghid->connection, GB_HID_TYPE_GET_REPORT,
-				&request, sizeof(request), buf, len);
+				 &request, sizeof(request), buf, len);
 
 	gb_pm_runtime_put_autosuspend(ghid->bundle);
 
@@ -210,19 +214,17 @@ static void gb_hid_init_reports(struct gb_hid *ghid)
 	struct hid_report *report;
 
 	list_for_each_entry(report,
-			    &hid->report_enum[HID_INPUT_REPORT].report_list,
-			    list)
+		&hid->report_enum[HID_INPUT_REPORT].report_list, list)
 		gb_hid_init_report(ghid, report);
 
 	list_for_each_entry(report,
-			    &hid->report_enum[HID_FEATURE_REPORT].report_list,
-			    list)
+		&hid->report_enum[HID_FEATURE_REPORT].report_list, list)
 		gb_hid_init_report(ghid, report);
 }
 
 static int __gb_hid_get_raw_report(struct hid_device *hid,
-				   unsigned char report_number, __u8 *buf, size_t count,
-				   unsigned char report_type)
+		unsigned char report_number, __u8 *buf, size_t count,
+		unsigned char report_type)
 {
 	struct gb_hid *ghid = hid->driver_data;
 	int ret;
@@ -254,14 +256,14 @@ static int __gb_hid_output_raw_report(struct hid_device *hid, __u8 *buf,
 
 	ret = gb_hid_set_report(ghid, report_type, report_id, buf, len);
 	if (report_id && ret >= 0)
-		ret++; /* add report_id to the number of transferred bytes */
+		ret++; /* add report_id to the number of transfered bytes */
 
 	return 0;
 }
 
 static int gb_hid_raw_request(struct hid_device *hid, unsigned char reportnum,
-			      __u8 *buf, size_t len, unsigned char rtype,
-			      int reqtype)
+			       __u8 *buf, size_t len, unsigned char rtype,
+			       int reqtype)
 {
 	switch (reqtype) {
 	case HID_REQ_GET_REPORT:
@@ -290,8 +292,10 @@ static int gb_hid_parse(struct hid_device *hid)
 	}
 
 	rdesc = kzalloc(rsize, GFP_KERNEL);
-	if (!rdesc)
+	if (!rdesc) {
+		dbg_hid("couldn't allocate rdesc memory\n");
 		return -ENOMEM;
+	}
 
 	ret = gb_hid_get_report_desc(ghid, rdesc);
 	if (ret) {
@@ -342,14 +346,19 @@ static void gb_hid_stop(struct hid_device *hid)
 static int gb_hid_open(struct hid_device *hid)
 {
 	struct gb_hid *ghid = hid->driver_data;
-	int ret;
+	int ret = 0;
 
-	ret = gb_hid_set_power(ghid, GB_HID_TYPE_PWR_ON);
-	if (ret < 0)
-		return ret;
+	mutex_lock(&gb_hid_open_mutex);
+	if (!hid->open++) {
+		ret = gb_hid_set_power(ghid, GB_HID_TYPE_PWR_ON);
+		if (ret < 0)
+			hid->open--;
+		else
+			set_bit(GB_HID_STARTED, &ghid->flags);
+	}
+	mutex_unlock(&gb_hid_open_mutex);
 
-	set_bit(GB_HID_STARTED, &ghid->flags);
-	return 0;
+	return ret;
 }
 
 static void gb_hid_close(struct hid_device *hid)
@@ -357,13 +366,21 @@ static void gb_hid_close(struct hid_device *hid)
 	struct gb_hid *ghid = hid->driver_data;
 	int ret;
 
-	clear_bit(GB_HID_STARTED, &ghid->flags);
+	/*
+	 * Protecting hid->open to make sure we don't restart data acquistion
+	 * due to a resumption we no longer care about..
+	 */
+	mutex_lock(&gb_hid_open_mutex);
+	if (!--hid->open) {
+		clear_bit(GB_HID_STARTED, &ghid->flags);
 
-	/* Save some power */
-	ret = gb_hid_set_power(ghid, GB_HID_TYPE_PWR_OFF);
-	if (ret)
-		dev_err(&ghid->connection->bundle->dev,
-			"failed to power off (%d)\n", ret);
+		/* Save some power */
+		ret = gb_hid_set_power(ghid, GB_HID_TYPE_PWR_OFF);
+		if (ret)
+			dev_err(&ghid->connection->bundle->dev,
+				"failed to power off (%d)\n", ret);
+	}
+	mutex_unlock(&gb_hid_open_mutex);
 }
 
 static int gb_hid_power(struct hid_device *hid, int lvl)
@@ -381,7 +398,7 @@ static int gb_hid_power(struct hid_device *hid, int lvl)
 }
 
 /* HID structure to pass callbacks */
-static const struct hid_ll_driver gb_hid_ll_driver = {
+static struct hid_ll_driver gb_hid_ll_driver = {
 	.parse = gb_hid_parse,
 	.start = gb_hid_start,
 	.stop = gb_hid_stop,
@@ -439,7 +456,7 @@ static int gb_hid_probe(struct gb_bundle *bundle,
 		return -ENOMEM;
 
 	connection = gb_connection_create(bundle, le16_to_cpu(cport_desc->id),
-					  gb_hid_request_handler);
+						gb_hid_request_handler);
 	if (IS_ERR(connection)) {
 		ret = PTR_ERR(connection);
 		goto err_free_ghid;

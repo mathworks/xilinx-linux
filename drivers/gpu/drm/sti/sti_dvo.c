@@ -1,22 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) STMicroelectronics SA 2014
  * Author: Vincent Abriou <vincent.abriou@st.com> for STMicroelectronics.
+ * License terms:  GNU General Public License (GPL), version 2
  */
 
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/debugfs.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 
+#include <drm/drmP.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_bridge.h>
-#include <drm/drm_device.h>
+#include <drm/drm_crtc_helper.h>
 #include <drm/drm_panel.h>
-#include <drm/drm_print.h>
-#include <drm/drm_probe_helper.h>
 
 #include "sti_awg_utils.h"
 #include "sti_drv.h"
@@ -66,7 +64,7 @@ static struct dvo_config rgb_24bit_de_cfg = {
 	.awg_fwgen_fct = sti_awg_generate_code_data_enable_mode,
 };
 
-/*
+/**
  * STI digital video output structure
  *
  * @dev: driver device
@@ -188,7 +186,8 @@ static int dvo_dbg_show(struct seq_file *s, void *data)
 	DBGFS_DUMP(DVO_LUT_PROG_MID);
 	DBGFS_DUMP(DVO_LUT_PROG_HIGH);
 	dvo_dbg_awg_microcode(s, dvo->regs + DVO_DIGSYNC_INSTR_I);
-	seq_putc(s, '\n');
+	seq_puts(s, "\n");
+
 	return 0;
 }
 
@@ -196,16 +195,23 @@ static struct drm_info_list dvo_debugfs_files[] = {
 	{ "dvo", dvo_dbg_show, 0, NULL },
 };
 
-static void dvo_debugfs_init(struct sti_dvo *dvo, struct drm_minor *minor)
+static void dvo_debugfs_exit(struct sti_dvo *dvo, struct drm_minor *minor)
+{
+	drm_debugfs_remove_files(dvo_debugfs_files,
+				 ARRAY_SIZE(dvo_debugfs_files),
+				 minor);
+}
+
+static int dvo_debugfs_init(struct sti_dvo *dvo, struct drm_minor *minor)
 {
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(dvo_debugfs_files); i++)
 		dvo_debugfs_files[i].data = dvo;
 
-	drm_debugfs_create_files(dvo_debugfs_files,
-				 ARRAY_SIZE(dvo_debugfs_files),
-				 minor->debugfs_root, minor);
+	return drm_debugfs_create_files(dvo_debugfs_files,
+					ARRAY_SIZE(dvo_debugfs_files),
+					minor->debugfs_root, minor);
 }
 
 static void sti_dvo_disable(struct drm_bridge *bridge)
@@ -222,7 +228,8 @@ static void sti_dvo_disable(struct drm_bridge *bridge)
 
 	writel(0x00000000, dvo->regs + DVO_DOF_CFG);
 
-	drm_panel_disable(dvo->panel);
+	if (dvo->panel)
+		dvo->panel->funcs->disable(dvo->panel);
 
 	/* Disable/unprepare dvo clock */
 	clk_disable_unprepare(dvo->clk_pix);
@@ -262,7 +269,8 @@ static void sti_dvo_pre_enable(struct drm_bridge *bridge)
 	if (clk_prepare_enable(dvo->clk))
 		DRM_ERROR("Failed to prepare/enable dvo clk\n");
 
-	drm_panel_enable(dvo->panel);
+	if (dvo->panel)
+		dvo->panel->funcs->enable(dvo->panel);
 
 	/* Set LUT */
 	writel(config->lowbyte,  dvo->regs + DVO_LUT_PROG_LOW);
@@ -277,8 +285,8 @@ static void sti_dvo_pre_enable(struct drm_bridge *bridge)
 }
 
 static void sti_dvo_set_mode(struct drm_bridge *bridge,
-			     const struct drm_display_mode *mode,
-			     const struct drm_display_mode *adjusted_mode)
+			     struct drm_display_mode *mode,
+			     struct drm_display_mode *adjusted_mode)
 {
 	struct sti_dvo *dvo = bridge->driver_private;
 	struct sti_mixer *mixer = to_sti_mixer(dvo->encoder->crtc);
@@ -288,7 +296,7 @@ static void sti_dvo_set_mode(struct drm_bridge *bridge,
 
 	DRM_DEBUG_DRIVER("\n");
 
-	drm_mode_copy(&dvo->mode, mode);
+	memcpy(&dvo->mode, mode, sizeof(struct drm_display_mode));
 
 	/* According to the path used (main or aux), the dvo clocks should
 	 * have a different parent clock. */
@@ -339,16 +347,15 @@ static int sti_dvo_connector_get_modes(struct drm_connector *connector)
 	struct sti_dvo *dvo = dvo_connector->dvo;
 
 	if (dvo->panel)
-		return drm_panel_get_modes(dvo->panel, connector);
+		return dvo->panel->funcs->get_modes(dvo->panel);
 
 	return 0;
 }
 
 #define CLK_TOLERANCE_HZ 50
 
-static enum drm_mode_status
-sti_dvo_connector_mode_valid(struct drm_connector *connector,
-			     struct drm_display_mode *mode)
+static int sti_dvo_connector_mode_valid(struct drm_connector *connector,
+					struct drm_display_mode *mode)
 {
 	int target = mode->clock * 1000;
 	int target_min = target - CLK_TOLERANCE_HZ;
@@ -388,8 +395,8 @@ sti_dvo_connector_detect(struct drm_connector *connector, bool force)
 
 	if (!dvo->panel) {
 		dvo->panel = of_drm_find_panel(dvo->panel_node);
-		if (IS_ERR(dvo->panel))
-			dvo->panel = NULL;
+		if (dvo->panel)
+			drm_panel_attach(dvo->panel, connector);
 	}
 
 	if (dvo->panel)
@@ -404,12 +411,16 @@ static int sti_dvo_late_register(struct drm_connector *connector)
 		= to_sti_dvo_connector(connector);
 	struct sti_dvo *dvo = dvo_connector->dvo;
 
-	dvo_debugfs_init(dvo, dvo->drm_dev->primary);
+	if (dvo_debugfs_init(dvo, dvo->drm_dev->primary)) {
+		DRM_ERROR("DVO debugfs setup failed\n");
+		return -EINVAL;
+	}
 
 	return 0;
 }
 
 static const struct drm_connector_funcs sti_dvo_connector_funcs = {
+	.dpms = drm_atomic_helper_connector_dpms,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.detect = sti_dvo_connector_detect,
 	.destroy = drm_connector_cleanup,
@@ -461,13 +472,20 @@ static int sti_dvo_bind(struct device *dev, struct device *master, void *data)
 	bridge->driver_private = dvo;
 	bridge->funcs = &sti_dvo_bridge_funcs;
 	bridge->of_node = dvo->dev.of_node;
-	drm_bridge_add(bridge);
-
-	err = drm_bridge_attach(encoder, bridge, NULL, 0);
-	if (err)
+	err = drm_bridge_add(bridge);
+	if (err) {
+		DRM_ERROR("Failed to add bridge\n");
 		return err;
+	}
+
+	err = drm_bridge_attach(drm_dev, bridge);
+	if (err) {
+		DRM_ERROR("Failed to attach bridge\n");
+		return err;
+	}
 
 	dvo->bridge = bridge;
+	encoder->bridge = bridge;
 	connector->encoder = encoder;
 	dvo->encoder = encoder;
 
@@ -480,7 +498,7 @@ static int sti_dvo_bind(struct device *dev, struct device *master, void *data)
 	drm_connector_helper_add(drm_connector,
 				 &sti_dvo_connector_helper_funcs);
 
-	err = drm_connector_attach_encoder(drm_connector, encoder);
+	err = drm_mode_connector_attach_encoder(drm_connector, encoder);
 	if (err) {
 		DRM_ERROR("Failed to attach a connector to a encoder\n");
 		goto err_sysfs;
@@ -497,6 +515,9 @@ static void sti_dvo_unbind(struct device *dev,
 			   struct device *master, void *data)
 {
 	struct sti_dvo *dvo = dev_get_drvdata(dev);
+	struct drm_device *drm_dev = data;
+
+	dvo_debugfs_exit(dvo, drm_dev->primary);
 
 	drm_bridge_remove(dvo->bridge);
 }
@@ -528,7 +549,7 @@ static int sti_dvo_probe(struct platform_device *pdev)
 		DRM_ERROR("Invalid dvo resource\n");
 		return -ENOMEM;
 	}
-	dvo->regs = devm_ioremap(dev, res->start,
+	dvo->regs = devm_ioremap_nocache(dev, res->start,
 			resource_size(res));
 	if (!dvo->regs)
 		return -ENOMEM;
@@ -567,12 +588,13 @@ static int sti_dvo_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sti_dvo_ops);
 }
 
-static void sti_dvo_remove(struct platform_device *pdev)
+static int sti_dvo_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sti_dvo_ops);
+	return 0;
 }
 
-static const struct of_device_id dvo_of_match[] = {
+static struct of_device_id dvo_of_match[] = {
 	{ .compatible = "st,stih407-dvo", },
 	{ /* end node */ }
 };
@@ -585,7 +607,7 @@ struct platform_driver sti_dvo_driver = {
 		.of_match_table = dvo_of_match,
 	},
 	.probe = sti_dvo_probe,
-	.remove_new = sti_dvo_remove,
+	.remove = sti_dvo_remove,
 };
 
 MODULE_AUTHOR("Benjamin Gaignard <benjamin.gaignard@st.com>");

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_MPIC_H
 #define _ASM_POWERPC_MPIC_H
 #ifdef __KERNEL__
@@ -393,14 +392,7 @@ extern struct bus_type mpic_subsys;
 #define	MPIC_REGSET_TSI108		MPIC_REGSET(1)	/* Tsi108/109 PIC */
 
 /* Get the version of primary MPIC */
-#ifdef CONFIG_MPIC
 extern u32 fsl_mpic_primary_get_version(void);
-#else
-static inline u32 fsl_mpic_primary_get_version(void)
-{
-	return 0;
-}
-#endif
 
 /* Allocate the controller structure and setup the linux irq descs
  * for the range if interrupts passed in. No HW initialization is
@@ -472,7 +464,7 @@ extern int mpic_cpu_get_priority(void);
 extern void mpic_cpu_set_priority(int prio);
 
 /* Request IPIs on primary mpic */
-void __init mpic_request_ipis(void);
+extern void mpic_request_ipis(void);
 
 /* Send a message (IPI) to a given target (cpu number or MSG_*) */
 void smp_mpic_message_pass(int target, int msg);

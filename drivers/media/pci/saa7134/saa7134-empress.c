@@ -1,7 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * (c) 2004 Gerd Knorr <kraxel@bytesex.org> [SuSE Labs]
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "saa7134.h"
@@ -91,7 +104,9 @@ static int empress_enum_fmt_vid_cap(struct file *file, void  *priv,
 	if (f->index != 0)
 		return -EINVAL;
 
+	strlcpy(f->description, "MPEG TS", sizeof(f->description));
 	f->pixelformat = V4L2_PIX_FMT_MPEG;
+	f->flags = V4L2_FMT_FLAG_COMPRESSED;
 	return 0;
 }
 
@@ -138,15 +153,12 @@ static int empress_try_fmt_vid_cap(struct file *file, void *priv,
 {
 	struct saa7134_dev *dev = video_drvdata(file);
 	struct v4l2_subdev_pad_config pad_cfg;
-	struct v4l2_subdev_state pad_state = {
-		.pads = &pad_cfg,
-	};
 	struct v4l2_subdev_format format = {
 		.which = V4L2_SUBDEV_FORMAT_TRY,
 	};
 
 	v4l2_fill_mbus_format(&format.format, &f->fmt.pix, MEDIA_BUS_FMT_FIXED);
-	saa_call_all(dev, pad, set_fmt, &pad_state, &format);
+	saa_call_all(dev, pad, set_fmt, &pad_cfg, &format);
 	v4l2_fill_pix_format(&f->fmt.pix, &format.format);
 
 	f->fmt.pix.pixelformat  = V4L2_PIX_FMT_MPEG;
@@ -197,7 +209,7 @@ static const struct v4l2_ioctl_ops ts_ioctl_ops = {
 
 /* ----------------------------------------------------------- */
 
-static const struct video_device saa7134_empress_template = {
+static struct video_device saa7134_empress_template = {
 	.name          = "saa7134-empress",
 	.fops          = &ts_fops,
 	.ioctl_ops     = &ts_ioctl_ops,
@@ -257,9 +269,9 @@ static int empress_init(struct saa7134_dev *dev)
 		 "%s empress (%s)", dev->name,
 		 saa7134_boards[dev->board].name);
 	v4l2_ctrl_handler_init(hdl, 21);
-	v4l2_ctrl_add_handler(hdl, &dev->ctrl_handler, empress_ctrl_filter, false);
+	v4l2_ctrl_add_handler(hdl, &dev->ctrl_handler, empress_ctrl_filter);
 	if (dev->empress_sd)
-		v4l2_ctrl_add_handler(hdl, dev->empress_sd->ctrl_handler, NULL, true);
+		v4l2_ctrl_add_handler(hdl, dev->empress_sd->ctrl_handler, NULL);
 	if (hdl->error) {
 		video_device_release(dev->empress_dev);
 		return hdl->error;
@@ -285,19 +297,12 @@ static int empress_init(struct saa7134_dev *dev)
 	q->lock = &dev->lock;
 	q->dev = &dev->pci->dev;
 	err = vb2_queue_init(q);
-	if (err) {
-		video_device_release(dev->empress_dev);
-		dev->empress_dev = NULL;
+	if (err)
 		return err;
-	}
 	dev->empress_dev->queue = q;
-	dev->empress_dev->device_caps = V4L2_CAP_READWRITE | V4L2_CAP_STREAMING |
-					V4L2_CAP_VIDEO_CAPTURE;
-	if (dev->tuner_type != TUNER_ABSENT && dev->tuner_type != UNSET)
-		dev->empress_dev->device_caps |= V4L2_CAP_TUNER;
 
 	video_set_drvdata(dev->empress_dev, dev);
-	err = video_register_device(dev->empress_dev,VFL_TYPE_VIDEO,
+	err = video_register_device(dev->empress_dev,VFL_TYPE_GRABBER,
 				    empress_nr[dev->nr]);
 	if (err < 0) {
 		pr_info("%s: can't register video device\n",
@@ -320,7 +325,8 @@ static int empress_fini(struct saa7134_dev *dev)
 	if (NULL == dev->empress_dev)
 		return 0;
 	flush_work(&dev->empress_workqueue);
-	vb2_video_unregister_device(dev->empress_dev);
+	video_unregister_device(dev->empress_dev);
+	vb2_queue_release(&dev->empress_vbq);
 	v4l2_ctrl_handler_free(&dev->empress_ctrl_handler);
 	dev->empress_dev = NULL;
 	return 0;

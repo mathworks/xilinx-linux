@@ -1,18 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * The driver for Freescale MPC512x LocalPlus Bus FIFO
  * (called SCLPC in the Reference Manual).
  *
  * Copyright (C) 2013-2015 Alexander Popov <alex.popov@linux.com>.
+ *
+ * This file is released under the GPLv2.
  */
 
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
 #include <asm/mpc5121.h>
 #include <asm/io.h>
 #include <linux/spinlock.h>
@@ -373,32 +374,50 @@ static int get_cs_ranges(struct device *dev)
 {
 	int ret = -ENODEV;
 	struct device_node *lb_node;
-	size_t i = 0;
-	struct of_range_parser parser;
-	struct of_range range;
+	const u32 *addr_cells_p;
+	const u32 *size_cells_p;
+	int proplen;
+	size_t i;
 
 	lb_node = of_find_compatible_node(NULL, NULL, "fsl,mpc5121-localbus");
 	if (!lb_node)
 		return ret;
 
-	of_range_parser_init(&parser, lb_node);
-	lpbfifo.cs_n = of_range_count(&parser);
+	/*
+	 * The node defined as compatible with 'fsl,mpc5121-localbus'
+	 * should have two address cells and one size cell.
+	 * Every item of its ranges property should consist of:
+	 * - the first address cell which is the chipselect number;
+	 * - the second address cell which is the offset in the chipselect,
+	 *    must be zero.
+	 * - CPU address of the beginning of an access window;
+	 * - the only size cell which is the size of an access window.
+	 */
+	addr_cells_p = of_get_property(lb_node, "#address-cells", NULL);
+	size_cells_p = of_get_property(lb_node, "#size-cells", NULL);
+	if (addr_cells_p == NULL || *addr_cells_p != 2 ||
+				size_cells_p == NULL ||	*size_cells_p != 1) {
+		goto end;
+	}
 
+	proplen = of_property_count_u32_elems(lb_node, "ranges");
+	if (proplen <= 0 || proplen % 4 != 0)
+		goto end;
+
+	lpbfifo.cs_n = proplen / 4;
 	lpbfifo.cs_ranges = devm_kcalloc(dev, lpbfifo.cs_n,
 					sizeof(struct cs_range), GFP_KERNEL);
 	if (!lpbfifo.cs_ranges)
 		goto end;
 
-	for_each_of_range(&parser, &range) {
-		u32 base = lower_32_bits(range.bus_addr);
-		if (base)
-			goto end;
+	if (of_property_read_u32_array(lb_node, "ranges",
+				(u32 *)lpbfifo.cs_ranges, proplen) != 0) {
+		goto end;
+	}
 
-		lpbfifo.cs_ranges[i].csnum = upper_32_bits(range.bus_addr);
-		lpbfifo.cs_ranges[i].base = base;
-		lpbfifo.cs_ranges[i].addr = range.cpu_addr;
-		lpbfifo.cs_ranges[i].size = range.size;
-		i++;
+	for (i = 0; i < lpbfifo.cs_n; i++) {
+		if (lpbfifo.cs_ranges[i].base != 0)
+			goto end;
 	}
 
 	ret = 0;
@@ -416,9 +435,9 @@ static int mpc512x_lpbfifo_probe(struct platform_device *pdev)
 	memset(&lpbfifo, 0, sizeof(struct lpbfifo_data));
 	spin_lock_init(&lpbfifo.lock);
 
-	lpbfifo.chan = dma_request_chan(&pdev->dev, "rx-tx");
-	if (IS_ERR(lpbfifo.chan))
-		return PTR_ERR(lpbfifo.chan);
+	lpbfifo.chan = dma_request_slave_channel(&pdev->dev, "rx-tx");
+	if (lpbfifo.chan == NULL)
+		return -EPROBE_DEFER;
 
 	if (of_address_to_resource(pdev->dev.of_node, 0, &r) != 0) {
 		dev_err(&pdev->dev, "bad 'reg' in 'sclpc' device tree node\n");
@@ -477,7 +496,7 @@ static int mpc512x_lpbfifo_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void mpc512x_lpbfifo_remove(struct platform_device *pdev)
+static int mpc512x_lpbfifo_remove(struct platform_device *pdev)
 {
 	unsigned long flags;
 	struct dma_device *dma_dev = lpbfifo.chan->device;
@@ -494,6 +513,8 @@ static void mpc512x_lpbfifo_remove(struct platform_device *pdev)
 	free_irq(lpbfifo.irq, &pdev->dev);
 	irq_dispose_mapping(lpbfifo.irq);
 	dma_release_channel(lpbfifo.chan);
+
+	return 0;
 }
 
 static const struct of_device_id mpc512x_lpbfifo_match[] = {
@@ -504,7 +525,7 @@ MODULE_DEVICE_TABLE(of, mpc512x_lpbfifo_match);
 
 static struct platform_driver mpc512x_lpbfifo_driver = {
 	.probe = mpc512x_lpbfifo_probe,
-	.remove_new = mpc512x_lpbfifo_remove,
+	.remove = mpc512x_lpbfifo_remove,
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = mpc512x_lpbfifo_match,

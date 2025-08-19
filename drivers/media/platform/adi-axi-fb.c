@@ -10,7 +10,6 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <media/media-device.h>
-#include <linux/fpga/adi-axi-common.h>
 
 /* DMA defines */
 #define DMAC_REG_CTRL				0x400
@@ -170,7 +169,7 @@ static int frame_buffer_probe(struct platform_device *pdev)
 		}
 	}
 	dev_info(&pdev->dev, "Allocated reserved memory, paddr: 0x%0X\n",
-		 (unsigned int)frm_buff->video_ram_buf.start);
+		 frm_buff->video_ram_buf.start);
 
 	/* Get physical address of DMAs*/
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "tx_dma");

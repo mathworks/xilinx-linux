@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * POWER Data Stream Control Register (DSCR) SPR test
  *
@@ -8,13 +7,17 @@
  * numbers.
  *
  * When using the privilege state SPR, the instructions such as
- * mfspr or mtspr are privileged and the kernel emulates them
- * for us. Instructions using problem state SPR can be executed
+ * mfspr or mtspr are priviledged and the kernel emulates them
+ * for us. Instructions using problem state SPR can be exuecuted
  * directly without any emulation if the HW supports them. Else
  * they also get emulated by the kernel.
  *
  * Copyright 2013, Anton Blanchard, IBM Corporation.
  * Copyright 2015, Anshuman Khandual, IBM Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published
+ * by the Free Software Foundation.
  */
 #include "dscr.h"
 
@@ -35,8 +38,6 @@ static int check_dscr(char *str)
 int dscr_user(void)
 {
 	int i;
-
-	SKIP_IF(!have_hwcap2(PPC_FEATURE2_DSCR));
 
 	check_dscr("");
 

@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * AD714X CapTouch Programmable Controller driver supporting AD7142/3/7/8/7A
  *
  * Copyright 2009-2011 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/device.h>
@@ -1162,9 +1163,9 @@ struct ad714x_chip *ad714x_probe(struct device *dev, u16 bus_type, int irq,
 }
 EXPORT_SYMBOL(ad714x_probe);
 
-static int ad714x_suspend(struct device *dev)
+#ifdef CONFIG_PM
+int ad714x_disable(struct ad714x_chip *ad714x)
 {
-	struct ad714x_chip *ad714x = dev_get_drvdata(dev);
 	unsigned short data;
 
 	dev_dbg(ad714x->dev, "%s enter\n", __func__);
@@ -1178,10 +1179,10 @@ static int ad714x_suspend(struct device *dev)
 
 	return 0;
 }
+EXPORT_SYMBOL(ad714x_disable);
 
-static int ad714x_resume(struct device *dev)
+int ad714x_enable(struct ad714x_chip *ad714x)
 {
-	struct ad714x_chip *ad714x = dev_get_drvdata(dev);
 	dev_dbg(ad714x->dev, "%s enter\n", __func__);
 
 	mutex_lock(&ad714x->mutex);
@@ -1201,8 +1202,8 @@ static int ad714x_resume(struct device *dev)
 
 	return 0;
 }
-
-EXPORT_SIMPLE_DEV_PM_OPS(ad714x_pm, ad714x_suspend, ad714x_resume);
+EXPORT_SYMBOL(ad714x_enable);
+#endif
 
 MODULE_DESCRIPTION("Analog Devices AD714X Capacitance Touch Sensor Driver");
 MODULE_AUTHOR("Barry Song <21cnbao@gmail.com>");

@@ -14,7 +14,9 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_module.h"
+#include "edac_core.h"
+
+#define I3000_REVISION		"1.1"
 
 #define EDAC_MOD_STR		"i3000_edac"
 
@@ -273,6 +275,7 @@ static void i3000_check(struct mem_ctl_info *mci)
 {
 	struct i3000_error_info info;
 
+	edac_dbg(1, "MC%d\n", mci->mc_idx);
 	i3000_get_error_info(mci, &info);
 	i3000_process_error_info(mci, &info, 1);
 }
@@ -323,7 +326,7 @@ static int i3000_probe1(struct pci_dev *pdev, int dev_idx)
 
 	pci_read_config_dword(pdev, I3000_MCHBAR, (u32 *) & mchbar);
 	mchbar &= I3000_MCHBAR_MASK;
-	window = ioremap(mchbar, I3000_MMR_WINDOW_SIZE);
+	window = ioremap_nocache(mchbar, I3000_MMR_WINDOW_SIZE);
 	if (!window) {
 		printk(KERN_ERR "i3000: cannot map mmio space at 0x%lx\n",
 			mchbar);
@@ -372,6 +375,7 @@ static int i3000_probe1(struct pci_dev *pdev, int dev_idx)
 	mci->edac_cap = EDAC_FLAG_SECDED;
 
 	mci->mod_name = EDAC_MOD_STR;
+	mci->mod_ver = I3000_REVISION;
 	mci->ctl_name = i3000_devs[dev_idx].ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->edac_check = i3000_check;
@@ -507,8 +511,8 @@ static int __init i3000_init(void)
 
 	edac_dbg(3, "MC:\n");
 
-	/* Ensure that the OPSTATE is set correctly for POLL or NMI */
-	opstate_init();
+       /* Ensure that the OPSTATE is set correctly for POLL or NMI */
+       opstate_init();
 
 	pci_rc = pci_register_driver(&i3000_driver);
 	if (pci_rc < 0)

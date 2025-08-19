@@ -1,10 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Nano River Technologies viperboard i2c master driver
  *
  *  (C) 2012 by Lemonage GmbH
  *  Author: Lars Poeschel <poeschel@lemonage.de>
  *  All rights reserved.
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the	License, or (at your
+ *  option) any later version.
+ *
  */
 
 #include <linux/kernel.h>
@@ -332,7 +337,7 @@ static int vprbrd_i2c_xfer(struct i2c_adapter *i2c, struct i2c_msg *msgs,
 		}
 		mutex_unlock(&vb->lock);
 	}
-	return num;
+	return 0;
 error:
 	mutex_unlock(&vb->lock);
 	return error;
@@ -349,7 +354,7 @@ static const struct i2c_algorithm vprbrd_algorithm = {
 	.functionality	= vprbrd_i2c_func,
 };
 
-static const struct i2c_adapter_quirks vprbrd_quirks = {
+static struct i2c_adapter_quirks vprbrd_quirks = {
 	.max_read_len = 2048,
 	.max_write_len = 2048,
 };
@@ -407,18 +412,20 @@ static int vprbrd_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void vprbrd_i2c_remove(struct platform_device *pdev)
+static int vprbrd_i2c_remove(struct platform_device *pdev)
 {
 	struct vprbrd_i2c *vb_i2c = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&vb_i2c->i2c);
+
+	return 0;
 }
 
 static struct platform_driver vprbrd_i2c_driver = {
 	.driver.name	= "viperboard-i2c",
 	.driver.owner	= THIS_MODULE,
 	.probe		= vprbrd_i2c_probe,
-	.remove_new	= vprbrd_i2c_remove,
+	.remove		= vprbrd_i2c_remove,
 };
 
 static int __init vprbrd_i2c_init(void)

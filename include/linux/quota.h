@@ -91,7 +91,7 @@ extern bool qid_valid(struct kqid qid);
  *
  *	When there is no mapping defined for the user-namespace, type,
  *	qid tuple an invalid kqid is returned.  Callers are expected to
- *	test for and handle invalid kqids being returned.
+ *	test for and handle handle invalid kqids being returned.
  *	Invalid kqids may be tested for using qid_valid().
  */
 static inline struct kqid make_kqid(struct user_namespace *from,
@@ -223,12 +223,12 @@ struct mem_dqinfo {
 	struct quota_format_type *dqi_format;
 	int dqi_fmt_id;		/* Id of the dqi_format - used when turning
 				 * quotas on after remount RW */
-	struct list_head dqi_dirty_list;	/* List of dirty dquots [dq_list_lock] */
-	unsigned long dqi_flags;	/* DFQ_ flags [dq_data_lock] */
-	unsigned int dqi_bgrace;	/* Space grace time [dq_data_lock] */
-	unsigned int dqi_igrace;	/* Inode grace time [dq_data_lock] */
-	qsize_t dqi_max_spc_limit;	/* Maximum space limit [static] */
-	qsize_t dqi_max_ino_limit;	/* Maximum inode limit [static] */
+	struct list_head dqi_dirty_list;	/* List of dirty dquots */
+	unsigned long dqi_flags;
+	unsigned int dqi_bgrace;
+	unsigned int dqi_igrace;
+	qsize_t dqi_max_spc_limit;
+	qsize_t dqi_max_ino_limit;
 	void *dqi_priv;
 };
 
@@ -263,10 +263,11 @@ enum {
 };
 
 struct dqstats {
-	unsigned long stat[_DQST_DQSTAT_LAST];
+	int stat[_DQST_DQSTAT_LAST];
 	struct percpu_counter counter[_DQST_DQSTAT_LAST];
 };
 
+extern struct dqstats *dqstats_pcpu;
 extern struct dqstats dqstats;
 
 static inline void dqstats_inc(unsigned int type)
@@ -285,27 +286,25 @@ static inline void dqstats_dec(unsigned int type)
 #define DQ_FAKE_B	3	/* no limits only usage */
 #define DQ_READ_B	4	/* dquot was read into memory */
 #define DQ_ACTIVE_B	5	/* dquot is active (dquot_release not called) */
-#define DQ_RELEASING_B	6	/* dquot is in releasing_dquots list waiting
-				 * to be cleaned up */
-#define DQ_LASTSET_B	7	/* Following 6 bits (see QIF_) are reserved\
+#define DQ_LASTSET_B	6	/* Following 6 bits (see QIF_) are reserved\
 				 * for the mask of entries set via SETQUOTA\
 				 * quotactl. They are set under dq_data_lock\
 				 * and the quota format handling dquot can\
 				 * clear them when it sees fit. */
 
 struct dquot {
-	struct hlist_node dq_hash;	/* Hash list in memory [dq_list_lock] */
-	struct list_head dq_inuse;	/* List of all quotas [dq_list_lock] */
-	struct list_head dq_free;	/* Free list element [dq_list_lock] */
-	struct list_head dq_dirty;	/* List of dirty dquots [dq_list_lock] */
+	struct hlist_node dq_hash;	/* Hash list in memory */
+	struct list_head dq_inuse;	/* List of all quotas */
+	struct list_head dq_free;	/* Free list element */
+	struct list_head dq_dirty;	/* List of dirty dquots */
 	struct mutex dq_lock;		/* dquot IO lock */
-	spinlock_t dq_dqb_lock;		/* Lock protecting dq_dqb changes */
 	atomic_t dq_count;		/* Use count */
+	wait_queue_head_t dq_wait_unused;	/* Wait queue for dquot to become unused */
 	struct super_block *dq_sb;	/* superblock this applies to */
 	struct kqid dq_id;		/* ID this applies to (uid, gid, projid) */
-	loff_t dq_off;			/* Offset of dquot on disk [dq_lock, stable once set] */
+	loff_t dq_off;			/* Offset of dquot on disk */
 	unsigned long dq_flags;		/* See DQ_* */
-	struct mem_dqblk dq_dqb;	/* Diskquota usage [dq_dqb_lock] */
+	struct mem_dqblk dq_dqb;	/* Diskquota usage */
 };
 
 /* Operations which must be implemented by each quota format */
@@ -333,8 +332,6 @@ struct dquot_operations {
 	 * quota code only */
 	qsize_t *(*get_reserved_space) (struct inode *);
 	int (*get_projid) (struct inode *, kprojid_t *);/* Get project ID */
-	/* Get number of inodes that were charged for a given inode */
-	int (*get_inode_usage) (struct inode *, qsize_t *);
 	/* Get next ID with active quota structure */
 	int (*get_next_id) (struct super_block *sb, struct kqid *qid);
 };
@@ -410,7 +407,13 @@ struct qc_type_state {
 
 struct qc_state {
 	unsigned int s_incoredqs;	/* Number of dquots in core */
-	struct qc_type_state s_state[MAXQUOTAS];  /* Per quota type information */
+	/*
+	 * Per quota type information. The array should really have
+	 * max(MAXQUOTAS, XQM_MAXQUOTAS) entries. BUILD_BUG_ON in
+	 * quota_getinfo() makes sure XQM_MAXQUOTAS is large enough.  Once VFS
+	 * supports project quotas, this can be changed to MAXQUOTAS
+	 */
+	struct qc_type_state s_state[XQM_MAXQUOTAS];
 };
 
 /* Structure for communicating via ->set_info */
@@ -428,7 +431,7 @@ struct qc_info {
 
 /* Operations handling requests from userspace */
 struct quotactl_ops {
-	int (*quota_on)(struct super_block *, int, int, const struct path *);
+	int (*quota_on)(struct super_block *, int, int, struct path *);
 	int (*quota_off)(struct super_block *, int);
 	int (*quota_enable)(struct super_block *, unsigned int);
 	int (*quota_disable)(struct super_block *, unsigned int);
@@ -450,18 +453,17 @@ struct quota_format_type {
 };
 
 /**
- * Quota state flags - they come in three flavors - for users, groups and projects.
+ * Quota state flags - they actually come in two flavors - for users and groups.
  *
  * Actual typed flags layout:
- *				USRQUOTA	GRPQUOTA	PRJQUOTA
- *  DQUOT_USAGE_ENABLED		0x0001		0x0002		0x0004
- *  DQUOT_LIMITS_ENABLED	0x0008		0x0010		0x0020
- *  DQUOT_SUSPENDED		0x0040		0x0080		0x0100
+ *				USRQUOTA	GRPQUOTA
+ *  DQUOT_USAGE_ENABLED		0x0001		0x0002
+ *  DQUOT_LIMITS_ENABLED	0x0004		0x0008
+ *  DQUOT_SUSPENDED		0x0010		0x0020
  *
  * Following bits are used for non-typed flags:
- *  DQUOT_QUOTA_SYS_FILE	0x0200
- *  DQUOT_NEGATIVE_USAGE	0x0400
- *  DQUOT_NOLIST_DIRTY		0x0800
+ *  DQUOT_QUOTA_SYS_FILE	0x0040
+ *  DQUOT_NEGATIVE_USAGE	0x0080
  */
 enum {
 	_DQUOT_USAGE_ENABLED = 0,		/* Track disk usage for users */
@@ -487,9 +489,6 @@ enum {
 						 */
 #define DQUOT_NEGATIVE_USAGE	(1 << (DQUOT_STATE_LAST + 1))
 					       /* Allow negative quota usage */
-/* Do not track dirty dquots in a list */
-#define DQUOT_NOLIST_DIRTY	(1 << (DQUOT_STATE_LAST + 2))
-
 static inline unsigned int dquot_state_flag(unsigned int flags, int type)
 {
 	return flags << type;
@@ -520,7 +519,8 @@ static inline void quota_send_warning(struct kqid qid, dev_t dev,
 
 struct quota_info {
 	unsigned int flags;			/* Flags for diskquotas on this device */
-	struct rw_semaphore dqio_sem;		/* Lock quota file while I/O in progress */
+	struct mutex dqio_mutex;		/* lock device while I/O in progress */
+	struct mutex dqonoff_mutex;		/* Serialize quotaon & quotaoff */
 	struct inode *files[MAXQUOTAS];		/* inodes of quotafiles */
 	struct mem_dqinfo info[MAXQUOTAS];	/* Information for each quota type */
 	const struct quota_format_ops *ops[MAXQUOTAS];	/* Operations for each type */

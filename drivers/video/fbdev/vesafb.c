@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * framebuffer driver for VBE 2.0 compliant graphic boards
  *
@@ -9,7 +8,6 @@
  *
  */
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -32,10 +30,7 @@
 
 struct vesafb_par {
 	u32 pseudo_palette[256];
-	resource_size_t base;
-	resource_size_t size;
 	int wc_cookie;
-	struct resource *region;
 };
 
 static struct fb_var_screeninfo vesafb_defined = {
@@ -143,7 +138,7 @@ static int vesafb_setcolreg(unsigned regno, unsigned red, unsigned green,
 	 *  (according to the entries in the `var' structure). Return
 	 *  != 0 for invalid regno.
 	 */
-
+	
 	if (regno >= info->cmap.len)
 		return 1;
 
@@ -182,10 +177,6 @@ static int vesafb_setcolreg(unsigned regno, unsigned red, unsigned green,
 	return err;
 }
 
-/*
- * fb_ops.fb_destroy is called by the last put_fb_info() call at the end
- * of unregister_framebuffer() or fb_release(). Do any cleanup here.
- */
 static void vesafb_destroy(struct fb_info *info)
 {
 	struct vesafb_par *par = info->par;
@@ -194,29 +185,29 @@ static void vesafb_destroy(struct fb_info *info)
 	arch_phys_wc_del(par->wc_cookie);
 	if (info->screen_base)
 		iounmap(info->screen_base);
-	release_mem_region(par->base, par->size);
-
-	framebuffer_release(info);
+	release_mem_region(info->apertures->ranges[0].base, info->apertures->ranges[0].size);
 }
 
 static struct fb_ops vesafb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_destroy     = vesafb_destroy,
 	.fb_setcolreg	= vesafb_setcolreg,
 	.fb_pan_display	= vesafb_pan_display,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
 static int vesafb_setup(char *options)
 {
 	char *this_opt;
-
+	
 	if (!options || !*options)
 		return 0;
-
+	
 	while ((this_opt = strsep(&options, ",")) != NULL) {
 		if (!*this_opt) continue;
-
+		
 		if (! strcmp(this_opt, "inverse"))
 			inverse=1;
 		else if (! strcmp(this_opt, "redraw"))
@@ -317,8 +308,14 @@ static int vesafb_probe(struct platform_device *dev)
 	par = info->par;
 	info->pseudo_palette = par->pseudo_palette;
 
-	par->base = screen_info.lfb_base;
-	par->size = size_total;
+	/* set vesafb aperture size for generic probing */
+	info->apertures = alloc_apertures(1);
+	if (!info->apertures) {
+		err = -ENOMEM;
+		goto err;
+	}
+	info->apertures->ranges[0].base = screen_info.lfb_base;
+	info->apertures->ranges[0].size = size_total;
 
 	printk(KERN_INFO "vesafb: mode is %dx%dx%d, linelength=%d, pages=%d\n",
 	       vesafb_defined.xres, vesafb_defined.yres, vesafb_defined.bits_per_pixel, vesafb_fix.line_length, screen_info.pages);
@@ -339,8 +336,8 @@ static int vesafb_probe(struct platform_device *dev)
 		printk(KERN_INFO "vesafb: pmi: set display start = %p, set palette = %p\n",pmi_start,pmi_pal);
 		if (pmi_base[3]) {
 			printk(KERN_INFO "vesafb: pmi: ports = ");
-			for (i = pmi_base[3]/2; pmi_base[i] != 0xffff; i++)
-				printk("%x ", pmi_base[i]);
+				for (i = pmi_base[3]/2; pmi_base[i] != 0xffff; i++)
+					printk("%x ",pmi_base[i]);
 			printk("\n");
 			if (pmi_base[i] != 0xffff) {
 				/*
@@ -376,7 +373,7 @@ static int vesafb_probe(struct platform_device *dev)
 	vesafb_defined.pixclock     = 10000000 / vesafb_defined.xres * 1000 / vesafb_defined.yres;
 	vesafb_defined.left_margin  = (vesafb_defined.xres / 8) & 0xf8;
 	vesafb_defined.hsync_len    = (vesafb_defined.xres / 8) & 0xf8;
-
+	
 	vesafb_defined.red.offset    = screen_info.red_pos;
 	vesafb_defined.red.length    = screen_info.red_size;
 	vesafb_defined.green.offset  = screen_info.green_pos;
@@ -413,7 +410,7 @@ static int vesafb_probe(struct platform_device *dev)
 
 	/* request failure does not faze us, as vgacon probably has this
 	 * region already (FIXME) */
-	par->region = request_region(0x3c0, 32, "vesafb");
+	request_region(0x3c0, 32, "vesafb");
 
 	if (mtrr == 3) {
 		unsigned int temp_size = size_total;
@@ -441,7 +438,7 @@ static int vesafb_probe(struct platform_device *dev)
 		       "vesafb: abort, cannot ioremap video memory 0x%x @ 0x%lx\n",
 			vesafb_fix.smem_len, vesafb_fix.smem_start);
 		err = -EIO;
-		goto err_release_region;
+		goto err;
 	}
 
 	printk(KERN_INFO "vesafb: framebuffer at 0x%lx, mapped to 0x%p, "
@@ -449,49 +446,43 @@ static int vesafb_probe(struct platform_device *dev)
 	       vesafb_fix.smem_start, info->screen_base,
 	       size_remap/1024, size_total/1024);
 
-	if (!ypan)
-		vesafb_ops.fb_pan_display = NULL;
-
 	info->fbops = &vesafb_ops;
 	info->var = vesafb_defined;
 	info->fix = vesafb_fix;
-	info->flags = (ypan ? FBINFO_HWACCEL_YPAN : 0);
+	info->flags = FBINFO_FLAG_DEFAULT | FBINFO_MISC_FIRMWARE |
+		(ypan ? FBINFO_HWACCEL_YPAN : 0);
+
+	if (!ypan)
+		info->fbops->fb_pan_display = NULL;
 
 	if (fb_alloc_cmap(&info->cmap, 256, 0) < 0) {
 		err = -ENOMEM;
-		goto err_release_region;
+		goto err;
 	}
-	err = devm_aperture_acquire_for_platform_device(dev, par->base, par->size);
-	if (err)
-		goto err_fb_dealloc_cmap;
 	if (register_framebuffer(info)<0) {
 		err = -EINVAL;
-		goto err_fb_dealloc_cmap;
+		fb_dealloc_cmap(&info->cmap);
+		goto err;
 	}
 	fb_info(info, "%s frame buffer device\n", info->fix.id);
 	return 0;
-err_fb_dealloc_cmap:
-	fb_dealloc_cmap(&info->cmap);
-err_release_region:
+err:
 	arch_phys_wc_del(par->wc_cookie);
 	if (info->screen_base)
 		iounmap(info->screen_base);
-	if (par->region)
-		release_region(0x3c0, 32);
 	framebuffer_release(info);
 	release_mem_region(vesafb_fix.smem_start, size_total);
 	return err;
 }
 
-static void vesafb_remove(struct platform_device *pdev)
+static int vesafb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 
-	if (((struct vesafb_par *)(info->par))->region)
-		release_region(0x3c0, 32);
-
-	/* vesafb_destroy takes care of info cleanup */
 	unregister_framebuffer(info);
+	framebuffer_release(info);
+
+	return 0;
 }
 
 static struct platform_driver vesafb_driver = {
@@ -499,7 +490,7 @@ static struct platform_driver vesafb_driver = {
 		.name = "vesa-framebuffer",
 	},
 	.probe = vesafb_probe,
-	.remove_new = vesafb_remove,
+	.remove = vesafb_remove,
 };
 
 module_platform_driver(vesafb_driver);

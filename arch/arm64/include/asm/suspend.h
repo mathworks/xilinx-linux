@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SUSPEND_H
 #define __ASM_SUSPEND_H
 
-#define NR_CTX_REGS 13
+#define NR_CTX_REGS 10
 #define NR_CALLEE_SAVED_REGS 12
 
 /*

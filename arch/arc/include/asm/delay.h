@@ -1,6 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Delay routines using pre computed loops_per_jiffy value.
  *
@@ -14,10 +17,7 @@
 #ifndef __ASM_ARC_UDELAY_H
 #define __ASM_ARC_UDELAY_H
 
-#include <asm-generic/types.h>
 #include <asm/param.h>		/* HZ */
-
-extern unsigned long loops_per_jiffy;
 
 static inline void __delay(unsigned long loops)
 {
@@ -26,9 +26,7 @@ static inline void __delay(unsigned long loops)
 	"	lp  1f			\n"
 	"	nop			\n"
 	"1:				\n"
-	:
-        : "r"(loops)
-        : "lp_count");
+	: : "r"(loops));
 }
 
 extern void __bad_udelay(void);

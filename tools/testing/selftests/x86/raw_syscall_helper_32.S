@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 .global sys32_helper
 sys32_helper:
 	/* Args: syscall_args_32*, function pointer */
@@ -45,5 +44,3 @@ int80_and_ret:
 
 	.type int80_and_ret, @function
 	.size int80_and_ret, .-int80_and_ret
-
-.section .note.GNU-stack,"",%progbits

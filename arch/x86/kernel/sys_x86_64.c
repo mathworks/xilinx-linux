@@ -1,8 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/compat.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
-#include <linux/sched/mm.h>
 #include <linux/syscalls.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
@@ -19,8 +16,8 @@
 #include <linux/uaccess.h>
 #include <linux/elf.h>
 
-#include <asm/elf.h>
 #include <asm/ia32.h>
+#include <asm/syscalls.h>
 
 /*
  * Align a virtual address to avoid aliasing in the I$ on AMD F15h.
@@ -68,6 +65,9 @@ static int __init control_va_addr_alignment(char *str)
 	if (*str == 0)
 		return 1;
 
+	if (*str == '=')
+		str++;
+
 	if (!strcmp(str, "32"))
 		va_align.flags = ALIGN_VA_32;
 	else if (!strcmp(str, "64"))
@@ -77,26 +77,30 @@ static int __init control_va_addr_alignment(char *str)
 	else if (!strcmp(str, "on"))
 		va_align.flags = ALIGN_VA_32 | ALIGN_VA_64;
 	else
-		pr_warn("invalid option value: 'align_va_addr=%s'\n", str);
+		return 0;
 
 	return 1;
 }
-__setup("align_va_addr=", control_va_addr_alignment);
+__setup("align_va_addr", control_va_addr_alignment);
 
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		unsigned long, prot, unsigned long, flags,
 		unsigned long, fd, unsigned long, off)
 {
+	long error;
+	error = -EINVAL;
 	if (off & ~PAGE_MASK)
-		return -EINVAL;
+		goto out;
 
-	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+	error = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+out:
+	return error;
 }
 
-static void find_start_end(unsigned long addr, unsigned long flags,
-		unsigned long *begin, unsigned long *end)
+static void find_start_end(unsigned long flags, unsigned long *begin,
+			   unsigned long *end)
 {
-	if (!in_32bit_syscall() && (flags & MAP_32BIT)) {
+	if (!test_thread_flag(TIF_ADDR32) && (flags & MAP_32BIT)) {
 		/* This is usually used needed to map code in small
 		   model, so it needs to be in the first 31bit. Limit
 		   it to that.  This means we need to move the
@@ -109,14 +113,10 @@ static void find_start_end(unsigned long addr, unsigned long flags,
 		if (current->flags & PF_RANDOMIZE) {
 			*begin = randomize_page(*begin, 0x02000000);
 		}
-		return;
+	} else {
+		*begin = current->mm->mmap_legacy_base;
+		*end = TASK_SIZE;
 	}
-
-	*begin	= get_mmap_base(1);
-	if (in_32bit_syscall())
-		*end = task_size_32bit();
-	else
-		*end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
 }
 
 unsigned long
@@ -131,7 +131,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	if (flags & MAP_FIXED)
 		return addr;
 
-	find_start_end(addr, flags, &begin, &end);
+	find_start_end(flags, &begin, &end);
 
 	if (len > end)
 		return -ENOMEM;
@@ -140,7 +140,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		addr = PAGE_ALIGN(addr);
 		vma = find_vma(mm, addr);
 		if (end - len >= addr &&
-		    (!vma || addr + len <= vm_start_gap(vma)))
+		    (!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
 
@@ -171,45 +171,26 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 	if (len > TASK_SIZE)
 		return -ENOMEM;
 
-	/* No address checking. See comment at mmap_address_hint_valid() */
 	if (flags & MAP_FIXED)
 		return addr;
 
 	/* for MAP_32BIT mappings we force the legacy mmap base */
-	if (!in_32bit_syscall() && (flags & MAP_32BIT))
+	if (!test_thread_flag(TIF_ADDR32) && (flags & MAP_32BIT))
 		goto bottomup;
 
 	/* requesting a specific address */
 	if (addr) {
-		addr &= PAGE_MASK;
-		if (!mmap_address_hint_valid(addr, len))
-			goto get_unmapped_area;
-
+		addr = PAGE_ALIGN(addr);
 		vma = find_vma(mm, addr);
-		if (!vma || addr + len <= vm_start_gap(vma))
+		if (TASK_SIZE - len >= addr &&
+				(!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
-get_unmapped_area:
 
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
-	if (!in_32bit_syscall() && (flags & MAP_ABOVE4G))
-		info.low_limit = SZ_4G;
-	else
-		info.low_limit = PAGE_SIZE;
-
-	info.high_limit = get_mmap_base(0);
-
-	/*
-	 * If hint address is above DEFAULT_MAP_WINDOW, look for unmapped area
-	 * in the full address space.
-	 *
-	 * !in_32bit_syscall() check to avoid high addresses for x32
-	 * (and make it no op on native i386).
-	 */
-	if (addr > DEFAULT_MAP_WINDOW && !in_32bit_syscall())
-		info.high_limit += TASK_SIZE_MAX - DEFAULT_MAP_WINDOW;
-
+	info.low_limit = PAGE_SIZE;
+	info.high_limit = mm->mmap_base;
 	info.align_mask = 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {

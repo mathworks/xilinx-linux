@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2003 Sistina Software
  * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
@@ -183,12 +182,10 @@ void dm_dirty_log_destroy(struct dm_dirty_log *log)
 }
 EXPORT_SYMBOL(dm_dirty_log_destroy);
 
-/*
- *---------------------------------------------------------------
+/*-----------------------------------------------------------------
  * Persistent and core logs share a lot of their implementation.
  * FIXME: need a reload method to be called from a resume
- *---------------------------------------------------------------
- */
+ *---------------------------------------------------------------*/
 /*
  * Magic for persistent mirrors: "MiRr"
  */
@@ -226,7 +223,7 @@ struct log_c {
 	unsigned int region_count;
 	region_t sync_count;
 
-	unsigned int bitset_uint32_count;
+	unsigned bitset_uint32_count;
 	uint32_t *clean_bits;
 	uint32_t *sync_bits;
 	uint32_t *recovering_bits;	/* FIXME: this seems excessive */
@@ -258,30 +255,28 @@ struct log_c {
  * The touched member needs to be updated every time we access
  * one of the bitsets.
  */
-static inline int log_test_bit(uint32_t *bs, unsigned int bit)
+static inline int log_test_bit(uint32_t *bs, unsigned bit)
 {
 	return test_bit_le(bit, bs) ? 1 : 0;
 }
 
 static inline void log_set_bit(struct log_c *l,
-			       uint32_t *bs, unsigned int bit)
+			       uint32_t *bs, unsigned bit)
 {
 	__set_bit_le(bit, bs);
 	l->touched_cleaned = 1;
 }
 
 static inline void log_clear_bit(struct log_c *l,
-				 uint32_t *bs, unsigned int bit)
+				 uint32_t *bs, unsigned bit)
 {
 	__clear_bit_le(bit, bs);
 	l->touched_dirtied = 1;
 }
 
-/*
- *---------------------------------------------------------------
+/*----------------------------------------------------------------
  * Header IO
- *--------------------------------------------------------------
- */
+ *--------------------------------------------------------------*/
 static void header_to_disk(struct log_header_core *core, struct log_header_disk *disk)
 {
 	disk->magic = cpu_to_le32(core->magic);
@@ -296,9 +291,10 @@ static void header_from_disk(struct log_header_core *core, struct log_header_dis
 	core->nr_regions = le64_to_cpu(disk->nr_regions);
 }
 
-static int rw_header(struct log_c *lc, enum req_op op)
+static int rw_header(struct log_c *lc, int op)
 {
-	lc->io_req.bi_opf = op;
+	lc->io_req.bi_op = op;
+	lc->io_req.bi_op_flags = 0;
 
 	return dm_io(&lc->io_req, 1, &lc->header_location, NULL);
 }
@@ -311,7 +307,8 @@ static int flush_header(struct log_c *lc)
 		.count = 0,
 	};
 
-	lc->io_req.bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
+	lc->io_req.bi_op = REQ_OP_WRITE;
+	lc->io_req.bi_op_flags = WRITE_FLUSH;
 
 	return dm_io(&lc->io_req, 1, &null_location, NULL);
 }
@@ -357,13 +354,11 @@ static int _check_region_size(struct dm_target *ti, uint32_t region_size)
 	return 1;
 }
 
-/*
- *--------------------------------------------------------------
+/*----------------------------------------------------------------
  * core log constructor/destructor
  *
  * argv contains region_size followed optionally by [no]sync
- *--------------------------------------------------------------
- */
+ *--------------------------------------------------------------*/
 #define BYTE_SHIFT 3
 static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 			      unsigned int argc, char **argv,
@@ -389,7 +384,8 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 		else if (!strcmp(argv[1], "nosync"))
 			sync = NOSYNC;
 		else {
-			DMWARN("unrecognised sync argument to dirty region log: %s", argv[1]);
+			DMWARN("unrecognised sync argument to "
+			       "dirty region log: %s", argv[1]);
 			return -EINVAL;
 		}
 	}
@@ -419,7 +415,8 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 	/*
 	 * Work out how many "unsigned long"s we need to hold the bitset.
 	 */
-	bitset_size = dm_round_up(region_count, BITS_PER_LONG);
+	bitset_size = dm_round_up(region_count,
+				  sizeof(*lc->clean_bits) << BYTE_SHIFT);
 	bitset_size >>= BYTE_SHIFT;
 
 	lc->bitset_uint32_count = bitset_size / sizeof(*lc->clean_bits);
@@ -447,9 +444,10 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 		 */
 		buf_size =
 		    dm_round_up((LOG_OFFSET << SECTOR_SHIFT) + bitset_size,
-				bdev_logical_block_size(lc->header_location.bdev));
+				bdev_logical_block_size(lc->header_location.
+							    bdev));
 
-		if (buf_size > bdev_nr_bytes(dev->bdev)) {
+		if (buf_size > i_size_read(dev->bdev->bd_inode)) {
 			DMWARN("log device %s too small: need %llu bytes",
 				dev->name, (unsigned long long)buf_size);
 			kfree(lc);
@@ -530,19 +528,17 @@ static void destroy_log_context(struct log_c *lc)
 
 static void core_dtr(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	vfree(lc->clean_bits);
 	destroy_log_context(lc);
 }
 
-/*
- *---------------------------------------------------------------------
+/*----------------------------------------------------------------
  * disk log constructor/destructor
  *
  * argv contains log_device region_size followed optionally by [no]sync
- *---------------------------------------------------------------------
- */
+ *--------------------------------------------------------------*/
 static int disk_ctr(struct dm_dirty_log *log, struct dm_target *ti,
 		    unsigned int argc, char **argv)
 {
@@ -569,7 +565,7 @@ static int disk_ctr(struct dm_dirty_log *log, struct dm_target *ti,
 
 static void disk_dtr(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	dm_put_device(lc->ti, lc->log_dev);
 	vfree(lc->disk_header);
@@ -589,8 +585,8 @@ static void fail_log_device(struct log_c *lc)
 static int disk_resume(struct dm_dirty_log *log)
 {
 	int r;
-	unsigned int i;
-	struct log_c *lc = log->context;
+	unsigned i;
+	struct log_c *lc = (struct log_c *) log->context;
 	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
 	/* read the disk header */
@@ -620,7 +616,7 @@ static int disk_resume(struct dm_dirty_log *log)
 			log_clear_bit(lc, lc->clean_bits, i);
 
 	/* clear any old bits -- device has shrunk */
-	for (i = lc->region_count; i % BITS_PER_LONG; i++)
+	for (i = lc->region_count; i % (sizeof(*lc->clean_bits) << BYTE_SHIFT); i++)
 		log_clear_bit(lc, lc->clean_bits, i);
 
 	/* copy clean across to sync */
@@ -652,30 +648,26 @@ static int disk_resume(struct dm_dirty_log *log)
 
 static uint32_t core_get_region_size(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	return lc->region_size;
 }
 
 static int core_resume(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	lc->sync_search = 0;
 	return 0;
 }
 
 static int core_is_clean(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	return log_test_bit(lc->clean_bits, region);
 }
 
 static int core_in_sync(struct dm_dirty_log *log, region_t region, int block)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	return log_test_bit(lc->sync_bits, region);
 }
 
@@ -727,22 +719,20 @@ static int disk_flush(struct dm_dirty_log *log)
 
 static void core_mark_region(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	log_clear_bit(lc, lc->clean_bits, region);
 }
 
 static void core_clear_region(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
-
+	struct log_c *lc = (struct log_c *) log->context;
 	if (likely(!lc->flush_failed))
 		log_set_bit(lc, lc->clean_bits, region);
 }
 
 static int core_get_resync_work(struct dm_dirty_log *log, region_t *region)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	if (lc->sync_search >= lc->region_count)
 		return 0;
@@ -765,13 +755,13 @@ static int core_get_resync_work(struct dm_dirty_log *log, region_t *region)
 static void core_set_region_sync(struct dm_dirty_log *log, region_t region,
 				 int in_sync)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	log_clear_bit(lc, lc->recovering_bits, region);
 	if (in_sync) {
 		log_set_bit(lc, lc->sync_bits, region);
-		lc->sync_count++;
-	} else if (log_test_bit(lc->sync_bits, region)) {
+                lc->sync_count++;
+        } else if (log_test_bit(lc->sync_bits, region)) {
 		lc->sync_count--;
 		log_clear_bit(lc, lc->sync_bits, region);
 	}
@@ -779,16 +769,14 @@ static void core_set_region_sync(struct dm_dirty_log *log, region_t region,
 
 static region_t core_get_sync_count(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+        struct log_c *lc = (struct log_c *) log->context;
 
-	return lc->sync_count;
+        return lc->sync_count;
 }
 
 #define	DMEMIT_SYNC \
-	do { \
-		if (lc->sync != DEFAULTSYNC) \
-			DMEMIT("%ssync ", lc->sync == NOSYNC ? "no" : ""); \
-	} while (0)
+	if (lc->sync != DEFAULTSYNC) \
+		DMEMIT("%ssync ", lc->sync == NOSYNC ? "no" : "")
 
 static int core_status(struct dm_dirty_log *log, status_type_t status,
 		       char *result, unsigned int maxlen)
@@ -796,7 +784,7 @@ static int core_status(struct dm_dirty_log *log, status_type_t status,
 	int sz = 0;
 	struct log_c *lc = log->context;
 
-	switch (status) {
+	switch(status) {
 	case STATUSTYPE_INFO:
 		DMEMIT("1 %s", log->type->name);
 		break;
@@ -805,11 +793,6 @@ static int core_status(struct dm_dirty_log *log, status_type_t status,
 		DMEMIT("%s %u %u ", log->type->name,
 		       lc->sync == DEFAULTSYNC ? 1 : 2, lc->region_size);
 		DMEMIT_SYNC;
-		break;
-
-	case STATUSTYPE_IMA:
-		*result = '\0';
-		break;
 	}
 
 	return sz;
@@ -821,7 +804,7 @@ static int disk_status(struct dm_dirty_log *log, status_type_t status,
 	int sz = 0;
 	struct log_c *lc = log->context;
 
-	switch (status) {
+	switch(status) {
 	case STATUSTYPE_INFO:
 		DMEMIT("3 %s %s %c", log->type->name, lc->log_dev->name,
 		       lc->log_dev_flush_failed ? 'F' :
@@ -834,11 +817,6 @@ static int disk_status(struct dm_dirty_log *log, status_type_t status,
 		       lc->sync == DEFAULTSYNC ? 2 : 3, lc->log_dev->name,
 		       lc->region_size);
 		DMEMIT_SYNC;
-		break;
-
-	case STATUSTYPE_IMA:
-		*result = '\0';
-		break;
 	}
 
 	return sz;

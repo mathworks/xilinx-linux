@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * cdc-wdm.c
  *
@@ -21,14 +20,16 @@
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/poll.h>
-#include <linux/skbuff.h>
 #include <linux/usb.h>
 #include <linux/usb/cdc.h>
-#include <linux/wwan.h>
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 #include <linux/usb/cdc-wdm.h>
 
+/*
+ * Version Information
+ */
+#define DRIVER_VERSION "v0.03"
 #define DRIVER_AUTHOR "Oliver Neukum"
 #define DRIVER_DESC "USB Abstract Control Model driver for USB WCM Device Management"
 
@@ -57,12 +58,9 @@ MODULE_DEVICE_TABLE (usb, wdm_ids);
 #define WDM_SUSPENDING		8
 #define WDM_RESETTING		9
 #define WDM_OVERFLOW		10
-#define WDM_WWAN_IN_USE		11
+#define WDM_DRAIN_ON_OPEN	11
 
 #define WDM_MAX			16
-
-/* we cannot wait forever at flush() */
-#define WDM_FLUSH_TIMEOUT	(30 * HZ)
 
 /* CDC-WMC r1.1 requires wMaxCommand to be "at least 256 decimal (0x100)" */
 #define WDM_DEFAULT_BUFSIZE	256
@@ -102,16 +100,12 @@ struct wdm_device {
 	struct mutex		rlock;
 	wait_queue_head_t	wait;
 	struct work_struct	rxwork;
-	struct work_struct	service_outs_intr;
 	int			werr;
 	int			rerr;
 	int                     resp_count;
 
 	struct list_head	device_list;
 	int			(*manage_power)(struct usb_interface *, int);
-
-	enum wwan_port_type	wwanp_type;
-	struct wwan_port	*wwanp;
 };
 
 static struct usb_driver wdm_driver;
@@ -151,28 +145,26 @@ found:
 static void wdm_out_callback(struct urb *urb)
 {
 	struct wdm_device *desc;
-	unsigned long flags;
-
 	desc = urb->context;
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	desc->werr = urb->status;
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+	spin_unlock(&desc->iuspin);
 	kfree(desc->outbuf);
 	desc->outbuf = NULL;
 	clear_bit(WDM_IN_USE, &desc->flags);
-	wake_up_all(&desc->wait);
+	wake_up(&desc->wait);
 }
 
-static void wdm_wwan_rx(struct wdm_device *desc, int length);
+/* forward declaration */
+static int service_outstanding_interrupt(struct wdm_device *desc);
 
 static void wdm_in_callback(struct urb *urb)
 {
-	unsigned long flags;
 	struct wdm_device *desc = urb->context;
 	int status = urb->status;
 	int length = urb->actual_length;
 
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	clear_bit(WDM_RESPONDING, &desc->flags);
 
 	if (status) {
@@ -190,7 +182,7 @@ static void wdm_in_callback(struct urb *urb)
 				"nonzero urb status received: -ESHUTDOWN\n");
 			goto skip_error;
 		case -EPIPE:
-			dev_err(&desc->intf->dev,
+			dev_dbg(&desc->intf->dev,
 				"nonzero urb status received: -EPIPE\n");
 			break;
 		default:
@@ -200,18 +192,11 @@ static void wdm_in_callback(struct urb *urb)
 		}
 	}
 
-	if (test_bit(WDM_WWAN_IN_USE, &desc->flags)) {
-		wdm_wwan_rx(desc, length);
-		goto out;
-	}
-
 	/*
 	 * only set a new error if there is no previous error.
 	 * Errors are only cleared during read/open
-	 * Avoid propagating -EPIPE (stall) to userspace since it is
-	 * better handled as an empty read
 	 */
-	if (desc->rerr == 0 && status != -EPIPE)
+	if (desc->rerr  == 0)
 		desc->rerr = status;
 
 	if (length + desc->length > desc->wMaxCommand) {
@@ -225,7 +210,28 @@ static void wdm_in_callback(struct urb *urb)
 			desc->reslength = length;
 		}
 	}
+
+	/*
+	 * Handling devices with the WDM_DRAIN_ON_OPEN flag set:
+	 * If desc->resp_count is unset, then the urb was submitted
+	 * without a prior notification.  If the device returned any
+	 * data, then this implies that it had messages queued without
+	 * notifying us.  Continue reading until that queue is flushed.
+	 */
+	if (!desc->resp_count) {
+		if (!length) {
+			/* do not propagate the expected -EPIPE */
+			desc->rerr = 0;
+			goto unlock;
+		}
+		dev_dbg(&desc->intf->dev, "got %d bytes without notification\n", length);
+		set_bit(WDM_RESPONDING, &desc->flags);
+		usb_submit_urb(desc->response, GFP_ATOMIC);
+	}
+
 skip_error:
+	set_bit(WDM_READ, &desc->flags);
+	wake_up(&desc->wait);
 
 	if (desc->rerr) {
 		/*
@@ -234,18 +240,15 @@ skip_error:
 		 * We should respond to further attempts from the device to send
 		 * data, so that we can get unstuck.
 		 */
-		schedule_work(&desc->service_outs_intr);
-	} else {
-		set_bit(WDM_READ, &desc->flags);
-		wake_up(&desc->wait);
+		service_outstanding_interrupt(desc);
 	}
-out:
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+
+unlock:
+	spin_unlock(&desc->iuspin);
 }
 
 static void wdm_int_callback(struct urb *urb)
 {
-	unsigned long flags;
 	int rv = 0;
 	int responding;
 	int status = urb->status;
@@ -305,7 +308,7 @@ static void wdm_int_callback(struct urb *urb)
 		goto exit;
 	}
 
-	spin_lock_irqsave(&desc->iuspin, flags);
+	spin_lock(&desc->iuspin);
 	responding = test_and_set_bit(WDM_RESPONDING, &desc->flags);
 	if (!desc->resp_count++ && !responding
 		&& !test_bit(WDM_DISCONNECTING, &desc->flags)
@@ -313,7 +316,7 @@ static void wdm_int_callback(struct urb *urb)
 		rv = usb_submit_urb(desc->response, GFP_ATOMIC);
 		dev_dbg(&desc->intf->dev, "submit response URB %d\n", rv);
 	}
-	spin_unlock_irqrestore(&desc->iuspin, flags);
+	spin_unlock(&desc->iuspin);
 	if (rv < 0) {
 		clear_bit(WDM_RESPONDING, &desc->flags);
 		if (rv == -EPERM)
@@ -335,23 +338,12 @@ exit:
 
 }
 
-static void poison_urbs(struct wdm_device *desc)
+static void kill_urbs(struct wdm_device *desc)
 {
 	/* the order here is essential */
-	usb_poison_urb(desc->command);
-	usb_poison_urb(desc->validity);
-	usb_poison_urb(desc->response);
-}
-
-static void unpoison_urbs(struct wdm_device *desc)
-{
-	/*
-	 *  the order here is not essential
-	 *  it is symmetrical just to be nice
-	 */
-	usb_unpoison_urb(desc->response);
-	usb_unpoison_urb(desc->validity);
-	usb_unpoison_urb(desc->command);
+	usb_kill_urb(desc->command);
+	usb_kill_urb(desc->validity);
+	usb_kill_urb(desc->response);
 }
 
 static void free_urbs(struct wdm_device *desc)
@@ -390,9 +382,17 @@ static ssize_t wdm_write
 	if (we < 0)
 		return usb_translate_errors(we);
 
-	buf = memdup_user(buffer, count);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
+	buf = kmalloc(count, GFP_KERNEL);
+	if (!buf) {
+		rv = -ENOMEM;
+		goto outnl;
+	}
+
+	r = copy_from_user(buf, buffer, count);
+	if (r > 0) {
+		rv = -EFAULT;
+		goto out_free_mem;
+	}
 
 	/* concurrent writes and disconnect */
 	r = mutex_lock_interruptible(&desc->wlock);
@@ -420,9 +420,6 @@ static ssize_t wdm_write
 
 	if (test_bit(WDM_RESETTING, &desc->flags))
 		r = -EIO;
-
-	if (test_bit(WDM_DISCONNECTING, &desc->flags))
-		r = -ENODEV;
 
 	if (r < 0) {
 		rv = r;
@@ -455,7 +452,6 @@ static ssize_t wdm_write
 	if (rv < 0) {
 		desc->outbuf = NULL;
 		clear_bit(WDM_IN_USE, &desc->flags);
-		wake_up_all(&desc->wait); /* for wdm_wait_for_response() */
 		dev_err(&desc->intf->dev, "Tx URB error: %d\n", rv);
 		rv = usb_translate_errors(rv);
 		goto out_free_mem_pm;
@@ -466,7 +462,8 @@ static ssize_t wdm_write
 
 	usb_autopm_put_interface(desc->intf);
 	mutex_unlock(&desc->wlock);
-	return count;
+outnl:
+	return rv < 0 ? rv : count;
 
 out_free_mem_pm:
 	usb_autopm_put_interface(desc->intf);
@@ -490,23 +487,13 @@ static int service_outstanding_interrupt(struct wdm_device *desc)
 	if (!desc->resp_count || !--desc->resp_count)
 		goto out;
 
-	if (test_bit(WDM_DISCONNECTING, &desc->flags)) {
-		rv = -ENODEV;
-		goto out;
-	}
-	if (test_bit(WDM_RESETTING, &desc->flags)) {
-		rv = -EIO;
-		goto out;
-	}
-
 	set_bit(WDM_RESPONDING, &desc->flags);
 	spin_unlock_irq(&desc->iuspin);
 	rv = usb_submit_urb(desc->response, GFP_KERNEL);
 	spin_lock_irq(&desc->iuspin);
 	if (rv) {
-		if (!test_bit(WDM_DISCONNECTING, &desc->flags))
-			dev_err(&desc->intf->dev,
-				"usb_submit_urb failed with result %d\n", rv);
+		dev_err(&desc->intf->dev,
+			"usb_submit_urb failed with result %d\n", rv);
 
 		/* make sure the next notification trigger a submit */
 		clear_bit(WDM_RESPONDING, &desc->flags);
@@ -528,7 +515,7 @@ static ssize_t wdm_read
 	if (rv < 0)
 		return -ERESTARTSYS;
 
-	cntr = READ_ONCE(desc->length);
+	cntr = ACCESS_ONCE(desc->length);
 	if (cntr == 0) {
 		desc->read = 0;
 retry:
@@ -544,7 +531,7 @@ retry:
 		i++;
 		if (file->f_flags & O_NONBLOCK) {
 			if (!test_bit(WDM_READ, &desc->flags)) {
-				rv = -EAGAIN;
+				rv = cntr ? cntr : -EAGAIN;
 				goto err;
 			}
 			rv = 0;
@@ -625,78 +612,38 @@ err:
 	return rv;
 }
 
-static int wdm_wait_for_response(struct file *file, long timeout)
-{
-	struct wdm_device *desc = file->private_data;
-	long rv; /* Use long here because (int) MAX_SCHEDULE_TIMEOUT < 0. */
-
-	/*
-	 * Needs both flags. We cannot do with one because resetting it would
-	 * cause a race with write() yet we need to signal a disconnect.
-	 */
-	rv = wait_event_interruptible_timeout(desc->wait,
-			      !test_bit(WDM_IN_USE, &desc->flags) ||
-			      test_bit(WDM_DISCONNECTING, &desc->flags),
-			      timeout);
-
-	/*
-	 * To report the correct error. This is best effort.
-	 * We are inevitably racing with the hardware.
-	 */
-	if (test_bit(WDM_DISCONNECTING, &desc->flags))
-		return -ENODEV;
-	if (!rv)
-		return -EIO;
-	if (rv < 0)
-		return -EINTR;
-
-	spin_lock_irq(&desc->iuspin);
-	rv = desc->werr;
-	desc->werr = 0;
-	spin_unlock_irq(&desc->iuspin);
-
-	return usb_translate_errors(rv);
-
-}
-
-/*
- * You need to send a signal when you react to malicious or defective hardware.
- * Also, don't abort when fsync() returned -EINVAL, for older kernels which do
- * not implement wdm_flush() will return -EINVAL.
- */
-static int wdm_fsync(struct file *file, loff_t start, loff_t end, int datasync)
-{
-	return wdm_wait_for_response(file, MAX_SCHEDULE_TIMEOUT);
-}
-
-/*
- * Same with wdm_fsync(), except it uses finite timeout in order to react to
- * malicious or defective hardware which ceased communication after close() was
- * implicitly called due to process termination.
- */
 static int wdm_flush(struct file *file, fl_owner_t id)
 {
-	return wdm_wait_for_response(file, WDM_FLUSH_TIMEOUT);
+	struct wdm_device *desc = file->private_data;
+
+	wait_event(desc->wait, !test_bit(WDM_IN_USE, &desc->flags));
+
+	/* cannot dereference desc->intf if WDM_DISCONNECTING */
+	if (desc->werr < 0 && !test_bit(WDM_DISCONNECTING, &desc->flags))
+		dev_err(&desc->intf->dev, "Error in flush path: %d\n",
+			desc->werr);
+
+	return usb_translate_errors(desc->werr);
 }
 
-static __poll_t wdm_poll(struct file *file, struct poll_table_struct *wait)
+static unsigned int wdm_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct wdm_device *desc = file->private_data;
 	unsigned long flags;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 
 	spin_lock_irqsave(&desc->iuspin, flags);
 	if (test_bit(WDM_DISCONNECTING, &desc->flags)) {
-		mask = EPOLLHUP | EPOLLERR;
+		mask = POLLHUP | POLLERR;
 		spin_unlock_irqrestore(&desc->iuspin, flags);
 		goto desc_out;
 	}
 	if (test_bit(WDM_READ, &desc->flags))
-		mask = EPOLLIN | EPOLLRDNORM;
+		mask = POLLIN | POLLRDNORM;
 	if (desc->rerr || desc->werr)
-		mask |= EPOLLERR;
+		mask |= POLLERR;
 	if (!test_bit(WDM_IN_USE, &desc->flags))
-		mask |= EPOLLOUT | EPOLLWRNORM;
+		mask |= POLLOUT | POLLWRNORM;
 	spin_unlock_irqrestore(&desc->iuspin, flags);
 
 	poll_wait(file, &desc->wait, wait);
@@ -722,11 +669,6 @@ static int wdm_open(struct inode *inode, struct file *file)
 		goto out;
 	file->private_data = desc;
 
-	if (test_bit(WDM_WWAN_IN_USE, &desc->flags)) {
-		rv = -EBUSY;
-		goto out;
-	}
-
 	rv = usb_autopm_get_interface(desc->intf);
 	if (rv < 0) {
 		dev_err(&desc->intf->dev, "Error autopm - %d\n", rv);
@@ -744,6 +686,17 @@ static int wdm_open(struct inode *inode, struct file *file)
 			dev_err(&desc->intf->dev,
 				"Error submitting int urb - %d\n", rv);
 			rv = usb_translate_errors(rv);
+		} else if (test_bit(WDM_DRAIN_ON_OPEN, &desc->flags)) {
+			/*
+			 * Some devices keep pending messages queued
+			 * without resending notifications.  We must
+			 * flush the message queue before we can
+			 * assume a one-to-one relationship between
+			 * notifications and messages in the queue
+			 */
+			dev_dbg(&desc->intf->dev, "draining queued data\n");
+			set_bit(WDM_RESPONDING, &desc->flags);
+			rv = usb_submit_urb(desc->response, GFP_KERNEL);
 		}
 	} else {
 		rv = 0;
@@ -771,13 +724,11 @@ static int wdm_release(struct inode *inode, struct file *file)
 	if (!desc->count) {
 		if (!test_bit(WDM_DISCONNECTING, &desc->flags)) {
 			dev_dbg(&desc->intf->dev, "wdm_release: cleanup\n");
-			poison_urbs(desc);
+			kill_urbs(desc);
 			spin_lock_irq(&desc->iuspin);
 			desc->resp_count = 0;
-			clear_bit(WDM_RESPONDING, &desc->flags);
 			spin_unlock_irq(&desc->iuspin);
 			desc->manage_power(desc->intf, 0);
-			unpoison_urbs(desc);
 		} else {
 			/* must avoid dev_printk here as desc->intf is invalid */
 			pr_debug(KBUILD_MODNAME " %s: device gone - cleaning up\n", __func__);
@@ -808,13 +759,12 @@ static const struct file_operations wdm_fops = {
 	.owner =	THIS_MODULE,
 	.read =		wdm_read,
 	.write =	wdm_write,
-	.fsync =	wdm_fsync,
 	.open =		wdm_open,
 	.flush =	wdm_flush,
 	.release =	wdm_release,
 	.poll =		wdm_poll,
 	.unlocked_ioctl = wdm_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
+	.compat_ioctl = wdm_ioctl,
 	.llseek =	noop_llseek,
 };
 
@@ -823,153 +773,6 @@ static struct usb_class_driver wdm_class = {
 	.fops =		&wdm_fops,
 	.minor_base =	WDM_MINOR_BASE,
 };
-
-/* --- WWAN framework integration --- */
-#ifdef CONFIG_WWAN
-static int wdm_wwan_port_start(struct wwan_port *port)
-{
-	struct wdm_device *desc = wwan_port_get_drvdata(port);
-
-	/* The interface is both exposed via the WWAN framework and as a
-	 * legacy usbmisc chardev. If chardev is already open, just fail
-	 * to prevent concurrent usage. Otherwise, switch to WWAN mode.
-	 */
-	mutex_lock(&wdm_mutex);
-	if (desc->count) {
-		mutex_unlock(&wdm_mutex);
-		return -EBUSY;
-	}
-	set_bit(WDM_WWAN_IN_USE, &desc->flags);
-	mutex_unlock(&wdm_mutex);
-
-	desc->manage_power(desc->intf, 1);
-
-	/* tx is allowed */
-	wwan_port_txon(port);
-
-	/* Start getting events */
-	return usb_submit_urb(desc->validity, GFP_KERNEL);
-}
-
-static void wdm_wwan_port_stop(struct wwan_port *port)
-{
-	struct wdm_device *desc = wwan_port_get_drvdata(port);
-
-	/* Stop all transfers and disable WWAN mode */
-	poison_urbs(desc);
-	desc->manage_power(desc->intf, 0);
-	clear_bit(WDM_READ, &desc->flags);
-	clear_bit(WDM_WWAN_IN_USE, &desc->flags);
-	unpoison_urbs(desc);
-}
-
-static void wdm_wwan_port_tx_complete(struct urb *urb)
-{
-	struct sk_buff *skb = urb->context;
-	struct wdm_device *desc = skb_shinfo(skb)->destructor_arg;
-
-	usb_autopm_put_interface(desc->intf);
-	wwan_port_txon(desc->wwanp);
-	kfree_skb(skb);
-}
-
-static int wdm_wwan_port_tx(struct wwan_port *port, struct sk_buff *skb)
-{
-	struct wdm_device *desc = wwan_port_get_drvdata(port);
-	struct usb_interface *intf = desc->intf;
-	struct usb_ctrlrequest *req = desc->orq;
-	int rv;
-
-	rv = usb_autopm_get_interface(intf);
-	if (rv)
-		return rv;
-
-	usb_fill_control_urb(
-		desc->command,
-		interface_to_usbdev(intf),
-		usb_sndctrlpipe(interface_to_usbdev(intf), 0),
-		(unsigned char *)req,
-		skb->data,
-		skb->len,
-		wdm_wwan_port_tx_complete,
-		skb
-	);
-
-	req->bRequestType = (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE);
-	req->bRequest = USB_CDC_SEND_ENCAPSULATED_COMMAND;
-	req->wValue = 0;
-	req->wIndex = desc->inum;
-	req->wLength = cpu_to_le16(skb->len);
-
-	skb_shinfo(skb)->destructor_arg = desc;
-
-	rv = usb_submit_urb(desc->command, GFP_KERNEL);
-	if (rv)
-		usb_autopm_put_interface(intf);
-	else /* One transfer at a time, stop TX until URB completion */
-		wwan_port_txoff(port);
-
-	return rv;
-}
-
-static const struct wwan_port_ops wdm_wwan_port_ops = {
-	.start = wdm_wwan_port_start,
-	.stop = wdm_wwan_port_stop,
-	.tx = wdm_wwan_port_tx,
-};
-
-static void wdm_wwan_init(struct wdm_device *desc)
-{
-	struct usb_interface *intf = desc->intf;
-	struct wwan_port *port;
-
-	/* Only register to WWAN core if protocol/type is known */
-	if (desc->wwanp_type == WWAN_PORT_UNKNOWN) {
-		dev_info(&intf->dev, "Unknown control protocol\n");
-		return;
-	}
-
-	port = wwan_create_port(&intf->dev, desc->wwanp_type, &wdm_wwan_port_ops,
-				NULL, desc);
-	if (IS_ERR(port)) {
-		dev_err(&intf->dev, "%s: Unable to create WWAN port\n",
-			dev_name(intf->usb_dev));
-		return;
-	}
-
-	desc->wwanp = port;
-}
-
-static void wdm_wwan_deinit(struct wdm_device *desc)
-{
-	if (!desc->wwanp)
-		return;
-
-	wwan_remove_port(desc->wwanp);
-	desc->wwanp = NULL;
-}
-
-static void wdm_wwan_rx(struct wdm_device *desc, int length)
-{
-	struct wwan_port *port = desc->wwanp;
-	struct sk_buff *skb;
-
-	/* Forward data to WWAN port */
-	skb = alloc_skb(length, GFP_ATOMIC);
-	if (!skb)
-		return;
-
-	skb_put_data(skb, desc->inbuf, length);
-	wwan_port_rx(port, skb);
-
-	/* inbuf has been copied, it is safe to check for outstanding data */
-	schedule_work(&desc->service_outs_intr);
-}
-#else /* CONFIG_WWAN */
-static void wdm_wwan_init(struct wdm_device *desc) {}
-static void wdm_wwan_deinit(struct wdm_device *desc) {}
-static void wdm_wwan_rx(struct wdm_device *desc, int length) {}
-#endif /* CONFIG_WWAN */
 
 /* --- error handling --- */
 static void wdm_rxwork(struct work_struct *work)
@@ -997,26 +800,11 @@ static void wdm_rxwork(struct work_struct *work)
 	}
 }
 
-static void service_interrupt_work(struct work_struct *work)
-{
-	struct wdm_device *desc;
-
-	desc = container_of(work, struct wdm_device, service_outs_intr);
-
-	spin_lock_irq(&desc->iuspin);
-	service_outstanding_interrupt(desc);
-	if (!desc->resp_count) {
-		set_bit(WDM_READ, &desc->flags);
-		wake_up(&desc->wait);
-	}
-	spin_unlock_irq(&desc->iuspin);
-}
-
 /* --- hotplug --- */
 
 static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor *ep,
-		      u16 bufsize, enum wwan_port_type type,
-		      int (*manage_power)(struct usb_interface *, int))
+		u16 bufsize, int (*manage_power)(struct usb_interface *, int),
+		bool drain_on_open)
 {
 	int rv = -ENOMEM;
 	struct wdm_device *desc;
@@ -1033,14 +821,11 @@ static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor
 	/* this will be expanded and needed in hardware endianness */
 	desc->inum = cpu_to_le16((u16)intf->cur_altsetting->desc.bInterfaceNumber);
 	desc->intf = intf;
-	desc->wwanp_type = type;
 	INIT_WORK(&desc->rxwork, wdm_rxwork);
-	INIT_WORK(&desc->service_outs_intr, service_interrupt_work);
 
-	if (!usb_endpoint_is_int_in(ep)) {
-		rv = -EINVAL;
+	rv = -EINVAL;
+	if (!usb_endpoint_is_int_in(ep))
 		goto err;
-	}
 
 	desc->wMaxPacketSize = usb_endpoint_maxp(ep);
 
@@ -1106,6 +891,68 @@ static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor
 
 	desc->manage_power = manage_power;
 
+	/*
+	 * "drain_on_open" enables a hack to work around a firmware
+	 * issue observed on network functions, in particular MBIM
+	 * functions.
+	 *
+	 * Quoting section 7 of the CDC-WMC r1.1 specification:
+	 *
+	 *  "The firmware shall interpret GetEncapsulatedResponse as a
+	 *   request to read response bytes. The firmware shall send
+	 *   the next wLength bytes from the response. The firmware
+	 *   shall allow the host to retrieve data using any number of
+	 *   GetEncapsulatedResponse requests. The firmware shall
+	 *   return a zero- length reply if there are no data bytes
+	 *   available.
+	 *
+	 *   The firmware shall send ResponseAvailable notifications
+	 *   periodically, using any appropriate algorithm, to inform
+	 *   the host that there is data available in the reply
+	 *   buffer. The firmware is allowed to send ResponseAvailable
+	 *   notifications even if there is no data available, but
+	 *   this will obviously reduce overall performance."
+	 *
+	 * These requirements, although they make equally sense, are
+	 * often not implemented by network functions. Some firmwares
+	 * will queue data indefinitely, without ever resending a
+	 * notification. The result is that the driver and firmware
+	 * loses "syncronization" if the driver ever fails to respond
+	 * to a single notification, something which easily can happen
+	 * on release(). When this happens, the driver will appear to
+	 * never receive notifications for the most current data. Each
+	 * notification will only cause a single read, which returns
+	 * the oldest data in the firmware's queue.
+	 *
+	 * The "drain_on_open" hack resolves the situation by draining
+	 * data from the firmware until none is returned, without a
+	 * prior notification.
+	 *
+	 * This will inevitably race with the firmware, risking that
+	 * we read data from the device before handling the associated
+	 * notification. To make things worse, some of the devices
+	 * needing the hack do not implement the "return zero if no
+	 * data is available" requirement either. Instead they return
+	 * an error on the subsequent read in this case.  This means
+	 * that "winning" the race can cause an unexpected EIO to
+	 * userspace.
+	 *
+	 * "winning" the race is more likely on resume() than on
+	 * open(), and the unexpected error is more harmful in the
+	 * middle of an open session. The hack is therefore only
+	 * applied on open(), and not on resume() where it logically
+	 * would be equally necessary. So we define open() as the only
+	 * driver <-> device "syncronization point".  Should we happen
+	 * to lose a notification after open(), then syncronization
+	 * will be lost until release()
+	 *
+	 * The hack should not be enabled for CDC WDM devices
+	 * conforming to the CDC-WMC r1.1 specification.  This is
+	 * ensured by setting drain_on_open to false in wdm_probe().
+	 */
+	if (drain_on_open)
+		set_bit(WDM_DRAIN_ON_OPEN, &desc->flags);
+
 	spin_lock(&wdm_device_list_lock);
 	list_add(&desc->device_list, &wdm_device_list);
 	spin_unlock(&wdm_device_list_lock);
@@ -1115,9 +962,6 @@ static int wdm_create(struct usb_interface *intf, struct usb_endpoint_descriptor
 		goto err;
 	else
 		dev_info(&intf->dev, "%s: USB WDM device\n", dev_name(intf->usb_dev));
-
-	wdm_wwan_init(desc);
-
 out:
 	return rv;
 err:
@@ -1162,7 +1006,7 @@ static int wdm_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		goto err;
 	ep = &iface->endpoint[0].desc;
 
-	rv = wdm_create(intf, ep, maxcom, WWAN_PORT_UNKNOWN, &wdm_manage_power);
+	rv = wdm_create(intf, ep, maxcom, &wdm_manage_power, false);
 
 err:
 	return rv;
@@ -1173,9 +1017,7 @@ err:
  * @intf: usb interface the subdriver will associate with
  * @ep: interrupt endpoint to monitor for notifications
  * @bufsize: maximum message size to support for read/write
- * @type: Type/protocol of the transported data (MBIM, QMI...)
- * @manage_power: call-back invoked during open and release to
- *                manage the device's power
+ *
  * Create WDM usb class character device and associate it with intf
  * without binding, allowing another driver to manage the interface.
  *
@@ -1191,12 +1033,12 @@ err:
  */
 struct usb_driver *usb_cdc_wdm_register(struct usb_interface *intf,
 					struct usb_endpoint_descriptor *ep,
-					int bufsize, enum wwan_port_type type,
+					int bufsize,
 					int (*manage_power)(struct usb_interface *, int))
 {
-	int rv;
+	int rv = -EINVAL;
 
-	rv = wdm_create(intf, ep, bufsize, type, manage_power);
+	rv = wdm_create(intf, ep, bufsize, manage_power, true);
 	if (rv < 0)
 		goto err;
 
@@ -1215,19 +1057,18 @@ static void wdm_disconnect(struct usb_interface *intf)
 	desc = wdm_find_device(intf);
 	mutex_lock(&wdm_mutex);
 
-	wdm_wwan_deinit(desc);
-
 	/* the spinlock makes sure no new urbs are generated in the callbacks */
 	spin_lock_irqsave(&desc->iuspin, flags);
 	set_bit(WDM_DISCONNECTING, &desc->flags);
 	set_bit(WDM_READ, &desc->flags);
+	/* to terminate pending flushes */
+	clear_bit(WDM_IN_USE, &desc->flags);
 	spin_unlock_irqrestore(&desc->iuspin, flags);
 	wake_up_all(&desc->wait);
 	mutex_lock(&desc->rlock);
 	mutex_lock(&desc->wlock);
-	poison_urbs(desc);
+	kill_urbs(desc);
 	cancel_work_sync(&desc->rxwork);
-	cancel_work_sync(&desc->service_outs_intr);
 	mutex_unlock(&desc->wlock);
 	mutex_unlock(&desc->rlock);
 
@@ -1268,10 +1109,8 @@ static int wdm_suspend(struct usb_interface *intf, pm_message_t message)
 		set_bit(WDM_SUSPENDING, &desc->flags);
 		spin_unlock_irq(&desc->iuspin);
 		/* callback submits work - order is essential */
-		poison_urbs(desc);
+		kill_urbs(desc);
 		cancel_work_sync(&desc->rxwork);
-		cancel_work_sync(&desc->service_outs_intr);
-		unpoison_urbs(desc);
 	}
 	if (!PMSG_IS_AUTO(message)) {
 		mutex_unlock(&desc->wlock);
@@ -1329,9 +1168,8 @@ static int wdm_pre_reset(struct usb_interface *intf)
 	wake_up_all(&desc->wait);
 	mutex_lock(&desc->rlock);
 	mutex_lock(&desc->wlock);
-	poison_urbs(desc);
+	kill_urbs(desc);
 	cancel_work_sync(&desc->rxwork);
-	cancel_work_sync(&desc->service_outs_intr);
 	return 0;
 }
 
@@ -1340,13 +1178,12 @@ static int wdm_post_reset(struct usb_interface *intf)
 	struct wdm_device *desc = wdm_find_device(intf);
 	int rv;
 
-	unpoison_urbs(desc);
 	clear_bit(WDM_OVERFLOW, &desc->flags);
 	clear_bit(WDM_RESETTING, &desc->flags);
 	rv = recover_from_urb_loss(desc);
 	mutex_unlock(&desc->wlock);
 	mutex_unlock(&desc->rlock);
-	return rv;
+	return 0;
 }
 
 static struct usb_driver wdm_driver = {

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * J-Core SPI controller driver
  *
@@ -33,7 +32,7 @@
 #define JCORE_SPI_WAIT_RDY_MAX_LOOP	2000000
 
 struct jcore_spi {
-	struct spi_controller *host;
+	struct spi_master *master;
 	void __iomem *base;
 	unsigned int cs_reg;
 	unsigned int speed_reg;
@@ -59,7 +58,7 @@ static void jcore_spi_program(struct jcore_spi *hw)
 	void __iomem *ctrl_reg = hw->base + CTRL_REG;
 
 	if (jcore_spi_wait(ctrl_reg))
-		dev_err(hw->host->dev.parent,
+		dev_err(hw->master->dev.parent,
 			"timeout waiting to program ctrl reg.\n");
 
 	writel(hw->cs_reg | hw->speed_reg, ctrl_reg);
@@ -67,10 +66,10 @@ static void jcore_spi_program(struct jcore_spi *hw)
 
 static void jcore_spi_chipsel(struct spi_device *spi, bool value)
 {
-	struct jcore_spi *hw = spi_controller_get_devdata(spi->controller);
-	u32 csbit = 1U << (2 * spi_get_chipselect(spi, 0));
+	struct jcore_spi *hw = spi_master_get_devdata(spi->master);
+	u32 csbit = 1U << (2 * spi->chip_select);
 
-	dev_dbg(hw->host->dev.parent, "chipselect %d\n", spi_get_chipselect(spi, 0));
+	dev_dbg(hw->master->dev.parent, "chipselect %d\n", spi->chip_select);
 
 	if (value)
 		hw->cs_reg |= csbit;
@@ -82,22 +81,21 @@ static void jcore_spi_chipsel(struct spi_device *spi, bool value)
 
 static void jcore_spi_baudrate(struct jcore_spi *hw, int speed)
 {
-	if (speed == hw->speed_hz)
-		return;
+	if (speed == hw->speed_hz) return;
 	hw->speed_hz = speed;
 	if (speed >= hw->clock_freq / 2)
 		hw->speed_reg = 0;
 	else
 		hw->speed_reg = ((hw->clock_freq / 2 / speed) - 1) << 27;
 	jcore_spi_program(hw);
-	dev_dbg(hw->host->dev.parent, "speed=%d reg=0x%x\n",
+	dev_dbg(hw->master->dev.parent, "speed=%d reg=0x%x\n",
 		speed, hw->speed_reg);
 }
 
-static int jcore_spi_txrx(struct spi_controller *host, struct spi_device *spi,
+static int jcore_spi_txrx(struct spi_master *master, struct spi_device *spi,
 			  struct spi_transfer *t)
 {
-	struct jcore_spi *hw = spi_controller_get_devdata(host);
+	struct jcore_spi *hw = spi_master_get_devdata(master);
 
 	void __iomem *ctrl_reg = hw->base + CTRL_REG;
 	void __iomem *data_reg = hw->base + DATA_REG;
@@ -130,7 +128,7 @@ static int jcore_spi_txrx(struct spi_controller *host, struct spi_device *spi,
 			*rx++ = readl(data_reg);
 	}
 
-	spi_finalize_current_transfer(host);
+	spi_finalize_current_transfer(master);
 
 	if (count < len)
 		return -EREMOTEIO;
@@ -142,26 +140,26 @@ static int jcore_spi_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	struct jcore_spi *hw;
-	struct spi_controller *host;
+	struct spi_master *master;
 	struct resource *res;
 	u32 clock_freq;
 	struct clk *clk;
 	int err = -ENODEV;
 
-	host = spi_alloc_host(&pdev->dev, sizeof(struct jcore_spi));
-	if (!host)
+	master = spi_alloc_master(&pdev->dev, sizeof(struct jcore_spi));
+	if (!master)
 		return err;
 
-	/* Setup the host state. */
-	host->num_chipselect = 3;
-	host->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
-	host->transfer_one = jcore_spi_txrx;
-	host->set_cs = jcore_spi_chipsel;
-	host->dev.of_node = node;
-	host->bus_num = pdev->id;
+	/* Setup the master state. */
+	master->num_chipselect = 3;
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
+	master->transfer_one = jcore_spi_txrx;
+	master->set_cs = jcore_spi_chipsel;
+	master->dev.of_node = node;
+	master->bus_num = pdev->id;
 
-	hw = spi_controller_get_devdata(host);
-	hw->host = host;
+	hw = spi_master_get_devdata(master);
+	hw->master = master;
 	platform_set_drvdata(pdev, hw);
 
 	/* Find and map our resources */
@@ -171,7 +169,7 @@ static int jcore_spi_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev, res->start,
 				     resource_size(res), pdev->name))
 		goto exit_busy;
-	hw->base = devm_ioremap(&pdev->dev, res->start,
+	hw->base = devm_ioremap_nocache(&pdev->dev, res->start,
 					resource_size(res));
 	if (!hw->base)
 		goto exit_busy;
@@ -186,11 +184,10 @@ static int jcore_spi_probe(struct platform_device *pdev)
 	 */
 	clock_freq = 50000000;
 	clk = devm_clk_get(&pdev->dev, "ref_clk");
-	if (!IS_ERR(clk)) {
-		if (clk_prepare_enable(clk) == 0) {
+	if (!IS_ERR_OR_NULL(clk)) {
+		if (clk_enable(clk) == 0)
 			clock_freq = clk_get_rate(clk);
-			clk_disable_unprepare(clk);
-		} else
+		else
 			dev_warn(&pdev->dev, "could not enable ref_clk\n");
 	}
 	hw->clock_freq = clock_freq;
@@ -200,7 +197,7 @@ static int jcore_spi_probe(struct platform_device *pdev)
 	jcore_spi_baudrate(hw, 400000);
 
 	/* Register our spi controller */
-	err = devm_spi_register_controller(&pdev->dev, host);
+	err = devm_spi_register_master(&pdev->dev, master);
 	if (err)
 		goto exit;
 
@@ -209,7 +206,7 @@ static int jcore_spi_probe(struct platform_device *pdev)
 exit_busy:
 	err = -EBUSY;
 exit:
-	spi_controller_put(host);
+	spi_master_put(master);
 	return err;
 }
 
@@ -217,7 +214,6 @@ static const struct of_device_id jcore_spi_of_match[] = {
 	{ .compatible = "jcore,spi2" },
 	{},
 };
-MODULE_DEVICE_TABLE(of, jcore_spi_of_match);
 
 static struct platform_driver jcore_spi_driver = {
 	.probe = jcore_spi_probe,

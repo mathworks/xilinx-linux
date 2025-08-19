@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  *			Linux MegaRAID device driver
  *
  * Copyright (c) 2003-2004  LSI Logic Corporation.
+ *
+ *	   This program is free software; you can redistribute it and/or
+ *	   modify it under the terms of the GNU General Public License
+ *	   as published by the Free Software Foundation; either version
+ *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_mm.c
  * Version	: v2.20.2.7 (Jul 16 2006)
@@ -31,7 +35,7 @@ static int kioc_to_mimd(uioc_t *, mimd_t __user *);
 static int handle_drvrcmd(void __user *, uint8_t, int *);
 static int lld_ioctl(mraid_mmadp_t *, uioc_t *);
 static void ioctl_done(uioc_t *);
-static void lld_timedout(struct timer_list *);
+static void lld_timedout(unsigned long);
 static void hinfo_to_cinfo(mraid_hba_info_t *, mcontroller_t *);
 static mraid_mmadp_t *mraid_mm_get_adapter(mimd_t __user *, int *);
 static uioc_t *mraid_mm_alloc_kioc(mraid_mmadp_t *);
@@ -40,6 +44,10 @@ static int mraid_mm_attach_buf(mraid_mmadp_t *, uioc_t *, int);
 static int mraid_mm_setup_dma_pools(mraid_mmadp_t *);
 static void mraid_mm_free_adp_resources(mraid_mmadp_t *);
 static void mraid_mm_teardown_dma_pools(mraid_mmadp_t *);
+
+#ifdef CONFIG_COMPAT
+static long mraid_mm_compat_ioctl(struct file *, unsigned int, unsigned long);
+#endif
 
 MODULE_AUTHOR("LSI Logic Corporation");
 MODULE_DESCRIPTION("LSI Logic Management Module");
@@ -64,7 +72,9 @@ static wait_queue_head_t wait_q;
 static const struct file_operations lsi_fops = {
 	.open	= mraid_mm_open,
 	.unlocked_ioctl = mraid_mm_unlocked_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = mraid_mm_compat_ioctl,
+#endif
 	.owner	= THIS_MODULE,
 	.llseek = noop_llseek,
 };
@@ -95,6 +105,7 @@ mraid_mm_open(struct inode *inode, struct file *filep)
 
 /**
  * mraid_mm_ioctl - module entry-point for ioctls
+ * @inode	: inode (ignored)
  * @filep	: file operations pointer (ignored)
  * @cmd		: ioctl command
  * @arg		: user ioctl packet
@@ -217,6 +228,7 @@ mraid_mm_unlocked_ioctl(struct file *filep, unsigned int cmd,
 {
 	int err;
 
+	/* inconsistent: mraid_mm_compat_ioctl doesn't take the BKL */
 	mutex_lock(&mraid_mm_mutex);
 	err = mraid_mm_ioctl(filep, cmd, arg);
 	mutex_unlock(&mraid_mm_mutex);
@@ -238,7 +250,7 @@ mraid_mm_get_adapter(mimd_t __user *umimd, int *rval)
 	mimd_t		mimd;
 	uint32_t	adapno;
 	int		iterator;
-	bool		is_found;
+
 
 	if (copy_from_user(&mimd, umimd, sizeof(mimd_t))) {
 		*rval = -EFAULT;
@@ -254,16 +266,12 @@ mraid_mm_get_adapter(mimd_t __user *umimd, int *rval)
 
 	adapter = NULL;
 	iterator = 0;
-	is_found = false;
 
 	list_for_each_entry(adapter, &adapters_list_g, list) {
-		if (iterator++ == adapno) {
-			is_found = true;
-			break;
-		}
+		if (iterator++ == adapno) break;
 	}
 
-	if (!is_found) {
+	if (!adapter) {
 		*rval = -ENODEV;
 		return NULL;
 	}
@@ -494,7 +502,7 @@ mimd_to_kioc(mimd_t __user *umimd, mraid_mmadp_t *adp, uioc_t *kioc)
 }
 
 /**
- * mraid_mm_attach_buf - Attach a free dma buffer for required size
+ * mraid_mm_attch_buf - Attach a free dma buffer for required size
  * @adp		: Adapter softstate
  * @kioc	: kioc that the buffer needs to be attached to
  * @xferlen	: required length for buffer
@@ -566,7 +574,7 @@ mraid_mm_attach_buf(mraid_mmadp_t *adp, uioc_t *kioc, int xferlen)
 
 	kioc->pool_index	= right_pool;
 	kioc->free_buf		= 1;
-	kioc->buf_vaddr		= dma_pool_alloc(pool->handle, GFP_ATOMIC,
+	kioc->buf_vaddr 	= pci_pool_alloc(pool->handle, GFP_KERNEL,
 							&kioc->buf_paddr);
 	spin_unlock_irqrestore(&pool->lock, flags);
 
@@ -650,7 +658,7 @@ mraid_mm_dealloc_kioc(mraid_mmadp_t *adp, uioc_t *kioc)
 		 * not in use
 		 */
 		if (kioc->free_buf == 1)
-			dma_pool_free(pool->handle, kioc->buf_vaddr, 
+			pci_pool_free(pool->handle, kioc->buf_vaddr, 
 							kioc->buf_paddr);
 		else
 			pool->in_use = 0;
@@ -678,7 +686,8 @@ static int
 lld_ioctl(mraid_mmadp_t *adp, uioc_t *kioc)
 {
 	int			rval;
-	struct uioc_timeout	timeout = { };
+	struct timer_list	timer;
+	struct timer_list	*tp = NULL;
 
 	kioc->status	= -ENODATA;
 	rval		= adp->issue_uioc(adp->drvr_data, kioc, IOCTL_ISSUE);
@@ -689,12 +698,14 @@ lld_ioctl(mraid_mmadp_t *adp, uioc_t *kioc)
 	 * Start the timer
 	 */
 	if (adp->timeout > 0) {
-		timeout.uioc = kioc;
-		timer_setup_on_stack(&timeout.timer, lld_timedout, 0);
+		tp		= &timer;
+		init_timer(tp);
 
-		timeout.timer.expires	= jiffies + adp->timeout * HZ;
+		tp->function	= lld_timedout;
+		tp->data	= (unsigned long)kioc;
+		tp->expires	= jiffies + adp->timeout * HZ;
 
-		add_timer(&timeout.timer);
+		add_timer(tp);
 	}
 
 	/*
@@ -702,9 +713,8 @@ lld_ioctl(mraid_mmadp_t *adp, uioc_t *kioc)
 	 * call, the ioctl either completed successfully or timedout.
 	 */
 	wait_event(wait_q, (kioc->status != -ENODATA));
-	if (timeout.timer.function) {
-		del_timer_sync(&timeout.timer);
-		destroy_timer_on_stack(&timeout.timer);
+	if (tp) {
+		del_timer_sync(tp);
 	}
 
 	/*
@@ -729,7 +739,6 @@ ioctl_done(uioc_t *kioc)
 	uint32_t	adapno;
 	int		iterator;
 	mraid_mmadp_t*	adapter;
-	bool		is_found;
 
 	/*
 	 * When the kioc returns from driver, make sure it still doesn't
@@ -752,23 +761,19 @@ ioctl_done(uioc_t *kioc)
 		iterator	= 0;
 		adapter		= NULL;
 		adapno		= kioc->adapno;
-		is_found	= false;
 
 		con_log(CL_ANN, ( KERN_WARNING "megaraid cmm: completed "
 					"ioctl that was timedout before\n"));
 
 		list_for_each_entry(adapter, &adapters_list_g, list) {
-			if (iterator++ == adapno) {
-				is_found = true;
-				break;
-			}
+			if (iterator++ == adapno) break;
 		}
 
 		kioc->timedout = 0;
 
-		if (is_found)
+		if (adapter) {
 			mraid_mm_dealloc_kioc( adapter, kioc );
-
+		}
 	}
 	else {
 		wake_up(&wait_q);
@@ -778,13 +783,12 @@ ioctl_done(uioc_t *kioc)
 
 /**
  * lld_timedout	- callback from the expired timer
- * @t		: timer that timed out
+ * @ptr		: ioctl packet that timed out
  */
 static void
-lld_timedout(struct timer_list *t)
+lld_timedout(unsigned long ptr)
 {
-	struct uioc_timeout *timeout = from_timer(timeout, t, timer);
-	uioc_t *kioc	= timeout->uioc;
+	uioc_t *kioc	= (uioc_t *)ptr;
 
 	kioc->status 	= -ETIME;
 	kioc->timedout	= 1;
@@ -932,14 +936,12 @@ mraid_mm_register_adp(mraid_mmadp_t *lld_adp)
 	 * Allocate single blocks of memory for all required kiocs,
 	 * mailboxes and passthru structures.
 	 */
-	adapter->kioc_list	= kmalloc_array(lld_adp->max_kioc,
-						  sizeof(uioc_t),
-						  GFP_KERNEL);
-	adapter->mbox_list	= kmalloc_array(lld_adp->max_kioc,
-						  sizeof(mbox64_t),
-						  GFP_KERNEL);
-	adapter->pthru_dma_pool = dma_pool_create("megaraid mm pthru pool",
-						&adapter->pdev->dev,
+	adapter->kioc_list	= kmalloc(sizeof(uioc_t) * lld_adp->max_kioc,
+						GFP_KERNEL);
+	adapter->mbox_list	= kmalloc(sizeof(mbox64_t) * lld_adp->max_kioc,
+						GFP_KERNEL);
+	adapter->pthru_dma_pool = pci_pool_create("megaraid mm pthru pool",
+						adapter->pdev,
 						sizeof(mraid_passthru_t),
 						16, 0);
 
@@ -968,7 +970,7 @@ mraid_mm_register_adp(mraid_mmadp_t *lld_adp)
 
 		kioc		= adapter->kioc_list + i;
 		kioc->cmdbuf	= (uint64_t)(unsigned long)(mbox_list + i);
-		kioc->pthru32	= dma_pool_alloc(adapter->pthru_dma_pool,
+		kioc->pthru32	= pci_pool_alloc(adapter->pthru_dma_pool,
 						GFP_KERNEL, &kioc->pthru32_h);
 
 		if (!kioc->pthru32) {
@@ -1004,7 +1006,7 @@ pthru_dma_pool_error:
 	for (i = 0; i < lld_adp->max_kioc; i++) {
 		kioc = adapter->kioc_list + i;
 		if (kioc->pthru32) {
-			dma_pool_free(adapter->pthru_dma_pool, kioc->pthru32,
+			pci_pool_free(adapter->pthru_dma_pool, kioc->pthru32,
 				kioc->pthru32_h);
 		}
 	}
@@ -1014,7 +1016,8 @@ memalloc_error:
 	kfree(adapter->kioc_list);
 	kfree(adapter->mbox_list);
 
-	dma_pool_destroy(adapter->pthru_dma_pool);
+	if (adapter->pthru_dma_pool)
+		pci_pool_destroy(adapter->pthru_dma_pool);
 
 	kfree(adapter);
 
@@ -1083,15 +1086,14 @@ mraid_mm_setup_dma_pools(mraid_mmadp_t *adp)
 		pool->buf_size = bufsize;
 		spin_lock_init(&pool->lock);
 
-		pool->handle = dma_pool_create("megaraid mm data buffer",
-						&adp->pdev->dev, bufsize,
-						16, 0);
+		pool->handle = pci_pool_create("megaraid mm data buffer",
+						adp->pdev, bufsize, 16, 0);
 
 		if (!pool->handle) {
 			goto dma_pool_setup_error;
 		}
 
-		pool->vaddr = dma_pool_alloc(pool->handle, GFP_KERNEL,
+		pool->vaddr = pci_pool_alloc(pool->handle, GFP_KERNEL,
 							&pool->paddr);
 
 		if (!pool->vaddr)
@@ -1161,14 +1163,14 @@ mraid_mm_free_adp_resources(mraid_mmadp_t *adp)
 
 		kioc = adp->kioc_list + i;
 
-		dma_pool_free(adp->pthru_dma_pool, kioc->pthru32,
+		pci_pool_free(adp->pthru_dma_pool, kioc->pthru32,
 				kioc->pthru32_h);
 	}
 
 	kfree(adp->kioc_list);
 	kfree(adp->mbox_list);
 
-	dma_pool_destroy(adp->pthru_dma_pool);
+	pci_pool_destroy(adp->pthru_dma_pool);
 
 
 	return;
@@ -1192,10 +1194,10 @@ mraid_mm_teardown_dma_pools(mraid_mmadp_t *adp)
 		if (pool->handle) {
 
 			if (pool->vaddr)
-				dma_pool_free(pool->handle, pool->vaddr,
+				pci_pool_free(pool->handle, pool->vaddr,
 							pool->paddr);
 
-			dma_pool_destroy(pool->handle);
+			pci_pool_destroy(pool->handle);
 			pool->handle = NULL;
 		}
 	}
@@ -1228,6 +1230,25 @@ mraid_mm_init(void)
 	return 0;
 }
 
+
+#ifdef CONFIG_COMPAT
+/**
+ * mraid_mm_compat_ioctl	- 32bit to 64bit ioctl conversion routine
+ * @filep	: file operations pointer (ignored)
+ * @cmd		: ioctl command
+ * @arg		: user ioctl packet
+ */
+static long
+mraid_mm_compat_ioctl(struct file *filep, unsigned int cmd,
+		      unsigned long arg)
+{
+	int err;
+
+	err = mraid_mm_ioctl(filep, cmd, arg);
+
+	return err;
+}
+#endif
 
 /**
  * mraid_mm_exit	- Module exit point

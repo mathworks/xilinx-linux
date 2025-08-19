@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * This file contains iSCSI Target Portal Group related functions.
  *
@@ -6,11 +5,20 @@
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  ******************************************************************************/
 
-#include <linux/slab.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
+
 #include <target/iscsi/iscsi_target_core.h>
 #include "iscsi_target_erl0.h"
 #include "iscsi_target_login.h"
@@ -82,10 +90,10 @@ int iscsit_load_discovery_tpg(void)
 	 */
 	param = iscsi_find_param_from_key(AUTHMETHOD, tpg->param_list);
 	if (!param)
-		goto free_pl_out;
+		goto out;
 
 	if (iscsi_update_param_value(param, "CHAP,None") < 0)
-		goto free_pl_out;
+		goto out;
 
 	tpg->tpg_attrib.authentication = 0;
 
@@ -97,8 +105,6 @@ int iscsit_load_discovery_tpg(void)
 	pr_debug("CORE[0] - Allocated Discovery TPG\n");
 
 	return 0;
-free_pl_out:
-	iscsi_release_param_list(tpg->param_list);
 out:
 	if (tpg->sid == 1)
 		core_tpg_deregister(&tpg->tpg_se_tpg);
@@ -113,7 +119,6 @@ void iscsit_release_discovery_tpg(void)
 	if (!tpg)
 		return;
 
-	iscsi_release_param_list(tpg->param_list);
 	core_tpg_deregister(&tpg->tpg_se_tpg);
 
 	kfree(tpg);
@@ -211,6 +216,7 @@ static void iscsit_set_default_tpg_attribs(struct iscsi_portal_group *tpg)
 
 	a->authentication = TA_AUTHENTICATION;
 	a->login_timeout = TA_LOGIN_TIMEOUT;
+	a->netif_timeout = TA_NETIF_TIMEOUT;
 	a->default_cmdsn_depth = TA_DEFAULT_CMDSN_DEPTH;
 	a->generate_node_acls = TA_GENERATE_NODE_ACLS;
 	a->cache_dynamic_acls = TA_CACHE_DYNAMIC_ACLS;
@@ -221,7 +227,6 @@ static void iscsit_set_default_tpg_attribs(struct iscsi_portal_group *tpg)
 	a->t10_pi = TA_DEFAULT_T10_PI;
 	a->fabric_prot_type = TA_DEFAULT_FABRIC_PROT_TYPE;
 	a->tpg_enabled_sendtargets = TA_DEFAULT_TPG_ENABLED_SENDTARGETS;
-	a->login_keys_workaround = TA_DEFAULT_LOGIN_KEYS_WORKAROUND;
 }
 
 int iscsit_tpg_add_portal_group(struct iscsi_tiqn *tiqn, struct iscsi_portal_group *tpg)
@@ -255,6 +260,7 @@ err_out:
 		iscsi_release_param_list(tpg->param_list);
 		tpg->param_list = NULL;
 	}
+	kfree(tpg);
 	return -ENOMEM;
 }
 
@@ -306,9 +312,11 @@ int iscsit_tpg_enable_portal_group(struct iscsi_portal_group *tpg)
 	struct iscsi_tiqn *tiqn = tpg->tpg_tiqn;
 	int ret;
 
+	spin_lock(&tpg->tpg_state_lock);
 	if (tpg->tpg_state == TPG_STATE_ACTIVE) {
 		pr_err("iSCSI target portal group: %hu is already"
 			" active, ignoring request.\n", tpg->tpgt);
+		spin_unlock(&tpg->tpg_state_lock);
 		return -EINVAL;
 	}
 	/*
@@ -317,8 +325,10 @@ int iscsit_tpg_enable_portal_group(struct iscsi_portal_group *tpg)
 	 * is enforced (as per default), and remove the NONE option.
 	 */
 	param = iscsi_find_param_from_key(AUTHMETHOD, tpg->param_list);
-	if (!param)
+	if (!param) {
+		spin_unlock(&tpg->tpg_state_lock);
 		return -EINVAL;
+	}
 
 	if (tpg->tpg_attrib.authentication) {
 		if (!strcmp(param->value, NONE)) {
@@ -332,7 +342,6 @@ int iscsit_tpg_enable_portal_group(struct iscsi_portal_group *tpg)
 			goto err;
 	}
 
-	spin_lock(&tpg->tpg_state_lock);
 	tpg->tpg_state = TPG_STATE_ACTIVE;
 	spin_unlock(&tpg->tpg_state_lock);
 
@@ -345,6 +354,7 @@ int iscsit_tpg_enable_portal_group(struct iscsi_portal_group *tpg)
 	return 0;
 
 err:
+	spin_unlock(&tpg->tpg_state_lock);
 	return ret;
 }
 
@@ -389,11 +399,12 @@ int iscsit_tpg_disable_portal_group(struct iscsi_portal_group *tpg, int force)
 }
 
 struct iscsi_node_attrib *iscsit_tpg_get_node_attrib(
-	struct iscsit_session *sess)
+	struct iscsi_session *sess)
 {
 	struct se_session *se_sess = sess->se_sess;
 	struct se_node_acl *se_nacl = se_sess->se_node_acl;
-	struct iscsi_node_acl *acl = to_iscsi_nacl(se_nacl);
+	struct iscsi_node_acl *acl = container_of(se_nacl, struct iscsi_node_acl,
+					se_node_acl);
 
 	return &acl->node_attrib;
 }
@@ -441,9 +452,6 @@ static bool iscsit_tpg_check_network_portal(
 				break;
 		}
 		spin_unlock(&tpg->tpg_np_lock);
-
-		if (match)
-			break;
 	}
 	spin_unlock(&tiqn->tiqn_tpg_lock);
 
@@ -629,7 +637,8 @@ int iscsit_ta_authentication(struct iscsi_portal_group *tpg, u32 authentication)
 		none = strstr(buf1, NONE);
 		if (none)
 			goto out;
-		strlcat(buf1, "," NONE, sizeof(buf1));
+		strncat(buf1, ",", strlen(","));
+		strncat(buf1, NONE, strlen(NONE));
 		if (iscsi_update_param_value(param, buf1) < 0)
 			return -EINVAL;
 	}
@@ -661,6 +670,31 @@ int iscsit_ta_login_timeout(
 	a->login_timeout = login_timeout;
 	pr_debug("Set Logout Timeout to %u for Target Portal Group"
 		" %hu\n", a->login_timeout, tpg->tpgt);
+
+	return 0;
+}
+
+int iscsit_ta_netif_timeout(
+	struct iscsi_portal_group *tpg,
+	u32 netif_timeout)
+{
+	struct iscsi_tpg_attrib *a = &tpg->tpg_attrib;
+
+	if (netif_timeout > TA_NETIF_TIMEOUT_MAX) {
+		pr_err("Requested Network Interface Timeout %u larger"
+			" than maximum %u\n", netif_timeout,
+				TA_NETIF_TIMEOUT_MAX);
+		return -EINVAL;
+	} else if (netif_timeout < TA_NETIF_TIMEOUT_MIN) {
+		pr_err("Requested Network Interface Timeout %u smaller"
+			" than minimum %u\n", netif_timeout,
+				TA_NETIF_TIMEOUT_MIN);
+		return -EINVAL;
+	}
+
+	a->netif_timeout = netif_timeout;
+	pr_debug("Set Network Interface Timeout to %u for"
+		" Target Portal Group %hu\n", a->netif_timeout, tpg->tpgt);
 
 	return 0;
 }
@@ -863,24 +897,6 @@ int iscsit_ta_tpg_enabled_sendtargets(
 	a->tpg_enabled_sendtargets = flag;
 	pr_debug("iSCSI_TPG[%hu] - TPG enabled bit required for SendTargets:"
 		" %s\n", tpg->tpgt, (a->tpg_enabled_sendtargets) ? "ON" : "OFF");
-
-	return 0;
-}
-
-int iscsit_ta_login_keys_workaround(
-	struct iscsi_portal_group *tpg,
-	u32 flag)
-{
-	struct iscsi_tpg_attrib *a = &tpg->tpg_attrib;
-
-	if ((flag != 0) && (flag != 1)) {
-		pr_err("Illegal value %d\n", flag);
-		return -EINVAL;
-	}
-
-	a->login_keys_workaround = flag;
-	pr_debug("iSCSI_TPG[%hu] - TPG enabled bit for login keys workaround: %s ",
-		tpg->tpgt, (a->login_keys_workaround) ? "ON" : "OFF");
 
 	return 0;
 }

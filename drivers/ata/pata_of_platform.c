@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OF-platform PATA driver
  *
  * Copyright (c) 2007  MontaVista Software, Inc.
  *                     Anton Vorontsov <avorontsov@ru.mvista.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License (Version 2) as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -15,7 +18,7 @@
 
 #define DRV_NAME "pata_of_platform"
 
-static const struct scsi_host_template pata_platform_sht = {
+static struct scsi_host_template pata_platform_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -25,12 +28,11 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 	struct device_node *dn = ofdev->dev.of_node;
 	struct resource io_res;
 	struct resource ctl_res;
-	struct resource irq_res;
+	struct resource *irq_res;
 	unsigned int reg_shift = 0;
 	int pio_mode = 0;
 	int pio_mask;
-	bool use16bit;
-	int irq;
+	const u32 *prop;
 
 	ret = of_address_to_resource(dn, 0, &io_res);
 	if (ret) {
@@ -46,19 +48,15 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 		return -EINVAL;
 	}
 
-	memset(&irq_res, 0, sizeof(irq_res));
+	irq_res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
 
-	irq = platform_get_irq_optional(ofdev, 0);
-	if (irq < 0 && irq != -ENXIO)
-		return irq;
-	if (irq > 0) {
-		irq_res.start = irq;
-		irq_res.end = irq;
-	}
+	prop = of_get_property(dn, "reg-shift", NULL);
+	if (prop)
+		reg_shift = be32_to_cpup(prop);
 
-	of_property_read_u32(dn, "reg-shift", &reg_shift);
-
-	if (!of_property_read_u32(dn, "pio-mode", &pio_mode)) {
+	prop = of_get_property(dn, "pio-mode", NULL);
+	if (prop) {
+		pio_mode = be32_to_cpup(prop);
 		if (pio_mode > 6) {
 			dev_err(&ofdev->dev, "invalid pio-mode\n");
 			return -EINVAL;
@@ -67,19 +65,16 @@ static int pata_of_platform_probe(struct platform_device *ofdev)
 		dev_info(&ofdev->dev, "pio-mode unspecified, assuming PIO0\n");
 	}
 
-	use16bit = of_property_read_bool(dn, "ata-generic,use16bit");
-
 	pio_mask = 1 << pio_mode;
 	pio_mask |= (1 << pio_mode) - 1;
 
-	return __pata_platform_probe(&ofdev->dev, &io_res, &ctl_res, irq > 0 ? &irq_res : NULL,
-				     reg_shift, pio_mask, &pata_platform_sht,
-				     use16bit);
+	return __pata_platform_probe(&ofdev->dev, &io_res, &ctl_res, irq_res,
+				     reg_shift, pio_mask, &pata_platform_sht);
 }
 
-static const struct of_device_id pata_of_platform_match[] = {
+static struct of_device_id pata_of_platform_match[] = {
 	{ .compatible = "ata-generic", },
-	{ /* sentinel */ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, pata_of_platform_match);
 
@@ -89,7 +84,7 @@ static struct platform_driver pata_of_platform_driver = {
 		.of_match_table = pata_of_platform_match,
 	},
 	.probe		= pata_of_platform_probe,
-	.remove_new	= ata_platform_remove_one,
+	.remove		= ata_platform_remove_one,
 };
 
 module_platform_driver(pata_of_platform_driver);

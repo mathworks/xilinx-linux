@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #ifndef __API_DEF_H__
 #define __API_DEF_H__
 #include <linux/kernel.h>
@@ -19,8 +18,7 @@
 #define ADI_MAXUINT32 (ADI_POW2_32 - 1)
 #define ADI_MAXUINT24 (0xFFFFFF)
 #define ADI_GET_BYTE(w, p) (uint8_t)(((w) >> (p)) & 0xFF)
-#define DIV_U64(x, y) div_u64(x, y)
-#define DIV64_U64(x, y) div64_u64(x, y)
+#define DIV_U64(x,y) div_u64(x, y)
 
 #define INT16_MAX S16_MAX
 

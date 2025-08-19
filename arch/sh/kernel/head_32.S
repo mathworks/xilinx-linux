@@ -1,10 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0
- * $Id: head.S,v 1.7 2003/09/01 17:58:19 lethal Exp $
+/* $Id: head.S,v 1.7 2003/09/01 17:58:19 lethal Exp $
  *
  *  arch/sh/kernel/head.S
  *
  *  Copyright (C) 1999, 2000  Niibe Yutaka & Kaz Kojima
  *  Copyright (C) 2010  Matt Fleming
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  *
  * Head.S contains the SH exception handlers and startup code.
  */
@@ -64,7 +67,7 @@ ENTRY(_stext)
 	ldc	r0, r6_bank
 #endif
 
-#ifdef CONFIG_OF_EARLY_FLATTREE
+#ifdef CONFIG_OF_FLATTREE
 	mov	r4, r12		! Store device tree blob pointer in r12
 #endif
 	
@@ -315,7 +318,7 @@ ENTRY(_stext)
 10:		
 #endif
 
-#ifdef CONFIG_OF_EARLY_FLATTREE
+#ifdef CONFIG_OF_FLATTREE
 	mov.l	8f, r0		! Make flat device tree available early.
 	jsr	@r0
 	 mov	r12, r4
@@ -346,7 +349,7 @@ ENTRY(stack_start)
 5:	.long	start_kernel
 6:	.long	cpu_init
 7:	.long	init_thread_union
-#if defined(CONFIG_OF_EARLY_FLATTREE)
+#if defined(CONFIG_OF_FLATTREE)
 8:	.long	sh_fdt_init
 #endif
 

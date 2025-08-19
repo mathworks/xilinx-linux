@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * seqiv: Sequence Number IV Generator
  *
@@ -6,6 +5,12 @@
  * with a salt.  This algorithm is mainly useful for CTR and similar modes.
  *
  * Copyright (c) 2007 Herbert Xu <herbert@gondor.apana.org.au>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ *
  */
 
 #include <crypto/internal/geniv.h>
@@ -18,12 +23,14 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
+static void seqiv_free(struct crypto_instance *inst);
+
 static void seqiv_aead_encrypt_complete2(struct aead_request *req, int err)
 {
 	struct aead_request *subreq = aead_request_ctx(req);
 	struct crypto_aead *geniv;
 
-	if (err == -EINPROGRESS || err == -EBUSY)
+	if (err == -EINPROGRESS)
 		return;
 
 	if (err)
@@ -33,12 +40,13 @@ static void seqiv_aead_encrypt_complete2(struct aead_request *req, int err)
 	memcpy(req->iv, subreq->iv, crypto_aead_ivsize(geniv));
 
 out:
-	kfree_sensitive(subreq->iv);
+	kzfree(subreq->iv);
 }
 
-static void seqiv_aead_encrypt_complete(void *data, int err)
+static void seqiv_aead_encrypt_complete(struct crypto_async_request *base,
+					int err)
 {
-	struct aead_request *req = data;
+	struct aead_request *req = base->data;
 
 	seqiv_aead_encrypt_complete2(req, err);
 	aead_request_complete(req, err);
@@ -65,9 +73,9 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	info = req->iv;
 
 	if (req->src != req->dst) {
-		SYNC_SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
+		SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
 
-		skcipher_request_set_sync_tfm(nreq, ctx->sknull);
+		skcipher_request_set_tfm(nreq, ctx->sknull);
 		skcipher_request_set_callback(nreq, req->base.flags,
 					      NULL, NULL);
 		skcipher_request_set_crypt(nreq, req->src, req->dst,
@@ -81,12 +89,13 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 
 	if (unlikely(!IS_ALIGNED((unsigned long)info,
 				 crypto_aead_alignmask(geniv) + 1))) {
-		info = kmemdup(req->iv, ivsize, req->base.flags &
-			       CRYPTO_TFM_REQ_MAY_SLEEP ? GFP_KERNEL :
-			       GFP_ATOMIC);
+		info = kmalloc(ivsize, req->base.flags &
+				       CRYPTO_TFM_REQ_MAY_SLEEP ? GFP_KERNEL:
+								  GFP_ATOMIC);
 		if (!info)
 			return -ENOMEM;
 
+		memcpy(info, req->iv, ivsize);
 		compl = seqiv_aead_encrypt_complete;
 		data = req;
 	}
@@ -135,12 +144,19 @@ static int seqiv_aead_decrypt(struct aead_request *req)
 static int seqiv_aead_create(struct crypto_template *tmpl, struct rtattr **tb)
 {
 	struct aead_instance *inst;
+	struct crypto_aead_spawn *spawn;
+	struct aead_alg *alg;
 	int err;
 
-	inst = aead_geniv_alloc(tmpl, tb);
+	inst = aead_geniv_alloc(tmpl, tb, 0, 0);
 
 	if (IS_ERR(inst))
 		return PTR_ERR(inst);
+
+	inst->alg.base.cra_alignmask |= __alignof__(u32) - 1;
+
+	spawn = aead_instance_ctx(inst);
+	alg = crypto_spawn_aead_alg(spawn);
 
 	err = -EINVAL;
 	if (inst->alg.ivsize != sizeof(u64))
@@ -156,16 +172,40 @@ static int seqiv_aead_create(struct crypto_template *tmpl, struct rtattr **tb)
 	inst->alg.base.cra_ctxsize += inst->alg.ivsize;
 
 	err = aead_register_instance(tmpl, inst);
-	if (err) {
-free_inst:
-		inst->free(inst);
-	}
+	if (err)
+		goto free_inst;
+
+out:
 	return err;
+
+free_inst:
+	aead_geniv_free(inst);
+	goto out;
+}
+
+static int seqiv_create(struct crypto_template *tmpl, struct rtattr **tb)
+{
+	struct crypto_attr_type *algt;
+
+	algt = crypto_get_attr_type(tb);
+	if (IS_ERR(algt))
+		return PTR_ERR(algt);
+
+	if ((algt->type ^ CRYPTO_ALG_TYPE_AEAD) & CRYPTO_ALG_TYPE_MASK)
+		return -EINVAL;
+
+	return seqiv_aead_create(tmpl, tb);
+}
+
+static void seqiv_free(struct crypto_instance *inst)
+{
+	aead_geniv_free(aead_instance(inst));
 }
 
 static struct crypto_template seqiv_tmpl = {
 	.name = "seqiv",
-	.create = seqiv_aead_create,
+	.create = seqiv_create,
+	.free = seqiv_free,
 	.module = THIS_MODULE,
 };
 
@@ -179,7 +219,7 @@ static void __exit seqiv_module_exit(void)
 	crypto_unregister_template(&seqiv_tmpl);
 }
 
-subsys_initcall(seqiv_module_init);
+module_init(seqiv_module_init);
 module_exit(seqiv_module_exit);
 
 MODULE_LICENSE("GPL");

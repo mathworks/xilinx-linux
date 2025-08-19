@@ -1,13 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SPEAr6xx machines clock framework source file
  *
  * Copyright (C) 2012 ST Microelectronics
  * Viresh Kumar <vireshk@kernel.org>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 #include <linux/clkdev.h>
-#include <linux/clk/spear.h>
 #include <linux/io.h>
 #include <linux/spinlock_types.h>
 #include "clk.h"
@@ -145,7 +147,7 @@ void __init spear6xx_clk_init(void __iomem *misc_base)
 
 	clk = clk_register_fixed_factor(NULL, "wdt_clk", "osc_30m_clk", 0, 1,
 			1);
-	clk_register_clkdev(clk, NULL, "fc880000.wdt");
+	clk_register_clkdev(clk, NULL, "wdt");
 
 	/* clock derived from pll1 clk */
 	clk = clk_register_fixed_factor(NULL, "cpu_clk", "pll1_clk",
@@ -207,7 +209,7 @@ void __init spear6xx_clk_init(void __iomem *misc_base)
 
 	clk = clk_register_gate(NULL, "clcd_clk", "clcd_mclk", 0,
 			PERIP1_CLK_ENB, CLCD_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "fc200000.clcd");
+	clk_register_clkdev(clk, NULL, "clcd");
 
 	/* gpt clocks */
 	clk = clk_register_gpt("gpt0_1_syn_clk", "pll1_clk", 0, PRSC0_CLK_CFG,
@@ -311,7 +313,7 @@ void __init spear6xx_clk_init(void __iomem *misc_base)
 	/* clock derived from apb clk */
 	clk = clk_register_gate(NULL, "adc_clk", "apb_clk", 0, PERIP1_CLK_ENB,
 			ADC_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "d820b000.adc");
+	clk_register_clkdev(clk, NULL, "adc");
 
 	clk = clk_register_fixed_factor(NULL, "gpio0_clk", "apb_clk", 0, 1, 1);
 	clk_register_clkdev(clk, NULL, "f0100000.gpio");
@@ -326,13 +328,13 @@ void __init spear6xx_clk_init(void __iomem *misc_base)
 
 	clk = clk_register_gate(NULL, "ssp0_clk", "apb_clk", 0, PERIP1_CLK_ENB,
 			SSP0_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "d0100000.spi");
+	clk_register_clkdev(clk, NULL, "ssp-pl022.0");
 
 	clk = clk_register_gate(NULL, "ssp1_clk", "apb_clk", 0, PERIP1_CLK_ENB,
 			SSP1_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "d0180000.spi");
+	clk_register_clkdev(clk, NULL, "ssp-pl022.1");
 
 	clk = clk_register_gate(NULL, "ssp2_clk", "apb_clk", 0, PERIP1_CLK_ENB,
 			SSP2_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "d8180000.spi");
+	clk_register_clkdev(clk, NULL, "ssp-pl022.2");
 }

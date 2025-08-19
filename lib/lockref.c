@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/export.h>
 #include <linux/lockref.h>
 
@@ -9,20 +8,19 @@
  * failure case.
  */
 #define CMPXCHG_LOOP(CODE, SUCCESS) do {					\
-	int retry = 100;							\
 	struct lockref old;							\
 	BUILD_BUG_ON(sizeof(old) != 8);						\
 	old.lock_count = READ_ONCE(lockref->lock_count);			\
 	while (likely(arch_spin_value_unlocked(old.lock.rlock.raw_lock))) {  	\
-		struct lockref new = old;					\
+		struct lockref new = old, prev = old;				\
 		CODE								\
-		if (likely(try_cmpxchg64_relaxed(&lockref->lock_count,		\
-						 &old.lock_count,		\
-						 new.lock_count))) {		\
+		old.lock_count = cmpxchg64_relaxed(&lockref->lock_count,	\
+						   old.lock_count,		\
+						   new.lock_count);		\
+		if (likely(old.lock_count == prev.lock_count)) {		\
 			SUCCESS;						\
 		}								\
-		if (!--retry)							\
-			break;							\
+		cpu_relax_lowlatency();						\
 	}									\
 } while (0)
 
@@ -82,32 +80,29 @@ int lockref_get_not_zero(struct lockref *lockref)
 EXPORT_SYMBOL(lockref_get_not_zero);
 
 /**
- * lockref_put_not_zero - Decrements count unless count <= 1 before decrement
+ * lockref_get_or_lock - Increments count unless the count is 0 or dead
  * @lockref: pointer to lockref structure
- * Return: 1 if count updated successfully or 0 if count would become zero
+ * Return: 1 if count updated successfully or 0 if count was zero
+ * and we got the lock instead.
  */
-int lockref_put_not_zero(struct lockref *lockref)
+int lockref_get_or_lock(struct lockref *lockref)
 {
-	int retval;
-
 	CMPXCHG_LOOP(
-		new.count--;
-		if (old.count <= 1)
-			return 0;
+		new.count++;
+		if (old.count <= 0)
+			break;
 	,
 		return 1;
 	);
 
 	spin_lock(&lockref->lock);
-	retval = 0;
-	if (lockref->count > 1) {
-		lockref->count--;
-		retval = 1;
-	}
+	if (lockref->count <= 0)
+		return 0;
+	lockref->count++;
 	spin_unlock(&lockref->lock);
-	return retval;
+	return 1;
 }
-EXPORT_SYMBOL(lockref_put_not_zero);
+EXPORT_SYMBOL(lockref_get_or_lock);
 
 /**
  * lockref_put_return - Decrement reference count if possible

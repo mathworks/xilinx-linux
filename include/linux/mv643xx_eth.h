@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * MV-643XX ethernet platform device data definition file.
  */
@@ -8,7 +7,6 @@
 
 #include <linux/mbus.h>
 #include <linux/if_ether.h>
-#include <linux/phy.h>
 
 #define MV643XX_ETH_SHARED_NAME		"mv643xx_eth"
 #define MV643XX_ETH_NAME		"mv643xx_eth_port"
@@ -60,7 +58,6 @@ struct mv643xx_eth_platform_data {
 	 */
 	int			speed;
 	int			duplex;
-	phy_interface_t		interface;
 
 	/*
 	 * How many RX/TX queues to use.

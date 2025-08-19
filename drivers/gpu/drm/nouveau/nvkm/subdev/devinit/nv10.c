@@ -106,8 +106,8 @@ nv10_devinit = {
 };
 
 int
-nv10_devinit_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+nv10_devinit_new(struct nvkm_device *device, int index,
 		 struct nvkm_devinit **pinit)
 {
-	return nv04_devinit_new_(&nv10_devinit, device, type, inst, pinit);
+	return nv04_devinit_new_(&nv10_devinit, device, index, pinit);
 }

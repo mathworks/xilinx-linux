@@ -1,8 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * FPGA Manager Driver for Altera SOCFPGA
  *
  *  Copyright (C) 2013-2015 Altera Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -544,18 +555,20 @@ static int socfpga_fpga_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct socfpga_fpga_priv *priv;
-	struct fpga_manager *mgr;
+	struct resource *res;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
-	priv->fpga_base_addr = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	priv->fpga_base_addr = devm_ioremap_resource(dev, res);
 	if (IS_ERR(priv->fpga_base_addr))
 		return PTR_ERR(priv->fpga_base_addr);
 
-	priv->fpga_data_addr = devm_platform_ioremap_resource(pdev, 1);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	priv->fpga_data_addr = devm_ioremap_resource(dev, res);
 	if (IS_ERR(priv->fpga_data_addr))
 		return PTR_ERR(priv->fpga_data_addr);
 
@@ -568,9 +581,15 @@ static int socfpga_fpga_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	mgr = devm_fpga_mgr_register(dev, "Altera SOCFPGA FPGA Manager",
-				     &socfpga_fpga_ops, priv);
-	return PTR_ERR_OR_ZERO(mgr);
+	return fpga_mgr_register(dev, "Altera SOCFPGA FPGA Manager",
+				 &socfpga_fpga_ops, priv);
+}
+
+static int socfpga_fpga_remove(struct platform_device *pdev)
+{
+	fpga_mgr_unregister(&pdev->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -584,6 +603,7 @@ MODULE_DEVICE_TABLE(of, socfpga_fpga_of_match);
 
 static struct platform_driver socfpga_fpga_driver = {
 	.probe = socfpga_fpga_probe,
+	.remove = socfpga_fpga_remove,
 	.driver = {
 		.name	= "socfpga_fpga_manager",
 		.of_match_table = of_match_ptr(socfpga_fpga_of_match),

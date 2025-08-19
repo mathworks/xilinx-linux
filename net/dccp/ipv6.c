@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	DCCP over IPv6
  *	Linux INET6 implementation
@@ -6,13 +5,17 @@
  *	Based on net/dccp6/ipv6.c
  *
  *	Arnaldo Carvalho de Melo <acme@ghostprotocols.net>
+ *
+ *	This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
  */
 
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/xfrm.h>
-#include <linux/string.h>
 
 #include <net/addrconf.h>
 #include <net/inet_common.h>
@@ -27,20 +30,12 @@
 #include <net/ip6_checksum.h>
 #include <net/xfrm.h>
 #include <net/secure_seq.h>
-#include <net/netns/generic.h>
-#include <net/sock.h>
 
 #include "dccp.h"
 #include "ipv6.h"
 #include "feat.h"
 
-struct dccp_v6_pernet {
-	struct sock *v6_ctl_sk;
-};
-
-static unsigned int dccp_v6_pernet_id __read_mostly;
-
-/* The per-net v6_ctl_sk is used for sending RSTs and ACKs */
+/* The per-net dccp.v6_ctl_sk is used for sending RSTs and ACKs */
 
 static const struct inet_connection_sock_af_ops dccp_ipv6_mapped;
 static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops;
@@ -71,10 +66,10 @@ static inline __u64 dccp_v6_init_sequence(struct sk_buff *skb)
 
 }
 
-static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
+static void dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			u8 type, u8 code, int offset, __be32 info)
 {
-	const struct ipv6hdr *hdr;
+	const struct ipv6hdr *hdr = (const struct ipv6hdr *)skb->data;
 	const struct dccp_hdr *dh;
 	struct dccp_sock *dp;
 	struct ipv6_pinfo *np;
@@ -83,34 +78,32 @@ static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	__u64 seq;
 	struct net *net = dev_net(skb->dev);
 
-	if (!pskb_may_pull(skb, offset + sizeof(*dh)))
-		return -EINVAL;
-	dh = (struct dccp_hdr *)(skb->data + offset);
-	if (!pskb_may_pull(skb, offset + __dccp_basic_hdr_len(dh)))
-		return -EINVAL;
-	hdr = (const struct ipv6hdr *)skb->data;
+	/* Only need dccph_dport & dccph_sport which are the first
+	 * 4 bytes in dccp header.
+	 * Our caller (icmpv6_notify()) already pulled 8 bytes for us.
+	 */
+	BUILD_BUG_ON(offsetofend(struct dccp_hdr, dccph_sport) > 8);
+	BUILD_BUG_ON(offsetofend(struct dccp_hdr, dccph_dport) > 8);
 	dh = (struct dccp_hdr *)(skb->data + offset);
 
 	sk = __inet6_lookup_established(net, &dccp_hashinfo,
 					&hdr->daddr, dh->dccph_dport,
 					&hdr->saddr, ntohs(dh->dccph_sport),
-					inet6_iif(skb), 0);
+					inet6_iif(skb));
 
 	if (!sk) {
 		__ICMP6_INC_STATS(net, __in6_dev_get(skb->dev),
 				  ICMP6_MIB_INERRORS);
-		return -ENOENT;
+		return;
 	}
 
 	if (sk->sk_state == DCCP_TIME_WAIT) {
 		inet_twsk_put(inet_twsk(sk));
-		return 0;
+		return;
 	}
 	seq = dccp_hdr_seq(dh);
-	if (sk->sk_state == DCCP_NEW_SYN_RECV) {
-		dccp_req_err(sk, seq);
-		return 0;
-	}
+	if (sk->sk_state == DCCP_NEW_SYN_RECV)
+		return dccp_req_err(sk, seq);
 
 	bh_lock_sock(sk);
 	if (sock_owned_by_user(sk))
@@ -129,12 +122,10 @@ static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	np = inet6_sk(sk);
 
 	if (type == NDISC_REDIRECT) {
-		if (!sock_owned_by_user(sk)) {
-			struct dst_entry *dst = __sk_dst_check(sk, np->dst_cookie);
+		struct dst_entry *dst = __sk_dst_check(sk, np->dst_cookie);
 
-			if (dst)
-				dst->ops->redirect(dst, sk, skb);
-		}
+		if (dst)
+			dst->ops->redirect(dst, sk, skb);
 		goto out;
 	}
 
@@ -172,24 +163,22 @@ static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			 * Wake people up to see the error
 			 * (see connect in sock.c)
 			 */
-			sk_error_report(sk);
+			sk->sk_error_report(sk);
 			dccp_done(sk);
-		} else {
-			WRITE_ONCE(sk->sk_err_soft, err);
-		}
+		} else
+			sk->sk_err_soft = err;
 		goto out;
 	}
 
 	if (!sock_owned_by_user(sk) && np->recverr) {
 		sk->sk_err = err;
-		sk_error_report(sk);
-	} else {
-		WRITE_ONCE(sk->sk_err_soft, err);
-	}
+		sk->sk_error_report(sk);
+	} else
+		sk->sk_err_soft = err;
+
 out:
 	bh_unlock_sock(sk);
 	sock_put(sk);
-	return 0;
 }
 
 
@@ -211,14 +200,14 @@ static int dccp_v6_send_response(const struct sock *sk, struct request_sock *req
 	fl6.flowi6_oif = ireq->ir_iif;
 	fl6.fl6_dport = ireq->ir_rmt_port;
 	fl6.fl6_sport = htons(ireq->ir_num);
-	security_req_classify_flow(req, flowi6_to_flowi_common(&fl6));
+	security_req_classify_flow(req, flowi6_to_flowi(&fl6));
 
 
 	rcu_read_lock();
 	final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt), &final);
 	rcu_read_unlock();
 
-	dst = ip6_dst_lookup_flow(sock_net(sk), sk, &fl6, final_p);
+	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
 	if (IS_ERR(dst)) {
 		err = PTR_ERR(dst);
 		dst = NULL;
@@ -238,8 +227,7 @@ static int dccp_v6_send_response(const struct sock *sk, struct request_sock *req
 		opt = ireq->ipv6_opt;
 		if (!opt)
 			opt = rcu_dereference(np->opt);
-		err = ip6_xmit(sk, skb, &fl6, READ_ONCE(sk->sk_mark), opt,
-			       np->tclass, sk->sk_priority);
+		err = ip6_xmit(sk, skb, &fl6, opt, np->tclass);
 		rcu_read_unlock();
 		err = net_xmit_eval(err);
 	}
@@ -262,8 +250,7 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	struct sk_buff *skb;
 	struct flowi6 fl6;
 	struct net *net = dev_net(skb_dst(rxskb)->dev);
-	struct dccp_v6_pernet *pn;
-	struct sock *ctl_sk;
+	struct sock *ctl_sk = net->dccp.v6_ctl_sk;
 	struct dst_entry *dst;
 
 	if (dccp_hdr(rxskb)->dccph_type == DCCP_PKT_RESET)
@@ -272,8 +259,6 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	if (!ipv6_unicast_destination(rxskb))
 		return;
 
-	pn = net_generic(net, dccp_v6_pernet_id);
-	ctl_sk = pn->v6_ctl_sk;
 	skb = dccp_ctl_make_reset(ctl_sk, rxskb);
 	if (skb == NULL)
 		return;
@@ -290,13 +275,13 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	fl6.flowi6_oif = inet6_iif(rxskb);
 	fl6.fl6_dport = dccp_hdr(skb)->dccph_dport;
 	fl6.fl6_sport = dccp_hdr(skb)->dccph_sport;
-	security_skb_classify_flow(rxskb, flowi6_to_flowi_common(&fl6));
+	security_skb_classify_flow(rxskb, flowi6_to_flowi(&fl6));
 
 	/* sk = NULL, but it is safe for now. RST socket required. */
-	dst = ip6_dst_lookup_flow(sock_net(ctl_sk), ctl_sk, &fl6, NULL);
+	dst = ip6_dst_lookup_flow(ctl_sk, &fl6, NULL);
 	if (!IS_ERR(dst)) {
 		skb_dst_set(skb, dst);
-		ip6_xmit(ctl_sk, skb, &fl6, 0, NULL, 0, 0);
+		ip6_xmit(ctl_sk, skb, &fl6, NULL, 0);
 		DCCP_INC_STATS(DCCP_MIB_OUTSEGS);
 		DCCP_INC_STATS(DCCP_MIB_OUTRSTS);
 		return;
@@ -330,11 +315,6 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (!ipv6_unicast_destination(skb))
 		return 0;	/* discard, don't send a reset here */
 
-	if (ipv6_addr_v4mapped(&ipv6_hdr(skb)->saddr)) {
-		__IP6_INC_STATS(sock_net(sk), NULL, IPSTATS_MIB_INHDRERRORS);
-		return 0;
-	}
-
 	if (dccp_bad_service_code(sk, service)) {
 		dcb->dccpd_reset_code = DCCP_RESET_CODE_BAD_SERVICE_CODE;
 		goto drop;
@@ -346,7 +326,7 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (inet_csk_reqsk_queue_is_full(sk))
 		goto drop;
 
-	if (sk_acceptq_is_full(sk))
+	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1)
 		goto drop;
 
 	req = inet_reqsk_alloc(&dccp6_request_sock_ops, sk, true);
@@ -367,18 +347,17 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	ireq->ir_v6_rmt_addr = ipv6_hdr(skb)->saddr;
 	ireq->ir_v6_loc_addr = ipv6_hdr(skb)->daddr;
 	ireq->ireq_family = AF_INET6;
-	ireq->ir_mark = inet_request_mark(sk, skb);
 
 	if (ipv6_opt_accepted(sk, skb, IP6CB(skb)) ||
 	    np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo ||
 	    np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim) {
-		refcount_inc(&skb->users);
+		atomic_inc(&skb->users);
 		ireq->pktopts = skb;
 	}
-	ireq->ir_iif = READ_ONCE(sk->sk_bound_dev_if);
+	ireq->ir_iif = sk->sk_bound_dev_if;
 
 	/* So that link locals have meaning */
-	if (!ireq->ir_iif &&
+	if (!sk->sk_bound_dev_if &&
 	    ipv6_addr_type(&ireq->ir_v6_rmt_addr) & IPV6_ADDR_LINKLOCAL)
 		ireq->ir_iif = inet6_iif(skb);
 
@@ -399,7 +378,6 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		goto drop_and_free;
 
 	inet_csk_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT);
-	reqsk_put(req);
 	return 0;
 
 drop_and_free:
@@ -446,11 +424,8 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 		newsk->sk_backlog_rcv = dccp_v4_do_rcv;
 		newnp->pktoptions  = NULL;
 		newnp->opt	   = NULL;
-		newnp->ipv6_mc_list = NULL;
-		newnp->ipv6_ac_list = NULL;
-		newnp->ipv6_fl_list = NULL;
-		newnp->mcast_oif   = inet_iif(skb);
-		newnp->mcast_hops  = ip_hdr(skb)->ttl;
+		newnp->mcast_oif   = inet6_iif(skb);
+		newnp->mcast_hops  = ipv6_hdr(skb)->hop_limit;
 
 		/*
 		 * No need to charge this sock to the relevant IPv6 refcnt debug socks count
@@ -513,9 +488,6 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	/* Clone RX bits */
 	newnp->rxopt.all = np->rxopt.all;
 
-	newnp->ipv6_mc_list = NULL;
-	newnp->ipv6_ac_list = NULL;
-	newnp->ipv6_fl_list = NULL;
 	newnp->pktoptions = NULL;
 	newnp->opt	  = NULL;
 	newnp->mcast_oif  = inet6_iif(skb);
@@ -549,12 +521,14 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 		dccp_done(newsk);
 		goto out;
 	}
-	*own_req = inet_ehash_nolisten(newsk, req_to_sk(req_unhash), NULL);
+	*own_req = inet_ehash_nolisten(newsk, req_to_sk(req_unhash));
 	/* Clone pktoptions received with SYN, if we own the req */
 	if (*own_req && ireq->pktopts) {
-		newnp->pktoptions = skb_clone_and_charge_r(ireq->pktopts, newsk);
+		newnp->pktoptions = skb_clone(ireq->pktopts, GFP_ATOMIC);
 		consume_skb(ireq->pktopts);
 		ireq->pktopts = NULL;
+		if (newnp->pktoptions)
+			skb_set_owner_r(newnp->pktoptions, newsk);
 	}
 
 	return newsk;
@@ -614,13 +588,19 @@ static int dccp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 					       --ANK (980728)
 	 */
 	if (np->rxopt.all)
-		opt_skb = skb_clone_and_charge_r(skb, sk);
+	/*
+	 * FIXME: Add handling of IPV6_PKTOPTIONS skb. See the comments below
+	 *        (wrt ipv6_pktopions) and net/ipv6/tcp_ipv6.c for an example.
+	 */
+		opt_skb = skb_clone(skb, GFP_ATOMIC);
 
 	if (sk->sk_state == DCCP_OPEN) { /* Fast path */
 		if (dccp_rcv_established(sk, skb, dccp_hdr(skb), skb->len))
 			goto reset;
-		if (opt_skb)
-			goto ipv6_pktoptions;
+		if (opt_skb) {
+			/* XXX This is where we would goto ipv6_pktoptions. */
+			__kfree_skb(opt_skb);
+		}
 		return 0;
 	}
 
@@ -651,8 +631,10 @@ static int dccp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 
 	if (dccp_rcv_state_process(sk, skb, dccp_hdr(skb), skb->len))
 		goto reset;
-	if (opt_skb)
-		goto ipv6_pktoptions;
+	if (opt_skb) {
+		/* XXX This is where we would goto ipv6_pktoptions. */
+		__kfree_skb(opt_skb);
+	}
 	return 0;
 
 reset:
@@ -661,34 +643,6 @@ discard:
 	if (opt_skb != NULL)
 		__kfree_skb(opt_skb);
 	kfree_skb(skb);
-	return 0;
-
-/* Handling IPV6_PKTOPTIONS skb the similar
- * way it's done for net/ipv6/tcp_ipv6.c
- */
-ipv6_pktoptions:
-	if (!((1 << sk->sk_state) & (DCCPF_CLOSED | DCCPF_LISTEN))) {
-		if (np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo)
-			np->mcast_oif = inet6_iif(opt_skb);
-		if (np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim)
-			np->mcast_hops = ipv6_hdr(opt_skb)->hop_limit;
-		if (np->rxopt.bits.rxflow || np->rxopt.bits.rxtclass)
-			np->rcv_flowinfo = ip6_flowinfo(ipv6_hdr(opt_skb));
-		if (np->repflow)
-			np->flow_label = ip6_flowlabel(ipv6_hdr(opt_skb));
-		if (ipv6_opt_accepted(sk, opt_skb,
-				      &DCCP_SKB_CB(opt_skb)->header.h6)) {
-			memmove(IP6CB(opt_skb),
-				&DCCP_SKB_CB(opt_skb)->header.h6,
-				sizeof(struct inet6_skb_parm));
-			opt_skb = xchg(&np->pktoptions, opt_skb);
-		} else {
-			__kfree_skb(opt_skb);
-			opt_skb = xchg(&np->pktoptions, NULL);
-		}
-	}
-
-	kfree_skb(opt_skb);
 	return 0;
 }
 
@@ -724,7 +678,7 @@ static int dccp_v6_rcv(struct sk_buff *skb)
 lookup:
 	sk = __inet6_lookup_skb(&dccp_hashinfo, skb, __dccp_hdr_len(dh),
 			        dh->dccph_sport, dh->dccph_dport,
-				inet6_iif(skb), 0, &refcounted);
+				inet6_iif(skb), &refcounted);
 	if (!sk) {
 		dccp_pr_debug("failed to look up flow ID in table and "
 			      "get corresponding socket\n");
@@ -784,7 +738,6 @@ lookup:
 
 	if (!xfrm6_policy_check(sk, XFRM_POLICY_IN, skb))
 		goto discard_and_relse;
-	nf_reset_ct(skb);
 
 	return __sk_receive_skb(sk, skb, 1, dh->dccph_doff * 4,
 				refcounted) ? -1 : 0;
@@ -845,7 +798,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		if (fl6.flowlabel & IPV6_FLOWLABEL_MASK) {
 			struct ip6_flowlabel *flowlabel;
 			flowlabel = fl6_sock_lookup(sk, fl6.flowlabel);
-			if (IS_ERR(flowlabel))
+			if (flowlabel == NULL)
 				return -EINVAL;
 			fl6_sock_release(flowlabel);
 		}
@@ -891,7 +844,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 		SOCK_DEBUG(sk, "connect: ipv4 mapped\n");
 
-		if (ipv6_only_sock(sk))
+		if (__ipv6_only_sock(sk))
 			return -ENETUNREACH;
 
 		sin.sin_family = AF_INET;
@@ -921,12 +874,12 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	fl6.flowi6_oif = sk->sk_bound_dev_if;
 	fl6.fl6_dport = usin->sin6_port;
 	fl6.fl6_sport = inet->inet_sport;
-	security_sk_classify_flow(sk, flowi6_to_flowi_common(&fl6));
+	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
 	opt = rcu_dereference_protected(np->opt, lockdep_sock_is_held(sk));
 	final_p = fl6_update_dst(&fl6, opt, &final);
 
-	dst = ip6_dst_lookup_flow(sock_net(sk), sk, &fl6, final_p);
+	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
 	if (IS_ERR(dst)) {
 		err = PTR_ERR(dst);
 		goto failure;
@@ -934,10 +887,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 	if (saddr == NULL) {
 		saddr = &fl6.saddr;
-
-		err = inet_bhash2_update_saddr(sk, saddr, AF_INET6);
-		if (err)
-			goto failure;
+		sk->sk_v6_rcv_saddr = *saddr;
 	}
 
 	/* set the source address */
@@ -969,7 +919,6 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 late_failure:
 	dccp_set_state(sk, DCCP_CLOSED);
-	inet_bhash2_reset_saddr(sk);
 	__sk_dst_reset(sk);
 failure:
 	inet->inet_dport = 0;
@@ -988,6 +937,11 @@ static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops = {
 	.getsockopt	   = ipv6_getsockopt,
 	.addr2sockaddr	   = inet6_csk_addr2sockaddr,
 	.sockaddr_len	   = sizeof(struct sockaddr_in6),
+	.bind_conflict	   = inet6_csk_bind_conflict,
+#ifdef CONFIG_COMPAT
+	.compat_setsockopt = compat_ipv6_setsockopt,
+	.compat_getsockopt = compat_ipv6_getsockopt,
+#endif
 };
 
 /*
@@ -1004,13 +958,12 @@ static const struct inet_connection_sock_af_ops dccp_ipv6_mapped = {
 	.getsockopt	   = ipv6_getsockopt,
 	.addr2sockaddr	   = inet6_csk_addr2sockaddr,
 	.sockaddr_len	   = sizeof(struct sockaddr_in6),
+	.bind_conflict	   = inet6_csk_bind_conflict,
+#ifdef CONFIG_COMPAT
+	.compat_setsockopt = compat_ipv6_setsockopt,
+	.compat_getsockopt = compat_ipv6_getsockopt,
+#endif
 };
-
-static void dccp_v6_sk_destruct(struct sock *sk)
-{
-	dccp_destruct_common(sk);
-	inet6_sock_destruct(sk);
-}
 
 /* NOTE: A lot of things set to zero explicitly by call to
  *       sk_alloc() so need not be done here.
@@ -1024,10 +977,15 @@ static int dccp_v6_init_sock(struct sock *sk)
 		if (unlikely(!dccp_v6_ctl_sock_initialized))
 			dccp_v6_ctl_sock_initialized = 1;
 		inet_csk(sk)->icsk_af_ops = &dccp_ipv6_af_ops;
-		sk->sk_destruct = dccp_v6_sk_destruct;
 	}
 
 	return err;
+}
+
+static void dccp_v6_destroy_sock(struct sock *sk)
+{
+	dccp_destroy_sock(sk);
+	inet6_destroy_sock(sk);
 }
 
 static struct timewait_sock_ops dccp6_timewait_sock_ops = {
@@ -1052,15 +1010,18 @@ static struct proto dccp_v6_prot = {
 	.accept		   = inet_csk_accept,
 	.get_port	   = inet_csk_get_port,
 	.shutdown	   = dccp_shutdown,
-	.destroy	   = dccp_destroy_sock,
+	.destroy	   = dccp_v6_destroy_sock,
 	.orphan_count	   = &dccp_orphan_count,
 	.max_header	   = MAX_DCCP_HEADER,
 	.obj_size	   = sizeof(struct dccp6_sock),
-	.ipv6_pinfo_offset = offsetof(struct dccp6_sock, inet6),
-	.slab_flags	   = SLAB_TYPESAFE_BY_RCU,
+	.slab_flags	   = SLAB_DESTROY_BY_RCU,
 	.rsk_prot	   = &dccp6_request_sock_ops,
 	.twsk_prot	   = &dccp6_timewait_sock_ops,
 	.h.hashinfo	   = &dccp_hashinfo,
+#ifdef CONFIG_COMPAT
+	.compat_setsockopt = compat_dccp_setsockopt,
+	.compat_getsockopt = compat_dccp_getsockopt,
+#endif
 };
 
 static const struct inet6_protocol dccp_v6_protocol = {
@@ -1080,7 +1041,6 @@ static const struct proto_ops inet6_dccp_ops = {
 	.getname	   = inet6_getname,
 	.poll		   = dccp_poll,
 	.ioctl		   = inet6_ioctl,
-	.gettstamp	   = sock_gettstamp,
 	.listen		   = inet_dccp_listen,
 	.shutdown	   = inet_shutdown,
 	.setsockopt	   = sock_common_setsockopt,
@@ -1088,8 +1048,10 @@ static const struct proto_ops inet6_dccp_ops = {
 	.sendmsg	   = inet_sendmsg,
 	.recvmsg	   = sock_common_recvmsg,
 	.mmap		   = sock_no_mmap,
+	.sendpage	   = sock_no_sendpage,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl	   = inet6_compat_ioctl,
+	.compat_setsockopt = compat_sock_common_setsockopt,
+	.compat_getsockopt = compat_sock_common_getsockopt,
 #endif
 };
 
@@ -1103,66 +1065,54 @@ static struct inet_protosw dccp_v6_protosw = {
 
 static int __net_init dccp_v6_init_net(struct net *net)
 {
-	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
-
 	if (dccp_hashinfo.bhash == NULL)
 		return -ESOCKTNOSUPPORT;
 
-	return inet_ctl_sock_create(&pn->v6_ctl_sk, PF_INET6,
+	return inet_ctl_sock_create(&net->dccp.v6_ctl_sk, PF_INET6,
 				    SOCK_DCCP, IPPROTO_DCCP, net);
 }
 
 static void __net_exit dccp_v6_exit_net(struct net *net)
 {
-	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
-
-	inet_ctl_sock_destroy(pn->v6_ctl_sk);
-}
-
-static void __net_exit dccp_v6_exit_batch(struct list_head *net_exit_list)
-{
-	inet_twsk_purge(&dccp_hashinfo, AF_INET6);
+	inet_ctl_sock_destroy(net->dccp.v6_ctl_sk);
 }
 
 static struct pernet_operations dccp_v6_ops = {
 	.init   = dccp_v6_init_net,
 	.exit   = dccp_v6_exit_net,
-	.exit_batch = dccp_v6_exit_batch,
-	.id	= &dccp_v6_pernet_id,
-	.size   = sizeof(struct dccp_v6_pernet),
 };
 
 static int __init dccp_v6_init(void)
 {
 	int err = proto_register(&dccp_v6_prot, 1);
 
-	if (err)
+	if (err != 0)
 		goto out;
+
+	err = inet6_add_protocol(&dccp_v6_protocol, IPPROTO_DCCP);
+	if (err != 0)
+		goto out_unregister_proto;
 
 	inet6_register_protosw(&dccp_v6_protosw);
 
 	err = register_pernet_subsys(&dccp_v6_ops);
-	if (err)
+	if (err != 0)
 		goto out_destroy_ctl_sock;
-
-	err = inet6_add_protocol(&dccp_v6_protocol, IPPROTO_DCCP);
-	if (err)
-		goto out_unregister_proto;
-
 out:
 	return err;
-out_unregister_proto:
-	unregister_pernet_subsys(&dccp_v6_ops);
+
 out_destroy_ctl_sock:
+	inet6_del_protocol(&dccp_v6_protocol, IPPROTO_DCCP);
 	inet6_unregister_protosw(&dccp_v6_protosw);
+out_unregister_proto:
 	proto_unregister(&dccp_v6_prot);
 	goto out;
 }
 
 static void __exit dccp_v6_exit(void)
 {
-	inet6_del_protocol(&dccp_v6_protocol, IPPROTO_DCCP);
 	unregister_pernet_subsys(&dccp_v6_ops);
+	inet6_del_protocol(&dccp_v6_protocol, IPPROTO_DCCP);
 	inet6_unregister_protosw(&dccp_v6_protosw);
 	proto_unregister(&dccp_v6_prot);
 }

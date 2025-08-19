@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-mmp/common.c
  *
  *  Code common to PXA168 processor lines
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/init.h>
@@ -13,11 +16,11 @@
 #include <asm/mach/map.h>
 #include <asm/system_misc.h>
 #include "addr-map.h"
-#include <linux/soc/mmp/cputype.h>
+#include "cputype.h"
 
 #include "common.h"
 
-#define MMP_CHIPID	CIU_REG(0x00)
+#define MMP_CHIPID	(AXI_VIRT_BASE + 0x82c00)
 
 unsigned int mmp_chip_id;
 EXPORT_SYMBOL(mmp_chip_id);
@@ -36,15 +39,6 @@ static struct map_desc standard_io_desc[] __initdata = {
 	},
 };
 
-static struct map_desc mmp2_io_desc[] __initdata = {
-	{
-		.pfn		= __phys_to_pfn(PGU_PHYS_BASE),
-		.virtual	= (unsigned long)PGU_VIRT_BASE,
-		.length		= PGU_PHYS_SIZE,
-		.type		= MT_DEVICE,
-	},
-};
-
 void __init mmp_map_io(void)
 {
 	iotable_init(standard_io_desc, ARRAY_SIZE(standard_io_desc));
@@ -53,8 +47,7 @@ void __init mmp_map_io(void)
 	mmp_chip_id = __raw_readl(MMP_CHIPID);
 }
 
-void __init mmp2_map_io(void)
+void mmp_restart(enum reboot_mode mode, const char *cmd)
 {
-	mmp_map_io();
-	iotable_init(mmp2_io_desc, ARRAY_SIZE(mmp2_io_desc));
+	soft_restart(0);
 }

@@ -32,6 +32,7 @@
  */
 #include <linux/bug.h>
 #include <linux/errno.h>
+#include <linux/module.h>
 #include <linux/spinlock.h>
 
 #include "usnic_log.h"
@@ -116,10 +117,10 @@ static int enable_qp_grp(struct usnic_ib_qp_grp *qp_grp)
 	vnic_idx = usnic_vnic_get_index(qp_grp->vf->vnic);
 
 	res_chunk = get_qp_res_chunk(qp_grp);
-	if (IS_ERR(res_chunk)) {
+	if (IS_ERR_OR_NULL(res_chunk)) {
 		usnic_err("Unable to get qp res with err %ld\n",
 				PTR_ERR(res_chunk));
-		return PTR_ERR(res_chunk);
+		return res_chunk ? PTR_ERR(res_chunk) : -ENOMEM;
 	}
 
 	for (i = 0; i < res_chunk->cnt; i++) {
@@ -157,10 +158,10 @@ static int disable_qp_grp(struct usnic_ib_qp_grp *qp_grp)
 	vnic_idx = usnic_vnic_get_index(qp_grp->vf->vnic);
 
 	res_chunk = get_qp_res_chunk(qp_grp);
-	if (IS_ERR(res_chunk)) {
+	if (IS_ERR_OR_NULL(res_chunk)) {
 		usnic_err("Unable to get qp res with err %ld\n",
 			PTR_ERR(res_chunk));
-		return PTR_ERR(res_chunk);
+		return res_chunk ? PTR_ERR(res_chunk) : -ENOMEM;
 	}
 
 	for (i = 0; i < res_chunk->cnt; i++) {
@@ -185,11 +186,11 @@ static int init_filter_action(struct usnic_ib_qp_grp *qp_grp,
 	struct usnic_vnic_res_chunk *res_chunk;
 
 	res_chunk = usnic_ib_qp_grp_get_chunk(qp_grp, USNIC_VNIC_RES_TYPE_RQ);
-	if (IS_ERR(res_chunk)) {
+	if (IS_ERR_OR_NULL(res_chunk)) {
 		usnic_err("Unable to get %s with err %ld\n",
 			usnic_vnic_res_type_to_str(USNIC_VNIC_RES_TYPE_RQ),
 			PTR_ERR(res_chunk));
-		return PTR_ERR(res_chunk);
+		return res_chunk ? PTR_ERR(res_chunk) : -ENOMEM;
 	}
 
 	uaction->vnic_idx = usnic_vnic_get_index(qp_grp->vf->vnic);
@@ -227,6 +228,8 @@ create_roce_custom_flow(struct usnic_ib_qp_grp *qp_grp,
 
 	flow = usnic_fwd_alloc_flow(qp_grp->ufdev, &filter, &uaction);
 	if (IS_ERR_OR_NULL(flow)) {
+		usnic_err("Unable to alloc flow failed with err %ld\n",
+				PTR_ERR(flow));
 		err = flow ? PTR_ERR(flow) : -EFAULT;
 		goto out_unreserve_port;
 	}
@@ -300,6 +303,8 @@ create_udp_flow(struct usnic_ib_qp_grp *qp_grp,
 
 	flow = usnic_fwd_alloc_flow(qp_grp->ufdev, &filter, &uaction);
 	if (IS_ERR_OR_NULL(flow)) {
+		usnic_err("Unable to alloc flow failed with err %ld\n",
+				PTR_ERR(flow));
 		err = flow ? PTR_ERR(flow) : -EFAULT;
 		goto out_put_sock;
 	}
@@ -391,12 +396,14 @@ int usnic_ib_qp_grp_modify(struct usnic_ib_qp_grp *qp_grp,
 				void *data)
 {
 	int status = 0;
+	int vnic_idx;
 	struct ib_event ib_event;
 	enum ib_qp_state old_state;
 	struct usnic_transport_spec *trans_spec;
 	struct usnic_ib_qp_grp_flow *qp_flow;
 
 	old_state = qp_grp->state;
+	vnic_idx = usnic_vnic_get_index(qp_grp->vf->vnic);
 	trans_spec = (struct usnic_transport_spec *) data;
 
 	spin_lock(&qp_grp->lock);
@@ -542,7 +549,7 @@ alloc_res_chunk_list(struct usnic_vnic *vnic,
 		/* Do Nothing */
 	}
 
-	res_chunk_list = kcalloc(res_lst_sz + 1, sizeof(*res_chunk_list),
+	res_chunk_list = kzalloc(sizeof(*res_chunk_list)*(res_lst_sz+1),
 					GFP_ATOMIC);
 	if (!res_chunk_list)
 		return ERR_PTR(-ENOMEM);
@@ -664,12 +671,13 @@ static int qp_grp_id_from_flow(struct usnic_ib_qp_grp_flow *qp_flow,
 	return 0;
 }
 
-int usnic_ib_qp_grp_create(struct usnic_ib_qp_grp *qp_grp,
-			   struct usnic_fwd_dev *ufdev, struct usnic_ib_vf *vf,
-			   struct usnic_ib_pd *pd,
-			   struct usnic_vnic_res_spec *res_spec,
-			   struct usnic_transport_spec *transport_spec)
+struct usnic_ib_qp_grp *
+usnic_ib_qp_grp_create(struct usnic_fwd_dev *ufdev, struct usnic_ib_vf *vf,
+			struct usnic_ib_pd *pd,
+			struct usnic_vnic_res_spec *res_spec,
+			struct usnic_transport_spec *transport_spec)
 {
+	struct usnic_ib_qp_grp *qp_grp;
 	int err;
 	enum usnic_transport_type transport = transport_spec->trans_type;
 	struct usnic_ib_qp_grp_flow *qp_flow;
@@ -679,18 +687,27 @@ int usnic_ib_qp_grp_create(struct usnic_ib_qp_grp *qp_grp,
 	err = usnic_vnic_res_spec_satisfied(&min_transport_spec[transport],
 						res_spec);
 	if (err) {
-		usnic_err("Spec does not meet minimum req for transport %d\n",
+		usnic_err("Spec does not meet miniumum req for transport %d\n",
 				transport);
 		log_spec(res_spec);
-		return err;
+		return ERR_PTR(err);
+	}
+
+	qp_grp = kzalloc(sizeof(*qp_grp), GFP_ATOMIC);
+	if (!qp_grp) {
+		usnic_err("Unable to alloc qp_grp - Out of memory\n");
+		return NULL;
 	}
 
 	qp_grp->res_chunk_list = alloc_res_chunk_list(vf->vnic, res_spec,
 							qp_grp);
-	if (IS_ERR_OR_NULL(qp_grp->res_chunk_list))
-		return qp_grp->res_chunk_list ?
-				     PTR_ERR(qp_grp->res_chunk_list) :
-				     -ENOMEM;
+	if (IS_ERR_OR_NULL(qp_grp->res_chunk_list)) {
+		err = qp_grp->res_chunk_list ?
+				PTR_ERR(qp_grp->res_chunk_list) : -ENOMEM;
+		usnic_err("Unable to alloc res for %d with err %d\n",
+				qp_grp->grp_id, err);
+		goto out_free_qp_grp;
+	}
 
 	err = qp_grp_and_vf_bind(vf, pd, qp_grp);
 	if (err)
@@ -717,7 +734,7 @@ int usnic_ib_qp_grp_create(struct usnic_ib_qp_grp *qp_grp,
 
 	usnic_ib_sysfs_qpn_add(qp_grp);
 
-	return 0;
+	return qp_grp;
 
 out_release_flow:
 	release_and_remove_flow(qp_flow);
@@ -725,7 +742,10 @@ out_qp_grp_vf_unbind:
 	qp_grp_and_vf_unbind(qp_grp);
 out_free_res:
 	free_qp_grp_res(qp_grp->res_chunk_list);
-	return err;
+out_free_qp_grp:
+	kfree(qp_grp);
+
+	return ERR_PTR(err);
 }
 
 void usnic_ib_qp_grp_destroy(struct usnic_ib_qp_grp *qp_grp)
@@ -738,6 +758,7 @@ void usnic_ib_qp_grp_destroy(struct usnic_ib_qp_grp *qp_grp)
 	usnic_ib_sysfs_qpn_remove(qp_grp);
 	qp_grp_and_vf_unbind(qp_grp);
 	free_qp_grp_res(qp_grp->res_chunk_list);
+	kfree(qp_grp);
 }
 
 struct usnic_vnic_res_chunk*

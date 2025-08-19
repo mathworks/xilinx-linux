@@ -1,10 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Driver for SMSC USB4604 USB HSIC 4-port 2.0 hub controller driver
  * Based on usb3503 driver
  *
  * Copyright (c) 2012-2013 Dongjin Kim (tobetter@gmail.com)
  * Copyright (c) 2016 Linaro Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/i2c.h>
@@ -97,7 +106,8 @@ static int usb4604_probe(struct usb4604 *hub)
 	return usb4604_switch_mode(hub, hub->mode);
 }
 
-static int usb4604_i2c_probe(struct i2c_client *i2c)
+static int usb4604_i2c_probe(struct i2c_client *i2c,
+			     const struct i2c_device_id *id)
 {
 	struct usb4604 *hub;
 
@@ -111,7 +121,8 @@ static int usb4604_i2c_probe(struct i2c_client *i2c)
 	return usb4604_probe(hub);
 }
 
-static int __maybe_unused usb4604_i2c_suspend(struct device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int usb4604_i2c_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct usb4604 *hub = i2c_get_clientdata(client);
@@ -121,7 +132,7 @@ static int __maybe_unused usb4604_i2c_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused usb4604_i2c_resume(struct device *dev)
+static int usb4604_i2c_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct usb4604 *hub = i2c_get_clientdata(client);
@@ -130,6 +141,7 @@ static int __maybe_unused usb4604_i2c_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(usb4604_i2c_pm_ops, usb4604_i2c_suspend,
 		usb4604_i2c_resume);
@@ -151,7 +163,7 @@ MODULE_DEVICE_TABLE(of, usb4604_of_match);
 static struct i2c_driver usb4604_i2c_driver = {
 	.driver = {
 		.name = "usb4604",
-		.pm = pm_ptr(&usb4604_i2c_pm_ops),
+		.pm = &usb4604_i2c_pm_ops,
 		.of_match_table = of_match_ptr(usb4604_of_match),
 	},
 	.probe		= usb4604_i2c_probe,

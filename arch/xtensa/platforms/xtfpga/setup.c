@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * arch/xtensa/platform/xtavnet/setup.c
@@ -9,11 +8,16 @@
  *		Joe Taylor <joe@tensilica.com>
  *
  * Copyright 2001 - 2006 Tensilica Inc.
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  */
 #include <linux/stddef.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/io.h>
 #include <linux/errno.h>
 #include <linux/reboot.h>
 #include <linux/kdev_t.h>
@@ -24,7 +28,6 @@
 #include <linux/of.h>
 #include <linux/clk-provider.h>
 #include <linux/of_address.h>
-#include <linux/slab.h>
 
 #include <asm/timex.h>
 #include <asm/processor.h>
@@ -33,32 +36,45 @@
 #include <platform/lcd.h>
 #include <platform/hardware.h>
 
-static int xtfpga_power_off(struct sys_off_data *unused)
+void platform_halt(void)
+{
+	lcd_disp_at_pos(" HALT ", 0);
+	local_irq_disable();
+	while (1)
+		cpu_relax();
+}
+
+void platform_power_off(void)
 {
 	lcd_disp_at_pos("POWEROFF", 0);
 	local_irq_disable();
 	while (1)
 		cpu_relax();
-	return NOTIFY_DONE;
 }
 
-static int xtfpga_restart(struct notifier_block *this,
-			  unsigned long event, void *ptr)
+void platform_restart(void)
 {
-	/* Try software reset first. */
-	WRITE_ONCE(*(u32 *)XTFPGA_SWRST_VADDR, 0xdead);
-
-	/* If software reset did not work, flush and reset the mmu,
-	 * simulate a processor reset, and jump to the reset vector.
-	 */
+	/* Flush and reset the mmu, simulate a processor reset, and
+	 * jump to the reset vector. */
 	cpu_reset();
-
-	return NOTIFY_DONE;
+	/* control never gets here */
 }
 
-static struct notifier_block xtfpga_restart_block = {
-	.notifier_call = xtfpga_restart,
-};
+void __init platform_setup(char **cmdline)
+{
+}
+
+/* early initialization */
+
+void __init platform_init(bp_tag_t *first)
+{
+}
+
+/* Heartbeat. */
+
+void platform_heartbeat(void)
+{
+}
 
 #ifdef CONFIG_XTENSA_CALIBRATE_CCOUNT
 
@@ -69,15 +85,7 @@ void __init platform_calibrate_ccount(void)
 
 #endif
 
-static void __init xtfpga_register_handlers(void)
-{
-	register_restart_handler(&xtfpga_restart_block);
-	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
-				 SYS_OFF_PRIO_DEFAULT,
-				 xtfpga_power_off, NULL);
-}
-
-#ifdef CONFIG_USE_OF
+#ifdef CONFIG_OF
 
 static void __init xtfpga_clk_setup(struct device_node *np)
 {
@@ -86,7 +94,7 @@ static void __init xtfpga_clk_setup(struct device_node *np)
 	u32 freq;
 
 	if (!base) {
-		pr_err("%pOFn: invalid address\n", np);
+		pr_err("%s: invalid address\n", np->name);
 		return;
 	}
 
@@ -95,12 +103,12 @@ static void __init xtfpga_clk_setup(struct device_node *np)
 	clk = clk_register_fixed_rate(NULL, np->name, NULL, 0, freq);
 
 	if (IS_ERR(clk)) {
-		pr_err("%pOFn: clk registration failed\n", np);
+		pr_err("%s: clk registration failed\n", np->name);
 		return;
 	}
 
 	if (of_clk_add_provider(np, of_clk_src_simple_get, clk)) {
-		pr_err("%pOFn: clk provider registration failed\n", np);
+		pr_err("%s: clk provider registration failed\n", np->name);
 		return;
 	}
 }
@@ -140,10 +148,6 @@ static int __init machine_setup(void)
 
 	if ((eth = of_find_compatible_node(eth, NULL, "opencores,ethoc")))
 		update_local_mac(eth);
-	of_node_put(eth);
-
-	xtfpga_register_handlers();
-
 	return 0;
 }
 arch_initcall(machine_setup);
@@ -171,8 +175,8 @@ static struct resource ethoc_res[] = {
 		.flags = IORESOURCE_MEM,
 	},
 	[2] = { /* IRQ number */
-		.start = XTENSA_PIC_LINUX_IRQ(OETH_IRQ),
-		.end   = XTENSA_PIC_LINUX_IRQ(OETH_IRQ),
+		.start = OETH_IRQ,
+		.end   = OETH_IRQ,
 		.flags = IORESOURCE_IRQ,
 	},
 };
@@ -209,8 +213,8 @@ static struct resource c67x00_res[] = {
 		.flags = IORESOURCE_MEM,
 	},
 	[1] = { /* IRQ number */
-		.start = XTENSA_PIC_LINUX_IRQ(C67X00_IRQ),
-		.end   = XTENSA_PIC_LINUX_IRQ(C67X00_IRQ),
+		.start = C67X00_IRQ,
+		.end   = C67X00_IRQ,
 		.flags = IORESOURCE_IRQ,
 	},
 };
@@ -243,7 +247,7 @@ static struct resource serial_resource = {
 static struct plat_serial8250_port serial_platform_data[] = {
 	[0] = {
 		.mapbase	= DUART16552_PADDR,
-		.irq		= XTENSA_PIC_LINUX_IRQ(DUART16552_INTNUM),
+		.irq		= DUART16552_INTNUM,
 		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST |
 				  UPF_IOREMAP,
 		.iotype		= XCHAL_HAVE_BE ? UPIO_MEM32BE : UPIO_MEM32,
@@ -291,8 +295,6 @@ static int __init xtavnet_init(void)
 	pr_info("XTFPGA: Ethernet MAC %pM\n", ethoc_pdata.hwaddr);
 	ethoc_pdata.eth_clkfreq = *(long *)XTFPGA_CLKFRQ_VADDR;
 
-	xtfpga_register_handlers();
-
 	return 0;
 }
 
@@ -301,4 +303,4 @@ static int __init xtavnet_init(void)
  */
 arch_initcall(xtavnet_init);
 
-#endif /* CONFIG_USE_OF */
+#endif /* CONFIG_OF */

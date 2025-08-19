@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * File:	mca_asm.S
  * Purpose:	assembly portion of the IA64 MCA handling
@@ -25,9 +24,9 @@
  *		Use per cpu MCA/INIT stacks for all data.
  */
 #include <linux/threads.h>
-#include <linux/pgtable.h>
 
 #include <asm/asmmacro.h>
+#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/mca_asm.h>
 #include <asm/mca.h>

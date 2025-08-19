@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  cx18 ADEC audio functions
  *
@@ -6,6 +5,21 @@
  *
  *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  *  Copyright (C) 2008  Andy Walls <awalls@md.metrocast.net>
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version 2
+ *  of the License, or (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ *  02110-1301, USA.
  */
 
 #include "cx18-driver.h"
@@ -22,7 +36,7 @@ static int set_audclk_freq(struct cx18 *cx, u32 freq)
 	 * would ideally be:
 	 *
 	 * NTSC Color subcarrier freq * 8 =
-	 *	4.5 MHz/286 * 455/2 * 8 = 28.63636363... MHz
+	 * 	4.5 MHz/286 * 455/2 * 8 = 28.63636363... MHz
 	 *
 	 * The accidents of history and rationale that explain from where this
 	 * combination of magic numbers originate can be found in:
@@ -46,11 +60,11 @@ static int set_audclk_freq(struct cx18 *cx, u32 freq)
 	 * an error of less than 0.13 ppm which is way, way better than any off
 	 * the shelf crystal will have for accuracy anyway.
 	 *
-	 * Below I aim to run the PLLs' VCOs near 400 MHz to minimize error.
+	 * Below I aim to run the PLLs' VCOs near 400 MHz to minimze error.
 	 *
 	 * Many thanks to Jeff Campbell and Mike Bradley for their extensive
 	 * investigation, experimentation, testing, and suggested solutions of
-	 * audio/video sync problems with SVideo and CVBS captures.
+	 * of audio/video sync problems with SVideo and CVBS captures.
 	 */
 
 	if (state->aud_input > CX18_AV_AUDIO_SERIAL2) {

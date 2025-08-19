@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Toshiba PCI Secure Digital Host Controller Interface driver
  *
@@ -7,6 +6,11 @@
  *
  *	Based on asic3_mmc.c, copyright (c) 2005 SDG Systems, LLC and,
  *	sdhci.c, copyright (C) 2005-2006 Pierre Ossman
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or (at
+ * your option) any later version.
  */
 
 #include <linux/delay.h>
@@ -546,7 +550,7 @@ static int toshsd_get_cd(struct mmc_host *mmc)
 	return !!(ioread16(host->ioaddr + SD_CARDSTATUS) & SD_CARD_PRESENT_0);
 }
 
-static const struct mmc_host_ops toshsd_ops = {
+static struct mmc_host_ops toshsd_ops = {
 	.request = toshsd_request,
 	.set_ios = toshsd_set_ios,
 	.get_ro = toshsd_get_ro,
@@ -651,9 +655,7 @@ static int toshsd_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (ret)
 		goto unmap;
 
-	ret = mmc_add_host(mmc);
-	if (ret)
-		goto free_irq;
+	mmc_add_host(mmc);
 
 	base = pci_resource_start(pdev, 0);
 	dev_dbg(&pdev->dev, "MMIO %pa, IRQ %d\n", &base, pdev->irq);
@@ -662,8 +664,6 @@ static int toshsd_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	return 0;
 
-free_irq:
-	free_irq(pdev->irq, host);
 unmap:
 	pci_iounmap(pdev, host->ioaddr);
 release:

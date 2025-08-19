@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -145,7 +144,7 @@ out:
 unsigned long os_get_top_address(void)
 {
 	/* The old value of CONFIG_TOP_ADDR */
-	return 0x7fc0002000;
+	return 0x7fc0000000;
 }
 
 #endif

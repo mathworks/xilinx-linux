@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* pmc - Driver implementation for power management functions
  * of Power Management Controller (PMC) on SPARCstation-Voyager.
  *
@@ -11,12 +10,12 @@
 #include <linux/init.h>
 #include <linux/pm.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/module.h>
 
 #include <asm/io.h>
 #include <asm/oplib.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/auxio.h>
 #include <asm/processor.h>
 
@@ -72,7 +71,7 @@ static int pmc_probe(struct platform_device *op)
 	return 0;
 }
 
-static const struct of_device_id pmc_match[] = {
+static struct of_device_id pmc_match[] = {
 	{
 		.name = PMC_OBPNAME,
 	},

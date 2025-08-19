@@ -575,12 +575,6 @@ static u_short maxfmode, chipset;
 #define downx(x, v)	((v) & -(x))
 #define modx(x, v)	((v) & ((x) - 1))
 
-/*
- * FIXME: Use C variants of the code marked with #ifdef __mc68000__
- * in the driver. It shouldn't negatively affect the performance and
- * is required for APUS support (once it is re-added to the kernel).
- * Needs to be tested on the hardware though..
- */
 /* if x1 is not a constant, this macro won't make real sense :-) */
 #ifdef __mc68000__
 #define DIVUL(x1, x2) ({int res; asm("divul %1,%2,%3": "=d" (res): \
@@ -687,7 +681,7 @@ struct fb_var_cursorinfo {
 	__u16 height;
 	__u16 xspot;
 	__u16 yspot;
-	DECLARE_FLEX_ARRAY(__u8, data);	/* field with [height][width]        */
+	__u8 data[1];			/* field with [height][width]        */
 };
 
 struct fb_cursorstate {
@@ -1490,11 +1484,13 @@ static int ami_decode_var(struct fb_var_screeninfo *var, struct amifb_par *par,
 		par->xoffset = var->xoffset;
 		par->yoffset = var->yoffset;
 		if (par->vmode & FB_VMODE_YWRAP) {
-			if (par->yoffset >= par->vyres)
+			if (par->xoffset || par->yoffset < 0 ||
+			    par->yoffset >= par->vyres)
 				par->xoffset = par->yoffset = 0;
 		} else {
-			if (par->xoffset > upx(16 << maxfmode, par->vxres - par->xres) ||
-			    par->yoffset > par->vyres - par->yres)
+			if (par->xoffset < 0 ||
+			    par->xoffset > upx(16 << maxfmode, par->vxres - par->xres) ||
+			    par->yoffset < 0 || par->yoffset > par->vyres - par->yres)
 				par->xoffset = par->yoffset = 0;
 		}
 	} else
@@ -1861,6 +1857,8 @@ static int ami_get_var_cursorinfo(struct fb_var_cursorinfo *var,
 	var->yspot = par->crsr.spot_y;
 	if (size > var->height * var->width)
 		return -ENAMETOOLONG;
+	if (!access_ok(VERIFY_WRITE, data, size))
+		return -EFAULT;
 	delta = 1 << par->crsr.fmode;
 	lspr = lofsprite + (delta << 1);
 	if (par->bplcon0 & BPC0_LACE)
@@ -1890,7 +1888,6 @@ static int ami_get_var_cursorinfo(struct fb_var_cursorinfo *var,
 				 | ((datawords >> 15) & 1));
 			datawords <<= 1;
 #endif
-			/* FIXME: check the return value + test the change */
 			put_user(color, data++);
 		}
 		if (bits > 0) {
@@ -1940,6 +1937,8 @@ static int ami_set_var_cursorinfo(struct fb_var_cursorinfo *var,
 		return -EINVAL;
 	if (!var->height)
 		return -EINVAL;
+	if (!access_ok(VERIFY_READ, data, var->width * var->height))
+		return -EFAULT;
 	delta = 1 << fmode;
 	lofsprite = shfsprite = (u_short *)spritememory;
 	lspr = lofsprite + (delta << 1);
@@ -1959,7 +1958,6 @@ static int ami_set_var_cursorinfo(struct fb_var_cursorinfo *var,
 		bits = 16; words = delta; datawords = 0;
 		for (width = (short)var->width - 1; width >= 0; width--) {
 			unsigned long tdata = 0;
-			/* FIXME: check the return value + test the change */
 			get_user(tdata, data);
 			data++;
 #ifdef __mc68000__
@@ -2307,7 +2305,7 @@ static void ami_build_copper(struct fb_info *info)
 	ami_rebuild_copper(info->par);
 }
 
-#ifndef MODULE
+
 static void __init amifb_setup_mcap(char *spec)
 {
 	char *p;
@@ -2372,7 +2370,7 @@ static int __init amifb_setup(char *options)
 
 	return 0;
 }
-#endif
+
 
 static int amifb_check_var(struct fb_var_screeninfo *var,
 			   struct fb_info *info)
@@ -2427,7 +2425,7 @@ static int amifb_set_par(struct fb_info *info)
 		info->fix.ywrapstep = 1;
 		info->fix.xpanstep = 0;
 		info->fix.ypanstep = 0;
-		info->flags = FBINFO_HWACCEL_YWRAP |
+		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YWRAP |
 			FBINFO_READS_FAST; /* override SCROLL_REDRAW */
 	} else {
 		info->fix.ywrapstep = 0;
@@ -2436,7 +2434,7 @@ static int amifb_set_par(struct fb_info *info)
 		else
 			info->fix.xpanstep = 16 << maxfmode;
 		info->fix.ypanstep = 1;
-		info->flags = FBINFO_HWACCEL_YPAN;
+		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
 	}
 	return 0;
 }
@@ -2540,16 +2538,27 @@ static int amifb_blank(int blank, struct fb_info *info)
 static int amifb_pan_display(struct fb_var_screeninfo *var,
 			     struct fb_info *info)
 {
-	if (!(var->vmode & FB_VMODE_YWRAP)) {
+	if (var->vmode & FB_VMODE_YWRAP) {
+		if (var->yoffset < 0 ||
+			var->yoffset >= info->var.yres_virtual || var->xoffset)
+				return -EINVAL;
+	} else {
 		/*
 		 * TODO: There will be problems when xpan!=1, so some columns
 		 * on the right side will never be seen
 		 */
 		if (var->xoffset + info->var.xres >
-		    upx(16 << maxfmode, info->var.xres_virtual))
+		    upx(16 << maxfmode, info->var.xres_virtual) ||
+		    var->yoffset + info->var.yres > info->var.yres_virtual)
 			return -EINVAL;
 	}
 	ami_pan_var(var, info);
+	info->var.xoffset = var->xoffset;
+	info->var.yoffset = var->yoffset;
+	if (var->vmode & FB_VMODE_YWRAP)
+		info->var.vmode |= FB_VMODE_YWRAP;
+	else
+		info->var.vmode &= ~FB_VMODE_YWRAP;
 	return 0;
 }
 
@@ -3486,7 +3495,7 @@ static irqreturn_t amifb_interrupt(int irq, void *dev_id)
 }
 
 
-static const struct fb_ops amifb_ops = {
+static struct fb_ops amifb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= amifb_check_var,
 	.fb_set_par	= amifb_set_par,
@@ -3547,8 +3556,10 @@ static int __init amifb_probe(struct platform_device *pdev)
 	custom.dmacon = DMAF_ALL | DMAF_MASTER;
 
 	info = framebuffer_alloc(sizeof(struct amifb_par), &pdev->dev);
-	if (!info)
+	if (!info) {
+		dev_err(&pdev->dev, "framebuffer_alloc failed\n");
 		return -ENOMEM;
+	}
 
 	strcpy(info->fix.id, "Amiga ");
 	info->fix.visual = FB_VISUAL_PSEUDOCOLOR;
@@ -3660,6 +3671,7 @@ default_chipset:
 	}
 
 	info->fbops = &amifb_ops;
+	info->flags = FBINFO_DEFAULT;
 	info->device = &pdev->dev;
 
 	if (!fb_find_mode(&info->var, info, mode_option, ami_modedb,
@@ -3724,7 +3736,7 @@ default_chipset:
 	if (err)
 		goto free_irq;
 
-	platform_set_drvdata(pdev, info);
+	dev_set_drvdata(&pdev->dev, info);
 
 	err = register_framebuffer(info);
 	if (err)
@@ -3752,7 +3764,7 @@ release:
 
 static int __exit amifb_remove(struct platform_device *pdev)
 {
-	struct fb_info *info = platform_get_drvdata(pdev);
+	struct fb_info *info = dev_get_drvdata(&pdev->dev);
 
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);

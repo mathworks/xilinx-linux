@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PowerPC 476FPE board specific routines
  *
@@ -15,22 +14,26 @@
  *    Rewritten and ported to the merged powerpc tree:
  *    Copyright 2007 David Gibson <dwg@au1.ibm.com>, IBM Corporation.
  *    Copyright © 2011 David Kliekamp IBM Corporation
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #include <linux/init.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/rtc.h>
 
 #include <asm/machdep.h>
+#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/time.h>
 #include <asm/uic.h>
 #include <asm/ppc4xx.h>
 #include <asm/mpic.h>
 #include <asm/mmu.h>
-#include <asm/swiotlb.h>
 
 #include <linux/pci.h>
 #include <linux/i2c.h>
@@ -86,7 +89,8 @@ static void __noreturn avr_reset_system(char *cmd)
 	avr_halt_system(AVR_PWRCTL_RESET);
 }
 
-static int avr_probe(struct i2c_client *client)
+static int avr_probe(struct i2c_client *client,
+			    const struct i2c_device_id *id)
 {
 	avr_i2c_client = client;
 	ppc_md.restart = avr_reset_system;
@@ -114,8 +118,7 @@ static int __init ppc47x_device_probe(void)
 
 	return 0;
 }
-machine_device_initcall(ppc47x_akebono, ppc47x_device_probe);
-machine_device_initcall(ppc47x_currituck, ppc47x_device_probe);
+machine_device_initcall(ppc47x, ppc47x_device_probe);
 
 static void __init ppc47x_init_irq(void)
 {
@@ -123,7 +126,7 @@ static void __init ppc47x_init_irq(void)
 
 	/* Find top level interrupt controller */
 	for_each_node_with_property(np, "interrupt-controller") {
-		if (!of_property_present(np, "interrupts"))
+		if (of_get_property(np, "interrupts", NULL) == NULL)
 			break;
 	}
 	if (np == NULL)
@@ -141,8 +144,6 @@ static void __init ppc47x_init_irq(void)
 		ppc_md.get_irq = mpic_get_irq;
 	} else
 		panic("Unrecognized top level interrupt controller");
-
-	of_node_put(np);
 }
 
 #ifdef CONFIG_SMP
@@ -222,7 +223,7 @@ static int board_rev = -1;
 static int __init ppc47x_get_board_rev(void)
 {
 	int reg;
-	u8 __iomem *fpga;
+	u8 *fpga;
 	struct device_node *np = NULL;
 
 	if (of_machine_is_compatible("ibm,currituck")) {
@@ -236,7 +237,7 @@ static int __init ppc47x_get_board_rev(void)
 	if (!np)
 		goto fail;
 
-	fpga = of_iomap(np, 0);
+	fpga = (u8 *) of_iomap(np, 0);
 	of_node_put(np);
 	if (!fpga)
 		goto fail;
@@ -250,8 +251,7 @@ fail:
 	pr_info("%s: Unable to find board revision\n", __func__);
 	return 0;
 }
-machine_arch_initcall(ppc47x_akebono, ppc47x_get_board_rev);
-machine_arch_initcall(ppc47x_currituck, ppc47x_get_board_rev);
+machine_arch_initcall(ppc47x, ppc47x_get_board_rev);
 
 /* Use USB controller should have been hardware swizzled but it wasn't :( */
 static void ppc47x_pci_irq_fixup(struct pci_dev *dev)
@@ -270,21 +270,28 @@ static void ppc47x_pci_irq_fixup(struct pci_dev *dev)
 	}
 }
 
-define_machine(ppc47x_akebono) {
-	.name			= "PowerPC 47x (akebono)",
-	.compatible		= "ibm,akebono",
-	.progress		= udbg_progress,
-	.init_IRQ		= ppc47x_init_irq,
-	.setup_arch		= ppc47x_setup_arch,
-	.restart		= ppc4xx_reset_system,
-};
+/*
+ * Called very early, MMU is off, device-tree isn't unflattened
+ */
+static int __init ppc47x_probe(void)
+{
+	if (of_machine_is_compatible("ibm,akebono"))
+		return 1;
 
-define_machine(ppc47x_currituck) {
-	.name			= "PowerPC 47x (currituck)",
-	.compatible		= "ibm,currituck",
+	if (of_machine_is_compatible("ibm,currituck")) {
+		ppc_md.pci_irq_fixup = ppc47x_pci_irq_fixup;
+		return 1;
+	}
+
+	return 0;
+}
+
+define_machine(ppc47x) {
+	.name			= "PowerPC 47x",
+	.probe			= ppc47x_probe,
 	.progress		= udbg_progress,
 	.init_IRQ		= ppc47x_init_irq,
-	.pci_irq_fixup		= ppc47x_pci_irq_fixup,
 	.setup_arch		= ppc47x_setup_arch,
 	.restart		= ppc4xx_reset_system,
+	.calibrate_decr		= generic_calibrate_decr,
 };

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This file is only included exactly once!
  *
@@ -13,7 +12,7 @@
 #define TAS3004_TREBLE_ZERO	36
 #define TAS3004_BASS_ZERO	36
 
-static const u8 tas3004_treble_table[] = {
+static u8 tas3004_treble_table[] = {
 	150, /* -18 dB */
 	149,
 	148,
@@ -99,7 +98,7 @@ static inline u8 tas3004_treble(int idx)
  * I have also ignored completely differences of
  * +/- 1
  */
-static const s8 tas3004_bass_diff_to_treble[] = {
+static s8 tas3004_bass_diff_to_treble[] = {
 	2, /* 7 dB, offset 50 */
 	2,
 	2,

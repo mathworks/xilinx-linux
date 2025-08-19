@@ -25,19 +25,15 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
-
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-
-#include <drm/drm_device.h>
-#include <drm/drm_file.h>
-
+#include <drm/drmP.h>
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "rs400d.h"
 
 /* This files gather functions specifics to : rs400,rs480 */
-static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
+static int rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
 
 void rs400_gart_adjust_size(struct radeon_device *rdev)
 {
@@ -71,7 +67,7 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
 		tmp = RREG32_MC(RS480_GART_CACHE_CNTRL);
 		if ((tmp & RS480_GART_CACHE_INVALIDATE) == 0)
 			break;
-		udelay(1);
+		DRM_UDELAY(1);
 		timeout--;
 	} while (timeout > 0);
 	WREG32_MC(RS480_GART_CACHE_CNTRL, 0);
@@ -102,7 +98,8 @@ int rs400_gart_init(struct radeon_device *rdev)
 	r = radeon_gart_init(rdev);
 	if (r)
 		return r;
-	rs400_debugfs_pcie_gart_info_init(rdev);
+	if (rs400_debugfs_pcie_gart_info_init(rdev))
+		DRM_ERROR("Failed to register debugfs file for RS400 GART !\n");
 	rdev->gart.table_size = rdev->gart.num_gpu_pages * 4;
 	return radeon_gart_table_ram_alloc(rdev);
 }
@@ -248,7 +245,7 @@ int rs400_mc_wait_for_idle(struct radeon_device *rdev)
 		if (tmp & RADEON_MC_IDLE) {
 			return 0;
 		}
-		udelay(1);
+		DRM_UDELAY(1);
 	}
 	return -1;
 }
@@ -258,8 +255,8 @@ static void rs400_gpu_init(struct radeon_device *rdev)
 	/* FIXME: is this correct ? */
 	r420_pipes_init(rdev);
 	if (rs400_mc_wait_for_idle(rdev)) {
-		pr_warn("rs400: Failed to wait MC idle while programming pipes. Bad things might happen. %08x\n",
-			RREG32(RADEON_MC_STATUS));
+		printk(KERN_WARNING "rs400: Failed to wait MC idle while "
+		       "programming pipes. Bad things might happen. %08x\n", RREG32(RADEON_MC_STATUS));
 	}
 }
 
@@ -305,9 +302,11 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 }
 
 #if defined(CONFIG_DEBUG_FS)
-static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
+static int rs400_debugfs_gart_info(struct seq_file *m, void *data)
 {
-	struct radeon_device *rdev = m->private;
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct radeon_device *rdev = dev->dev_private;
 	uint32_t tmp;
 
 	tmp = RREG32(RADEON_HOST_PATH_CNTL);
@@ -372,16 +371,17 @@ static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
-DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_info);
+static struct drm_info_list rs400_gart_info_list[] = {
+	{"rs400_gart_info", rs400_debugfs_gart_info, 0, NULL},
+};
 #endif
 
-static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
+static int rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev->ddev->primary->debugfs_root;
-
-	debugfs_create_file("rs400_gart_info", 0444, root, rdev,
-			    &rs400_debugfs_gart_info_fops);
+	return radeon_debugfs_add_files(rdev, rs400_gart_info_list, 1);
+#else
+	return 0;
 #endif
 }
 
@@ -555,7 +555,9 @@ int rs400_init(struct radeon_device *rdev)
 	/* initialize memory controller */
 	rs400_mc_init(rdev);
 	/* Fence driver */
-	radeon_fence_driver_init(rdev);
+	r = radeon_fence_driver_init(rdev);
+	if (r)
+		return r;
 	/* Memory manager */
 	r = radeon_bo_init(rdev);
 	if (r)

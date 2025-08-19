@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* 8390 core for ISA devices needing bus delays */
 
 static const char version[] =
@@ -41,9 +40,9 @@ void eip_set_multicast_list(struct net_device *dev)
 }
 EXPORT_SYMBOL(eip_set_multicast_list);
 
-void eip_tx_timeout(struct net_device *dev, unsigned int txqueue)
+void eip_tx_timeout(struct net_device *dev)
 {
-	__ei_tx_timeout(dev, txqueue);
+	__ei_tx_timeout(dev);
 }
 EXPORT_SYMBOL(eip_tx_timeout);
 
@@ -70,6 +69,7 @@ const struct net_device_ops eip_netdev_ops = {
 	.ndo_set_rx_mode	= eip_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= eip_poll,
 #endif

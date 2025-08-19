@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for ADAU1361/ADAU1461/ADAU1761/ADAU1961 codec
  *
  * Copyright 2011-2013 Analog Devices Inc.
  * Author: Lars-Peter Clausen <lars@metafoo.de>
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
@@ -379,8 +380,8 @@ static const struct snd_kcontrol_new adau1761_input_mux_control =
 static int adau1761_dejitter_fixup(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
-	struct adau *adau = snd_soc_component_get_drvdata(component);
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
+	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 
 	/* After any power changes have been made the dejitter circuit
 	 * has to be reinitialized. */
@@ -556,6 +557,8 @@ static const struct snd_soc_dapm_route adau1761_dapm_routes[] = {
 	{ "Left DAC", NULL, "Interpolator Resync Clock" },
 	{ "Right DAC", NULL, "Interpolator Resync Clock" },
 
+	{ "DSP", NULL, "Digital Clock 0" },
+
 	{ "Slew Clock", NULL, "Digital Clock 0" },
 	{ "Right Playback Mixer", NULL, "Slew Clock" },
 	{ "Left Playback Mixer", NULL, "Slew Clock" },
@@ -567,60 +570,10 @@ static const struct snd_soc_dapm_route adau1761_dapm_routes[] = {
 	{ "Digital Clock 1", NULL, "SYSCLK" },
 };
 
-static const struct snd_soc_dapm_route adau1761_dapm_dsp_routes[] = {
-	{ "DSP", NULL, "Digital Clock 0" },
-};
-
-static int adau1761_compatibility_probe(struct device *dev)
-{
-	struct adau *adau = dev_get_drvdata(dev);
-	struct regmap *regmap = adau->regmap;
-	int val, ret = 0;
-
-	/* Only consider compatibility mode when ADAU1361 was specified. */
-	if (adau->type != ADAU1361)
-		return 0;
-
-	regcache_cache_bypass(regmap, true);
-
-	/*
-	 * This will enable the core clock and bypass the PLL,
-	 * so that we can access the registers for probing purposes
-	 * (without having to set up the PLL).
-	 */
-	regmap_write(regmap, ADAU17X1_CLOCK_CONTROL,
-		ADAU17X1_CLOCK_CONTROL_SYSCLK_EN);
-
-	/*
-	 * ADAU17X1_SERIAL_SAMPLING_RATE doesn't exist in non-DSP chips;
-	 * reading it results in zero at all times, and write is a no-op.
-	 * Use this register to probe for ADAU1761.
-	 */
-	regmap_write(regmap, ADAU17X1_SERIAL_SAMPLING_RATE, 1);
-	ret = regmap_read(regmap, ADAU17X1_SERIAL_SAMPLING_RATE, &val);
-	if (ret)
-		goto exit;
-	if (val != 1)
-		goto exit;
-	regmap_write(regmap, ADAU17X1_SERIAL_SAMPLING_RATE, 0);
-	ret = regmap_read(regmap, ADAU17X1_SERIAL_SAMPLING_RATE, &val);
-	if (ret)
-		goto exit;
-	if (val != 0)
-		goto exit;
-
-	adau->type = ADAU1761_AS_1361;
-exit:
-	/* Disable core clock after probing. */
-	regmap_write(regmap, ADAU17X1_CLOCK_CONTROL, 0);
-	regcache_cache_bypass(regmap, false);
-	return ret;
-}
-
-static int adau1761_set_bias_level(struct snd_soc_component *component,
+static int adau1761_set_bias_level(struct snd_soc_codec *codec,
 				 enum snd_soc_bias_level level)
 {
-	struct adau *adau = snd_soc_component_get_drvdata(component);
+	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -632,7 +585,7 @@ static int adau1761_set_bias_level(struct snd_soc_component *component,
 		regmap_update_bits(adau->regmap, ADAU17X1_CLOCK_CONTROL,
 			ADAU17X1_CLOCK_CONTROL_SYSCLK_EN,
 			ADAU17X1_CLOCK_CONTROL_SYSCLK_EN);
-		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
+		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF)
 			regcache_sync(adau->regmap);
 		break;
 	case SND_SOC_BIAS_OFF:
@@ -646,9 +599,9 @@ static int adau1761_set_bias_level(struct snd_soc_component *component,
 }
 
 static enum adau1761_output_mode adau1761_get_lineout_mode(
-	struct snd_soc_component *component)
+	struct snd_soc_codec *codec)
 {
-	struct adau1761_platform_data *pdata = component->dev->platform_data;
+	struct adau1761_platform_data *pdata = codec->dev->platform_data;
 
 	if (pdata)
 		return pdata->lineout_mode;
@@ -656,11 +609,11 @@ static enum adau1761_output_mode adau1761_get_lineout_mode(
 	return ADAU1761_OUTPUT_MODE_LINE;
 }
 
-static int adau1761_setup_digmic_jackdetect(struct snd_soc_component *component)
+static int adau1761_setup_digmic_jackdetect(struct snd_soc_codec *codec)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
-	struct adau1761_platform_data *pdata = component->dev->platform_data;
-	struct adau *adau = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(codec);
+	struct adau1761_platform_data *pdata = codec->dev->platform_data;
+	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 	enum adau1761_digmic_jackdet_pin_mode mode;
 	unsigned int val = 0;
 	int ret;
@@ -685,13 +638,12 @@ static int adau1761_setup_digmic_jackdetect(struct snd_soc_component *component)
 		if (pdata->jackdetect_active_low)
 			val |= ADAU1761_DIGMIC_JACKDETECT_ACTIVE_LOW;
 
-		ret = snd_soc_add_component_controls(component,
+		ret = snd_soc_add_codec_controls(codec,
 			adau1761_jack_detect_controls,
 			ARRAY_SIZE(adau1761_jack_detect_controls));
 		if (ret)
 			return ret;
-		fallthrough;
-	case ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE:
+	case ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE: /* fallthrough */
 		ret = snd_soc_dapm_add_routes(dapm, adau1761_no_dmic_routes,
 			ARRAY_SIZE(adau1761_no_dmic_routes));
 		if (ret)
@@ -719,11 +671,11 @@ static int adau1761_setup_digmic_jackdetect(struct snd_soc_component *component)
 	return 0;
 }
 
-static int adau1761_setup_headphone_mode(struct snd_soc_component *component)
+static int adau1761_setup_headphone_mode(struct snd_soc_codec *codec)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
-	struct adau *adau = snd_soc_component_get_drvdata(component);
-	struct adau1761_platform_data *pdata = component->dev->platform_data;
+	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(codec);
+	struct adau *adau = snd_soc_codec_get_drvdata(codec);
+	struct adau1761_platform_data *pdata = codec->dev->platform_data;
 	enum adau1761_output_mode mode;
 	int ret;
 
@@ -741,7 +693,7 @@ static int adau1761_setup_headphone_mode(struct snd_soc_component *component)
 			ADAU1761_PLAY_MONO_OUTPUT_VOL_UNMUTE,
 			ADAU1761_PLAY_MONO_OUTPUT_VOL_MODE_HP |
 			ADAU1761_PLAY_MONO_OUTPUT_VOL_UNMUTE);
-		fallthrough;
+		/* fallthrough */
 	case ADAU1761_OUTPUT_MODE_HEADPHONE:
 		regmap_update_bits(adau->regmap, ADAU1761_PLAY_HP_RIGHT_VOL,
 			ADAU1761_PLAY_HP_RIGHT_VOL_MODE_HP,
@@ -761,7 +713,7 @@ static int adau1761_setup_headphone_mode(struct snd_soc_component *component)
 			adau1761_capless_dapm_routes,
 			ARRAY_SIZE(adau1761_capless_dapm_routes));
 	} else {
-		ret = snd_soc_add_component_controls(component, adau1761_mono_controls,
+		ret = snd_soc_add_codec_controls(codec, adau1761_mono_controls,
 			ARRAY_SIZE(adau1761_mono_controls));
 		if (ret)
 			return ret;
@@ -817,14 +769,14 @@ static bool adau1761_readable_register(struct device *dev, unsigned int reg)
 	return adau17x1_readable_register(dev, reg);
 }
 
-static int adau1761_component_probe(struct snd_soc_component *component)
+static int adau1761_codec_probe(struct snd_soc_codec *codec)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
-	struct adau1761_platform_data *pdata = component->dev->platform_data;
-	struct adau *adau = snd_soc_component_get_drvdata(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(codec);
+	struct adau1761_platform_data *pdata = codec->dev->platform_data;
+	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 	int ret;
 
-	ret = adau17x1_add_widgets(component);
+	ret = adau17x1_add_widgets(codec);
 	if (ret < 0)
 		return ret;
 
@@ -835,20 +787,20 @@ static int adau1761_component_probe(struct snd_soc_component *component)
 		regmap_update_bits(adau->regmap, ADAU1761_RIGHT_DIFF_INPUT_VOL,
 			ADAU1761_DIFF_INPUT_VOL_LDEN,
 			ADAU1761_DIFF_INPUT_VOL_LDEN);
-		ret = snd_soc_add_component_controls(component,
+		ret = snd_soc_add_codec_controls(codec,
 			adau1761_differential_mode_controls,
 			ARRAY_SIZE(adau1761_differential_mode_controls));
 		if (ret)
 			return ret;
 	} else {
-		ret = snd_soc_add_component_controls(component,
+		ret = snd_soc_add_codec_controls(codec,
 			adau1761_single_mode_controls,
 			ARRAY_SIZE(adau1761_single_mode_controls));
 		if (ret)
 			return ret;
 	}
 
-	switch (adau1761_get_lineout_mode(component)) {
+	switch (adau1761_get_lineout_mode(codec)) {
 	case ADAU1761_OUTPUT_MODE_LINE:
 		break;
 	case ADAU1761_OUTPUT_MODE_HEADPHONE:
@@ -863,19 +815,15 @@ static int adau1761_component_probe(struct snd_soc_component *component)
 		return -EINVAL;
 	}
 
-	ret = adau1761_setup_headphone_mode(component);
+	ret = adau1761_setup_headphone_mode(codec);
 	if (ret)
 		return ret;
 
-	ret = adau1761_setup_digmic_jackdetect(component);
+	ret = adau1761_setup_digmic_jackdetect(codec);
 	if (ret)
 		return ret;
 
-	/*
-	 * If we've got an ADAU1761, or an ADAU1761 operating as an
-	 * ADAU1361, we need these non-DSP related DAPM widgets and routes.
-	 */
-	if (adau->type == ADAU1761 || adau->type == ADAU1761_AS_1361) {
+	if (adau->type == ADAU1761) {
 		ret = snd_soc_dapm_new_controls(dapm, adau1761_dapm_widgets,
 			ARRAY_SIZE(adau1761_dapm_widgets));
 		if (ret)
@@ -886,50 +834,28 @@ static int adau1761_component_probe(struct snd_soc_component *component)
 		if (ret)
 			return ret;
 	}
-	/*
-	 * These routes are DSP related and only used when we have a
-	 * bona fide ADAU1761.
-	 */
-	if (adau->type == ADAU1761) {
-		ret = snd_soc_dapm_add_routes(dapm, adau1761_dapm_dsp_routes,
-			ARRAY_SIZE(adau1761_dapm_dsp_routes));
-		if (ret)
-			return ret;
-	}
-	/*
-	 * In the ADAU1761, by default, the AIF is routed to the DSP, whereas
-	 * for the ADAU1361, the AIF is permanently routed to the ADC and DAC.
-	 * Thus, if we have an ADAU1761 masquerading as an ADAU1361,
-	 * we need to explicitly route the AIF to the ADC and DAC.
-	 * For the ADAU1761, this is normally done by set_tdm_slot, but this
-	 * function is not necessarily called during stream setup, so set up
-	 * the compatible AIF routings here from the start.
-	 */
-	if  (adau->type == ADAU1761_AS_1361) {
-		regmap_write(adau->regmap, ADAU17X1_SERIAL_INPUT_ROUTE, 0x01);
-		regmap_write(adau->regmap, ADAU17X1_SERIAL_OUTPUT_ROUTE, 0x01);
-	}
-	ret = adau17x1_add_routes(component);
+
+	ret = adau17x1_add_routes(codec);
 	if (ret < 0)
 		return ret;
 
 	return 0;
 }
 
-static const struct snd_soc_component_driver adau1761_component_driver = {
-	.probe			= adau1761_component_probe,
-	.resume			= adau17x1_resume,
-	.set_bias_level		= adau1761_set_bias_level,
-	.controls		= adau1761_controls,
-	.num_controls		= ARRAY_SIZE(adau1761_controls),
-	.dapm_widgets		= adau1x61_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(adau1x61_dapm_widgets),
-	.dapm_routes		= adau1x61_dapm_routes,
-	.num_dapm_routes	= ARRAY_SIZE(adau1x61_dapm_routes),
-	.suspend_bias_off	= 1,
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
+static const struct snd_soc_codec_driver adau1761_codec_driver = {
+	.probe = adau1761_codec_probe,
+	.resume	= adau17x1_resume,
+	.set_bias_level	= adau1761_set_bias_level,
+	.suspend_bias_off = true,
+
+	.component_driver = {
+		.controls		= adau1761_controls,
+		.num_controls		= ARRAY_SIZE(adau1761_controls),
+		.dapm_widgets		= adau1x61_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(adau1x61_dapm_widgets),
+		.dapm_routes		= adau1x61_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(adau1x61_dapm_routes),
+	},
 };
 
 #define ADAU1761_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
@@ -1003,16 +929,11 @@ int adau1761_probe(struct device *dev, struct regmap *regmap,
 	if (ret)
 		return ret;
 
-	ret = adau1761_compatibility_probe(dev);
-	if (ret)
-		return ret;
-
 	/* Enable cache only mode as we could miss writes before bias level
 	 * reaches standby and the core clock is enabled */
 	regcache_cache_only(regmap, true);
 
-	return devm_snd_soc_register_component(dev, &adau1761_component_driver,
-					       dai_drv, 1);
+	return snd_soc_register_codec(dev, &adau1761_codec_driver, dai_drv, 1);
 }
 EXPORT_SYMBOL_GPL(adau1761_probe);
 
@@ -1025,7 +946,7 @@ const struct regmap_config adau1761_regmap_config = {
 	.readable_reg = adau1761_readable_register,
 	.volatile_reg = adau17x1_volatile_register,
 	.precious_reg = adau17x1_precious_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
 EXPORT_SYMBOL_GPL(adau1761_regmap_config);
 

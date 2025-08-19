@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * AD7091RX Analog to Digital converter driver
+ * AD7091R5 Analog -> Digital converter driver
  *
- * Copyright 2014-2019 Analog Devices Inc.
+ * Copyright 2014 Analog Devices Inc.
+ * Author: Paul Cercueil <paul.cercueil@analog.com>
+ *
+ * Licensed under the GPL-2.
  */
+
+#include "ad7091r-base.h"
 
 #include <linux/bitops.h>
 #include <linux/iio/events.h>
@@ -12,8 +16,6 @@
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-
-#include "ad7091r-base.h"
 
 #define AD7091R_REG_RESULT  0
 #define AD7091R_REG_CHANNEL 1
@@ -24,15 +26,14 @@
 #define AD7091R_REG_CH_HYSTERESIS(ch) ((ch) * 3 + 6)
 
 /* AD7091R_REG_RESULT */
-#define AD7091R_REG_RESULT_CH_ID(x)	    (((x) >> 13) & 0x3)
-#define AD7091R_REG_RESULT_CONV_RESULT(x)   ((x) & 0xfff)
+#define REG_RESULT_CH_ID(x)	    (((x) >> 13) & 0x3)
+#define REG_RESULT_CONV_RESULT(x)   ((x) & 0xfff)
 
 /* AD7091R_REG_CONF */
-#define AD7091R_REG_CONF_AUTO   BIT(8)
-#define AD7091R_REG_CONF_CMD    BIT(10)
+#define REG_CONF_AUTO   BIT(8)
+#define REG_CONF_CMD    BIT(10)
 
-#define AD7091R_REG_CONF_MODE_MASK  \
-	(AD7091R_REG_CONF_AUTO | AD7091R_REG_CONF_CMD)
+#define REG_CONF_MODE_MASK  (REG_CONF_AUTO | REG_CONF_CMD)
 
 enum ad7091r_mode {
 	AD7091R_MODE_SAMPLE,
@@ -43,65 +44,62 @@ enum ad7091r_mode {
 struct ad7091r_state {
 	struct device *dev;
 	struct regmap *map;
-	struct regulator *vref;
+	struct regulator *reg;
 	const struct ad7091r_chip_info *chip_info;
 	enum ad7091r_mode mode;
-	struct mutex lock; /*lock to prevent concurent reads */
 };
 
 static int ad7091r_set_mode(struct ad7091r_state *st, enum ad7091r_mode mode)
 {
-	int ret, conf;
+	int ret;
 
 	switch (mode) {
 	case AD7091R_MODE_SAMPLE:
-		conf = 0;
+		ret = regmap_update_bits(st->map, AD7091R_REG_CONF,
+				REG_CONF_MODE_MASK, 0);
 		break;
 	case AD7091R_MODE_COMMAND:
-		conf = AD7091R_REG_CONF_CMD;
+		ret = regmap_update_bits(st->map, AD7091R_REG_CONF,
+				REG_CONF_MODE_MASK, REG_CONF_CMD);
 		break;
 	case AD7091R_MODE_AUTOCYCLE:
-		conf = AD7091R_REG_CONF_AUTO;
+		ret = regmap_update_bits(st->map, AD7091R_REG_CONF,
+				REG_CONF_MODE_MASK, REG_CONF_AUTO);
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
 
-	ret = regmap_update_bits(st->map, AD7091R_REG_CONF,
-				 AD7091R_REG_CONF_MODE_MASK, conf);
-	if (ret)
-		return ret;
-
-	st->mode = mode;
-
-	return 0;
+	if (!ret)
+		st->mode = mode;
+	return ret;
 }
 
-static int ad7091r_set_channel(struct ad7091r_state *st, unsigned int channel)
+static int ad7091r_set_channel(struct ad7091r_state *st, unsigned channel)
 {
-	unsigned int dummy;
+	unsigned int foo;
 	int ret;
 
-	/* AD7091R_REG_CHANNEL specified which channels to be converted */
+	/* AD7091R_REG_CHANNEL is a 8-bit register */
 	ret = regmap_write(st->map, AD7091R_REG_CHANNEL,
 			BIT(channel) | (BIT(channel) << 8));
 	if (ret)
 		return ret;
 
-	/*
-	 * There is a latency of one conversion before the channel conversion
-	 * sequence is updated
-	 */
-	return regmap_read(st->map, AD7091R_REG_RESULT, &dummy);
+	/* There is a latency of one conversion before the channel conversion
+	 * sequence is updated */
+	return regmap_read(st->map, AD7091R_REG_RESULT, &foo);
 }
 
 static int ad7091r_read_one(struct iio_dev *iio_dev,
-		unsigned int channel, unsigned int *read_val)
+		unsigned channel, unsigned int *read_val)
 {
 	struct ad7091r_state *st = iio_priv(iio_dev);
-	unsigned int val;
+	unsigned val;
 	int ret;
 
+	/* TODO: locking */
 	ret = ad7091r_set_channel(st, channel);
 	if (ret)
 		return ret;
@@ -110,11 +108,10 @@ static int ad7091r_read_one(struct iio_dev *iio_dev,
 	if (ret)
 		return ret;
 
-	if (AD7091R_REG_RESULT_CH_ID(val) != channel)
+	if (REG_RESULT_CH_ID(val) != channel)
 		return -EIO;
 
-	*read_val = AD7091R_REG_RESULT_CONV_RESULT(val);
-
+	*read_val = REG_RESULT_CONV_RESULT(val);
 	return 0;
 }
 
@@ -126,7 +123,7 @@ static int ad7091r_read_raw(struct iio_dev *iio_dev,
 	unsigned int read_val;
 	int ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&iio_dev->mlock);
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
@@ -144,8 +141,8 @@ static int ad7091r_read_raw(struct iio_dev *iio_dev,
 		break;
 
 	case IIO_CHAN_INFO_SCALE:
-		if (st->vref) {
-			ret = regulator_get_voltage(st->vref);
+		if (st->reg) {
+			ret = regulator_get_voltage(st->reg);
 			if (ret < 0)
 				goto unlock;
 
@@ -164,25 +161,26 @@ static int ad7091r_read_raw(struct iio_dev *iio_dev,
 	}
 
 unlock:
-	mutex_unlock(&st->lock);
+	mutex_unlock(&iio_dev->mlock);
 	return ret;
 }
 
 static const struct iio_info ad7091r_info = {
 	.read_raw = ad7091r_read_raw,
+	.driver_module = THIS_MODULE,
 };
 
 static irqreturn_t ad7091r_event_handler(int irq, void *private)
 {
 	struct ad7091r_state *st = (struct ad7091r_state *) private;
 	struct iio_dev *iio_dev = dev_get_drvdata(st->dev);
-	unsigned int i, read_val;
+	unsigned i, read_val;
 	int ret;
 	s64 timestamp = iio_get_time_ns(iio_dev);
 
 	ret = regmap_read(st->map, AD7091R_REG_ALERT, &read_val);
 	if (ret)
-		return IRQ_HANDLED;
+		return IRQ_HANDLED; /* TODO */
 
 	for (i = 0; i < st->chip_info->num_channels; i++) {
 		if (read_val & BIT(i * 2))
@@ -198,13 +196,6 @@ static irqreturn_t ad7091r_event_handler(int irq, void *private)
 	}
 
 	return IRQ_HANDLED;
-}
-
-static void ad7091r_remove(void *data)
-{
-	struct ad7091r_state *st = data;
-
-	regulator_disable(st->vref);
 }
 
 int ad7091r_probe(struct device *dev, const char *name,
@@ -223,7 +214,9 @@ int ad7091r_probe(struct device *dev, const char *name,
 	st->dev = dev;
 	st->chip_info = chip_info;
 	st->map = map;
+	dev_set_drvdata(dev, iio_dev);
 
+	iio_dev->dev.parent = dev;
 	iio_dev->name = name;
 	iio_dev->info = &ad7091r_info;
 	iio_dev->modes = INDIO_DIRECT_MODE;
@@ -239,30 +232,53 @@ int ad7091r_probe(struct device *dev, const char *name,
 			return ret;
 	}
 
-	st->vref = devm_regulator_get_optional(dev, "vref");
-	if (IS_ERR(st->vref)) {
-		if (PTR_ERR(st->vref) == -EPROBE_DEFER)
+	st->reg = devm_regulator_get_optional(dev, "vref");
+	if (IS_ERR(st->reg)) {
+		if (PTR_ERR(st->reg) == EPROBE_DEFER)
 			return -EPROBE_DEFER;
-		st->vref = NULL;
+		else
+			st->reg = NULL;
 	} else {
-		ret = regulator_enable(st->vref);
-		if (ret)
-			return ret;
-		ret = devm_add_action_or_reset(dev, ad7091r_remove, st);
+		ret = regulator_enable(st->reg);
 		if (ret)
 			return ret;
 	}
 
-	/* Use command mode by default to convert only desired channels*/
+	/* Use command mode by default */
 	ret = ad7091r_set_mode(st, AD7091R_MODE_COMMAND);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
-	return devm_iio_device_register(dev, iio_dev);
-}
-EXPORT_SYMBOL_NS_GPL(ad7091r_probe, IIO_AD7091R);
+	ret = iio_device_register(iio_dev);
+	if (ret)
+		goto err_disable_reg;
 
-static bool ad7091r_writeable_reg(struct device *dev, unsigned int reg)
+	dev_dbg(dev, "Probed\n");
+	return 0;
+
+err_disable_reg:
+	if (st->reg)
+		regulator_disable(st->reg);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ad7091r_probe);
+
+int ad7091r_remove(struct device *dev)
+{
+	struct iio_dev *iio_dev = dev_get_drvdata(dev);
+	struct ad7091r_state *st = iio_priv(iio_dev);
+
+	iio_device_unregister(iio_dev);
+
+	if (st->reg)
+		regulator_disable(st->reg);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ad7091r_remove);
+
+static bool ad7091r_writeable_reg(struct device *dev, unsigned reg)
 {
 	switch (reg) {
 	case AD7091R_REG_RESULT:
@@ -273,7 +289,7 @@ static bool ad7091r_writeable_reg(struct device *dev, unsigned int reg)
 	}
 }
 
-static bool ad7091r_volatile_reg(struct device *dev, unsigned int reg)
+static bool ad7091r_volatile_reg(struct device *dev, unsigned reg)
 {
 	switch (reg) {
 	case AD7091R_REG_RESULT:
@@ -290,8 +306,8 @@ const struct regmap_config ad7091r_regmap_config = {
 	.writeable_reg = ad7091r_writeable_reg,
 	.volatile_reg = ad7091r_volatile_reg,
 };
-EXPORT_SYMBOL_NS_GPL(ad7091r_regmap_config, IIO_AD7091R);
+EXPORT_SYMBOL_GPL(ad7091r_regmap_config);
 
-MODULE_AUTHOR("Beniamin Bia <beniamin.bia@analog.com>");
-MODULE_DESCRIPTION("Analog Devices AD7091Rx multi-channel converters");
-MODULE_LICENSE("GPL v2");
+//MODULE_AUTHOR("Paul Cercueil <paul.cercueil@analog.com>");
+//MODULE_DESCRIPTION("Analog Devices AD7091Rx multi-channel converters");
+//MODULE_LICENSE("GPL v2");

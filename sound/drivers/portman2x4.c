@@ -1,8 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Driver for Midiman Portman2x4 parallel port midi interface
  *
  *   Copyright (c) by Levent Guendogdu <levon@feature-it.com>
+ *
+ *   This program is free software; you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program; if not, write to the Free Software
+ *   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * ChangeLog
  * Jan 24 2007 Matthias Koenig <mkoenig@suse.de>
@@ -47,16 +60,17 @@ static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 static struct platform_device *platform_devices[SNDRV_CARDS]; 
 static int device_count;
 
-module_param_array(index, int, NULL, 0444);
+module_param_array(index, int, NULL, S_IRUGO);
 MODULE_PARM_DESC(index, "Index value for " CARD_NAME " soundcard.");
-module_param_array(id, charp, NULL, 0444);
+module_param_array(id, charp, NULL, S_IRUGO);
 MODULE_PARM_DESC(id, "ID string for " CARD_NAME " soundcard.");
-module_param_array(enable, bool, NULL, 0444);
+module_param_array(enable, bool, NULL, S_IRUGO);
 MODULE_PARM_DESC(enable, "Enable " CARD_NAME " soundcard.");
 
 MODULE_AUTHOR("Levent Guendogdu, Tobias Gehrig, Matthias Koenig");
 MODULE_DESCRIPTION("Midiman Portman2x4");
 MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("{{Midiman,Portman2x4}}");
 
 /*********************************************************************
  * Chip specific
@@ -182,9 +196,19 @@ static inline void portman_write_command(struct portman *pm, u8 value)
 	parport_write_control(pm->pardev->port, value);
 }
 
+static inline u8 portman_read_command(struct portman *pm)
+{
+	return parport_read_control(pm->pardev->port);
+}
+
 static inline u8 portman_read_status(struct portman *pm)
 {
 	return parport_read_status(pm->pardev->port);
+}
+
+static inline u8 portman_read_data(struct portman *pm)
+{
+	return parport_read_data(pm->pardev->port);
 }
 
 static inline void portman_write_data(struct portman *pm, u8 value)
@@ -446,7 +470,7 @@ static int portman_probe(struct parport *p)
 
 	/* Set for RXDATA0 where no damage will be done. */
 	/* 5 */
-	parport_write_control(p, RXDATA0 | STROBE);	/* Write Strobe=1 to command reg. */
+	parport_write_control(p, RXDATA0 + STROBE);	/* Write Strobe=1 to command reg. */
 
 	/* 6 */
 	if ((parport_read_status(p) & ESTB) != ESTB)
@@ -456,7 +480,7 @@ static int portman_probe(struct parport *p)
 	parport_write_control(p, 0);	/* Reset Strobe=0. */
 
 	/* Check if Tx circuitry is functioning properly.  If initialized 
-	 * unit TxEmpty is false, send out char and see if it goes true.
+	 * unit TxEmpty is false, send out char and see if if goes true.
 	 */
 	/* 8 */
 	parport_write_control(p, TXDATA0);	/* Tx channel 0, strobe off. */
@@ -522,13 +546,13 @@ static void snd_portman_midi_output_trigger(struct snd_rawmidi_substream *substr
 	spin_unlock_irqrestore(&pm->reg_lock, flags);
 }
 
-static const struct snd_rawmidi_ops snd_portman_midi_output = {
+static struct snd_rawmidi_ops snd_portman_midi_output = {
 	.open =		snd_portman_midi_open,
 	.close =	snd_portman_midi_close,
 	.trigger =	snd_portman_midi_output_trigger,
 };
 
-static const struct snd_rawmidi_ops snd_portman_midi_input = {
+static struct snd_rawmidi_ops snd_portman_midi_input = {
 	.open =		snd_portman_midi_open,
 	.close =	snd_portman_midi_close,
 	.trigger =	snd_portman_midi_input_trigger,
@@ -739,8 +763,7 @@ static int snd_portman_probe(struct platform_device *pdev)
 		goto free_pardev;
 	}
 
-	err = portman_create(card, pardev, &pm);
-	if (err < 0) {
+	if ((err = portman_create(card, pardev, &pm)) < 0) {
 		snd_printd("Cannot create main component\n");
 		goto release_pardev;
 	}
@@ -753,22 +776,19 @@ static int snd_portman_probe(struct platform_device *pdev)
 		goto __err;
 	}
 	
-	err = snd_portman_rawmidi_create(card);
-	if (err < 0) {
+	if ((err = snd_portman_rawmidi_create(card)) < 0) {
 		snd_printd("Creating Rawmidi component failed\n");
 		goto __err;
 	}
 
 	/* init device */
-	err = portman_device_init(pm);
-	if (err < 0)
+	if ((err = portman_device_init(pm)) < 0)
 		goto __err;
 
 	platform_set_drvdata(pdev, card);
 
 	/* At this point card will be usable */
-	err = snd_card_register(card);
-	if (err < 0) {
+	if ((err = snd_card_register(card)) < 0) {
 		snd_printd("Cannot register card\n");
 		goto __err;
 	}
@@ -785,18 +805,20 @@ __err:
 	return err;
 }
 
-static void snd_portman_remove(struct platform_device *pdev)
+static int snd_portman_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
 	if (card)
 		snd_card_free(card);
+
+	return 0;
 }
 
 
 static struct platform_driver snd_portman_driver = {
 	.probe  = snd_portman_probe,
-	.remove_new = snd_portman_remove,
+	.remove = snd_portman_remove,
 	.driver = {
 		.name = PLATFORM_DRIVER,
 	}
@@ -823,8 +845,7 @@ static int __init snd_portman_module_init(void)
 {
 	int err;
 
-	err = platform_driver_register(&snd_portman_driver);
-	if (err < 0)
+	if ((err = platform_driver_register(&snd_portman_driver)) < 0)
 		return err;
 
 	if (parport_register_driver(&portman_parport_driver) != 0) {

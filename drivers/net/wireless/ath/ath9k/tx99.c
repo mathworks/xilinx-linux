@@ -56,6 +56,11 @@ static struct sk_buff *ath9k_build_tx99_skb(struct ath_softc *sc)
 	struct sk_buff *skb;
 	struct ath_vif *avp;
 
+	if (!sc->tx99_vif)
+		return NULL;
+
+	avp = (struct ath_vif *)sc->tx99_vif->drv_priv;
+
 	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb)
 		return NULL;
@@ -72,10 +77,7 @@ static struct sk_buff *ath9k_build_tx99_skb(struct ath_softc *sc)
 	memcpy(hdr->addr2, hw->wiphy->perm_addr, ETH_ALEN);
 	memcpy(hdr->addr3, hw->wiphy->perm_addr, ETH_ALEN);
 
-	if (sc->tx99_vif) {
-		avp = (struct ath_vif *) sc->tx99_vif->drv_priv;
-		hdr->seq_ctrl |= cpu_to_le16(avp->seq_no);
-	}
+	hdr->seq_ctrl |= cpu_to_le16(avp->seq_no);
 
 	tx_info = IEEE80211_SKB_CB(skb);
 	memset(tx_info, 0, sizeof(*tx_info));
@@ -151,7 +153,7 @@ static int ath9k_tx99_init(struct ath_softc *sc)
 		sc->tx99_power,
 		sc->tx99_power / 2);
 
-	/* We leave the hardware awake as it will be chugging on */
+	/* We leave the harware awake as it will be chugging on */
 
 	return 0;
 }
@@ -172,41 +174,37 @@ static ssize_t write_file_tx99(struct file *file, const char __user *user_buf,
 {
 	struct ath_softc *sc = file->private_data;
 	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
+	char buf[32];
 	bool start;
-	ssize_t ret;
+	ssize_t len;
 	int r;
-
-	if (count < 1)
-		return -EINVAL;
 
 	if (sc->cur_chan->nvifs > 1)
 		return -EOPNOTSUPP;
 
-	ret = kstrtobool_from_user(user_buf, count, &start);
-	if (ret)
-		return ret;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
 
-	mutex_lock(&sc->mutex);
+	if (strtobool(buf, &start))
+		return -EINVAL;
 
 	if (start == sc->tx99_state) {
 		if (!start)
-			goto out;
+			return count;
 		ath_dbg(common, XMIT, "Resetting TX99\n");
 		ath9k_tx99_deinit(sc);
 	}
 
 	if (!start) {
 		ath9k_tx99_deinit(sc);
-		goto out;
+		return count;
 	}
 
 	r = ath9k_tx99_init(sc);
-	if (r) {
-		mutex_unlock(&sc->mutex);
+	if (r)
 		return r;
-	}
-out:
-	mutex_unlock(&sc->mutex);
+
 	return count;
 }
 
@@ -270,10 +268,10 @@ void ath9k_tx99_init_debug(struct ath_softc *sc)
 	if (!AR_SREV_9280_20_OR_LATER(sc->sc_ah))
 		return;
 
-	debugfs_create_file("tx99", 0600,
+	debugfs_create_file("tx99", S_IRUSR | S_IWUSR,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99);
-	debugfs_create_file("tx99_power", 0600,
+	debugfs_create_file("tx99_power", S_IRUSR | S_IWUSR,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99_power);
 }

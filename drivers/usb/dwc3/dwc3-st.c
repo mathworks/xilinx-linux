@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
-/*
+/**
  * dwc3-st.c Support for dwc3 platform devices on ST Microelectronics platforms
  *
  * This is a small driver for the dwc3 to provide the glue logic
@@ -10,6 +9,11 @@
  * Author: Giuseppe Cavallaro <peppe.cavallaro@st.com>
  * Contributors: Aymen Bouattay <aymen.bouattay@st.com>
  *               Peter Griffin <peter.griffin@linaro.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * Inspired by dwc3-omap.c and dwc3-exynos.c.
  */
@@ -206,8 +210,8 @@ static int st_dwc3_probe(struct platform_device *pdev)
 	if (!dwc3_data)
 		return -ENOMEM;
 
-	dwc3_data->glue_base =
-		devm_platform_ioremap_resource_byname(pdev, "reg-glue");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "reg-glue");
+	dwc3_data->glue_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(dwc3_data->glue_base))
 		return PTR_ERR(dwc3_data->glue_base);
 
@@ -215,6 +219,7 @@ static int st_dwc3_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
+	dma_set_coherent_mask(dev, dev->coherent_dma_mask);
 	dwc3_data->dev = dev;
 	dwc3_data->regmap = regmap;
 
@@ -226,7 +231,7 @@ static int st_dwc3_probe(struct platform_device *pdev)
 
 	dwc3_data->syscfg_reg_off = res->start;
 
-	dev_vdbg(&pdev->dev, "glue-logic addr 0x%pK, syscfg-reg offset 0x%x\n",
+	dev_vdbg(&pdev->dev, "glue-logic addr 0x%p, syscfg-reg offset 0x%x\n",
 		 dwc3_data->glue_base, dwc3_data->syscfg_reg_off);
 
 	dwc3_data->rstc_pwrdn =
@@ -251,30 +256,28 @@ static int st_dwc3_probe(struct platform_device *pdev)
 	/* Manage SoftReset */
 	reset_control_deassert(dwc3_data->rstc_rst);
 
-	child = of_get_compatible_child(node, "snps,dwc3");
+	child = of_get_child_by_name(node, "dwc3");
 	if (!child) {
 		dev_err(&pdev->dev, "failed to find dwc3 core node\n");
 		ret = -ENODEV;
-		goto err_node_put;
+		goto undo_softreset;
 	}
 
 	/* Allocate and initialize the core */
 	ret = of_platform_populate(node, NULL, NULL, dev);
 	if (ret) {
 		dev_err(dev, "failed to add dwc3 core\n");
-		goto err_node_put;
+		goto undo_softreset;
 	}
 
 	child_pdev = of_find_device_by_node(child);
 	if (!child_pdev) {
 		dev_err(dev, "failed to find dwc3 core device\n");
 		ret = -ENODEV;
-		goto err_node_put;
+		goto undo_softreset;
 	}
 
 	dwc3_data->dr_mode = usb_get_dr_mode(&child_pdev->dev);
-	of_node_put(child);
-	platform_device_put(child_pdev);
 
 	/*
 	 * Configure the USB port as device or host according to the static
@@ -294,8 +297,6 @@ static int st_dwc3_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dwc3_data);
 	return 0;
 
-err_node_put:
-	of_node_put(child);
 undo_softreset:
 	reset_control_assert(dwc3_data->rstc_rst);
 undo_powerdown:
@@ -305,7 +306,7 @@ undo_platform_dev_alloc:
 	return ret;
 }
 
-static void st_dwc3_remove(struct platform_device *pdev)
+static int st_dwc3_remove(struct platform_device *pdev)
 {
 	struct st_dwc3 *dwc3_data = platform_get_drvdata(pdev);
 
@@ -313,6 +314,8 @@ static void st_dwc3_remove(struct platform_device *pdev)
 
 	reset_control_assert(dwc3_data->rstc_pwrdn);
 	reset_control_assert(dwc3_data->rstc_rst);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -362,7 +365,7 @@ MODULE_DEVICE_TABLE(of, st_dwc3_match);
 
 static struct platform_driver st_dwc3_driver = {
 	.probe = st_dwc3_probe,
-	.remove_new = st_dwc3_remove,
+	.remove = st_dwc3_remove,
 	.driver = {
 		.name = "usb-st-dwc3",
 		.of_match_table = st_dwc3_match,

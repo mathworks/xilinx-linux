@@ -1,17 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/smp.h>
 #include <linux/timex.h>
 #include <linux/string.h>
 #include <linux/seq_file.h>
 #include <linux/cpufreq.h>
-#include <asm/prctl.h>
-#include <linux/proc_fs.h>
-
-#include "cpu.h"
-
-#ifdef CONFIG_X86_VMX_FEATURE_NAMES
-extern const char * const x86_vmx_flags[NVMXINTS*32];
-#endif
 
 /*
  *	Get CPU information for use by the procfs.
@@ -40,13 +31,14 @@ static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)
 		   "fpu\t\t: %s\n"
 		   "fpu_exception\t: %s\n"
 		   "cpuid level\t: %d\n"
-		   "wp\t\t: yes\n",
-		   boot_cpu_has_bug(X86_BUG_FDIV) ? "yes" : "no",
-		   boot_cpu_has_bug(X86_BUG_F00F) ? "yes" : "no",
-		   boot_cpu_has_bug(X86_BUG_COMA) ? "yes" : "no",
-		   boot_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
-		   boot_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
-		   c->cpuid_level);
+		   "wp\t\t: %s\n",
+		   static_cpu_has_bug(X86_BUG_FDIV) ? "yes" : "no",
+		   static_cpu_has_bug(X86_BUG_F00F) ? "yes" : "no",
+		   static_cpu_has_bug(X86_BUG_COMA) ? "yes" : "no",
+		   static_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
+		   static_cpu_has(X86_FEATURE_FPU) ? "yes" : "no",
+		   c->cpuid_level,
+		   c->wp_works_ok ? "yes" : "no");
 }
 #else
 static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)
@@ -78,22 +70,25 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		   c->x86_model,
 		   c->x86_model_id[0] ? c->x86_model_id : "unknown");
 
-	if (c->x86_stepping || c->cpuid_level >= 0)
-		seq_printf(m, "stepping\t: %d\n", c->x86_stepping);
+	if (c->x86_mask || c->cpuid_level >= 0)
+		seq_printf(m, "stepping\t: %d\n", c->x86_mask);
 	else
 		seq_puts(m, "stepping\t: unknown\n");
 	if (c->microcode)
 		seq_printf(m, "microcode\t: 0x%x\n", c->microcode);
 
 	if (cpu_has(c, X86_FEATURE_TSC)) {
-		unsigned int freq = arch_freq_get_on_cpu(cpu);
+		unsigned int freq = cpufreq_quick_get(cpu);
 
-		seq_printf(m, "cpu MHz\t\t: %u.%03u\n", freq / 1000, (freq % 1000));
+		if (!freq)
+			freq = cpu_khz;
+		seq_printf(m, "cpu MHz\t\t: %u.%03u\n",
+			   freq / 1000, (freq % 1000));
 	}
 
 	/* Cache size */
-	if (c->x86_cache_size)
-		seq_printf(m, "cache size\t: %u KB\n", c->x86_cache_size);
+	if (c->x86_cache_size >= 0)
+		seq_printf(m, "cache size\t: %d KB\n", c->x86_cache_size);
 
 	show_cpuinfo_core(m, c, cpu);
 	show_cpuinfo_misc(m, c);
@@ -102,17 +97,6 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	for (i = 0; i < 32*NCAPINTS; i++)
 		if (cpu_has(c, i) && x86_cap_flags[i] != NULL)
 			seq_printf(m, " %s", x86_cap_flags[i]);
-
-#ifdef CONFIG_X86_VMX_FEATURE_NAMES
-	if (cpu_has(c, X86_FEATURE_VMX) && c->vmx_capability[0]) {
-		seq_puts(m, "\nvmx flags\t:");
-		for (i = 0; i < 32*NVMXINTS; i++) {
-			if (test_bit(i, (unsigned long *)c->vmx_capability) &&
-			    x86_vmx_flags[i] != NULL)
-				seq_printf(m, " %s", x86_vmx_flags[i]);
-		}
-	}
-#endif
 
 	seq_puts(m, "\nbugs\t\t:");
 	for (i = 0; i < 32*NBUGINTS; i++) {
@@ -177,24 +161,3 @@ const struct seq_operations cpuinfo_op = {
 	.stop	= c_stop,
 	.show	= show_cpuinfo,
 };
-
-#ifdef CONFIG_X86_USER_SHADOW_STACK
-static void dump_x86_features(struct seq_file *m, unsigned long features)
-{
-	if (features & ARCH_SHSTK_SHSTK)
-		seq_puts(m, "shstk ");
-	if (features & ARCH_SHSTK_WRSS)
-		seq_puts(m, "wrss ");
-}
-
-void arch_proc_pid_thread_features(struct seq_file *m, struct task_struct *task)
-{
-	seq_puts(m, "x86_Thread_features:\t");
-	dump_x86_features(m, task->thread.features);
-	seq_putc(m, '\n');
-
-	seq_puts(m, "x86_Thread_features_locked:\t");
-	dump_x86_features(m, task->thread.features_locked);
-	seq_putc(m, '\n');
-}
-#endif /* CONFIG_X86_USER_SHADOW_STACK */

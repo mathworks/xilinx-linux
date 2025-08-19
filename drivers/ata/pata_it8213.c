@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_it8213.c - iTE Tech. Inc.  IT8213 PATA driver
  *
@@ -228,7 +227,7 @@ static void it8213_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 	pci_write_config_byte(dev, 0x48, udma_enable);
 }
 
-static const struct scsi_host_template it8213_sht = {
+static struct scsi_host_template it8213_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 

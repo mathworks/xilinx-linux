@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Interface for Dynamic Logical Partitioning of I/O Slots on
  * RPA-compliant PPC64 platform.
@@ -9,13 +8,17 @@
  * October 2003
  *
  * Copyright (C) 2003 IBM.
+ *
+ *      This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
  */
 
 #undef DEBUG
 
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
@@ -24,7 +27,6 @@
 #include <linux/mutex.h>
 #include <asm/rtas.h>
 #include <asm/vio.h>
-#include <linux/firmware.h>
 
 #include "../pci.h"
 #include "rpaphp.h"
@@ -41,18 +43,18 @@ static DEFINE_MUTEX(rpadlpar_mutex);
 static struct device_node *find_vio_slot_node(char *drc_name)
 {
 	struct device_node *parent = of_find_node_by_name(NULL, "vdevice");
-	struct device_node *dn;
+	struct device_node *dn = NULL;
+	char *name;
 	int rc;
 
 	if (!parent)
 		return NULL;
 
-	for_each_child_of_node(parent, dn) {
-		rc = rpaphp_check_drc_props(dn, drc_name, NULL);
-		if (rc == 0)
+	while ((dn = of_get_next_child(parent, dn))) {
+		rc = rpaphp_get_drc_props(dn, NULL, &name, NULL, NULL);
+		if ((rc == 0) && (!strcmp(drc_name, name)))
 			break;
 	}
-	of_node_put(parent);
 
 	return dn;
 }
@@ -61,19 +63,21 @@ static struct device_node *find_vio_slot_node(char *drc_name)
 static struct device_node *find_php_slot_pci_node(char *drc_name,
 						  char *drc_type)
 {
-	struct device_node *np;
+	struct device_node *np = NULL;
+	char *name;
+	char *type;
 	int rc;
 
-	for_each_node_by_name(np, "pci") {
-		rc = rpaphp_check_drc_props(np, drc_name, drc_type);
+	while ((np = of_find_node_by_name(np, "pci"))) {
+		rc = rpaphp_get_drc_props(np, NULL, &name, &type, NULL);
 		if (rc == 0)
-			break;
+			if (!strcmp(drc_name, name) && !strcmp(drc_type, type))
+				break;
 	}
 
 	return np;
 }
 
-/* Returns a device_node with its reference count incremented */
 static struct device_node *find_dlpar_node(char *drc_name, int *node_type)
 {
 	struct device_node *dn;
@@ -141,13 +145,13 @@ static void dlpar_pci_add_bus(struct device_node *dn)
 	struct pci_controller *phb = pdn->phb;
 	struct pci_dev *dev = NULL;
 
-	pseries_eeh_init_edev_recursive(pdn);
+	eeh_add_device_tree_early(pdn);
 
 	/* Add EADS device to PHB bus, adding new entry to bus->devices */
 	dev = of_create_pci_dev(dn, phb->bus, pdn->devfn);
 	if (!dev) {
-		printk(KERN_ERR "%s: failed to create pci dev for %pOF\n",
-				__func__, dn);
+		printk(KERN_ERR "%s: failed to create pci dev for %s\n",
+				__func__, dn->full_name);
 		return;
 	}
 
@@ -253,13 +257,8 @@ static int dlpar_add_phb(char *drc_name, struct device_node *dn)
 
 static int dlpar_add_vio_slot(char *drc_name, struct device_node *dn)
 {
-	struct vio_dev *vio_dev;
-
-	vio_dev = vio_find_node(dn);
-	if (vio_dev) {
-		put_device(&vio_dev->dev);
+	if (vio_find_node(dn))
 		return -EINVAL;
-	}
 
 	if (!vio_register_device_node(dn)) {
 		printk(KERN_ERR
@@ -309,7 +308,6 @@ int dlpar_add_slot(char *drc_name)
 			rc = dlpar_add_phb(drc_name, dn);
 			break;
 	}
-	of_node_put(dn);
 
 	printk(KERN_INFO "%s: slot %s added\n", DLPAR_MODULE_NAME, drc_name);
 exit:
@@ -336,9 +334,6 @@ static int dlpar_remove_vio_slot(char *drc_name, struct device_node *dn)
 		return -EINVAL;
 
 	vio_unregister_device(vio_dev);
-
-	put_device(&vio_dev->dev);
-
 	return 0;
 }
 
@@ -353,7 +348,7 @@ static int dlpar_remove_vio_slot(char *drc_name, struct device_node *dn)
  * -ENODEV		Not a valid drc_name
  * -EIO			Internal PCI Error
  */
-static int dlpar_remove_pci_slot(char *drc_name, struct device_node *dn)
+int dlpar_remove_pci_slot(char *drc_name, struct device_node *dn)
 {
 	struct pci_bus *bus;
 	struct slot *slot;
@@ -443,7 +438,6 @@ int dlpar_remove_slot(char *drc_name)
 			rc = dlpar_remove_pci_slot(drc_name, dn);
 			break;
 	}
-	of_node_put(dn);
 	vm_unmap_aliases();
 
 	printk(KERN_INFO "%s: slot %s removed\n", DLPAR_MODULE_NAME, drc_name);
@@ -459,8 +453,9 @@ static inline int is_dlpar_capable(void)
 	return (int) (rc != RTAS_UNKNOWN_SERVICE);
 }
 
-static int __init rpadlpar_io_init(void)
+int __init rpadlpar_io_init(void)
 {
+	int rc = 0;
 
 	if (!is_dlpar_capable()) {
 		printk(KERN_WARNING "%s: partition not DLPAR capable\n",
@@ -468,15 +463,16 @@ static int __init rpadlpar_io_init(void)
 		return -EPERM;
 	}
 
-	return dlpar_sysfs_init();
+	rc = dlpar_sysfs_init();
+	return rc;
 }
 
-static void __exit rpadlpar_io_exit(void)
+void rpadlpar_io_exit(void)
 {
 	dlpar_sysfs_exit();
+	return;
 }
 
 module_init(rpadlpar_io_init);
 module_exit(rpadlpar_io_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("RPA Dynamic Logical Partitioning driver for I/O slots");

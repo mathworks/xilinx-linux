@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * J-Core SoC PIT/clocksource driver
  *
  * Copyright (C) 2015-2016 Smart Energy Instruments, Inc.
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
 #include <linux/kernel.h>
@@ -54,7 +57,7 @@ static notrace u64 jcore_sched_clock_read(void)
 	return seclo * NSEC_PER_SEC + nsec;
 }
 
-static u64 jcore_clocksource_read(struct clocksource *cs)
+static cycle_t jcore_clocksource_read(struct clocksource *cs)
 {
 	return jcore_sched_clock_read();
 }
@@ -237,10 +240,10 @@ static int __init jcore_pit_init(struct device_node *node)
 	}
 
 	cpuhp_setup_state(CPUHP_AP_JCORE_TIMER_STARTING,
-			  "clockevents/jcore:starting",
+			  "AP_JCORE_TIMER_STARTING",
 			  jcore_pit_local_init, NULL);
 
 	return 0;
 }
 
-TIMER_OF_DECLARE(jcore_pit, "jcore,pit", jcore_pit_init);
+CLOCKSOURCE_OF_DECLARE(jcore_pit, "jcore,pit", jcore_pit_init);

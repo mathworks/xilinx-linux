@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) by Uros Bizjak <uros@kss-loka.si>
  *
@@ -6,6 +5,21 @@
  *
  *  OPL2/3 FM instrument loader:
  *   alsa-tools/seq/sbiload/
+ *
+ *   This program is free software; you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program; if not, write to the Free Software
+ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *
  */
 
 #include "opl3_voice.h"
@@ -92,8 +106,7 @@ static int snd_opl3_synth_use(void *private_data, struct snd_seq_port_subscribe 
 	struct snd_opl3 *opl3 = private_data;
 	int err;
 
-	err = snd_opl3_synth_setup(opl3);
-	if (err < 0)
+	if ((err = snd_opl3_synth_setup(opl3)) < 0)
 		return err;
 
 	if (use_internal_drums) {
@@ -108,8 +121,7 @@ static int snd_opl3_synth_use(void *private_data, struct snd_seq_port_subscribe 
 	}
 
 	if (info->sender.client != SNDRV_SEQ_CLIENT_SYSTEM) {
-		err = snd_opl3_synth_use_inc(opl3);
-		if (err < 0)
+		if ((err = snd_opl3_synth_use_inc(opl3)) < 0)
 			return err;
 	}
 	opl3->synth_mode = SNDRV_OPL3_MODE_SEQ;
@@ -130,7 +142,7 @@ static int snd_opl3_synth_unuse(void *private_data, struct snd_seq_port_subscrib
 /*
  * MIDI emulation operators
  */
-const struct snd_midi_op opl3_ops = {
+struct snd_midi_op opl3_ops = {
 	.note_on =		snd_opl3_note_on,
 	.note_off =		snd_opl3_note_off,
 	.key_press =		snd_opl3_key_press,
@@ -229,19 +241,18 @@ static int snd_opl3_seq_probe(struct device *_dev)
 	if (client < 0)
 		return client;
 
-	err = snd_opl3_synth_create_port(opl3);
-	if (err < 0) {
+	if ((err = snd_opl3_synth_create_port(opl3)) < 0) {
 		snd_seq_delete_kernel_client(client);
 		opl3->seq_client = -1;
 		return err;
 	}
 
 	/* setup system timer */
-	timer_setup(&opl3->tlist, snd_opl3_timer_func, 0);
+	setup_timer(&opl3->tlist, snd_opl3_timer_func, (unsigned long) opl3);
 	spin_lock_init(&opl3->sys_timer_lock);
 	opl3->sys_timer_status = 0;
 
-#if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
+#ifdef CONFIG_SND_SEQUENCER_OSS
 	snd_opl3_init_seq_oss(opl3, name);
 #endif
 	return 0;
@@ -256,7 +267,7 @@ static int snd_opl3_seq_remove(struct device *_dev)
 	if (opl3 == NULL)
 		return -EINVAL;
 
-#if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
+#ifdef CONFIG_SND_SEQUENCER_OSS
 	snd_opl3_free_seq_oss(opl3);
 #endif
 	if (opl3->seq_client >= 0) {

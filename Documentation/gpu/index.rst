@@ -1,6 +1,6 @@
-============================
-GPU Driver Developer's Guide
-============================
+==================================
+Linux GPU Driver Developer's Guide
+==================================
 
 .. toctree::
 
@@ -10,18 +10,11 @@ GPU Driver Developer's Guide
    drm-kms
    drm-kms-helpers
    drm-uapi
-   drm-usage-stats
-   driver-uapi
-   drm-client
-   drivers
-   backlight
+   i915
    vga-switcheroo
    vgaarbiter
-   automated_testing
-   todo
-   rfc/index
 
-.. only::  subproject and html
+.. only::  subproject
 
    Indices
    =======

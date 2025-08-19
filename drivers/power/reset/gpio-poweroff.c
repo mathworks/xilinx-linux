@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Toggles a GPIO pin to power down a device
  *
@@ -6,25 +5,25 @@
  * Andrew Lunn <andrew@lunn.ch>
  *
  * Copyright (C) 2012 Jamie Lentin
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/gpio/consumer.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of_platform.h>
 #include <linux/module.h>
 
-#define DEFAULT_TIMEOUT_MS 3000
 /*
  * Hold configuration here, cannot be more than one instance of the driver
  * since pm_power_off itself is global.
  */
 static struct gpio_desc *reset_gpio;
-static u32 timeout = DEFAULT_TIMEOUT_MS;
-static u32 active_delay = 100;
-static u32 inactive_delay = 100;
 
 static void gpio_poweroff_do_poweroff(void)
 {
@@ -32,17 +31,16 @@ static void gpio_poweroff_do_poweroff(void)
 
 	/* drive it active, also inactive->active edge */
 	gpiod_direction_output(reset_gpio, 1);
-	mdelay(active_delay);
-
+	mdelay(100);
 	/* drive inactive, also active->inactive edge */
-	gpiod_set_value_cansleep(reset_gpio, 0);
-	mdelay(inactive_delay);
+	gpiod_set_value(reset_gpio, 0);
+	mdelay(100);
 
 	/* drive it active, also inactive->active edge */
-	gpiod_set_value_cansleep(reset_gpio, 1);
+	gpiod_set_value(reset_gpio, 1);
 
 	/* give it some time */
-	mdelay(timeout);
+	mdelay(3000);
 
 	WARN_ON(1);
 }
@@ -55,21 +53,16 @@ static int gpio_poweroff_probe(struct platform_device *pdev)
 	/* If a pm_power_off function has already been added, leave it alone */
 	if (pm_power_off != NULL) {
 		dev_err(&pdev->dev,
-			"%s: pm_power_off function already registered\n",
+			"%s: pm_power_off function already registered",
 		       __func__);
 		return -EBUSY;
 	}
 
-	input = device_property_read_bool(&pdev->dev, "input");
+	input = of_property_read_bool(pdev->dev.of_node, "input");
 	if (input)
 		flags = GPIOD_IN;
 	else
 		flags = GPIOD_OUT_LOW;
-
-	device_property_read_u32(&pdev->dev, "active-delay-ms", &active_delay);
-	device_property_read_u32(&pdev->dev, "inactive-delay-ms",
-				 &inactive_delay);
-	device_property_read_u32(&pdev->dev, "timeout-ms", &timeout);
 
 	reset_gpio = devm_gpiod_get(&pdev->dev, NULL, flags);
 	if (IS_ERR(reset_gpio))
@@ -91,7 +84,6 @@ static const struct of_device_id of_gpio_poweroff_match[] = {
 	{ .compatible = "gpio-poweroff", },
 	{},
 };
-MODULE_DEVICE_TABLE(of, of_gpio_poweroff_match);
 
 static struct platform_driver gpio_poweroff_driver = {
 	.probe = gpio_poweroff_probe,
@@ -106,4 +98,5 @@ module_platform_driver(gpio_poweroff_driver);
 
 MODULE_AUTHOR("Jamie Lentin <jm@lentin.co.uk>");
 MODULE_DESCRIPTION("GPIO poweroff driver");
+MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:poweroff-gpio");

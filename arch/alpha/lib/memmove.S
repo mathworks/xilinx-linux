@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/memmove.S
  *
@@ -7,7 +6,7 @@
  * This is hand-massaged output from the original memcpy.c.  We defer to
  * memcpy whenever possible; the backwards copy loops are not unrolled.
  */
-#include <linux/export.h>
+#include <asm/export.h>        
 	.set noat
 	.set noreorder
 	.text

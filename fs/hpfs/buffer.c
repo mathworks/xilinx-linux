@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/hpfs/buffer.c
  *
@@ -53,7 +52,7 @@ void hpfs_prefetch_sectors(struct super_block *s, unsigned secno, int n)
 			return;
 		}
 		brelse(bh);
-	}
+	};
 
 	blk_start_plug(&plug);
 	while (n > 0) {

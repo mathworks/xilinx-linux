@@ -71,7 +71,7 @@ aic_handle(struct pt_regs *regs)
 	if (!irqstat)
 		irq_reg_writel(gc, 0, AT91_AIC_EOICR);
 	else
-		generic_handle_domain_irq(aic_domain, irqnr);
+		handle_domain_irq(aic_domain, irqnr, regs);
 }
 
 static int aic_retrigger(struct irq_data *d)
@@ -83,7 +83,7 @@ static int aic_retrigger(struct irq_data *d)
 	irq_reg_writel(gc, d->mask, AT91_AIC_ISCR);
 	irq_gc_unlock(gc);
 
-	return 1;
+	return 0;
 }
 
 static int aic_set_type(struct irq_data *d, unsigned type)
@@ -209,20 +209,20 @@ static const struct irq_domain_ops aic_irq_ops = {
 	.xlate	= aic_irq_domain_xlate,
 };
 
-static void __init at91rm9200_aic_irq_fixup(void)
+static void __init at91rm9200_aic_irq_fixup(struct device_node *root)
 {
-	aic_common_rtc_irq_fixup();
+	aic_common_rtc_irq_fixup(root);
 }
 
-static void __init at91sam9260_aic_irq_fixup(void)
+static void __init at91sam9260_aic_irq_fixup(struct device_node *root)
 {
-	aic_common_rtt_irq_fixup();
+	aic_common_rtt_irq_fixup(root);
 }
 
-static void __init at91sam9g45_aic_irq_fixup(void)
+static void __init at91sam9g45_aic_irq_fixup(struct device_node *root)
 {
-	aic_common_rtc_irq_fixup();
-	aic_common_rtt_irq_fixup();
+	aic_common_rtc_irq_fixup(root);
+	aic_common_rtt_irq_fixup(root);
 }
 
 static const struct of_device_id aic_irq_fixups[] __initconst = {

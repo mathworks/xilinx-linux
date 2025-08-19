@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/lib/uaccess_with_memcpy.c
  *
  *  Written by: Lennert Buytenhek and Nicolas Pitre
  *  Copyright (C) 2009 Marvell Semiconductor
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -24,7 +27,6 @@ pin_page_for_write(const void __user *_addr, pte_t **ptep, spinlock_t **ptlp)
 {
 	unsigned long addr = (unsigned long)_addr;
 	pgd_t *pgd;
-	p4d_t *p4d;
 	pmd_t *pmd;
 	pte_t *pte;
 	pud_t *pud;
@@ -34,11 +36,7 @@ pin_page_for_write(const void __user *_addr, pte_t **ptep, spinlock_t **ptlp)
 	if (unlikely(pgd_none(*pgd) || pgd_bad(*pgd)))
 		return 0;
 
-	p4d = p4d_offset(pgd, addr);
-	if (unlikely(p4d_none(*p4d) || p4d_bad(*p4d)))
-		return 0;
-
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset(pgd, addr);
 	if (unlikely(pud_none(*pud) || pud_bad(*pud)))
 		return 0;
 
@@ -74,9 +72,6 @@ pin_page_for_write(const void __user *_addr, pte_t **ptep, spinlock_t **ptlp)
 		return 0;
 
 	pte = pte_offset_map_lock(current->mm, pmd, addr, &ptl);
-	if (unlikely(!pte))
-		return 0;
-
 	if (unlikely(!pte_present(*pte) || !pte_young(*pte) ||
 	    !pte_write(*pte) || !pte_dirty(*pte))) {
 		pte_unmap_unlock(pte, ptl);
@@ -95,11 +90,16 @@ __copy_to_user_memcpy(void __user *to, const void *from, unsigned long n)
 	unsigned long ua_flags;
 	int atomic;
 
+	if (unlikely(segment_eq(get_fs(), KERNEL_DS))) {
+		memcpy((void *)to, from, n);
+		return 0;
+	}
+
 	/* the mmap semaphore is taken only if not in an atomic context */
 	atomic = faulthandler_disabled();
 
 	if (!atomic)
-		mmap_read_lock(current->mm);
+		down_read(&current->mm->mmap_sem);
 	while (n) {
 		pte_t *pte;
 		spinlock_t *ptl;
@@ -107,11 +107,11 @@ __copy_to_user_memcpy(void __user *to, const void *from, unsigned long n)
 
 		while (!pin_page_for_write(to, &pte, &ptl)) {
 			if (!atomic)
-				mmap_read_unlock(current->mm);
+				up_read(&current->mm->mmap_sem);
 			if (__put_user(0, (char __user *)to))
 				goto out;
 			if (!atomic)
-				mmap_read_lock(current->mm);
+				down_read(&current->mm->mmap_sem);
 		}
 
 		tocopy = (~(unsigned long)to & ~PAGE_MASK) + 1;
@@ -119,7 +119,7 @@ __copy_to_user_memcpy(void __user *to, const void *from, unsigned long n)
 			tocopy = n;
 
 		ua_flags = uaccess_save_and_enable();
-		__memcpy((void *)to, from, tocopy);
+		memcpy((void *)to, from, tocopy);
 		uaccess_restore(ua_flags);
 		to += tocopy;
 		from += tocopy;
@@ -131,7 +131,7 @@ __copy_to_user_memcpy(void __user *to, const void *from, unsigned long n)
 			spin_unlock(ptl);
 	}
 	if (!atomic)
-		mmap_read_unlock(current->mm);
+		up_read(&current->mm->mmap_sem);
 
 out:
 	return n;
@@ -152,8 +152,7 @@ arm_copy_to_user(void __user *to, const void *from, unsigned long n)
 		n = __copy_to_user_std(to, from, n);
 		uaccess_restore(ua_flags);
 	} else {
-		n = __copy_to_user_memcpy(uaccess_mask_range_ptr(to, n),
-					  from, n);
+		n = __copy_to_user_memcpy(to, from, n);
 	}
 	return n;
 }
@@ -163,17 +162,22 @@ __clear_user_memset(void __user *addr, unsigned long n)
 {
 	unsigned long ua_flags;
 
-	mmap_read_lock(current->mm);
+	if (unlikely(segment_eq(get_fs(), KERNEL_DS))) {
+		memset((void *)addr, 0, n);
+		return 0;
+	}
+
+	down_read(&current->mm->mmap_sem);
 	while (n) {
 		pte_t *pte;
 		spinlock_t *ptl;
 		int tocopy;
 
 		while (!pin_page_for_write(addr, &pte, &ptl)) {
-			mmap_read_unlock(current->mm);
+			up_read(&current->mm->mmap_sem);
 			if (__put_user(0, (char __user *)addr))
 				goto out;
-			mmap_read_lock(current->mm);
+			down_read(&current->mm->mmap_sem);
 		}
 
 		tocopy = (~(unsigned long)addr & ~PAGE_MASK) + 1;
@@ -181,7 +185,7 @@ __clear_user_memset(void __user *addr, unsigned long n)
 			tocopy = n;
 
 		ua_flags = uaccess_save_and_enable();
-		__memset((void *)addr, 0, tocopy);
+		memset((void *)addr, 0, tocopy);
 		uaccess_restore(ua_flags);
 		addr += tocopy;
 		n -= tocopy;
@@ -191,7 +195,7 @@ __clear_user_memset(void __user *addr, unsigned long n)
 		else
 			spin_unlock(ptl);
 	}
-	mmap_read_unlock(current->mm);
+	up_read(&current->mm->mmap_sem);
 
 out:
 	return n;
@@ -240,7 +244,7 @@ static int __init test_size_treshold(void)
 	if (!dst_page)
 		goto no_dst;
 	kernel_ptr = page_address(src_page);
-	user_ptr = vmap(&dst_page, 1, VM_IOREMAP, __pgprot(__PAGE_COPY));
+	user_ptr = vmap(&dst_page, 1, VM_IOREMAP, __pgprot(__P010));
 	if (!user_ptr)
 		goto no_vmap;
 

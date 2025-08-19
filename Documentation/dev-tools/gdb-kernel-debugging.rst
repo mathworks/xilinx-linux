@@ -24,24 +24,18 @@ Setup
 
 - Create a virtual Linux machine for QEMU/KVM (see www.linux-kvm.org and
   www.qemu.org for more details). For cross-development,
-  https://landley.net/aboriginal/bin keeps a pool of machine images and
+  http://landley.net/aboriginal/bin keeps a pool of machine images and
   toolchains that can be helpful to start from.
 
 - Build the kernel with CONFIG_GDB_SCRIPTS enabled, but leave
   CONFIG_DEBUG_INFO_REDUCED off. If your architecture supports
   CONFIG_FRAME_POINTER, keep it enabled.
 
-- Install that kernel on the guest, turn off KASLR if necessary by adding
-  "nokaslr" to the kernel command line.
+- Install that kernel on the guest.
   Alternatively, QEMU allows to boot the kernel directly using -kernel,
   -append, -initrd command line switches. This is generally only useful if
   you do not depend on modules. See QEMU documentation for more details on
-  this mode. In this case, you should build the kernel with
-  CONFIG_RANDOMIZE_BASE disabled if the architecture supports KASLR.
-
-- Build the gdb scripts (required on kernels v5.1 and above)::
-
-    make scripts_gdb
+  this mode.
 
 - Enable the gdb stub of QEMU/KVM, either
 
@@ -118,7 +112,7 @@ Examples of using the Linux-provided gdb helpers
     [     0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
     ....
 
-- Examine fields of the current task struct(supported by x86 and arm64 only)::
+- Examine fields of the current task struct::
 
     (gdb) p $lx_current().pid
     $1 = 4998

@@ -88,32 +88,18 @@ int jffs2_rubinmips_init(void);
 void jffs2_rubinmips_exit(void);
 int jffs2_dynrubin_init(void);
 void jffs2_dynrubin_exit(void);
-#else
-static inline int jffs2_rubinmips_init(void) { return 0; }
-static inline void jffs2_rubinmips_exit(void) {}
-static inline int jffs2_dynrubin_init(void) { return 0; }
-static inline void jffs2_dynrubin_exit(void) {}
 #endif
 #ifdef CONFIG_JFFS2_RTIME
-extern int jffs2_rtime_init(void);
-extern void jffs2_rtime_exit(void);
-#else
-static inline int jffs2_rtime_init(void) { return 0; }
-static inline void jffs2_rtime_exit(void) {}
+int jffs2_rtime_init(void);
+void jffs2_rtime_exit(void);
 #endif
 #ifdef CONFIG_JFFS2_ZLIB
-extern int jffs2_zlib_init(void);
-extern void jffs2_zlib_exit(void);
-#else
-static inline int jffs2_zlib_init(void) { return 0; }
-static inline void jffs2_zlib_exit(void) {}
+int jffs2_zlib_init(void);
+void jffs2_zlib_exit(void);
 #endif
 #ifdef CONFIG_JFFS2_LZO
-extern int jffs2_lzo_init(void);
-extern void jffs2_lzo_exit(void);
-#else
-static inline int jffs2_lzo_init(void) { return 0; }
-static inline void jffs2_lzo_exit(void) {}
+int jffs2_lzo_init(void);
+void jffs2_lzo_exit(void);
 #endif
 
 #endif /* __JFFS2_COMPR_H__ */

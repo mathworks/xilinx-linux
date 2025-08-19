@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASMAXP_PTRACE_H
 #define _ASMAXP_PTRACE_H
 
@@ -16,6 +15,7 @@
 
 #define current_pt_regs() \
   ((struct pt_regs *) ((char *)current_thread_info() + 2*PAGE_SIZE) - 1)
+#define signal_pt_regs current_pt_regs
 
 #define force_successful_syscall_return() (current_pt_regs()->r0 = 0)
 

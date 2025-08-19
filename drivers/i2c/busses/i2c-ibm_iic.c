@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/i2c/busses/i2c-ibm_iic.c
  *
@@ -24,6 +23,12 @@
  *
  *   	With some changes from Kyösti Mälkki <kmalkki@cc.hut.fi>
  *	and even Frodo Looijaard <frodol@dds.nl>
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  */
 
 #include <linux/module.h>
@@ -32,15 +37,12 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
-#include <linux/sched/signal.h>
-
 #include <asm/irq.h>
 #include <linux/io.h>
 #include <linux/i2c.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 
 #include "i2c-ibm_iic.h"
 
@@ -433,7 +435,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 				break;
 			}
 
-			if (signal_pending(current)){
+			if (unlikely(signal_pending(current))){
 				DBG("%d: poll interrupted\n", dev->idx);
 				ret = -ERESTARTSYS;
 				break;
@@ -556,6 +558,9 @@ static int iic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	int i, ret = 0;
 
 	DBG2("%d: iic_xfer, %d msg(s)\n", dev->idx, num);
+
+	if (!num)
+		return 0;
 
 	/* Check the sanity of the passed messages.
 	 * Uhh, generic i2c layer is more suitable place for such code...
@@ -695,8 +700,10 @@ static int iic_probe(struct platform_device *ofdev)
 	int ret;
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
+	if (!dev) {
+		dev_err(&ofdev->dev, "failed to allocate device data\n");
 		return -ENOMEM;
+	}
 
 	platform_set_drvdata(ofdev, dev);
 
@@ -737,7 +744,7 @@ static int iic_probe(struct platform_device *ofdev)
 	adap = &dev->adap;
 	adap->dev.parent = &ofdev->dev;
 	adap->dev.of_node = of_node_get(np);
-	strscpy(adap->name, "IBM IIC", sizeof(adap->name));
+	strlcpy(adap->name, "IBM IIC", sizeof(adap->name));
 	i2c_set_adapdata(adap, dev);
 	adap->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	adap->algo = &iic_algo;
@@ -768,7 +775,7 @@ error_cleanup:
 /*
  * Cleanup initialized IIC interface
  */
-static void iic_remove(struct platform_device *ofdev)
+static int iic_remove(struct platform_device *ofdev)
 {
 	struct ibm_iic_private *dev = platform_get_drvdata(ofdev);
 
@@ -781,6 +788,8 @@ static void iic_remove(struct platform_device *ofdev)
 
 	iounmap(dev->vaddr);
 	kfree(dev);
+
+	return 0;
 }
 
 static const struct of_device_id ibm_iic_match[] = {
@@ -795,7 +804,7 @@ static struct platform_driver ibm_iic_driver = {
 		.of_match_table = ibm_iic_match,
 	},
 	.probe	= iic_probe,
-	.remove_new = iic_remove,
+	.remove	= iic_remove,
 };
 
 module_platform_driver(ibm_iic_driver);

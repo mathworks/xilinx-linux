@@ -106,20 +106,20 @@ static inline enum htc_endpoint_id get_htc_epid(struct ath9k_htc_priv *priv,
 
 	switch (qnum) {
 	case 0:
-		TX_QSTAT_INC(priv, IEEE80211_AC_VO);
+		TX_QSTAT_INC(IEEE80211_AC_VO);
 		epid = priv->data_vo_ep;
 		break;
 	case 1:
-		TX_QSTAT_INC(priv, IEEE80211_AC_VI);
+		TX_QSTAT_INC(IEEE80211_AC_VI);
 		epid = priv->data_vi_ep;
 		break;
 	case 2:
-		TX_QSTAT_INC(priv, IEEE80211_AC_BE);
+		TX_QSTAT_INC(IEEE80211_AC_BE);
 		epid = priv->data_be_ep;
 		break;
 	case 3:
 	default:
-		TX_QSTAT_INC(priv, IEEE80211_AC_BK);
+		TX_QSTAT_INC(IEEE80211_AC_BK);
 		epid = priv->data_bk_ep;
 		break;
 	}
@@ -297,12 +297,7 @@ static void ath9k_htc_tx_data(struct ath9k_htc_priv *priv,
 		tx_hdr.data_type = ATH9K_HTC_NORMAL;
 	}
 
-	/* Transmit all frames that should not be reordered relative
-	 * to each other using the same priority. For other QoS data
-	 * frames extract the priority from the header.
-	 */
-	if (!(tx_info->control.flags & IEEE80211_TX_CTRL_DONT_REORDER) &&
-	    ieee80211_is_data_qos(hdr->frame_control)) {
+	if (ieee80211_is_data_qos(hdr->frame_control)) {
 		qc = ieee80211_get_qos_ctl(hdr);
 		tx_hdr.tidno = qc[0] & IEEE80211_QOS_CTL_TID_MASK;
 	}
@@ -328,7 +323,7 @@ static void ath9k_htc_tx_data(struct ath9k_htc_priv *priv,
 	memcpy(tx_fhdr, (u8 *) &tx_hdr, sizeof(tx_hdr));
 
 	if (is_cab) {
-		CAB_STAT_INC(priv);
+		CAB_STAT_INC;
 		tx_ctl->epid = priv->cab_ep;
 		return;
 	}
@@ -575,16 +570,16 @@ void ath9k_htc_tx_drain(struct ath9k_htc_priv *priv)
 	spin_unlock_bh(&priv->tx.tx_lock);
 }
 
-void ath9k_tx_failed_tasklet(struct tasklet_struct *t)
+void ath9k_tx_failed_tasklet(unsigned long data)
 {
-	struct ath9k_htc_priv *priv = from_tasklet(priv, t, tx_failed_tasklet);
+	struct ath9k_htc_priv *priv = (struct ath9k_htc_priv *)data;
 
-	spin_lock(&priv->tx.tx_lock);
+	spin_lock_bh(&priv->tx.tx_lock);
 	if (priv->tx.flags & ATH9K_HTC_OP_TX_DRAIN) {
-		spin_unlock(&priv->tx.tx_lock);
+		spin_unlock_bh(&priv->tx.tx_lock);
 		return;
 	}
-	spin_unlock(&priv->tx.tx_lock);
+	spin_unlock_bh(&priv->tx.tx_lock);
 
 	ath9k_htc_tx_drainq(priv, &priv->tx.tx_failed);
 }
@@ -646,7 +641,7 @@ static struct sk_buff* ath9k_htc_tx_get_packet(struct ath9k_htc_priv *priv,
 
 void ath9k_htc_txstatus(struct ath9k_htc_priv *priv, void *wmi_event)
 {
-	struct wmi_event_txstatus *txs = wmi_event;
+	struct wmi_event_txstatus *txs = (struct wmi_event_txstatus *)wmi_event;
 	struct __wmi_event_txstatus *__txs;
 	struct sk_buff *skb;
 	struct ath9k_htc_tx_event *tx_pend;
@@ -689,7 +684,7 @@ void ath9k_htc_txstatus(struct ath9k_htc_priv *priv, void *wmi_event)
 void ath9k_htc_txep(void *drv_priv, struct sk_buff *skb,
 		    enum htc_endpoint_id ep_id, bool txok)
 {
-	struct ath9k_htc_priv *priv = drv_priv;
+	struct ath9k_htc_priv *priv = (struct ath9k_htc_priv *) drv_priv;
 	struct ath9k_htc_tx_ctl *tx_ctl;
 	struct sk_buff_head *epid_queue;
 
@@ -757,9 +752,9 @@ static void ath9k_htc_tx_cleanup_queue(struct ath9k_htc_priv *priv,
 	}
 }
 
-void ath9k_htc_tx_cleanup_timer(struct timer_list *t)
+void ath9k_htc_tx_cleanup_timer(unsigned long data)
 {
-	struct ath9k_htc_priv *priv = from_timer(priv, t, tx.cleanup_timer);
+	struct ath9k_htc_priv *priv = (struct ath9k_htc_priv *) data;
 	struct ath_common *common = ath9k_hw_common(priv->ah);
 	struct ath9k_htc_tx_event *event, *tmp;
 	struct sk_buff *skb;
@@ -813,11 +808,6 @@ int ath9k_tx_init(struct ath9k_htc_priv *priv)
 	skb_queue_head_init(&priv->tx.data_vi_queue);
 	skb_queue_head_init(&priv->tx.data_vo_queue);
 	skb_queue_head_init(&priv->tx.tx_failed);
-
-	/* Allow ath9k_wmi_event_tasklet(WMI_TXSTATUS_EVENTID) to operate. */
-	smp_wmb();
-	priv->tx.initialized = true;
-
 	return 0;
 }
 
@@ -903,8 +893,7 @@ u32 ath9k_htc_calcrxfilter(struct ath9k_htc_priv *priv)
 	if (priv->rxfilter & FIF_PSPOLL)
 		rfilt |= ATH9K_RX_FILTER_PSPOLL;
 
-	if (priv->nvifs > 1 ||
-	    priv->rxfilter & (FIF_OTHER_BSS | FIF_MCAST_ACTION))
+	if (priv->nvifs > 1 || priv->rxfilter & FIF_OTHER_BSS)
 		rfilt |= ATH9K_RX_FILTER_MCAST_BCAST_ALL;
 
 	return rfilt;
@@ -940,12 +929,11 @@ void ath9k_host_rx_init(struct ath9k_htc_priv *priv)
 static inline void convert_htc_flag(struct ath_rx_status *rx_stats,
 				   struct ath_htc_rx_status *rxstatus)
 {
-	rx_stats->enc_flags = 0;
-	rx_stats->bw = RATE_INFO_BW_20;
+	rx_stats->flag = 0;
 	if (rxstatus->rs_flags & ATH9K_RX_2040)
-		rx_stats->bw = RATE_INFO_BW_40;
+		rx_stats->flag |= RX_FLAG_40MHZ;
 	if (rxstatus->rs_flags & ATH9K_RX_GI)
-		rx_stats->enc_flags |= RX_ENC_FLAG_SHORT_GI;
+		rx_stats->flag |= RX_FLAG_SHORT_GI;
 }
 
 static void rx_status_htc_to_ath(struct ath_rx_status *rx_stats,
@@ -984,8 +972,6 @@ static bool ath9k_rx_prepare(struct ath9k_htc_priv *priv,
 	struct ath_htc_rx_status *rxstatus;
 	struct ath_rx_status rx_stats;
 	bool decrypt_error = false;
-	u16 rs_datalen;
-	bool is_phyerr;
 
 	if (skb->len < HTC_RX_FRAME_HEADER_SIZE) {
 		ath_err(common, "Corrupted RX frame, dropping (len: %d)\n",
@@ -995,32 +981,11 @@ static bool ath9k_rx_prepare(struct ath9k_htc_priv *priv,
 
 	rxstatus = (struct ath_htc_rx_status *)skb->data;
 
-	rs_datalen = be16_to_cpu(rxstatus->rs_datalen);
-	if (unlikely(rs_datalen -
-	    (skb->len - HTC_RX_FRAME_HEADER_SIZE) != 0)) {
+	if (be16_to_cpu(rxstatus->rs_datalen) -
+	    (skb->len - HTC_RX_FRAME_HEADER_SIZE) != 0) {
 		ath_err(common,
 			"Corrupted RX data len, dropping (dlen: %d, skblen: %d)\n",
-			rs_datalen, skb->len);
-		goto rx_next;
-	}
-
-	is_phyerr = rxstatus->rs_status & ATH9K_RXERR_PHY;
-	/*
-	 * Discard zero-length packets and packets smaller than an ACK
-	 * which are not PHY_ERROR (short radar pulses have a length of 3)
-	 */
-	if (unlikely(!rs_datalen || (rs_datalen < 10 && !is_phyerr))) {
-		ath_dbg(common, ANY,
-			"Short RX data len, dropping (dlen: %d)\n",
-			rs_datalen);
-		goto rx_next;
-	}
-
-	if (rxstatus->rs_keyix >= ATH_KEYMAX &&
-	    rxstatus->rs_keyix != ATH9K_RXKEYIX_INVALID) {
-		ath_dbg(common, ANY,
-			"Invalid keyix, dropping (keyix: %d)\n",
-			rxstatus->rs_keyix);
+			rxstatus->rs_datalen, skb->len);
 		goto rx_next;
 	}
 
@@ -1045,7 +1010,7 @@ static bool ath9k_rx_prepare(struct ath9k_htc_priv *priv,
 	 * Process PHY errors and return so that the packet
 	 * can be dropped.
 	 */
-	if (unlikely(is_phyerr)) {
+	if (rx_stats.rs_status & ATH9K_RXERR_PHY) {
 		/* TODO: Not using DFS processing now. */
 		if (ath_cmn_process_fft(&priv->spec_priv, hdr,
 				    &rx_stats, rx_status->mactime)) {
@@ -1080,9 +1045,9 @@ rx_next:
 /*
  * FIXME: Handle FLUSH later on.
  */
-void ath9k_rx_tasklet(struct tasklet_struct *t)
+void ath9k_rx_tasklet(unsigned long data)
 {
-	struct ath9k_htc_priv *priv = from_tasklet(priv, t, rx_tasklet);
+	struct ath9k_htc_priv *priv = (struct ath9k_htc_priv *)data;
 	struct ath9k_htc_rxbuf *rxbuf = NULL, *tmp_buf = NULL;
 	struct ieee80211_rx_status rx_status;
 	struct sk_buff *skb;
@@ -1137,34 +1102,29 @@ requeue:
 void ath9k_htc_rxep(void *drv_priv, struct sk_buff *skb,
 		    enum htc_endpoint_id ep_id)
 {
-	struct ath9k_htc_priv *priv = drv_priv;
+	struct ath9k_htc_priv *priv = (struct ath9k_htc_priv *)drv_priv;
 	struct ath_hw *ah = priv->ah;
 	struct ath_common *common = ath9k_hw_common(ah);
 	struct ath9k_htc_rxbuf *rxbuf = NULL, *tmp_buf = NULL;
-	unsigned long flags;
 
-	/* Check if ath9k_rx_init() completed. */
-	if (!data_race(priv->rx.initialized))
-		goto err;
-
-	spin_lock_irqsave(&priv->rx.rxbuflock, flags);
+	spin_lock(&priv->rx.rxbuflock);
 	list_for_each_entry(tmp_buf, &priv->rx.rxbuf, list) {
 		if (!tmp_buf->in_process) {
 			rxbuf = tmp_buf;
 			break;
 		}
 	}
-	spin_unlock_irqrestore(&priv->rx.rxbuflock, flags);
+	spin_unlock(&priv->rx.rxbuflock);
 
 	if (rxbuf == NULL) {
 		ath_dbg(common, ANY, "No free RX buffer\n");
 		goto err;
 	}
 
-	spin_lock_irqsave(&priv->rx.rxbuflock, flags);
+	spin_lock(&priv->rx.rxbuflock);
 	rxbuf->skb = skb;
 	rxbuf->in_process = true;
-	spin_unlock_irqrestore(&priv->rx.rxbuflock, flags);
+	spin_unlock(&priv->rx.rxbuflock);
 
 	tasklet_schedule(&priv->rx_tasklet);
 	return;
@@ -1201,10 +1161,6 @@ int ath9k_rx_init(struct ath9k_htc_priv *priv)
 
 		list_add_tail(&rxbuf->list, &priv->rx.rxbuf);
 	}
-
-	/* Allow ath9k_htc_rxep() to operate. */
-	smp_wmb();
-	priv->rx.initialized = true;
 
 	return 0;
 

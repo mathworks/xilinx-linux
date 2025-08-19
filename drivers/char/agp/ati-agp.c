@@ -10,7 +10,6 @@
 #include <linux/slab.h>
 #include <linux/agp_backend.h>
 #include <asm/agp.h>
-#include <asm/set_memory.h>
 #include "agp.h"
 
 #define ATI_GART_MMBASE_BAR	1
@@ -55,7 +54,7 @@ static struct _ati_generic_private {
 
 static int ati_create_page_map(struct ati_page_map *page_map)
 {
-	int i, err;
+	int i, err = 0;
 
 	page_map->real = (unsigned long *) __get_free_page(GFP_KERNEL);
 	if (page_map->real == NULL)
@@ -63,10 +62,6 @@ static int ati_create_page_map(struct ati_page_map *page_map)
 
 	set_memory_uc((unsigned long)page_map->real, 1);
 	err = map_page_into_agp(virt_to_page(page_map->real));
-	if (err) {
-		free_page((unsigned long)page_map->real);
-		return err;
-	}
 	page_map->remapped = page_map->real;
 
 	for (i = 0; i < PAGE_SIZE / sizeof(unsigned long); i++) {
@@ -112,8 +107,7 @@ static int ati_create_gatt_pages(int nr_tables)
 	int retval = 0;
 	int i;
 
-	tables = kcalloc(nr_tables + 1, sizeof(struct ati_page_map *),
-			 GFP_KERNEL);
+	tables = kzalloc((nr_tables + 1) * sizeof(struct ati_page_map *),GFP_KERNEL);
 	if (tables == NULL)
 		return -ENOMEM;
 
@@ -238,10 +232,23 @@ static int ati_configure(void)
 }
 
 
-static int agp_ati_resume(struct device *dev)
+#ifdef CONFIG_PM
+static int agp_ati_suspend(struct pci_dev *dev, pm_message_t state)
 {
+	pci_save_state(dev);
+	pci_set_power_state(dev, PCI_D3hot);
+
+	return 0;
+}
+
+static int agp_ati_resume(struct pci_dev *dev)
+{
+	pci_set_power_state(dev, PCI_D0);
+	pci_restore_state(dev);
+
 	return ati_configure();
 }
+#endif
 
 /*
  *Since we don't need contiguous memory we just try
@@ -294,7 +301,7 @@ static int ati_insert_memory(struct agp_memory * mem,
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		addr = (j * PAGE_SIZE) + agp_bridge->gart_bus_addr;
 		cur_gatt = GET_GATT(addr);
-		writel(agp_bridge->driver->mask_memory(agp_bridge,
+		writel(agp_bridge->driver->mask_memory(agp_bridge,	
 						       page_to_phys(mem->pages[i]),
 						       mem->type),
 		       cur_gatt+GET_GATT_OFF(addr));
@@ -532,7 +539,7 @@ static void agp_ati_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static const struct pci_device_id agp_ati_pci_table[] = {
+static struct pci_device_id agp_ati_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,
@@ -546,14 +553,15 @@ static const struct pci_device_id agp_ati_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, agp_ati_pci_table);
 
-static DEFINE_SIMPLE_DEV_PM_OPS(agp_ati_pm_ops, NULL, agp_ati_resume);
-
 static struct pci_driver agp_ati_pci_driver = {
 	.name		= "agpgart-ati",
 	.id_table	= agp_ati_pci_table,
 	.probe		= agp_ati_probe,
 	.remove		= agp_ati_remove,
-	.driver.pm	= &agp_ati_pm_ops,
+#ifdef CONFIG_PM
+	.suspend	= agp_ati_suspend,
+	.resume		= agp_ati_resume,
+#endif
 };
 
 static int __init agp_ati_init(void)

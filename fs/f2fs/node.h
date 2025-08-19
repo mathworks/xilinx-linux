@@ -1,22 +1,22 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * fs/f2fs/node.h
  *
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
  *             http://www.samsung.com/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 /* start node id of a node block dedicated to the given node id */
-#define	START_NID(nid) (((nid) / NAT_ENTRY_PER_BLOCK) * NAT_ENTRY_PER_BLOCK)
+#define	START_NID(nid) ((nid / NAT_ENTRY_PER_BLOCK) * NAT_ENTRY_PER_BLOCK)
 
 /* node block offset on the NAT area dedicated to the given start node id */
-#define	NAT_BLOCK_OFFSET(start_nid) ((start_nid) / NAT_ENTRY_PER_BLOCK)
+#define	NAT_BLOCK_OFFSET(start_nid) (start_nid / NAT_ENTRY_PER_BLOCK)
 
 /* # of pages to perform synchronous readahead before building free nids */
 #define FREE_NID_PAGES	8
 #define MAX_FREE_NIDS	(NAT_ENTRY_PER_BLOCK * FREE_NID_PAGES)
-
-/* size of free nid batch when shrinking */
-#define SHRINK_NID_BATCH_SIZE	8
 
 #define DEF_RA_NID_PAGES	0	/* # of nid pages to be readaheaded */
 
@@ -31,17 +31,12 @@
 /* control total # of nats */
 #define DEF_NAT_CACHE_THRESHOLD			100000
 
-/* control total # of node writes used for roll-fowrad recovery */
-#define DEF_RF_NODE_BLOCKS			0
-
 /* vector size for gang look-up from nat cache that consists of radix tree */
-#define NAT_VEC_SIZE	32
+#define NATVEC_SIZE	64
+#define SETVEC_SIZE	32
 
 /* return value for read_node_page */
 #define LOCKED_PAGE	1
-
-/* check pinned file's alignment status of physical blocks */
-#define FILE_NOT_ALIGNED	1
 
 /* For flag in struct node_info */
 enum {
@@ -49,7 +44,6 @@ enum {
 	HAS_FSYNCED_INODE,	/* is the inode fsynced before? */
 	HAS_LAST_FSYNC,		/* has the latest node fsync mark? */
 	IS_DIRTY,		/* this nat entry is dirty? */
-	IS_PREALLOC,		/* nat entry is preallocated */
 };
 
 /*
@@ -68,16 +62,16 @@ struct nat_entry {
 	struct node_info ni;	/* in-memory node information */
 };
 
-#define nat_get_nid(nat)		((nat)->ni.nid)
-#define nat_set_nid(nat, n)		((nat)->ni.nid = (n))
-#define nat_get_blkaddr(nat)		((nat)->ni.blk_addr)
-#define nat_set_blkaddr(nat, b)		((nat)->ni.blk_addr = (b))
-#define nat_get_ino(nat)		((nat)->ni.ino)
-#define nat_set_ino(nat, i)		((nat)->ni.ino = (i))
-#define nat_get_version(nat)		((nat)->ni.version)
-#define nat_set_version(nat, v)		((nat)->ni.version = (v))
+#define nat_get_nid(nat)		(nat->ni.nid)
+#define nat_set_nid(nat, n)		(nat->ni.nid = n)
+#define nat_get_blkaddr(nat)		(nat->ni.blk_addr)
+#define nat_set_blkaddr(nat, b)		(nat->ni.blk_addr = b)
+#define nat_get_ino(nat)		(nat->ni.ino)
+#define nat_set_ino(nat, i)		(nat->ni.ino = i)
+#define nat_get_version(nat)		(nat->ni.version)
+#define nat_set_version(nat, v)		(nat->ni.version = v)
 
-#define inc_node_version(version)	(++(version))
+#define inc_node_version(version)	(++version)
 
 static inline void copy_node_info(struct node_info *dst,
 						struct node_info *src)
@@ -92,15 +86,17 @@ static inline void copy_node_info(struct node_info *dst,
 static inline void set_nat_flag(struct nat_entry *ne,
 				unsigned int type, bool set)
 {
+	unsigned char mask = 0x01 << type;
 	if (set)
-		ne->ni.flag |= BIT(type);
+		ne->ni.flag |= mask;
 	else
-		ne->ni.flag &= ~BIT(type);
+		ne->ni.flag &= ~mask;
 }
 
 static inline bool get_nat_flag(struct nat_entry *ne, unsigned int type)
 {
-	return ne->ni.flag & BIT(type);
+	unsigned char mask = 0x01 << type;
+	return ne->ni.flag & mask;
 }
 
 static inline void nat_reset_flag(struct nat_entry *ne)
@@ -129,13 +125,13 @@ static inline void raw_nat_from_node_info(struct f2fs_nat_entry *raw_ne,
 
 static inline bool excess_dirty_nats(struct f2fs_sb_info *sbi)
 {
-	return NM_I(sbi)->nat_cnt[DIRTY_NAT] >= NM_I(sbi)->max_nid *
+	return NM_I(sbi)->dirty_nat_cnt >= NM_I(sbi)->max_nid *
 					NM_I(sbi)->dirty_nats_ratio / 100;
 }
 
 static inline bool excess_cached_nats(struct f2fs_sb_info *sbi)
 {
-	return NM_I(sbi)->nat_cnt[TOTAL_NAT] >= DEF_NAT_CACHE_THRESHOLD;
+	return NM_I(sbi)->nat_cnt >= DEF_NAT_CACHE_THRESHOLD;
 }
 
 enum mem_type {
@@ -143,10 +139,7 @@ enum mem_type {
 	NAT_ENTRIES,	/* indicates the cached nat entry */
 	DIRTY_DENTS,	/* indicates dirty dentry pages */
 	INO_ENTRIES,	/* indicates inode entries */
-	READ_EXTENT_CACHE,	/* indicates read extent cache */
-	AGE_EXTENT_CACHE,	/* indicates age extent cache */
-	DISCARD_CACHE,	/* indicates memory of cached discard cmds */
-	COMPRESS_PAGE,	/* indicates memory of cached compressed pages */
+	EXTENT_CACHE,	/* indicates extent cache */
 	BASE_CHECK,	/* check kernel status */
 };
 
@@ -157,10 +150,18 @@ struct nat_entry_set {
 	unsigned int entry_cnt;		/* the # of nat entries in set */
 };
 
+/*
+ * For free nid mangement
+ */
+enum nid_state {
+	NID_NEW,	/* newly added to free nid list */
+	NID_ALLOC	/* it is allocated */
+};
+
 struct free_nid {
 	struct list_head list;	/* for free node id list */
 	nid_t nid;		/* node id */
-	int state;		/* in use or not: FREE_NID or PREALLOC_NID */
+	int state;		/* in use or not: NID_NEW or NID_ALLOC */
 };
 
 static inline void next_free_nid(struct f2fs_sb_info *sbi, nid_t *nid)
@@ -168,14 +169,14 @@ static inline void next_free_nid(struct f2fs_sb_info *sbi, nid_t *nid)
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	struct free_nid *fnid;
 
-	spin_lock(&nm_i->nid_list_lock);
-	if (nm_i->nid_cnt[FREE_NID] <= 0) {
-		spin_unlock(&nm_i->nid_list_lock);
+	spin_lock(&nm_i->free_nid_list_lock);
+	if (nm_i->fcnt <= 0) {
+		spin_unlock(&nm_i->free_nid_list_lock);
 		return;
 	}
-	fnid = list_first_entry(&nm_i->free_nid_list, struct free_nid, list);
+	fnid = list_entry(nm_i->free_nid_list.next, struct free_nid, list);
 	*nid = fnid->nid;
-	spin_unlock(&nm_i->nid_list_lock);
+	spin_unlock(&nm_i->free_nid_list_lock);
 }
 
 /*
@@ -184,12 +185,6 @@ static inline void next_free_nid(struct f2fs_sb_info *sbi, nid_t *nid)
 static inline void get_nat_bitmap(struct f2fs_sb_info *sbi, void *addr)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
-
-#ifdef CONFIG_F2FS_CHECK_FS
-	if (memcmp(nm_i->nat_bitmap, nm_i->nat_bitmap_mir,
-						nm_i->bitmap_size))
-		f2fs_bug_on(sbi, 1);
-#endif
 	memcpy(addr, nm_i->nat_bitmap, nm_i->bitmap_size);
 }
 
@@ -198,16 +193,13 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	pgoff_t block_off;
 	pgoff_t block_addr;
+	int seg_off;
 
-	/*
-	 * block_off = segment_off * 512 + off_in_segment
-	 * OLD = (segment_off * 512) * 2 + off_in_segment
-	 * NEW = 2 * (segment_off * 512 + off_in_segment) - off_in_segment
-	 */
 	block_off = NAT_BLOCK_OFFSET(start);
+	seg_off = block_off >> sbi->log_blocks_per_seg;
 
 	block_addr = (pgoff_t)(nm_i->nat_blkaddr +
-		(block_off << 1) -
+		(seg_off << sbi->log_blocks_per_seg << 1) +
 		(block_off & (sbi->blocks_per_seg - 1)));
 
 	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))
@@ -222,7 +214,11 @@ static inline pgoff_t next_nat_addr(struct f2fs_sb_info *sbi,
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 
 	block_addr -= nm_i->nat_blkaddr;
-	block_addr ^= BIT(sbi->log_blocks_per_seg);
+	if ((block_addr >> sbi->log_blocks_per_seg) % 2)
+		block_addr -= sbi->blocks_per_seg;
+	else
+		block_addr += sbi->blocks_per_seg;
+
 	return block_addr + nm_i->nat_blkaddr;
 }
 
@@ -231,9 +227,6 @@ static inline void set_to_next_nat(struct f2fs_nm_info *nm_i, nid_t start_nid)
 	unsigned int block_off = NAT_BLOCK_OFFSET(start_nid);
 
 	f2fs_change_bit(block_off, nm_i->nat_bitmap);
-#ifdef CONFIG_F2FS_CHECK_FS
-	f2fs_change_bit(block_off, nm_i->nat_bitmap_mir);
-#endif
 }
 
 static inline nid_t ino_of_node(struct page *node_page)
@@ -297,11 +290,14 @@ static inline void fill_node_footer_blkaddr(struct page *page, block_t blkaddr)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(F2FS_P_SB(page));
 	struct f2fs_node *rn = F2FS_NODE(page);
-	__u64 cp_ver = cur_cp_version(ckpt);
+	size_t crc_offset = le32_to_cpu(ckpt->checksum_offset);
+	__u64 cp_ver = le64_to_cpu(ckpt->checkpoint_ver);
 
-	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG))
-		cp_ver |= (cur_cp_crc(ckpt) << 32);
-
+	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG)) {
+		__u64 crc = le32_to_cpu(*((__le32 *)
+				((unsigned char *)ckpt + crc_offset)));
+		cp_ver |= (crc << 32);
+	}
 	rn->footer.cp_ver = cpu_to_le64(cp_ver);
 	rn->footer.next_blkaddr = cpu_to_le32(blkaddr);
 }
@@ -309,16 +305,15 @@ static inline void fill_node_footer_blkaddr(struct page *page, block_t blkaddr)
 static inline bool is_recoverable_dnode(struct page *page)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(F2FS_P_SB(page));
+	size_t crc_offset = le32_to_cpu(ckpt->checksum_offset);
 	__u64 cp_ver = cur_cp_version(ckpt);
 
-	/* Don't care crc part, if fsck.f2fs sets it. */
-	if (__is_set_ckpt_flags(ckpt, CP_NOCRC_RECOVERY_FLAG))
-		return (cp_ver << 32) == (cpver_of_node(page) << 32);
-
-	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG))
-		cp_ver |= (cur_cp_crc(ckpt) << 32);
-
-	return cp_ver == cpver_of_node(page);
+	if (__is_set_ckpt_flags(ckpt, CP_CRC_RECOVERY_FLAG)) {
+		__u64 crc = le32_to_cpu(*((__le32 *)
+				((unsigned char *)ckpt + crc_offset)));
+		cp_ver |= (crc << 32);
+	}
+	return cpu_to_le64(cp_ver) == cpver_of_node(page);
 }
 
 /*
@@ -347,7 +342,7 @@ static inline bool IS_DNODE(struct page *node_page)
 	unsigned int ofs = ofs_of_node(node_page);
 
 	if (f2fs_has_xattr_block(ofs))
-		return true;
+		return false;
 
 	if (ofs == 3 || ofs == 4 + NIDS_PER_BLOCK ||
 			ofs == 5 + 2 * NIDS_PER_BLOCK)
@@ -364,7 +359,7 @@ static inline int set_nid(struct page *p, int off, nid_t nid, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);
 
-	f2fs_wait_on_page_writeback(p, NODE, true, true);
+	f2fs_wait_on_page_writeback(p, NODE, true);
 
 	if (i)
 		rn->i.i_nid[off - NODE_DIR1_BLOCK] = cpu_to_le32(nid);
@@ -388,26 +383,55 @@ static inline nid_t get_nid(struct page *p, int off, bool i)
  *  - Mark cold node blocks in their node footer
  *  - Mark cold data pages in page cache
  */
+static inline int is_cold_data(struct page *page)
+{
+	return PageChecked(page);
+}
+
+static inline void set_cold_data(struct page *page)
+{
+	SetPageChecked(page);
+}
+
+static inline void clear_cold_data(struct page *page)
+{
+	ClearPageChecked(page);
+}
 
 static inline int is_node(struct page *page, int type)
 {
 	struct f2fs_node *rn = F2FS_NODE(page);
-	return le32_to_cpu(rn->footer.flag) & BIT(type);
+	return le32_to_cpu(rn->footer.flag) & (1 << type);
 }
 
 #define is_cold_node(page)	is_node(page, COLD_BIT_SHIFT)
 #define is_fsync_dnode(page)	is_node(page, FSYNC_BIT_SHIFT)
 #define is_dent_dnode(page)	is_node(page, DENT_BIT_SHIFT)
 
-static inline void set_cold_node(struct page *page, bool is_dir)
+static inline int is_inline_node(struct page *page)
+{
+	return PageChecked(page);
+}
+
+static inline void set_inline_node(struct page *page)
+{
+	SetPageChecked(page);
+}
+
+static inline void clear_inline_node(struct page *page)
+{
+	ClearPageChecked(page);
+}
+
+static inline void set_cold_node(struct inode *inode, struct page *page)
 {
 	struct f2fs_node *rn = F2FS_NODE(page);
 	unsigned int flag = le32_to_cpu(rn->footer.flag);
 
-	if (is_dir)
-		flag &= ~BIT(COLD_BIT_SHIFT);
+	if (S_ISDIR(inode->i_mode))
+		flag &= ~(0x1 << COLD_BIT_SHIFT);
 	else
-		flag |= BIT(COLD_BIT_SHIFT);
+		flag |= (0x1 << COLD_BIT_SHIFT);
 	rn->footer.flag = cpu_to_le32(flag);
 }
 
@@ -416,14 +440,10 @@ static inline void set_mark(struct page *page, int mark, int type)
 	struct f2fs_node *rn = F2FS_NODE(page);
 	unsigned int flag = le32_to_cpu(rn->footer.flag);
 	if (mark)
-		flag |= BIT(type);
+		flag |= (0x1 << type);
 	else
-		flag &= ~BIT(type);
+		flag &= ~(0x1 << type);
 	rn->footer.flag = cpu_to_le32(flag);
-
-#ifdef CONFIG_F2FS_CHECK_FS
-	f2fs_inode_chksum_set(F2FS_P_SB(page), page);
-#endif
 }
 #define set_dentry_mark(page, mark)	set_mark(page, mark, DENT_BIT_SHIFT)
 #define set_fsync_mark(page, mark)	set_mark(page, mark, FSYNC_BIT_SHIFT)

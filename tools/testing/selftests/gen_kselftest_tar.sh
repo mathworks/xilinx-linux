@@ -1,10 +1,12 @@
 #!/bin/bash
 #
-# SPDX-License-Identifier: GPL-2.0
 # gen_kselftest_tar
 # Generate kselftest tarball
 # Author: Shuah Khan <shuahkh@osg.samsung.com>
 # Copyright (C) 2015 Samsung Electronics Co., Ltd.
+
+# This software may be freely redistributed under the terms of the GNU
+# General Public License (GPLv2).
 
 # main
 main()
@@ -38,26 +40,16 @@ main()
 	esac
 	fi
 
-	# Create working directory.
-	dest=`pwd`
-	install_work="$dest"/kselftest_install
-	install_name=kselftest
-	install_dir="$install_work"/"$install_name"
-	mkdir -p "$install_dir"
+	install_dir=./kselftest
 
-	# Run install using INSTALL_KSFT_PATH override to generate install
-	# directory
-	./kselftest_install.sh "$install_dir"
-	(cd "$install_work"; tar $copts "$dest"/kselftest${ext} $install_name)
+# Run install using INSTALL_KSFT_PATH override to generate install
+# directory
+./kselftest_install.sh
+tar $copts kselftest${ext} $install_dir
+echo "Kselftest archive kselftest${ext} created!"
 
-	# Don't put the message at the actual end as people may be parsing the
-	# "archive created" line in their scripts.
-	echo -e "\nConsider using 'make gen_tar' instead of this script\n"
-
-	echo "Kselftest archive kselftest${ext} created!"
-
-	# clean up top-level install work directory
-	rm -rf "$install_work"
+# clean up install directory
+rm -rf kselftest
 }
 
 main "$@"

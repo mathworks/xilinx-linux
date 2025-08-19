@@ -1,20 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the ADB controller in the Mac I/O (Hydra) chip.
  */
+#include <stdarg.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
-#include <linux/pgtable.h>
-#include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
+#include <asm/prom.h>
 #include <linux/adb.h>
-
 #include <asm/io.h>
+#include <asm/pgtable.h>
 #include <asm/hydra.h>
 #include <asm/irq.h>
 #include <linux/init.h>
@@ -72,13 +69,14 @@ static void macio_adb_poll(void);
 static int macio_adb_reset_bus(void);
 
 struct adb_driver macio_adb_driver = {
-	.name         = "MACIO",
-	.probe        = macio_probe,
-	.init         = macio_init,
-	.send_request = macio_send_request,
-	.autopoll     = macio_adb_autopoll,
-	.poll         = macio_adb_poll,
-	.reset_bus    = macio_adb_reset_bus,
+	"MACIO",
+	macio_probe,
+	macio_init,
+	macio_send_request,
+	/*macio_write,*/
+	macio_adb_autopoll,
+	macio_adb_poll,
+	macio_adb_reset_bus
 };
 
 int macio_probe(void)
@@ -100,7 +98,7 @@ int macio_init(void)
 	unsigned int irq;
 
 	adbs = of_find_compatible_node(NULL, "adb", "chrp,adb0");
-	if (!adbs)
+	if (adbs == 0)
 		return -ENXIO;
 
 	if (of_address_to_resource(adbs, 0, &r)) {
@@ -108,10 +106,6 @@ int macio_init(void)
 		return -ENXIO;
 	}
 	adb = ioremap(r.start, sizeof(struct adb_regs));
-	if (!adb) {
-		of_node_put(adbs);
-		return -ENOMEM;
-	}
 
 	out_8(&adb->ctrl.r, 0);
 	out_8(&adb->intr.r, 0);
@@ -187,7 +181,7 @@ static int macio_send_request(struct adb_request *req, int sync)
 	req->reply_len = 0;
 
 	spin_lock_irqsave(&macio_lock, flags);
-	if (current_req) {
+	if (current_req != 0) {
 		last_req->next = req;
 		last_req = req;
 	} else {
@@ -217,8 +211,7 @@ static irqreturn_t macio_adb_interrupt(int irq, void *arg)
 	spin_lock(&macio_lock);
 	if (in_8(&adb->intr.r) & TAG) {
 		handled = 1;
-		req = current_req;
-		if (req) {
+		if ((req = current_req) != 0) {
 			/* put the current request in */
 			for (i = 0; i < req->nbytes; ++i)
 				out_8(&adb->data[i].r, req->data[i]);

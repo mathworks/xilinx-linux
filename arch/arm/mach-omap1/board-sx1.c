@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
 * linux/arch/arm/mach-omap1/board-sx1.c
 *
@@ -10,9 +9,12 @@
 *
 * Maintainters : Vladimir Ananiev (aka Vovan888), Sergge
 *		oslik.ru
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License version 2 as
+* published by the Free Software Foundation.
 */
-#include <linux/gpio/machine.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/input.h>
@@ -27,18 +29,20 @@
 #include <linux/export.h>
 #include <linux/omapfb.h>
 #include <linux/platform_data/keypad-omap.h>
-#include <linux/omap-dma.h>
-#include "tc.h"
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
 #include "flash.h"
-#include "mux.h"
+#include <mach/mux.h>
+#include <linux/omap-dma.h>
+#include <mach/tc.h>
 #include "board-sx1.h"
-#include "hardware.h"
-#include "usb.h"
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
 #include "common.h"
 
 /* Write to I2C device */
@@ -293,7 +297,7 @@ static struct omap_usb_config sx1_usb_config __initdata = {
 
 /*----------- LCD -------------------------*/
 
-static const struct omap_lcd_config sx1_lcd_config __initconst = {
+static struct omap_lcd_config sx1_lcd_config __initdata = {
 	.ctrl_name	= "internal",
 };
 
@@ -305,23 +309,8 @@ static struct platform_device *sx1_devices[] __initdata = {
 
 /*-----------------------------------------*/
 
-static struct gpiod_lookup_table sx1_gpio_table = {
-	.dev_id = NULL,
-	.table = {
-		GPIO_LOOKUP("gpio-0-15", 1, "irda_off",
-			    GPIO_ACTIVE_HIGH),
-		GPIO_LOOKUP("gpio-0-15", 11, "switch",
-			    GPIO_ACTIVE_HIGH),
-		GPIO_LOOKUP("gpio-0-15", 15, "usb_on",
-			    GPIO_ACTIVE_HIGH),
-		{ }
-	},
-};
-
 static void __init omap_sx1_init(void)
 {
-	struct gpio_desc *d;
-
 	/* mux pins for uarts */
 	omap_cfg_reg(UART1_TX);
 	omap_cfg_reg(UART1_RTS);
@@ -336,34 +325,25 @@ static void __init omap_sx1_init(void)
 	omap_register_i2c_bus(1, 100, NULL, 0);
 	omap1_usb_init(&sx1_usb_config);
 	sx1_mmc_init();
-	gpiod_add_lookup_table(&sx1_gpio_table);
 
 	/* turn on USB power */
 	/* sx1_setusbpower(1); can't do it here because i2c is not ready */
-	d = gpiod_get(NULL, "irda_off", GPIOD_OUT_HIGH);
-	if (IS_ERR(d))
-		pr_err("Unable to get IRDA OFF GPIO descriptor\n");
-	else
-		gpiod_put(d);
-	d = gpiod_get(NULL, "switch", GPIOD_OUT_LOW);
-	if (IS_ERR(d))
-		pr_err("Unable to get SWITCH GPIO descriptor\n");
-	else
-		gpiod_put(d);
-	d = gpiod_get(NULL, "usb_on", GPIOD_OUT_LOW);
-	if (IS_ERR(d))
-		pr_err("Unable to get USB ON GPIO descriptor\n");
-	else
-		gpiod_put(d);
+	gpio_request(1, "A_IRDA_OFF");
+	gpio_request(11, "A_SWITCH");
+	gpio_request(15, "A_USB_ON");
+	gpio_direction_output(1, 1);	/*A_IRDA_OFF = 1 */
+	gpio_direction_output(11, 0);	/*A_SWITCH = 0 */
+	gpio_direction_output(15, 0);	/*A_USB_ON = 0 */
 
 	omapfb_set_lcd_config(&sx1_lcd_config);
 }
 
 MACHINE_START(SX1, "OMAP310 based Siemens SX1")
 	.atag_offset	= 0x100,
-	.map_io		= omap1_map_io,
+	.map_io		= omap15xx_map_io,
 	.init_early     = omap1_init_early,
 	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
 	.init_machine	= omap_sx1_init,
 	.init_late	= omap1_init_late,
 	.init_time	= omap1_timer_init,

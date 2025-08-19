@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __DT_C8SECTPFE_H
 #define __DT_C8SECTPFE_H
 

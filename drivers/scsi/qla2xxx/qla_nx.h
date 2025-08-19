@@ -1,12 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic Fibre Channel HBA Driver
  * Copyright (c)  2003-2014 QLogic Corporation
+ *
+ * See LICENSE.qla2xxx for copyright and licensing details.
  */
 #ifndef __QLA_NX_H
 #define __QLA_NX_H
-
-#include <scsi/scsi.h>
 
 /*
  * Following are the states of the Phantom. Phantom will set them and
@@ -485,13 +484,13 @@
 #define QLA82XX_ADDR_QDR_NET		(0x0000000300000000ULL)
 #define QLA82XX_P3_ADDR_QDR_NET_MAX	(0x0000000303ffffffULL)
 
-#define QLA82XX_PCI_CRBSPACE		0x06000000UL
-#define QLA82XX_PCI_DIRECT_CRB		0x04400000UL
-#define QLA82XX_PCI_CAMQM		0x04800000UL
-#define QLA82XX_PCI_CAMQM_MAX		0x04ffffffUL
-#define QLA82XX_PCI_DDR_NET		0x00000000UL
-#define QLA82XX_PCI_QDR_NET		0x04000000UL
-#define QLA82XX_PCI_QDR_NET_MAX		0x043fffffUL
+#define QLA82XX_PCI_CRBSPACE		(unsigned long)0x06000000
+#define QLA82XX_PCI_DIRECT_CRB		(unsigned long)0x04400000
+#define QLA82XX_PCI_CAMQM		(unsigned long)0x04800000
+#define QLA82XX_PCI_CAMQM_MAX		(unsigned long)0x04ffffff
+#define QLA82XX_PCI_DDR_NET		(unsigned long)0x00000000
+#define QLA82XX_PCI_QDR_NET		(unsigned long)0x04000000
+#define QLA82XX_PCI_QDR_NET_MAX		(unsigned long)0x043fffff
 
 /*
  *   Register offsets for MN
@@ -540,18 +539,14 @@
 #define QLA82XX_CRB_DRV_IDC_VERSION  (QLA82XX_CAM_RAM(0x174))
 
 /* Every driver should use these Device State */
-enum {
-	QLA8XXX_DEV_UNKNOWN,
-	QLA8XXX_DEV_COLD,
-	QLA8XXX_DEV_INITIALIZING,
-	QLA8XXX_DEV_READY,
-	QLA8XXX_DEV_NEED_RESET,
-	QLA8XXX_DEV_NEED_QUIESCENT,
-	QLA8XXX_DEV_FAILED,
-	QLA8XXX_DEV_QUIESCENT,
-	MAX_STATES, /* Increment if new state added */
-};
-
+#define QLA8XXX_DEV_COLD		1
+#define QLA8XXX_DEV_INITIALIZING	2
+#define QLA8XXX_DEV_READY		3
+#define QLA8XXX_DEV_NEED_RESET		4
+#define QLA8XXX_DEV_NEED_QUIESCENT	5
+#define QLA8XXX_DEV_FAILED		6
+#define QLA8XXX_DEV_QUIESCENT		7
+#define	MAX_STATES			8 /* Increment if new state added */
 #define QLA8XXX_BAD_VALUE		0xbad0bad0
 
 #define QLA82XX_IDC_VERSION			1
@@ -803,16 +798,16 @@ struct qla82xx_legacy_intr_set {
 #define QLA82XX_URI_FIRMWARE_IDX_OFF	29
 
 struct qla82xx_uri_table_desc{
-	__le32	findex;
-	__le32	num_entries;
-	__le32	entry_size;
-	__le32	reserved[5];
+	uint32_t	findex;
+	uint32_t	num_entries;
+	uint32_t	entry_size;
+	uint32_t	reserved[5];
 };
 
 struct qla82xx_uri_data_desc{
-	__le32	findex;
-	__le32	size;
-	__le32	reserved[5];
+	uint32_t	findex;
+	uint32_t	size;
+	uint32_t	reserved[5];
 };
 
 /* UNIFIED ROMIMAGE END */
@@ -824,6 +819,21 @@ struct qla82xx_uri_data_desc{
 #define MIU_TEST_AGT_WRDATA_UPPER_LO		(0x0b0)
 #define	MIU_TEST_AGT_WRDATA_UPPER_HI		(0x0b4)
 
+#ifndef readq
+static inline u64 readq(void __iomem *addr)
+{
+	return readl(addr) | (((u64) readl(addr + 4)) << 32LL);
+}
+#endif
+
+#ifndef writeq
+static inline void writeq(u64 val, void __iomem *addr)
+{
+	writel(((u32) (val)), (addr));
+	writel(((u32) (val >> 32)), (addr + 4));
+}
+#endif
+
 /* Request and response queue size */
 #define REQUEST_ENTRY_CNT_82XX		128	/* Number of request entries. */
 #define RESPONSE_ENTRY_CNT_82XX		128	/* Number of response entries.*/
@@ -832,22 +842,22 @@ struct qla82xx_uri_data_desc{
  * ISP 8021 I/O Register Set structure definitions.
  */
 struct device_reg_82xx {
-	__le32	req_q_out[64];		/* Request Queue out-Pointer (64 * 4) */
-	__le32	rsp_q_in[64];		/* Response Queue In-Pointer. */
-	__le32	rsp_q_out[64];		/* Response Queue Out-Pointer. */
+	uint32_t req_q_out[64];		/* Request Queue out-Pointer (64 * 4) */
+	uint32_t rsp_q_in[64];		/* Response Queue In-Pointer. */
+	uint32_t rsp_q_out[64];		/* Response Queue Out-Pointer. */
 
-	__le16	mailbox_in[32];		/* Mailbox In registers */
-	__le16	unused_1[32];
-	__le32	hint;			/* Host interrupt register */
+	uint16_t mailbox_in[32];	/* Mail box In registers */
+	uint16_t unused_1[32];
+	uint32_t hint;			/* Host interrupt register */
 #define	HINT_MBX_INT_PENDING	BIT_0
-	__le16	unused_2[62];
-	__le16	mailbox_out[32];	/* Mailbox Out registers */
-	__le32	unused_3[48];
+	uint16_t unused_2[62];
+	uint16_t mailbox_out[32];	/* Mail box Out registers */
+	uint32_t unused_3[48];
 
-	__le32	host_status;		/* host status */
+	uint32_t host_status;		/* host status */
 #define HSRX_RISC_INT		BIT_15	/* RISC to Host interrupt. */
 #define HSRX_RISC_PAUSED	BIT_8	/* RISC Paused. */
-	__le32	host_int;		/* Interrupt status. */
+	uint32_t host_int;		/* Interrupt status. */
 #define ISRX_NX_RISC_INT	BIT_0	/* RISC interrupt. */
 };
 
@@ -857,9 +867,7 @@ struct fcp_cmnd {
 	uint8_t task_attribute;
 	uint8_t task_management;
 	uint8_t additional_cdb_len;
-#define QLA_CDB_BUF_SIZE  256
-#define QLA_FCP_DL_SIZE   4
-	uint8_t cdb[QLA_CDB_BUF_SIZE + QLA_FCP_DL_SIZE]; /* 256 for CDB len and 4 for FCP_DL */
+	uint8_t cdb[260]; /* 256 for CDB len and 4 for FCP_DL */
 };
 
 struct dsd_dma {
@@ -1168,7 +1176,8 @@ struct qla82xx_md_entry_queue {
 #define MD_MIU_TEST_AGT_ADDR_LO		0x41000094
 #define MD_MIU_TEST_AGT_ADDR_HI		0x41000098
 
-extern const int MD_MIU_TEST_AGT_RDDATA[4];
+static const int MD_MIU_TEST_AGT_RDDATA[] = { 0x410000A8, 0x410000AC,
+	0x410000B8, 0x410000BC };
 
 #define CRB_NIU_XG_PAUSE_CTL_P0        0x1
 #define CRB_NIU_XG_PAUSE_CTL_P1        0x8

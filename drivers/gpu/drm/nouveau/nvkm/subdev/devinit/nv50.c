@@ -50,7 +50,7 @@ nv50_devinit_pll_set(struct nvkm_devinit *init, u32 type, u32 freq)
 	ret = nv04_pll_calc(subdev, &info, freq, &N1, &M1, &N2, &M2, &P);
 	if (!ret) {
 		nvkm_error(subdev, "failed pll calculation\n");
-		return -EINVAL;
+		return ret;
 	}
 
 	switch (info.type) {
@@ -77,14 +77,17 @@ nv50_devinit_pll_set(struct nvkm_devinit *init, u32 type, u32 freq)
 	return 0;
 }
 
-static void
+static u64
 nv50_devinit_disable(struct nvkm_devinit *init)
 {
 	struct nvkm_device *device = init->subdev.device;
 	u32 r001540 = nvkm_rd32(device, 0x001540);
+	u64 disable = 0ULL;
 
 	if (!(r001540 & 0x40000000))
-		nvkm_subdev_disable(device, NVKM_ENGINE_MPEG, 0);
+		disable |= (1ULL << NVKM_ENGINE_MPEG);
+
+	return disable;
 }
 
 void
@@ -98,8 +101,8 @@ nv50_devinit_preinit(struct nvkm_devinit *base)
 	 * missing, assume it's a secondary gpu which requires post
 	 */
 	if (!base->post) {
-		nvkm_devinit_disable(base);
-		if (!device->disp)
+		u64 disable = nvkm_devinit_disable(base);
+		if (disable & (1ULL << NVKM_ENGINE_DISP))
 			base->post = true;
 	}
 
@@ -134,19 +137,25 @@ nv50_devinit_init(struct nvkm_devinit *base)
 	while (init->base.post && dcb_outp_parse(bios, i, &ver, &hdr, &outp)) {
 		if (nvbios_outp_match(bios, outp.hasht, outp.hashm,
 				      &ver, &hdr, &cnt, &len, &info)) {
-			nvbios_init(subdev, info.script[0],
-				init.outp = &outp;
-				init.or   = ffs(outp.or) - 1;
-				init.link = outp.sorconf.link == 2;
-			);
+			struct nvbios_init exec = {
+				.subdev = subdev,
+				.bios = bios,
+				.offset = info.script[0],
+				.outp = &outp,
+				.crtc = -1,
+				.execute = 1,
+			};
+
+			nvbios_exec(&exec);
 		}
 		i++;
 	}
 }
 
 int
-nv50_devinit_new_(const struct nvkm_devinit_func *func, struct nvkm_device *device,
-		  enum nvkm_subdev_type type, int inst, struct nvkm_devinit **pinit)
+nv50_devinit_new_(const struct nvkm_devinit_func *func,
+		  struct nvkm_device *device, int index,
+		  struct nvkm_devinit **pinit)
 {
 	struct nv50_devinit *init;
 
@@ -154,7 +163,7 @@ nv50_devinit_new_(const struct nvkm_devinit_func *func, struct nvkm_device *devi
 		return -ENOMEM;
 	*pinit = &init->base;
 
-	nvkm_devinit_ctor(func, device, type, inst, &init->base);
+	nvkm_devinit_ctor(func, device, index, &init->base);
 	return 0;
 }
 
@@ -168,8 +177,8 @@ nv50_devinit = {
 };
 
 int
-nv50_devinit_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+nv50_devinit_new(struct nvkm_device *device, int index,
 		 struct nvkm_devinit **pinit)
 {
-	return nv50_devinit_new_(&nv50_devinit, device, type, inst, pinit);
+	return nv50_devinit_new_(&nv50_devinit, device, index, pinit);
 }

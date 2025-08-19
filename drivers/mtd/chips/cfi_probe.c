@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
    Common Flash Interface probe code.
-   (C) 2000 Red Hat.
+   (C) 2000 Red Hat. GPL'd.
 */
 
 #include <linux/module.h>
@@ -63,30 +62,6 @@ do { \
 #define xip_disable_qry(base, map, cfi) do { } while (0)
 
 #endif
-
-/*
- * This fixup occurs immediately after reading the CFI structure and can affect
- * the number of chips detected, unlike cfi_fixup, which occurs after an
- * mtd_info structure has been created for the chip.
- */
-struct cfi_early_fixup {
-	uint16_t mfr;
-	uint16_t id;
-	void (*fixup)(struct cfi_private *cfi);
-};
-
-static void cfi_early_fixup(struct cfi_private *cfi,
-			    const struct cfi_early_fixup *fixups)
-{
-	const struct cfi_early_fixup *f;
-
-	for (f = fixups; f->fixup; f++) {
-		if (((f->mfr == CFI_MFR_ANY) || (f->mfr == cfi->mfr)) &&
-		    ((f->id == CFI_ID_ANY) || (f->id == cfi->id))) {
-			f->fixup(cfi);
-		}
-	}
-}
 
 /* check for QRY.
    in: interleave,type,mode
@@ -176,22 +151,6 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 	return 1;
 }
 
-static void fixup_s70gl02gs_chips(struct cfi_private *cfi)
-{
-	/*
-	 * S70GL02GS flash reports a single 256 MiB chip, but is really made up
-	 * of two 128 MiB chips with 1024 sectors each.
-	 */
-	cfi->cfiq->DevSize = 27;
-	cfi->cfiq->EraseRegionInfo[0] = 0x20003ff;
-	pr_warn("Bad S70GL02GS CFI data; adjust to detect 2 chips\n");
-}
-
-static const struct cfi_early_fixup cfi_early_fixup_table[] = {
-	{ CFI_MFR_AMD, 0x4801, fixup_s70gl02gs_chips },
-	{ },
-};
-
 static int __xipram cfi_chip_setup(struct map_info *map,
 				   struct cfi_private *cfi)
 {
@@ -199,6 +158,9 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	__u32 base = 0;
 	int num_erase_regions = cfi_read_query(map, base + (0x10 + 28)*ofs_factor);
 	int i;
+	int extendedId1 = 0;
+	int extendedId2 = 0;
+	int extendedId3 = 0;
 	int addr_unlock1 = 0x555, addr_unlock2 = 0x2AA;
 
 	xip_enable(base, map, cfi);
@@ -223,6 +185,38 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	for (i=0; i<(sizeof(struct cfi_ident) + num_erase_regions * 4); i++)
 		((unsigned char *)cfi->cfiq)[i] = cfi_read_query(map,base + (0x10 + i)*ofs_factor);
 
+	/* Note we put the device back into Read Mode BEFORE going into Auto
+	 * Select Mode, as some devices support nesting of modes, others
+	 * don't. This way should always work.
+	 * On cmdset 0001 the writes of 0xaa and 0x55 are not needed, and
+	 * so should be treated as nops or illegal (and so put the device
+	 * back into Read Mode, which is a nop in this case).
+	 */
+	cfi_send_gen_cmd(0xf0,     0, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0xaa, 0x555, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, 0x2aa, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x90, 0x555, base, map, cfi, cfi->device_type, NULL);
+	cfi->mfr = cfi_read_query16(map, base);
+	cfi->id = cfi_read_query16(map, base + ofs_factor);
+
+	/* Get device ID cycle 1,2,3 for Numonyx/ST devices */
+	if ((cfi->mfr == CFI_MFR_INTEL || cfi->mfr == CFI_MFR_ST)
+		&& ((cfi->id & 0xff) == 0x7e)
+		&& (le16_to_cpu(cfi->cfiq->P_ID) == 0x0002)) {
+		extendedId1 = cfi_read_query16(map, base + 0x1 * ofs_factor);
+		extendedId2 = cfi_read_query16(map, base + 0xe * ofs_factor);
+		extendedId3 = cfi_read_query16(map, base + 0xf * ofs_factor);
+	}
+
+	/* Get AMD/Spansion extended JEDEC ID */
+	if (cfi->mfr == CFI_MFR_AMD && (cfi->id & 0xff) == 0x7e)
+		cfi->id = cfi_read_query(map, base + 0xe * ofs_factor) << 8 |
+			  cfi_read_query(map, base + 0xf * ofs_factor);
+
+	/* Put it back into Read Mode */
+	cfi_qry_mode_off(base, map, cfi);
+	xip_allowed(base, map);
+
 	/* Do any necessary byteswapping */
 	cfi->cfiq->P_ID = le16_to_cpu(cfi->cfiq->P_ID);
 
@@ -231,6 +225,16 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	cfi->cfiq->A_ADR = le16_to_cpu(cfi->cfiq->A_ADR);
 	cfi->cfiq->InterfaceDesc = le16_to_cpu(cfi->cfiq->InterfaceDesc);
 	cfi->cfiq->MaxBufWriteSize = le16_to_cpu(cfi->cfiq->MaxBufWriteSize);
+
+   /* If the device is a M29EW used in 8-bit mode, adjust buffer size */
+	if ((cfi->cfiq->MaxBufWriteSize > 0x8) && (cfi->mfr == CFI_MFR_INTEL ||
+		 cfi->mfr == CFI_MFR_ST) && (extendedId1 == 0x7E) &&
+		 (extendedId2 == 0x22 || extendedId2 == 0x23 || extendedId2 == 0x28) &&
+		 (extendedId3 == 0x01)) {
+		cfi->cfiq->MaxBufWriteSize = 0x8;
+		pr_warning("Adjusted buffer size on Numonyx flash M29EW family");
+		pr_warning("in 8 bit mode\n");
+    }
 
 #ifdef DEBUG_CFI
 	/* Dump the information therein */
@@ -275,8 +279,6 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	/* Put it back into Read Mode */
 	cfi_qry_mode_off(base, map, cfi);
 	xip_allowed(base, map);
-
-	cfi_early_fixup(cfi, cfi_early_fixup_table);
 
 	printk(KERN_INFO "%s: Found %d x%d devices at 0x%x in %d-bit bank. Manufacturer ID %#08x Chip ID %#08x\n",
 	       map->name, cfi->interleave, cfi->device_type*8, base,

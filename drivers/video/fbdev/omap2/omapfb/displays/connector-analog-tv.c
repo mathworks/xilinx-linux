@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Analog TV Connector driver
  *
  * Copyright (C) 2013 Texas Instruments
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
  */
 
 #include <linux/slab.h>
@@ -12,6 +15,7 @@
 #include <linux/of.h>
 
 #include <video/omapfb_dss.h>
+#include <video/omap-panel-data.h>
 
 struct panel_drv_data {
 	struct omap_dss_device dssdev;
@@ -46,13 +50,18 @@ static int tvc_connect(struct omap_dss_device *dssdev)
 {
 	struct panel_drv_data *ddata = to_panel_data(dssdev);
 	struct omap_dss_device *in = ddata->in;
+	int r;
 
 	dev_dbg(ddata->dev, "connect\n");
 
 	if (omapdss_device_is_connected(dssdev))
 		return 0;
 
-	return in->ops.atv->connect(in, dssdev);
+	r = in->ops.atv->connect(in, dssdev);
+	if (r)
+		return r;
+
+	return 0;
 }
 
 static void tvc_disconnect(struct omap_dss_device *dssdev)
@@ -177,14 +186,52 @@ static struct omap_dss_driver tvc_driver = {
 	.set_wss		= tvc_set_wss,
 };
 
+static int tvc_probe_pdata(struct platform_device *pdev)
+{
+	struct panel_drv_data *ddata = platform_get_drvdata(pdev);
+	struct connector_atv_platform_data *pdata;
+	struct omap_dss_device *in, *dssdev;
+
+	pdata = dev_get_platdata(&pdev->dev);
+
+	in = omap_dss_find_output(pdata->source);
+	if (in == NULL) {
+		dev_err(&pdev->dev, "Failed to find video source\n");
+		return -EPROBE_DEFER;
+	}
+
+	ddata->in = in;
+
+	ddata->invert_polarity = pdata->invert_polarity;
+
+	dssdev = &ddata->dssdev;
+	dssdev->name = pdata->name;
+
+	return 0;
+}
+
+static int tvc_probe_of(struct platform_device *pdev)
+{
+	struct panel_drv_data *ddata = platform_get_drvdata(pdev);
+	struct device_node *node = pdev->dev.of_node;
+	struct omap_dss_device *in;
+
+	in = omapdss_of_find_source_for_first_ep(node);
+	if (IS_ERR(in)) {
+		dev_err(&pdev->dev, "failed to find video source\n");
+		return PTR_ERR(in);
+	}
+
+	ddata->in = in;
+
+	return 0;
+}
+
 static int tvc_probe(struct platform_device *pdev)
 {
 	struct panel_drv_data *ddata;
 	struct omap_dss_device *dssdev;
 	int r;
-
-	if (!pdev->dev.of_node)
-		return -ENODEV;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
@@ -193,11 +240,16 @@ static int tvc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, ddata);
 	ddata->dev = &pdev->dev;
 
-	ddata->in = omapdss_of_find_source_for_first_ep(pdev->dev.of_node);
-	r = PTR_ERR_OR_ZERO(ddata->in);
-	if (r) {
-		dev_err(&pdev->dev, "failed to find video source\n");
-		return r;
+	if (dev_get_platdata(&pdev->dev)) {
+		r = tvc_probe_pdata(pdev);
+		if (r)
+			return r;
+	} else if (pdev->dev.of_node) {
+		r = tvc_probe_of(pdev);
+		if (r)
+			return r;
+	} else {
+		return -ENODEV;
 	}
 
 	ddata->timings = tvc_pal_timings;

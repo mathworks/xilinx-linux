@@ -1,7 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* IIO - useful set of util functionality
  *
  * Copyright (c) 2008 Jonathan Cameron
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
  */
 #include <string.h>
 #include <stdlib.h>
@@ -156,9 +159,9 @@ int iioutils_get_type(unsigned *is_signed, unsigned *bytes, unsigned *bits_used,
 			*be = (endianchar == 'b');
 			*bytes = padint / 8;
 			if (*bits_used == 64)
-				*mask = ~(0ULL);
+				*mask = ~0;
 			else
-				*mask = (1ULL << *bits_used) - 1ULL;
+				*mask = (1ULL << *bits_used) - 1;
 
 			*is_signed = (signchar == 's');
 			if (fclose(sysfsfp)) {
@@ -262,7 +265,6 @@ int iioutils_get_param_float(float *output, const char *param_name,
 			if (fscanf(sysfsfp, "%f", output) != 1)
 				ret = errno ? -errno : -ENODATA;
 
-			fclose(sysfsfp);
 			break;
 		}
 error_free_filename:
@@ -343,9 +345,9 @@ int build_channel_array(const char *device_dir,
 			}
 
 			sysfsfp = fopen(filename, "r");
-			free(filename);
 			if (!sysfsfp) {
 				ret = -errno;
+				free(filename);
 				goto error_close_dir;
 			}
 
@@ -355,6 +357,7 @@ int build_channel_array(const char *device_dir,
 				if (fclose(sysfsfp))
 					perror("build_channel_array(): Failed to close file");
 
+				free(filename);
 				goto error_close_dir;
 			}
 			if (ret == 1)
@@ -362,9 +365,11 @@ int build_channel_array(const char *device_dir,
 
 			if (fclose(sysfsfp)) {
 				ret = -errno;
+				free(filename);
 				goto error_close_dir;
 			}
 
+			free(filename);
 		}
 
 	*ci_array = malloc(sizeof(**ci_array) * (*counter));
@@ -390,9 +395,9 @@ int build_channel_array(const char *device_dir,
 			}
 
 			sysfsfp = fopen(filename, "r");
-			free(filename);
 			if (!sysfsfp) {
 				ret = -errno;
+				free(filename);
 				count--;
 				goto error_cleanup_array;
 			}
@@ -400,17 +405,20 @@ int build_channel_array(const char *device_dir,
 			errno = 0;
 			if (fscanf(sysfsfp, "%i", &current_enabled) != 1) {
 				ret = errno ? -errno : -ENODATA;
+				free(filename);
 				count--;
 				goto error_cleanup_array;
 			}
 
 			if (fclose(sysfsfp)) {
 				ret = -errno;
+				free(filename);
 				count--;
 				goto error_cleanup_array;
 			}
 
 			if (!current_enabled) {
+				free(filename);
 				count--;
 				continue;
 			}
@@ -421,6 +429,7 @@ int build_channel_array(const char *device_dir,
 						strlen(ent->d_name) -
 						strlen("_en"));
 			if (!current->name) {
+				free(filename);
 				ret = -ENOMEM;
 				count--;
 				goto error_cleanup_array;
@@ -430,6 +439,7 @@ int build_channel_array(const char *device_dir,
 			ret = iioutils_break_up_name(current->name,
 						     &current->generic_name);
 			if (ret) {
+				free(filename);
 				free(current->name);
 				count--;
 				goto error_cleanup_array;
@@ -440,16 +450,17 @@ int build_channel_array(const char *device_dir,
 				       scan_el_dir,
 				       current->name);
 			if (ret < 0) {
+				free(filename);
 				ret = -ENOMEM;
 				goto error_cleanup_array;
 			}
 
 			sysfsfp = fopen(filename, "r");
-			free(filename);
 			if (!sysfsfp) {
 				ret = -errno;
-				fprintf(stderr, "failed to open %s/%s_index\n",
-					scan_el_dir, current->name);
+				fprintf(stderr, "failed to open %s\n",
+					filename);
+				free(filename);
 				goto error_cleanup_array;
 			}
 
@@ -459,14 +470,17 @@ int build_channel_array(const char *device_dir,
 				if (fclose(sysfsfp))
 					perror("build_channel_array(): Failed to close file");
 
+				free(filename);
 				goto error_cleanup_array;
 			}
 
 			if (fclose(sysfsfp)) {
 				ret = -errno;
+				free(filename);
 				goto error_cleanup_array;
 			}
 
+			free(filename);
 			/* Find the scale */
 			ret = iioutils_get_param_float(&current->scale,
 						       "scale",
@@ -531,10 +545,6 @@ error_free_name:
 static int calc_digits(int num)
 {
 	int count = 0;
-
-	/* It takes a digit to represent zero */
-	if (!num)
-		return 1;
 
 	while (num != 0) {
 		num /= 10;

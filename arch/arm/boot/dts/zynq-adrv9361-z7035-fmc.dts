@@ -1,16 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * AD9361-Z0735 System on Module (SOM) SDR - FMC Carrier
- * Link: https://www.analog.com/ADRV9361-Z7035
- * Link: https://wiki.analog.com/resources/eval/user-guides/adrv936x_rfsom
- *
- * hdl_project: <adrv9361z7035/ccfmc_lvds>
- * board_revision: <>
- *
- * Copyright 2015-2019 Analog Devices Inc.
- */
 /dts-v1/;
-#include "zynq-adrv9361-z7035.dtsi"
+/include/ "zynq-adrv9361-z7035.dtsi"
 
 #include <dt-bindings/input/input.h>
 
@@ -33,7 +22,7 @@
 
 &axi_i2c0 {
 
-	i2cswitch@70 {
+	i2cswitch@74 {
 		compatible = "nxp,pca9548";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -68,7 +57,7 @@
 				adi,input-justification = "left";
 				adi,clock-delay = <0>;
 
-				#sound-dai-cells = <1>;
+				#sound-dai-cells = <0>;
 
 				ports {
 					#address-cells = <1>;
@@ -146,14 +135,8 @@
 &gem1 {
 	status = "okay";
 
-	phy-handle = <&phy1>;
+	phy-handle = <&gmiitorgmii>;
 	phy-mode = "gmii";
-
-	phy1: phy@1 {
-		device_type = "ethernet-phy";
-		reg = <0x1>;
-		marvell,reg-init = <3 16 0xff00 0x1e 3 17 0xfff0 0x00>;
-	};
 
 	gmiitorgmii: gmiitorgmii@8 {
 		compatible = "xlnx,gmii-to-rgmii-1.0";
@@ -161,6 +144,11 @@
 		phy-handle = <&phy1>;
 	};
 
+	phy1: phy@1 {
+		device_type = "ethernet-phy";
+		reg = <0x1>;
+		marvell,reg-init = <3 16 0xff00 0x1e 3 17 0xfff0 0x00>;
+	};
 };
 
 / {
@@ -170,24 +158,20 @@
 		#size-cells = <0x1>;
 		ranges;
 
-		hdmi_dma: dma@43000000 {
-			compatible = "adi,axi-dmac-1.00.a";
-			reg = <0x43000000 0x10000>;
+		axi_vdma_0: axivdma@43000000 {
+			compatible = "xlnx,axi-vdma-1.00.a";
+			#address-cells = <1>;
+			#size-cells = <1>;
 			#dma-cells = <1>;
-			interrupts = <0 59 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&clkc 16>;
-
-			adi,channels {
-				#size-cells = <0>;
-				#address-cells = <1>;
-
-				dma-channel@0 {
-					reg = <0>;
-					adi,source-bus-width = <64>;
-					adi,source-bus-type = <0>;
-					adi,destination-bus-width = <64>;
-					adi,destination-bus-type = <1>;
-				};
+			#dma-channels = <1>;
+			reg = <0x43000000 0x1000>;
+			xlnx,num-fstores = <0x3>;
+			dma-channel@43000000 {
+				compatible = "xlnx,axi-vdma-mm2s-channel";
+				interrupts = <0 59 0x4>;
+				xlnx,datawidth = <0x40>;
+				xlnx,genlock-mode = <0x0>;
+				xlnx,include-dre = <0x0>;
 			};
 		};
 
@@ -195,14 +179,13 @@
 			compatible = "adi,axi-clkgen-2.00.a";
 			reg = <0x79000000 0x10000>;
 			#clock-cells = <0>;
-			clocks = <&clkc 15>, <&clkc 16>;
-			clock-names = "s_axi_aclk", "clkin1";
+			clocks = <&clkc 16>;
 		};
 
 		axi_hdmi@70e00000 {
 			compatible = "adi,axi-hdmi-tx-1.00.a";
 			reg = <0x70e00000 0x10000>;
-			dmas = <&hdmi_dma 0>;
+			dmas = <&axi_vdma_0 0>;
 			dma-names = "video";
 			clocks = <&hdmi_clock>;
 
@@ -252,7 +235,7 @@
 				bitclock-master;
 			};
 			codec {
-				sound-dai = <&adv7511 1>;
+				sound-dai = <&adv7511>;
 			};
 		};
 	};
@@ -345,7 +328,7 @@
 		sw0 {
 			label = "SW0";
 			linux,input-type = <5>;
-			linux,code = <13>;
+			linux,code = <0>;
 			gpios = <&gpio0 65 0>;
 		};
 

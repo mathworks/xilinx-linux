@@ -9,6 +9,7 @@
  * Copyright (c) 2009 Wind River Systems, Inc.  All Rights Reserved.
  */
 
+#include <linux/module.h>
 #include <linux/types.h>
 #include <linux/ctype.h>
 #include <linux/kernel.h>
@@ -29,7 +30,6 @@
 char kdb_prompt_str[CMD_BUFLEN];
 
 int kdb_trap_printk;
-int kdb_printf_cpu = -1;
 
 static int kgdb_transition_check(char *buffer)
 {
@@ -48,90 +48,15 @@ static int kgdb_transition_check(char *buffer)
 	return 0;
 }
 
-/**
- * kdb_handle_escape() - validity check on an accumulated escape sequence.
- * @buf:	Accumulated escape characters to be examined. Note that buf
- *		is not a string, it is an array of characters and need not be
- *		nil terminated.
- * @sz:		Number of accumulated escape characters.
- *
- * Return: -1 if the escape sequence is unwanted, 0 if it is incomplete,
- * otherwise it returns a mapped key value to pass to the upper layers.
- */
-static int kdb_handle_escape(char *buf, size_t sz)
-{
-	char *lastkey = buf + sz - 1;
-
-	switch (sz) {
-	case 1:
-		if (*lastkey == '\e')
-			return 0;
-		break;
-
-	case 2: /* \e<something> */
-		if (*lastkey == '[')
-			return 0;
-		break;
-
-	case 3:
-		switch (*lastkey) {
-		case 'A': /* \e[A, up arrow */
-			return 16;
-		case 'B': /* \e[B, down arrow */
-			return 14;
-		case 'C': /* \e[C, right arrow */
-			return 6;
-		case 'D': /* \e[D, left arrow */
-			return 2;
-		case '1': /* \e[<1,3,4>], may be home, del, end */
-		case '3':
-		case '4':
-			return 0;
-		}
-		break;
-
-	case 4:
-		if (*lastkey == '~') {
-			switch (buf[2]) {
-			case '1': /* \e[1~, home */
-				return 1;
-			case '3': /* \e[3~, del */
-				return 4;
-			case '4': /* \e[4~, end */
-				return 5;
-			}
-		}
-		break;
-	}
-
-	return -1;
-}
-
-/**
- * kdb_getchar() - Read a single character from a kdb console (or consoles).
- *
- * Other than polling the various consoles that are currently enabled,
- * most of the work done in this function is dealing with escape sequences.
- *
- * An escape key could be the start of a vt100 control sequence such as \e[D
- * (left arrow) or it could be a character in its own right.  The standard
- * method for detecting the difference is to wait for 2 seconds to see if there
- * are any other characters.  kdb is complicated by the lack of a timer service
- * (interrupts are off), by multiple input sources. Escape sequence processing
- * has to be done as states in the polling loop.
- *
- * Return: The key pressed or a control code derived from an escape sequence.
- */
-char kdb_getchar(void)
+static int kdb_read_get_key(char *buffer, size_t bufsize)
 {
 #define ESCAPE_UDELAY 1000
 #define ESCAPE_DELAY (2*1000000/ESCAPE_UDELAY) /* 2 seconds worth of udelays */
-	char buf[4];	/* longest vt100 escape sequence is 4 bytes */
-	char *pbuf = buf;
+	char escape_data[5];	/* longest vt100 escape sequence is 4 bytes */
+	char *ped = escape_data;
 	int escape_delay = 0;
-	get_char_func *f, *f_prev = NULL;
+	get_char_func *f, *f_escape = NULL;
 	int key;
-	static bool last_char_was_cr;
 
 	for (f = &kdb_poll_funcs[0]; ; ++f) {
 		if (*f == NULL) {
@@ -139,49 +64,109 @@ char kdb_getchar(void)
 			touch_nmi_watchdog();
 			f = &kdb_poll_funcs[0];
 		}
-
+		if (escape_delay == 2) {
+			*ped = '\0';
+			ped = escape_data;
+			--escape_delay;
+		}
+		if (escape_delay == 1) {
+			key = *ped++;
+			if (!*ped)
+				--escape_delay;
+			break;
+		}
 		key = (*f)();
 		if (key == -1) {
 			if (escape_delay) {
 				udelay(ESCAPE_UDELAY);
-				if (--escape_delay == 0)
-					return '\e';
+				--escape_delay;
 			}
 			continue;
 		}
-
-		/*
-		 * The caller expects that newlines are either CR or LF. However
-		 * some terminals send _both_ CR and LF. Avoid having to handle
-		 * this in the caller by stripping the LF if we saw a CR right
-		 * before.
-		 */
-		if (last_char_was_cr && key == '\n') {
-			last_char_was_cr = false;
-			continue;
+		if (bufsize <= 2) {
+			if (key == '\r')
+				key = '\n';
+			*buffer++ = key;
+			*buffer = '\0';
+			return -1;
 		}
-		last_char_was_cr = (key == '\r');
-
-		/*
-		 * When the first character is received (or we get a change
-		 * input source) we set ourselves up to handle an escape
-		 * sequences (just in case).
-		 */
-		if (f_prev != f) {
-			f_prev = f;
-			pbuf = buf;
+		if (escape_delay == 0 && key == '\e') {
 			escape_delay = ESCAPE_DELAY;
+			ped = escape_data;
+			f_escape = f;
 		}
-
-		*pbuf++ = key;
-		key = kdb_handle_escape(buf, pbuf - buf);
-		if (key < 0) /* no escape sequence; return best character */
-			return buf[pbuf - buf == 2 ? 1 : 0];
-		if (key > 0)
-			return key;
+		if (escape_delay) {
+			*ped++ = key;
+			if (f_escape != f) {
+				escape_delay = 2;
+				continue;
+			}
+			if (ped - escape_data == 1) {
+				/* \e */
+				continue;
+			} else if (ped - escape_data == 2) {
+				/* \e<something> */
+				if (key != '[')
+					escape_delay = 2;
+				continue;
+			} else if (ped - escape_data == 3) {
+				/* \e[<something> */
+				int mapkey = 0;
+				switch (key) {
+				case 'A': /* \e[A, up arrow */
+					mapkey = 16;
+					break;
+				case 'B': /* \e[B, down arrow */
+					mapkey = 14;
+					break;
+				case 'C': /* \e[C, right arrow */
+					mapkey = 6;
+					break;
+				case 'D': /* \e[D, left arrow */
+					mapkey = 2;
+					break;
+				case '1': /* dropthrough */
+				case '3': /* dropthrough */
+				/* \e[<1,3,4>], may be home, del, end */
+				case '4':
+					mapkey = -1;
+					break;
+				}
+				if (mapkey != -1) {
+					if (mapkey > 0) {
+						escape_data[0] = mapkey;
+						escape_data[1] = '\0';
+					}
+					escape_delay = 2;
+				}
+				continue;
+			} else if (ped - escape_data == 4) {
+				/* \e[<1,3,4><something> */
+				int mapkey = 0;
+				if (key == '~') {
+					switch (escape_data[2]) {
+					case '1': /* \e[1~, home */
+						mapkey = 1;
+						break;
+					case '3': /* \e[3~, del */
+						mapkey = 4;
+						break;
+					case '4': /* \e[4~, end */
+						mapkey = 5;
+						break;
+					}
+				}
+				if (mapkey > 0) {
+					escape_data[0] = mapkey;
+					escape_data[1] = '\0';
+				}
+				escape_delay = 2;
+				continue;
+			}
+		}
+		break;	/* A key to process */
 	}
-
-	unreachable();
+	return key;
 }
 
 /*
@@ -202,7 +187,17 @@ char kdb_getchar(void)
  *	function.  It is not reentrant - it relies on the fact
  *	that while kdb is running on only one "master debug" cpu.
  * Remarks:
- *	The buffer size must be >= 2.
+ *
+ * The buffer size must be >= 2.  A buffer size of 2 means that the caller only
+ * wants a single key.
+ *
+ * An escape key could be the start of a vt100 control sequence such as \e[D
+ * (left arrow) or it could be a character in its own right.  The standard
+ * method for detecting the difference is to wait for 2 seconds to see if there
+ * are any other characters.  kdb is complicated by the lack of a timer service
+ * (interrupts are off), by multiple input sources and by the need to sometimes
+ * return after just one key.  Escape sequence processing has to be done as
+ * states in the polling loop.
  */
 
 static char *kdb_read(char *buffer, size_t bufsize)
@@ -220,7 +215,7 @@ static char *kdb_read(char *buffer, size_t bufsize)
 	int count;
 	int i;
 	int diag, dtab_count;
-	int key, buf_size, ret;
+	int key;
 
 
 	diag = kdbgetintenv("DTABCOUNT", &dtab_count);
@@ -237,7 +232,9 @@ static char *kdb_read(char *buffer, size_t bufsize)
 	*cp = '\0';
 	kdb_printf("%s", buffer);
 poll_again:
-	key = kdb_getchar();
+	key = kdb_read_get_key(buffer, bufsize);
+	if (key == -1)
+		return buffer;
 	if (key != 9)
 		tab = 0;
 	switch (key) {
@@ -257,8 +254,7 @@ poll_again:
 			*cp = tmp;
 		}
 		break;
-	case 10: /* linefeed */
-	case 13: /* carriage return */
+	case 13: /* enter */
 		*lastchar++ = '\n';
 		*lastchar++ = '\0';
 		if (!KDB_STATE(KGDB_TRANS)) {
@@ -339,8 +335,9 @@ poll_again:
 		else
 			p_tmp = tmpbuffer;
 		len = strlen(p_tmp);
-		buf_size = sizeof(tmpbuffer) - (p_tmp - tmpbuffer);
-		count = kallsyms_symbol_complete(p_tmp, buf_size);
+		count = kallsyms_symbol_complete(p_tmp,
+						 sizeof(tmpbuffer) -
+						 (p_tmp - tmpbuffer));
 		if (tab == 2 && count > 0) {
 			kdb_printf("\n%d symbols are found.", count);
 			if (count > dtab_count) {
@@ -352,13 +349,9 @@ poll_again:
 			}
 			kdb_printf("\n");
 			for (i = 0; i < count; i++) {
-				ret = kallsyms_symbol_next(p_tmp, i, buf_size);
-				if (WARN_ON(!ret))
+				if (kallsyms_symbol_next(p_tmp, i) < 0)
 					break;
-				if (ret != -E2BIG)
-					kdb_printf("%s ", p_tmp);
-				else
-					kdb_printf("%s... ", p_tmp);
+				kdb_printf("%s ", p_tmp);
 				*(p_tmp + len) = '\0';
 			}
 			if (i >= dtab_count)
@@ -449,7 +442,7 @@ poll_again:
 char *kdb_getstr(char *buffer, size_t bufsize, const char *prompt)
 {
 	if (prompt && kdb_prompt_str != prompt)
-		strscpy(kdb_prompt_str, prompt, CMD_BUFLEN);
+		strncpy(kdb_prompt_str, prompt, CMD_BUFLEN);
 	kdb_printf(kdb_prompt_str);
 	kdb_nextline = 1;	/* Prompt and input resets line number */
 	return kdb_read(buffer, bufsize);
@@ -555,85 +548,37 @@ static int kdb_search_string(char *searched, char *searchfor)
 	return 0;
 }
 
-static void kdb_msg_write(const char *msg, int msg_len)
-{
-	struct console *c;
-	const char *cp;
-	int cookie;
-	int len;
-
-	if (msg_len == 0)
-		return;
-
-	cp = msg;
-	len = msg_len;
-
-	while (len--) {
-		dbg_io_ops->write_char(*cp);
-		cp++;
-	}
-
-	/*
-	 * The console_srcu_read_lock() only provides safe console list
-	 * traversal. The use of the ->write() callback relies on all other
-	 * CPUs being stopped at the moment and console drivers being able to
-	 * handle reentrance when @oops_in_progress is set.
-	 *
-	 * There is no guarantee that every console driver can handle
-	 * reentrance in this way; the developer deploying the debugger
-	 * is responsible for ensuring that the console drivers they
-	 * have selected handle reentrance appropriately.
-	 */
-	cookie = console_srcu_read_lock();
-	for_each_console_srcu(c) {
-		if (!(console_srcu_read_flags(c) & CON_ENABLED))
-			continue;
-		if (c == dbg_io_ops->cons)
-			continue;
-		if (!c->write)
-			continue;
-		/*
-		 * Set oops_in_progress to encourage the console drivers to
-		 * disregard their internal spin locks: in the current calling
-		 * context the risk of deadlock is a bigger problem than risks
-		 * due to re-entering the console driver. We operate directly on
-		 * oops_in_progress rather than using bust_spinlocks() because
-		 * the calls bust_spinlocks() makes on exit are not appropriate
-		 * for this calling context.
-		 */
-		++oops_in_progress;
-		c->write(c, msg, msg_len);
-		--oops_in_progress;
-		touch_nmi_watchdog();
-	}
-	console_srcu_read_unlock(cookie);
-}
-
 int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 {
 	int diag;
 	int linecount;
 	int colcount;
 	int logging, saved_loglevel = 0;
+	int saved_trap_printk;
+	int got_printf_lock = 0;
 	int retlen = 0;
 	int fnd, len;
-	int this_cpu, old_cpu;
 	char *cp, *cp2, *cphold = NULL, replaced_byte = ' ';
 	char *moreprompt = "more> ";
-	unsigned long flags;
+	struct console *c = console_drivers;
+	static DEFINE_SPINLOCK(kdb_printf_lock);
+	unsigned long uninitialized_var(flags);
+
+	preempt_disable();
+	saved_trap_printk = kdb_trap_printk;
+	kdb_trap_printk = 0;
 
 	/* Serialize kdb_printf if multiple cpus try to write at once.
 	 * But if any cpu goes recursive in kdb, just print the output,
 	 * even if it is interleaved with any other text.
 	 */
-	local_irq_save(flags);
-	this_cpu = smp_processor_id();
-	for (;;) {
-		old_cpu = cmpxchg(&kdb_printf_cpu, -1, this_cpu);
-		if (old_cpu == -1 || old_cpu == this_cpu)
-			break;
-
-		cpu_relax();
+	if (!KDB_STATE(PRINTF_LOCK)) {
+		KDB_STATE_SET(PRINTF_LOCK);
+		spin_lock_irqsave(&kdb_printf_lock, flags);
+		got_printf_lock = 1;
+		atomic_inc(&kdb_event);
+	} else {
+		__acquire(kdb_printf_lock);
 	}
 
 	diag = kdbgetintenv("LINES", &linecount);
@@ -735,16 +680,12 @@ int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 			size_avail = sizeof(kdb_buffer) - len;
 			goto kdb_print_out;
 		}
-		if (kdb_grepping_flag >= KDB_GREPPING_FLAG_SEARCH) {
+		if (kdb_grepping_flag >= KDB_GREPPING_FLAG_SEARCH)
 			/*
 			 * This was a interactive search (using '/' at more
-			 * prompt) and it has completed. Replace the \0 with
-			 * its original value to ensure multi-line strings
-			 * are handled properly, and return to normal mode.
+			 * prompt) and it has completed. Clear the flag.
 			 */
-			*cphold = replaced_byte;
 			kdb_grepping_flag = 0;
-		}
 		/*
 		 * at this point the string is a full line and
 		 * should be printed, up to the null.
@@ -756,12 +697,24 @@ kdb_printit:
 	 * Write to all consoles.
 	 */
 	retlen = strlen(kdb_buffer);
-	cp = (char *) printk_skip_headers(kdb_buffer);
-	if (!dbg_kdb_mode && kgdb_connected)
+	cp = (char *) printk_skip_level(kdb_buffer);
+	if (!dbg_kdb_mode && kgdb_connected) {
 		gdbstub_msg_write(cp, retlen - (cp - kdb_buffer));
-	else
-		kdb_msg_write(cp, retlen - (cp - kdb_buffer));
-
+	} else {
+		if (dbg_io_ops && !dbg_io_ops->is_console) {
+			len = retlen - (cp - kdb_buffer);
+			cp2 = cp;
+			while (len--) {
+				dbg_io_ops->write_char(*cp2);
+				cp2++;
+			}
+		}
+		while (c) {
+			c->write(c, cp, retlen - (cp - kdb_buffer));
+			touch_nmi_watchdog();
+			c = c->next;
+		}
+	}
 	if (logging) {
 		saved_loglevel = console_loglevel;
 		console_loglevel = CONSOLE_LOGLEVEL_SILENT;
@@ -794,7 +747,7 @@ kdb_printit:
 
 	/* check for having reached the LINES number of printed lines */
 	if (kdb_nextline >= linecount) {
-		char ch;
+		char buf1[16] = "";
 
 		/* Watch out for recursion here.  Any routine that calls
 		 * kdb_printf will come back through here.  And kdb_read
@@ -810,43 +763,58 @@ kdb_printit:
 			moreprompt = "more> ";
 
 		kdb_input_flush();
-		kdb_msg_write(moreprompt, strlen(moreprompt));
+		c = console_drivers;
+
+		if (dbg_io_ops && !dbg_io_ops->is_console) {
+			len = strlen(moreprompt);
+			cp = moreprompt;
+			while (len--) {
+				dbg_io_ops->write_char(*cp);
+				cp++;
+			}
+		}
+		while (c) {
+			c->write(c, moreprompt, strlen(moreprompt));
+			touch_nmi_watchdog();
+			c = c->next;
+		}
 
 		if (logging)
 			printk("%s", moreprompt);
 
-		ch = kdb_getchar();
+		kdb_read(buf1, 2); /* '2' indicates to return
+				    * immediately after getting one key. */
 		kdb_nextline = 1;	/* Really set output line 1 */
 
 		/* empty and reset the buffer: */
 		kdb_buffer[0] = '\0';
 		next_avail = kdb_buffer;
 		size_avail = sizeof(kdb_buffer);
-		if ((ch == 'q') || (ch == 'Q')) {
+		if ((buf1[0] == 'q') || (buf1[0] == 'Q')) {
 			/* user hit q or Q */
 			KDB_FLAG_SET(CMD_INTERRUPT); /* command interrupted */
 			KDB_STATE_CLEAR(PAGER);
 			/* end of command output; back to normal mode */
 			kdb_grepping_flag = 0;
 			kdb_printf("\n");
-		} else if (ch == ' ') {
+		} else if (buf1[0] == ' ') {
 			kdb_printf("\r");
 			suspend_grep = 1; /* for this recursion */
-		} else if (ch == '\n' || ch == '\r') {
+		} else if (buf1[0] == '\n') {
 			kdb_nextline = linecount - 1;
 			kdb_printf("\r");
 			suspend_grep = 1; /* for this recursion */
-		} else if (ch == '/' && !kdb_grepping_flag) {
+		} else if (buf1[0] == '/' && !kdb_grepping_flag) {
 			kdb_printf("\r");
 			kdb_getstr(kdb_grep_string, KDB_GREP_STRLEN,
 				   kdbgetenv("SEARCHPROMPT") ?: "search> ");
 			*strchrnul(kdb_grep_string, '\n') = '\0';
 			kdb_grepping_flag += KDB_GREPPING_FLAG_SEARCH;
 			suspend_grep = 1; /* for this recursion */
-		} else if (ch) {
-			/* user hit something unexpected */
+		} else if (buf1[0] && buf1[0] != '\n') {
+			/* user hit something other than enter */
 			suspend_grep = 1; /* for this recursion */
-			if (ch != '/')
+			if (buf1[0] != '/')
 				kdb_printf(
 				    "\nOnly 'q', 'Q' or '/' are processed at "
 				    "more prompt, input ignored\n");
@@ -879,9 +847,16 @@ kdb_print_out:
 	suspend_grep = 0; /* end of what may have been a recursive call */
 	if (logging)
 		console_loglevel = saved_loglevel;
-	/* kdb_printf_cpu locked the code above. */
-	smp_store_release(&kdb_printf_cpu, old_cpu);
-	local_irq_restore(flags);
+	if (KDB_STATE(PRINTF_LOCK) && got_printf_lock) {
+		got_printf_lock = 0;
+		spin_unlock_irqrestore(&kdb_printf_lock, flags);
+		KDB_STATE_CLEAR(PRINTF_LOCK);
+		atomic_dec(&kdb_event);
+	} else {
+		__release(kdb_printf_lock);
+	}
+	kdb_trap_printk = saved_trap_printk;
+	preempt_enable();
 	return retlen;
 }
 

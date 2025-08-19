@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/ev67-strcat.S
  * 21264 version contributed by Rick Gorton <rick.gorton@alpha-processor.com>
@@ -20,7 +19,7 @@
  * string once.
  */
 
-#include <linux/export.h>
+#include <asm/export.h>
 	.text
 
 	.align 4

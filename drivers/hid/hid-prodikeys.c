@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  HID driver for the Prodikeys PC-MIDI Keyboard
  *  providing midi & extra multimedia keys functionality
@@ -7,9 +6,14 @@
  *
  *  Controls for Octave Shift Up/Down, Channel, and
  *  Sustain Duration available via sysfs.
+ *
  */
 
 /*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -235,9 +239,9 @@ drop_note:
 	return;
 }
 
-static void pcmidi_sustained_note_release(struct timer_list *t)
+static void pcmidi_sustained_note_release(unsigned long data)
 {
-	struct pcmidi_sustain *pms = from_timer(pms, t, timer);
+	struct pcmidi_sustain *pms = (struct pcmidi_sustain *)data;
 
 	pcmidi_send_note(pms->pm, pms->status, pms->note, pms->velocity);
 	pms->in_use = 0;
@@ -252,7 +256,8 @@ static void init_sustain_timers(struct pcmidi_snd *pm)
 		pms = &pm->sustained_notes[i];
 		pms->in_use = 0;
 		pms->pm = pm;
-		timer_setup(&pms->timer, pcmidi_sustained_note_release, 0);
+		setup_timer(&pms->timer, pcmidi_sustained_note_release,
+			(unsigned long)pms);
 	}
 }
 
@@ -516,7 +521,7 @@ static void pcmidi_setup_extra_keys(
 		MY PICTURES =>	KEY_WORDPROCESSOR
 		MY MUSIC=>	KEY_SPREADSHEET
 	*/
-	static const unsigned int keys[] = {
+	unsigned int keys[] = {
 		KEY_FN,
 		KEY_MESSENGER, KEY_CALENDAR,
 		KEY_ADDRESSBOOK, KEY_DOCUMENTS,
@@ -532,7 +537,7 @@ static void pcmidi_setup_extra_keys(
 		0
 	};
 
-	const unsigned int *pkeys = &keys[0];
+	unsigned int *pkeys = &keys[0];
 	unsigned short i;
 
 	if (pm->ifnum != 1)  /* only set up ONCE for interace 1 */
@@ -551,14 +556,10 @@ static void pcmidi_setup_extra_keys(
 
 static int pcmidi_set_operational(struct pcmidi_snd *pm)
 {
-	int rc;
-
 	if (pm->ifnum != 1)
 		return 0; /* only set up ONCE for interace 1 */
 
-	rc = pcmidi_get_output_report(pm);
-	if (rc < 0)
-		return rc;
+	pcmidi_get_output_report(pm);
 	pcmidi_submit_output_report(pm, 0xc1);
 	return 0;
 }
@@ -592,7 +593,7 @@ static void pcmidi_in_trigger(struct snd_rawmidi_substream *substream, int up)
 	pm->in_triggered = up;
 }
 
-static const struct snd_rawmidi_ops pcmidi_in_ops = {
+static struct snd_rawmidi_ops pcmidi_in_ops = {
 	.open = pcmidi_in_open,
 	.close = pcmidi_in_close,
 	.trigger = pcmidi_in_trigger
@@ -687,11 +688,7 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 	spin_lock_init(&pm->rawmidi_in_lock);
 
 	init_sustain_timers(pm);
-	err = pcmidi_set_operational(pm);
-	if (err < 0) {
-		pk_error("failed to find output report\n");
-		goto fail_register;
-	}
+	pcmidi_set_operational(pm);
 
 	/* register it */
 	err = snd_card_register(card);
@@ -798,17 +795,11 @@ static int pk_raw_event(struct hid_device *hdev, struct hid_report *report,
 static int pk_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
-	struct usb_interface *intf;
-	unsigned short ifnum;
+	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
+	unsigned short ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 	unsigned long quirks = id->driver_data;
 	struct pk_device *pk;
 	struct pcmidi_snd *pm = NULL;
-
-	if (!hid_is_usb(hdev))
-		return -EINVAL;
-
-	intf = to_usb_interface(hdev->dev.parent);
-	ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
 	pk = kzalloc(sizeof(*pk), GFP_KERNEL);
 	if (pk == NULL) {

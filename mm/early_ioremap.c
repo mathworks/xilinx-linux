@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Provide common bits of early_ioremap() support for architectures needing
  * temporary mappings during boot before ioremap() is available.
@@ -17,7 +16,6 @@
 #include <linux/vmalloc.h>
 #include <asm/fixmap.h>
 #include <asm/early_ioremap.h>
-#include "internal.h"
 
 #ifdef CONFIG_MMU
 static int early_ioremap_debug __initdata;
@@ -32,15 +30,13 @@ early_param("early_ioremap_debug", early_ioremap_debug_setup);
 
 static int after_paging_init __initdata;
 
-pgprot_t __init __weak early_memremap_pgprot_adjust(resource_size_t phys_addr,
-						    unsigned long size,
-						    pgprot_t prot)
+void __init __weak early_ioremap_shutdown(void)
 {
-	return prot;
 }
 
 void __init early_ioremap_reset(void)
 {
+	early_ioremap_shutdown();
 	after_paging_init = 1;
 }
 
@@ -72,10 +68,12 @@ void __init early_ioremap_setup(void)
 {
 	int i;
 
-	for (i = 0; i < FIX_BTMAPS_SLOTS; i++) {
-		WARN_ON_ONCE(prev_map[i]);
+	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
+		if (WARN_ON(prev_map[i]))
+			break;
+
+	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
 		slot_virt[i] = __fix_to_virt(FIX_BTMAP_BEGIN - NR_FIX_BTMAPS*i);
-	}
 }
 
 static int __init check_early_ioremap_leak(void)
@@ -105,7 +103,7 @@ __early_ioremap(resource_size_t phys_addr, unsigned long size, pgprot_t prot)
 	enum fixed_addresses idx;
 	int i, slot;
 
-	WARN_ON(system_state >= SYSTEM_RUNNING);
+	WARN_ON(system_state != SYSTEM_BOOTING);
 
 	slot = -1;
 	for (i = 0; i < FIX_BTMAPS_SLOTS; i++) {
@@ -115,8 +113,8 @@ __early_ioremap(resource_size_t phys_addr, unsigned long size, pgprot_t prot)
 		}
 	}
 
-	if (WARN(slot < 0, "%s(%pa, %08lx) not found slot\n",
-		 __func__, &phys_addr, size))
+	if (WARN(slot < 0, "%s(%08llx, %08lx) not found slot\n",
+		 __func__, (u64)phys_addr, size))
 		return NULL;
 
 	/* Don't allow wraparound or zero size */
@@ -152,8 +150,8 @@ __early_ioremap(resource_size_t phys_addr, unsigned long size, pgprot_t prot)
 		--idx;
 		--nrpages;
 	}
-	WARN(early_ioremap_debug, "%s(%pa, %08lx) [%d] => %08lx + %08lx\n",
-	     __func__, &phys_addr, size, slot, offset, slot_virt[slot]);
+	WARN(early_ioremap_debug, "%s(%08llx, %08lx) [%d] => %08lx + %08lx\n",
+	     __func__, (u64)phys_addr, size, slot, offset, slot_virt[slot]);
 
 	prev_map[slot] = (void __iomem *)(offset + slot_virt[slot]);
 	return prev_map[slot];
@@ -175,17 +173,17 @@ void __init early_iounmap(void __iomem *addr, unsigned long size)
 		}
 	}
 
-	if (WARN(slot < 0, "%s(%p, %08lx) not found slot\n",
-		  __func__, addr, size))
+	if (WARN(slot < 0, "early_iounmap(%p, %08lx) not found slot\n",
+		 addr, size))
 		return;
 
 	if (WARN(prev_size[slot] != size,
-		 "%s(%p, %08lx) [%d] size not consistent %08lx\n",
-		  __func__, addr, size, slot, prev_size[slot]))
+		 "early_iounmap(%p, %08lx) [%d] size not consistent %08lx\n",
+		 addr, size, slot, prev_size[slot]))
 		return;
 
-	WARN(early_ioremap_debug, "%s(%p, %08lx) [%d]\n",
-	      __func__, addr, size, slot);
+	WARN(early_ioremap_debug, "early_iounmap(%p, %08lx) [%d]\n",
+	     addr, size, slot);
 
 	virt_addr = (unsigned long)addr;
 	if (WARN_ON(virt_addr < fix_to_virt(FIX_BTMAP_BEGIN)))
@@ -217,29 +215,14 @@ early_ioremap(resource_size_t phys_addr, unsigned long size)
 void __init *
 early_memremap(resource_size_t phys_addr, unsigned long size)
 {
-	pgprot_t prot = early_memremap_pgprot_adjust(phys_addr, size,
-						     FIXMAP_PAGE_NORMAL);
-
-	return (__force void *)__early_ioremap(phys_addr, size, prot);
+	return (__force void *)__early_ioremap(phys_addr, size,
+					       FIXMAP_PAGE_NORMAL);
 }
 #ifdef FIXMAP_PAGE_RO
 void __init *
 early_memremap_ro(resource_size_t phys_addr, unsigned long size)
 {
-	pgprot_t prot = early_memremap_pgprot_adjust(phys_addr, size,
-						     FIXMAP_PAGE_RO);
-
-	return (__force void *)__early_ioremap(phys_addr, size, prot);
-}
-#endif
-
-#ifdef CONFIG_ARCH_USE_MEMREMAP_PROT
-void __init *
-early_memremap_prot(resource_size_t phys_addr, unsigned long size,
-		    unsigned long prot_val)
-{
-	return (__force void *)__early_ioremap(phys_addr, size,
-					       __pgprot(prot_val));
+	return (__force void *)__early_ioremap(phys_addr, size, FIXMAP_PAGE_RO);
 }
 #endif
 

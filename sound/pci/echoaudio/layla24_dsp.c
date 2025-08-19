@@ -43,8 +43,7 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 	if (snd_BUG_ON((subdevice_id & 0xfff0) != LAYLA24))
 		return -ENODEV;
 
-	err = init_dsp_comm_page(chip);
-	if (err) {
+	if ((err = init_dsp_comm_page(chip))) {
 		dev_err(chip->card->dev,
 			"init_hw - could not initialize DSP comm page\n");
 		return err;
@@ -63,13 +62,11 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 		ECHOCAPS_HAS_DIGITAL_MODE_SPDIF_OPTICAL |
 		ECHOCAPS_HAS_DIGITAL_MODE_ADAT;
 
-	err = load_firmware(chip);
-	if (err < 0)
+	if ((err = load_firmware(chip)) < 0)
 		return err;
 	chip->bad_board = false;
 
-	err = init_line_levels(chip);
-	if (err < 0)
+	if ((err = init_line_levels(chip)) < 0)
 		return err;
 
 	return err;
@@ -138,7 +135,7 @@ static int load_asic(struct echoaudio *chip)
 	err = load_asic_generic(chip, DSP_FNC_LOAD_LAYLA24_EXTERNAL_ASIC,
 				FW_LAYLA24_2S_ASIC);
 	if (err < 0)
-		return err;
+		return false;
 
 	/* Now give the external ASIC a little time to set up */
 	mdelay(10);

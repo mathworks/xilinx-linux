@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
 
 #include <sys/ptrace.h>
@@ -59,8 +58,7 @@ static void do_full_int80(struct syscall_args32 *args)
 	asm volatile ("int $0x80"
 		      : "+a" (args->nr),
 			"+b" (args->arg0), "+c" (args->arg1), "+d" (args->arg2),
-			"+S" (args->arg3), "+D" (args->arg4), "+r" (bp)
-			: : "r8", "r9", "r10", "r11");
+			"+S" (args->arg3), "+D" (args->arg4), "+r" (bp));
 	args->arg5 = bp;
 #else
 	sys32_helper(args, int80_and_ret);
@@ -183,10 +181,8 @@ static void test_ptrace_syscall_restart(void)
 		if (ptrace(PTRACE_TRACEME, 0, 0, 0) != 0)
 			err(1, "PTRACE_TRACEME");
 
-		pid_t pid = getpid(), tid = syscall(SYS_gettid);
-
 		printf("\tChild will make one syscall\n");
-		syscall(SYS_tgkill, pid, tid, SIGSTOP);
+		raise(SIGSTOP);
 
 		syscall(SYS_gettid, 10, 11, 12, 13, 14, 15);
 		_exit(0);
@@ -303,11 +299,9 @@ static void test_restart_under_ptrace(void)
 		if (ptrace(PTRACE_TRACEME, 0, 0, 0) != 0)
 			err(1, "PTRACE_TRACEME");
 
-		pid_t pid = getpid(), tid = syscall(SYS_gettid);
-
 		printf("\tChild will take a nap until signaled\n");
 		setsigign(SIGUSR1, SA_RESTART);
-		syscall(SYS_tgkill, pid, tid, SIGSTOP);
+		raise(SIGSTOP);
 
 		syscall(SYS_pause, 0, 0, 0, 0, 0, 0);
 		_exit(0);
@@ -414,12 +408,8 @@ int main()
 
 #if defined(__i386__) && (!defined(__GLIBC__) || __GLIBC__ > 2 || __GLIBC_MINOR__ >= 16)
 	vsyscall32 = (void *)getauxval(AT_SYSINFO);
-	if (vsyscall32) {
-		printf("[RUN]\tCheck AT_SYSINFO return regs\n");
-		test_sys32_regs(do_full_vsyscall32);
-	} else {
-		printf("[SKIP]\tAT_SYSINFO is not available\n");
-	}
+	printf("[RUN]\tCheck AT_SYSINFO return regs\n");
+	test_sys32_regs(do_full_vsyscall32);
 #endif
 
 	test_ptrace_syscall_restart();

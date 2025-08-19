@@ -362,7 +362,7 @@ struct mlx4_wqe_datagram_seg {
 
 struct mlx4_wqe_lso_seg {
 	__be32			mss_hdr_size;
-	__be32			header[];
+	__be32			header[0];
 };
 
 enum mlx4_wqe_bind_seg_flags2 {
@@ -446,7 +446,6 @@ enum {
 
 struct mlx4_wqe_inline_seg {
 	__be32			byte_count;
-	__u8			data[];
 };
 
 enum mlx4_update_qp_attr {
@@ -471,7 +470,6 @@ struct mlx4_update_qp_params {
 	u16	rate_val;
 };
 
-struct mlx4_qp *mlx4_qp_lookup(struct mlx4_dev *dev, u32 qpn);
 int mlx4_update_qp(struct mlx4_dev *dev, u32 qpn,
 		   enum mlx4_update_qp_attr attr,
 		   struct mlx4_update_qp_params *params);
@@ -504,5 +502,4 @@ static inline u16 folded_qp(u32 q)
 
 u16 mlx4_qp_roce_entropy(struct mlx4_dev *dev, u32 qpn);
 
-void mlx4_put_qp(struct mlx4_qp *qp);
 #endif /* MLX4_QP_H */

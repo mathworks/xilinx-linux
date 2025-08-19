@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  i2c-pca-isa.c driver for PCA9564 on ISA boards
  *    Copyright (C) 2004 Arcom Control Systems
  *    Copyright (C) 2008 Pengutronix
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -161,7 +170,7 @@ static int pca_isa_probe(struct device *dev, unsigned int id)
 	return -ENODEV;
 }
 
-static void pca_isa_remove(struct device *dev, unsigned int id)
+static int pca_isa_remove(struct device *dev, unsigned int id)
 {
 	i2c_del_adapter(&pca_isa_ops);
 
@@ -170,6 +179,8 @@ static void pca_isa_remove(struct device *dev, unsigned int id)
 		free_irq(irq, &pca_isa_ops);
 	}
 	release_region(base, IO_SIZE);
+
+	return 0;
 }
 
 static struct isa_driver pca_isa_driver = {
@@ -186,9 +197,9 @@ MODULE_AUTHOR("Ian Campbell <icampbell@arcom.com>");
 MODULE_DESCRIPTION("ISA base PCA9564/PCA9665 driver");
 MODULE_LICENSE("GPL");
 
-module_param_hw(base, ulong, ioport, 0);
+module_param(base, ulong, 0);
 MODULE_PARM_DESC(base, "I/O base address");
-module_param_hw(irq, int, irq, 0);
+module_param(irq, int, 0);
 MODULE_PARM_DESC(irq, "IRQ");
 module_param(clock, int, 0);
 MODULE_PARM_DESC(clock, "Clock rate in hertz.\n\t\t"

@@ -1,15 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  1997-2003  All rights reserved.
 **  Copyright (C) 2004-2007 Red Hat, Inc.  All rights reserved.
 **
+**  This copyrighted material is made available to anyone wishing to use,
+**  modify, copy, or redistribute it subject to the terms and conditions
+**  of the GNU General Public License v.2.
 **
 *******************************************************************************
 ******************************************************************************/
-
-#include <linux/module.h>
 
 #include "dlm_internal.h"
 #include "lockspace.h"
@@ -17,10 +17,7 @@
 #include "user.h"
 #include "memory.h"
 #include "config.h"
-#include "midcomms.h"
-
-#define CREATE_TRACE_POINTS
-#include <trace/events/dlm.h>
+#include "lowcomms.h"
 
 static int __init init_dlm(void)
 {
@@ -30,8 +27,6 @@ static int __init init_dlm(void)
 	if (error)
 		goto out;
 
-	dlm_midcomms_init();
-
 	error = dlm_lockspace_init();
 	if (error)
 		goto out_mem;
@@ -40,29 +35,37 @@ static int __init init_dlm(void)
 	if (error)
 		goto out_lockspace;
 
-	dlm_register_debugfs();
+	error = dlm_register_debugfs();
+	if (error)
+		goto out_config;
 
 	error = dlm_user_init();
 	if (error)
 		goto out_debug;
 
-	error = dlm_plock_init();
+	error = dlm_netlink_init();
 	if (error)
 		goto out_user;
+
+	error = dlm_plock_init();
+	if (error)
+		goto out_netlink;
 
 	printk("DLM installed\n");
 
 	return 0;
 
+ out_netlink:
+	dlm_netlink_exit();
  out_user:
 	dlm_user_exit();
  out_debug:
 	dlm_unregister_debugfs();
+ out_config:
 	dlm_config_exit();
  out_lockspace:
 	dlm_lockspace_exit();
  out_mem:
-	dlm_midcomms_exit();
 	dlm_memory_exit();
  out:
 	return error;
@@ -71,12 +74,13 @@ static int __init init_dlm(void)
 static void __exit exit_dlm(void)
 {
 	dlm_plock_exit();
+	dlm_netlink_exit();
 	dlm_user_exit();
 	dlm_config_exit();
-	dlm_lockspace_exit();
-	dlm_midcomms_exit();
-	dlm_unregister_debugfs();
 	dlm_memory_exit();
+	dlm_lockspace_exit();
+	dlm_lowcomms_exit();
+	dlm_unregister_debugfs();
 }
 
 module_init(init_dlm);

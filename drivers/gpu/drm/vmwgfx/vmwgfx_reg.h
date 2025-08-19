@@ -1,7 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
- * Copyright 2009-2014 VMware, Inc., Palo Alto, CA., USA
+ * Copyright © 2009-2014 VMware, Inc., Palo Alto, CA., USA
+ * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -33,6 +33,10 @@
 #define _VMWGFX_REG_H_
 
 #include <linux/types.h>
+
+#define VMWGFX_INDEX_PORT     0x0
+#define VMWGFX_VALUE_PORT     0x1
+#define VMWGFX_IRQSTATUS_PORT 0x8
 
 struct svga_guest_mem_descriptor {
 	u32 ppn;

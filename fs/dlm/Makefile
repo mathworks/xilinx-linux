@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_DLM) +=		dlm.o
 dlm-y :=			ast.o \
 				config.o \
@@ -9,6 +8,7 @@ dlm-y :=			ast.o \
 				member.o \
 				memory.o \
 				midcomms.o \
+				netlink.o \
 				lowcomms.o \
 				plock.o \
 				rcom.o \

@@ -1,12 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Keerthy <j-keerthy@ti.com>
  *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether expressed or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License version 2 for more details.
+ *
  * Based on the TPS65218 driver
  */
 
-#include <linux/gpio/driver.h>
+#include <linux/gpio.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -25,7 +33,7 @@ static int lp873x_gpio_get_direction(struct gpio_chip *chip,
 				     unsigned int offset)
 {
 	/* This device is output only */
-	return GPIO_LINE_DIRECTION_OUT;
+	return 0;
 }
 
 static int lp873x_gpio_direction_input(struct gpio_chip *chip,
@@ -92,21 +100,21 @@ static int lp873x_gpio_request(struct gpio_chip *gc, unsigned int offset)
 	return 0;
 }
 
-static int lp873x_gpio_set_config(struct gpio_chip *gc, unsigned offset,
-				  unsigned long config)
+static int lp873x_gpio_set_single_ended(struct gpio_chip *gc,
+					unsigned int offset,
+					enum single_ended_mode mode)
 {
 	struct lp873x_gpio *gpio = gpiochip_get_data(gc);
 
-	switch (pinconf_to_config_param(config)) {
-	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
+	switch (mode) {
+	case LINE_MODE_OPEN_DRAIN:
 		return regmap_update_bits(gpio->lp873->regmap,
 					  LP873X_REG_GPO_CTRL,
 					  BIT(offset * BITS_PER_GPO +
 					  LP873X_GPO_CTRL_OD),
 					  BIT(offset * BITS_PER_GPO +
 					  LP873X_GPO_CTRL_OD));
-
-	case PIN_CONFIG_DRIVE_PUSH_PULL:
+	case LINE_MODE_PUSH_PULL:
 		return regmap_update_bits(gpio->lp873->regmap,
 					  LP873X_REG_GPO_CTRL,
 					  BIT(offset * BITS_PER_GPO +
@@ -125,7 +133,7 @@ static const struct gpio_chip template_chip = {
 	.direction_output	= lp873x_gpio_direction_output,
 	.get			= lp873x_gpio_get,
 	.set			= lp873x_gpio_set,
-	.set_config		= lp873x_gpio_set_config,
+	.set_single_ended	= lp873x_gpio_set_single_ended,
 	.base			= -1,
 	.ngpio			= 2,
 	.can_sleep		= true,

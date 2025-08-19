@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_IA32_H
 #define _ASM_X86_IA32_H
 
@@ -68,6 +67,6 @@ extern void ia32_pick_mmap_layout(struct mm_struct *mm);
 
 #endif
 
-#endif /* CONFIG_IA32_EMULATION */
+#endif /* !CONFIG_IA32_SUPPORT */
 
 #endif /* _ASM_X86_IA32_H */

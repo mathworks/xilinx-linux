@@ -1,9 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* Written 2003 by Andi Kleen, based on a kernel by Evandro Menezes */
 
 #include <linux/linkage.h>
 #include <asm/cpufeatures.h>
-#include <asm/alternative.h>
+#include <asm/alternative-asm.h>
 #include <asm/export.h>
 
 /*
@@ -13,15 +12,15 @@
  * prefetch distance based on SMP/UP.
  */
 	ALIGN
-SYM_FUNC_START(copy_page)
+ENTRY(copy_page)
 	ALTERNATIVE "jmp copy_page_regs", "", X86_FEATURE_REP_GOOD
 	movl	$4096/8, %ecx
 	rep	movsq
-	RET
-SYM_FUNC_END(copy_page)
+	ret
+ENDPROC(copy_page)
 EXPORT_SYMBOL(copy_page)
 
-SYM_FUNC_START_LOCAL(copy_page_regs)
+ENTRY(copy_page_regs)
 	subq	$2*8,	%rsp
 	movq	%rbx,	(%rsp)
 	movq	%r12,	1*8(%rsp)
@@ -85,5 +84,5 @@ SYM_FUNC_START_LOCAL(copy_page_regs)
 	movq	(%rsp), %rbx
 	movq	1*8(%rsp), %r12
 	addq	$2*8, %rsp
-	RET
-SYM_FUNC_END(copy_page_regs)
+	ret
+ENDPROC(copy_page_regs)

@@ -66,8 +66,7 @@ static int spi_ad9250_transfer_one(struct spi_master *master,
 
 	x[0].len = 1;
 	x[0].tx_buf = spi_ad9250->data;
-	x[0].delay.unit = SPI_DELAY_UNIT_USECS,
-	x[0].delay.value = 10;
+	x[0].delay_usecs = 10;
 	spi_ad9250->data[0] = cs_to_cpld(spi->chip_select, spi_ad9250->id);
 	spi_message_add_tail(&x[0], &m);
 
@@ -138,12 +137,13 @@ static int spi_ad9250_probe(struct spi_device *spi)
 	return 0;
 }
 
-static void spi_ad9250_remove(struct spi_device *spi)
+static int spi_ad9250_remove(struct spi_device *spi)
 {
 	struct spi_master *master = spi_get_drvdata(spi);
 
 	spi_unregister_master(master);
 
+	return 0;
 }
 
 static const struct spi_device_id spi_ad9250_ids[] = {
@@ -168,4 +168,3 @@ module_spi_driver(spi_ad9250_driver);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD9250-FMC/FMCDAQ1 boards SPI mux driver");
-

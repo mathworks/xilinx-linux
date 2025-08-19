@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Ours Technology Inc. OTi-6858 USB to serial adapter driver.
  *
@@ -22,7 +21,11 @@
  * So, THIS CODE CAN DESTROY OTi-6858 AND ANY OTHER DEVICES, THAT ARE
  * CONNECTED TO IT!
  *
- * See Documentation/usb/usb-serial.rst for more information on using this
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License.
+ *
+ * See Documentation/usb/usb-serial.txt for more information on using this
  * driver
  *
  * TODO:
@@ -119,21 +122,20 @@ struct oti6858_control_pkt {
 static int oti6858_open(struct tty_struct *tty, struct usb_serial_port *port);
 static void oti6858_close(struct usb_serial_port *port);
 static void oti6858_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios);
+			struct usb_serial_port *port, struct ktermios *old);
 static void oti6858_init_termios(struct tty_struct *tty);
 static void oti6858_read_int_callback(struct urb *urb);
 static void oti6858_read_bulk_callback(struct urb *urb);
 static void oti6858_write_bulk_callback(struct urb *urb);
 static int oti6858_write(struct tty_struct *tty, struct usb_serial_port *port,
 			const unsigned char *buf, int count);
-static unsigned int oti6858_write_room(struct tty_struct *tty);
-static unsigned int oti6858_chars_in_buffer(struct tty_struct *tty);
+static int oti6858_write_room(struct tty_struct *tty);
+static int oti6858_chars_in_buffer(struct tty_struct *tty);
 static int oti6858_tiocmget(struct tty_struct *tty);
 static int oti6858_tiocmset(struct tty_struct *tty,
 				unsigned int set, unsigned int clear);
 static int oti6858_port_probe(struct usb_serial_port *port);
-static void oti6858_port_remove(struct usb_serial_port *port);
+static int oti6858_port_remove(struct usb_serial_port *port);
 
 /* device info */
 static struct usb_serial_driver oti6858_device = {
@@ -143,9 +145,6 @@ static struct usb_serial_driver oti6858_device = {
 	},
 	.id_table =		id_table,
 	.num_ports =		1,
-	.num_bulk_in =		1,
-	.num_bulk_out =		1,
-	.num_interrupt_in =	1,
 	.open =			oti6858_open,
 	.close =		oti6858_close,
 	.write =		oti6858_write,
@@ -345,12 +344,14 @@ static int oti6858_port_probe(struct usb_serial_port *port)
 	return 0;
 }
 
-static void oti6858_port_remove(struct usb_serial_port *port)
+static int oti6858_port_remove(struct usb_serial_port *port)
 {
 	struct oti6858_private *priv;
 
 	priv = usb_get_serial_port_data(port);
 	kfree(priv);
+
+	return 0;
 }
 
 static int oti6858_write(struct tty_struct *tty, struct usb_serial_port *port,
@@ -364,10 +365,10 @@ static int oti6858_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static unsigned int oti6858_write_room(struct tty_struct *tty)
+static int oti6858_write_room(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
-	unsigned int room;
+	int room = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -377,10 +378,10 @@ static unsigned int oti6858_write_room(struct tty_struct *tty)
 	return room;
 }
 
-static unsigned int oti6858_chars_in_buffer(struct tty_struct *tty)
+static int oti6858_chars_in_buffer(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
-	unsigned int chars;
+	int chars = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -392,12 +393,14 @@ static unsigned int oti6858_chars_in_buffer(struct tty_struct *tty)
 
 static void oti6858_init_termios(struct tty_struct *tty)
 {
-	tty_encode_baud_rate(tty, 38400, 38400);
+	tty->termios = tty_std_termios;
+	tty->termios.c_cflag = B38400 | CS8 | CREAD | HUPCL | CLOCAL;
+	tty->termios.c_ispeed = 38400;
+	tty->termios.c_ospeed = 38400;
 }
 
 static void oti6858_set_termios(struct tty_struct *tty,
-				struct usb_serial_port *port,
-				const struct ktermios *old_termios)
+		struct usb_serial_port *port, struct ktermios *old_termios)
 {
 	struct oti6858_private *priv = usb_get_serial_port_data(port);
 	unsigned long flags;
@@ -841,4 +844,4 @@ module_usb_serial_driver(serial_drivers, id_table);
 
 MODULE_DESCRIPTION(OTI6858_DESCRIPTION);
 MODULE_AUTHOR(OTI6858_AUTHOR);
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

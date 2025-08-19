@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Roccat Pyra driver for Linux
  *
@@ -6,6 +5,10 @@
  */
 
 /*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  */
 
 /*
@@ -25,6 +28,9 @@
 #include "hid-roccat-pyra.h"
 
 static uint profile_numbers[5] = {0, 1, 2, 3, 4};
+
+/* pyra_class is used for creating sysfs attributes via roccat char device */
+static struct class *pyra_class;
 
 static void profile_activated(struct pyra_device *pyra,
 		unsigned int new_profile)
@@ -363,12 +369,6 @@ static const struct attribute_group *pyra_groups[] = {
 	NULL,
 };
 
-/* pyra_class is used for creating sysfs attributes via roccat char device */
-static const struct class pyra_class = {
-	.name = "pyra",
-	.dev_groups = pyra_groups,
-};
-
 static int pyra_init_pyra_device_struct(struct usb_device *usb_dev,
 		struct pyra_device *pyra)
 {
@@ -416,7 +416,7 @@ static int pyra_init_specials(struct hid_device *hdev)
 			goto exit_free;
 		}
 
-		retval = roccat_connect(&pyra_class, hdev,
+		retval = roccat_connect(pyra_class, hdev,
 				sizeof(struct pyra_roccat_report));
 		if (retval < 0) {
 			hid_err(hdev, "couldn't init char dev\n");
@@ -451,9 +451,6 @@ static void pyra_remove_specials(struct hid_device *hdev)
 static int pyra_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int retval;
-
-	if (!hid_is_usb(hdev))
-		return -EINVAL;
 
 	retval = hid_parse(hdev);
 	if (retval) {
@@ -588,20 +585,21 @@ static int __init pyra_init(void)
 	int retval;
 
 	/* class name has to be same as driver name */
-	retval = class_register(&pyra_class);
-	if (retval)
-		return retval;
+	pyra_class = class_create(THIS_MODULE, "pyra");
+	if (IS_ERR(pyra_class))
+		return PTR_ERR(pyra_class);
+	pyra_class->dev_groups = pyra_groups;
 
 	retval = hid_register_driver(&pyra_driver);
 	if (retval)
-		class_unregister(&pyra_class);
+		class_destroy(pyra_class);
 	return retval;
 }
 
 static void __exit pyra_exit(void)
 {
 	hid_unregister_driver(&pyra_driver);
-	class_unregister(&pyra_class);
+	class_destroy(pyra_class);
 }
 
 module_init(pyra_init);

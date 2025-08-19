@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
-#include "bcm63268.dtsi"
+/include/ "bcm63268.dtsi"
 
 / {
 	compatible = "comtrend,vr-3032u", "brcm,bcm63268";
@@ -19,7 +18,7 @@
 };
 
 &leds0 {
-	status = "okay";
+	status = "ok";
 	brcm,serial-leds;
 	brcm,serial-dat-low;
 	brcm,serial-shift-inv;

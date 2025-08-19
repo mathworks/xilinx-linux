@@ -165,7 +165,8 @@ static int alpine_msix_middle_domain_alloc(struct irq_domain *domain,
 	return 0;
 
 err_sgi:
-	irq_domain_free_irqs_parent(domain, virq, i - 1);
+	while (--i >= 0)
+		irq_domain_free_irqs_parent(domain, virq, i);
 	alpine_msix_free_sgi(priv, sgi, nr_irqs);
 	return err;
 }
@@ -199,19 +200,20 @@ static int alpine_msix_init_domains(struct alpine_msix_data *priv,
 	}
 
 	gic_domain = irq_find_host(gic_node);
-	of_node_put(gic_node);
 	if (!gic_domain) {
 		pr_err("Failed to find the GIC domain\n");
 		return -ENXIO;
 	}
 
-	middle_domain = irq_domain_add_hierarchy(gic_domain, 0, 0, NULL,
-						 &alpine_msix_middle_domain_ops,
-						 priv);
+	middle_domain = irq_domain_add_tree(NULL,
+					    &alpine_msix_middle_domain_ops,
+					    priv);
 	if (!middle_domain) {
 		pr_err("Failed to create the MSIX middle domain\n");
 		return -ENOMEM;
 	}
+
+	middle_domain->parent = gic_domain;
 
 	msi_domain = pci_msi_create_irq_domain(of_node_to_fwnode(node),
 					       &alpine_msix_domain_info,
@@ -266,7 +268,8 @@ static int alpine_msix_init(struct device_node *node,
 		goto err_priv;
 	}
 
-	priv->msi_map = bitmap_zalloc(priv->num_spis, GFP_KERNEL);
+	priv->msi_map = kzalloc(sizeof(*priv->msi_map) * BITS_TO_LONGS(priv->num_spis),
+				GFP_KERNEL);
 	if (!priv->msi_map) {
 		ret = -ENOMEM;
 		goto err_priv;
@@ -282,7 +285,7 @@ static int alpine_msix_init(struct device_node *node,
 	return 0;
 
 err_map:
-	bitmap_free(priv->msi_map);
+	kfree(priv->msi_map);
 err_priv:
 	kfree(priv);
 	return ret;

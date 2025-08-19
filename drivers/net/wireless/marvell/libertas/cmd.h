@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* Copyright (C) 2007, Red Hat, Inc. */
 
 #ifndef _LBS_CMD_H_
@@ -76,7 +75,7 @@ void lbs_mac_event_disconnected(struct lbs_private *priv,
 
 /* Events */
 
-void lbs_process_event(struct lbs_private *priv, u32 event);
+int lbs_process_event(struct lbs_private *priv, u32 event);
 
 
 /* Actual commands */

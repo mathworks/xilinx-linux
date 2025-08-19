@@ -1,7 +1,7 @@
 /dts-v1/;
 
-#include "zynq-zed.dtsi"
-#include "zynq-zed-adv7511.dtsi"
+/include/ "zynq-zed.dtsi"
+/include/ "zynq-zed-adv7511.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 
 / {
@@ -34,7 +34,7 @@
 					reg = <1>;
 
 					adv7511@39 {
-						compatible = "adv7511-v4l2";
+						compatible = "adv7511-media";
 						reg = <0x39>;
 
 						powerdown-gpio = <&pca9534 4 GPIO_ACTIVE_HIGH>;
@@ -54,11 +54,11 @@
 						};
 
 						video-output {
-							hdmi-mode = <1>;
-							output-format = <1>;
-							output-color-space = <1>;
+							hdmi-mode = <0>;
+							output-format = <0>;
+							output-color-space = <0>;
 							up-conversion = <0>;
-							csc-enable = <0>;
+							csc-enable = <1>;
 							csc-scaling-factor = <2>;
 							csc-coefficients {
 								a1 = <0x0B37>;

@@ -1,11 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/kernel/dec21285.c: PCI functions for DC21285
  *
  *  Copyright (C) 1998-2001 Russell King
  *  Copyright (C) 1998-2000 Phil Blundell
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
-#include <linux/dma-map-ops.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/interrupt.h>
@@ -32,6 +34,7 @@
 				  PCI_STATUS_PARITY) << 16)
 
 extern int setup_arm_irq(int, struct irqaction *);
+extern void pcibios_report_status(u_int status_mask, int warn);
 
 static unsigned long
 dc21285_base_address(struct pci_bus *bus, unsigned int devfn)
@@ -66,15 +69,15 @@ dc21285_read_config(struct pci_bus *bus, unsigned int devfn, int where,
 	if (addr)
 		switch (size) {
 		case 1:
-			asm volatile("ldrb	%0, [%1, %2]"
+			asm("ldrb	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		case 2:
-			asm volatile("ldrh	%0, [%1, %2]"
+			asm("ldrh	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		case 4:
-			asm volatile("ldr	%0, [%1, %2]"
+			asm("ldr	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		}
@@ -100,17 +103,17 @@ dc21285_write_config(struct pci_bus *bus, unsigned int devfn, int where,
 	if (addr)
 		switch (size) {
 		case 1:
-			asm volatile("strb	%0, [%1, %2]"
+			asm("strb	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
 		case 2:
-			asm volatile("strh	%0, [%1, %2]"
+			asm("strh	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
 		case 4:
-			asm volatile("str	%0, [%1, %2]"
+			asm("str	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
@@ -133,14 +136,19 @@ struct pci_ops dc21285_ops = {
 static struct timer_list serr_timer;
 static struct timer_list perr_timer;
 
-static void dc21285_enable_error(struct timer_list *timer)
+static void dc21285_enable_error(unsigned long __data)
 {
-	del_timer(timer);
+	switch (__data) {
+	case IRQ_PCI_SERR:
+		del_timer(&serr_timer);
+		break;
 
-	if (timer == &serr_timer)
-		enable_irq(IRQ_PCI_SERR);
-	else if (timer == &perr_timer)
-		enable_irq(IRQ_PCI_PERR);
+	case IRQ_PCI_PERR:
+		del_timer(&perr_timer);
+		break;
+	}
+
+	enable_irq(__data);
 }
 
 /*
@@ -242,27 +250,14 @@ static irqreturn_t dc21285_parity_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int dc21285_pci_bus_notifier(struct notifier_block *nb,
-				    unsigned long action,
-				    void *data)
-{
-	if (action != BUS_NOTIFY_ADD_DEVICE)
-		return NOTIFY_DONE;
-
-	dma_direct_set_offset(data, PHYS_OFFSET, BUS_OFFSET, SZ_256M);
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block dc21285_pci_bus_nb = {
-	.notifier_call = dc21285_pci_bus_notifier,
-};
-
 int __init dc21285_setup(int nr, struct pci_sys_data *sys)
 {
 	struct resource *res;
 
-	res = kcalloc(2, sizeof(struct resource), GFP_KERNEL);
+	if (nr || !footbridge_cfn_mode())
+		return 0;
+
+	res = kzalloc(sizeof(struct resource) * 2, GFP_KERNEL);
 	if (!res) {
 		printk("out of memory for root bus resources");
 		return 0;
@@ -283,8 +278,6 @@ int __init dc21285_setup(int nr, struct pci_sys_data *sys)
 	pci_add_resource_offset(&sys->resources, &res[0], sys->mem_offset);
 	pci_add_resource_offset(&sys->resources, &res[1], sys->mem_offset);
 
-	bus_register_notifier(&pci_bus_type, &dc21285_pci_bus_nb);
-
 	return 1;
 }
 
@@ -294,6 +287,7 @@ int __init dc21285_setup(int nr, struct pci_sys_data *sys)
 void __init dc21285_preinit(void)
 {
 	unsigned int mem_size, mem_mask;
+	int cfn_mode;
 
 	pcibios_min_mem = 0x81000000;
 
@@ -313,18 +307,29 @@ void __init dc21285_preinit(void)
 	*CSR_CSRBASEOFFSET    = 0;
 	*CSR_PCIADDR_EXTN     = 0;
 
+	cfn_mode = __footbridge_cfn_mode();
+
 	printk(KERN_INFO "PCI: DC21285 footbridge, revision %02lX, in "
-		"central function mode\n", *CSR_CLASSREV & 0xff);
+		"%s mode\n", *CSR_CLASSREV & 0xff, cfn_mode ?
+		"central function" : "addin");
 
-	/*
-	 * Clear any existing errors - we aren't
-	 * interested in historical data...
-	 */
-	*CSR_SA110_CNTL	= (*CSR_SA110_CNTL & 0xffffde07) | SA110_CNTL_RXSERR;
-	*CSR_PCICMD = (*CSR_PCICMD & 0xffff) | PCICMD_ERROR_BITS;
+	if (footbridge_cfn_mode()) {
+		/*
+		 * Clear any existing errors - we aren't
+		 * interested in historical data...
+		 */
+		*CSR_SA110_CNTL	= (*CSR_SA110_CNTL & 0xffffde07) |
+				  SA110_CNTL_RXSERR;
+		*CSR_PCICMD = (*CSR_PCICMD & 0xffff) | PCICMD_ERROR_BITS;
+	}
 
-	timer_setup(&serr_timer, dc21285_enable_error, 0);
-	timer_setup(&perr_timer, dc21285_enable_error, 0);
+	init_timer(&serr_timer);
+	init_timer(&perr_timer);
+
+	serr_timer.data = IRQ_PCI_SERR;
+	serr_timer.function = dc21285_enable_error;
+	perr_timer.data = IRQ_PCI_PERR;
+	perr_timer.function = dc21285_enable_error;
 
 	/*
 	 * We don't care if these fail.
@@ -340,18 +345,29 @@ void __init dc21285_preinit(void)
 	dc21285_request_irq(IRQ_PCI_DPERR, dc21285_dparity_irq, 0,
 			    "PCI data parity", NULL);
 
-	/*
-	 * Map our SDRAM at a known address in PCI space, just in case
-	 * the firmware had other ideas.  Using a nonzero base is
-	 * necessary, since some VGA cards forcefully use PCI addresses
-	 * in the range 0x000a0000 to 0x000c0000. (eg, S3 cards).
-	 */
-	*CSR_PCICSRBASE       = 0xf4000000;
-	*CSR_PCICSRIOBASE     = 0;
-	*CSR_PCISDRAMBASE     = BUS_OFFSET;
-	*CSR_PCIROMBASE       = 0;
-	*CSR_PCICMD = PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER |
-		      PCI_COMMAND_INVALIDATE | PCICMD_ERROR_BITS;
+	if (cfn_mode) {
+		/*
+		 * Map our SDRAM at a known address in PCI space, just in case
+		 * the firmware had other ideas.  Using a nonzero base is
+		 * necessary, since some VGA cards forcefully use PCI addresses
+		 * in the range 0x000a0000 to 0x000c0000. (eg, S3 cards).
+		 */
+		*CSR_PCICSRBASE       = 0xf4000000;
+		*CSR_PCICSRIOBASE     = 0;
+		*CSR_PCISDRAMBASE     = __virt_to_bus(PAGE_OFFSET);
+		*CSR_PCIROMBASE       = 0;
+		*CSR_PCICMD = PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER |
+			      PCI_COMMAND_INVALIDATE | PCICMD_ERROR_BITS;
+	} else if (footbridge_cfn_mode() != 0) {
+		/*
+		 * If we are not compiled to accept "add-in" mode, then
+		 * we are using a constant virt_to_bus translation which
+		 * can not hope to cater for the way the host BIOS  has
+		 * set up the machine.
+		 */
+		panic("PCI: this kernel is compiled for central "
+			"function mode only");
+	}
 }
 
 void __init dc21285_postinit(void)

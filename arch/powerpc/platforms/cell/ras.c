@@ -1,6 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2006-2008, IBM Corporation.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
  */
 
 #undef DEBUG
@@ -12,17 +16,17 @@
 #include <linux/reboot.h>
 #include <linux/kexec.h>
 #include <linux/crash_dump.h>
-#include <linux/of.h>
 
 #include <asm/kexec.h>
 #include <asm/reg.h>
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/rtas.h>
 #include <asm/cell-regs.h>
 
 #include "ras.h"
-#include "pervasive.h"
+
 
 static void dump_fir(int cpu)
 {
@@ -49,7 +53,7 @@ static void dump_fir(int cpu)
 
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_system_error_exception)
+void cbe_system_error_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 
@@ -58,7 +62,7 @@ DEFINE_INTERRUPT_HANDLER(cbe_system_error_exception)
 	dump_stack();
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_maintenance_exception)
+void cbe_maintenance_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 
@@ -70,7 +74,7 @@ DEFINE_INTERRUPT_HANDLER(cbe_maintenance_exception)
 	dump_stack();
 }
 
-DEFINE_INTERRUPT_HANDLER(cbe_thermal_exception)
+void cbe_thermal_exception(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
 
@@ -192,8 +196,8 @@ static int __init cbe_ptcal_enable(void)
 	for_each_node_by_type(np, "cpu") {
 		const u32 *nid = of_get_property(np, "node-id", NULL);
 		if (!nid) {
-			printk(KERN_ERR "%s: node %pOF is missing node-id?\n",
-					__func__, np);
+			printk(KERN_ERR "%s: node %s is missing node-id?\n",
+					__func__, np->full_name);
 			continue;
 		}
 		cbe_ptcal_enable_on_node(*nid, order);
@@ -297,8 +301,8 @@ int cbe_sysreset_hack(void)
 static int __init cbe_ptcal_init(void)
 {
 	int ret;
-	ptcal_start_tok = rtas_function_token(RTAS_FN_IBM_CBE_START_PTCAL);
-	ptcal_stop_tok = rtas_function_token(RTAS_FN_IBM_CBE_STOP_PTCAL);
+	ptcal_start_tok = rtas_token("ibm,cbe-start-ptcal");
+	ptcal_stop_tok = rtas_token("ibm,cbe-stop-ptcal");
 
 	if (ptcal_start_tok == RTAS_UNKNOWN_SERVICE
 			|| ptcal_stop_tok == RTAS_UNKNOWN_SERVICE)

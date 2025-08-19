@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AXI clkgen driver
  *
  * Copyright 2012-2013 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
+ *
+ * Licensed under the GPL-2.
+ *
  */
 
 #include <linux/platform_device.h>
@@ -41,22 +43,9 @@
 #define MMCM_REG_FILTER1	0x4e
 #define MMCM_REG_FILTER2	0x4f
 
-#define MMCM_CLKOUT_NOCOUNT	BIT(6)
-
-#define MMCM_CLK_DIV_DIVIDE	BIT(11)
-#define MMCM_CLK_DIV_NOCOUNT	BIT(12)
-
-struct axi_clkgen_limits {
-	unsigned int fpfd_min;
-	unsigned int fpfd_max;
-	unsigned int fvco_min;
-	unsigned int fvco_max;
-};
-
 struct axi_clkgen {
 	void __iomem *base;
 	struct clk_hw clk_hw;
-	struct axi_clkgen_limits limits;
 };
 
 static uint32_t axi_clkgen_lookup_filter(unsigned int m)
@@ -108,22 +97,19 @@ static uint32_t axi_clkgen_lookup_lock(unsigned int m)
 	return 0x1f1f00fa;
 }
 
-static const struct axi_clkgen_limits axi_clkgen_zynqmp_default_limits = {
-	.fpfd_min = 10000,
-	.fpfd_max = 450000,
-	.fvco_min = 800000,
-	.fvco_max = 1600000,
-};
+#ifdef ARCH_ZYNQMP
+static const unsigned int fpfd_min = 10000;
+static const unsigned int fpfd_max = 450000;
+static const unsigned int fvco_min = 800000;
+static const unsigned int fvco_max = 1600000;
+#else
+static const unsigned int fpfd_min = 10000;
+static const unsigned int fpfd_max = 300000;
+static const unsigned int fvco_min = 600000;
+static const unsigned int fvco_max = 1200000;
+#endif
 
-static const struct axi_clkgen_limits axi_clkgen_zynq_default_limits = {
-	.fpfd_min = 10000,
-	.fpfd_max = 300000,
-	.fvco_min = 600000,
-	.fvco_max = 1200000,
-};
-
-static void axi_clkgen_calc_params(const struct axi_clkgen_limits *limits,
-	unsigned long fin, unsigned long fout,
+static void axi_clkgen_calc_params(unsigned long fin, unsigned long fout,
 	unsigned int *best_d, unsigned int *best_m, unsigned int *best_dout)
 {
 	unsigned long d, d_min, d_max, _d_min, _d_max;
@@ -140,12 +126,12 @@ static void axi_clkgen_calc_params(const struct axi_clkgen_limits *limits,
 	*best_m = 0;
 	*best_dout = 0;
 
-	d_min = max_t(unsigned long, DIV_ROUND_UP(fin, limits->fpfd_max), 1);
-	d_max = min_t(unsigned long, fin / limits->fpfd_min, 80);
+	d_min = max_t(unsigned long, DIV_ROUND_UP(fin, fpfd_max), 1);
+	d_max = min_t(unsigned long, fin / fpfd_min, 80);
 
 again:
-	fvco_min_fract = limits->fvco_min << fract_shift;
-	fvco_max_fract = limits->fvco_max << fract_shift;
+	fvco_min_fract = fvco_min << fract_shift;
+	fvco_max_fract = fvco_max << fract_shift;
 
 	m_min = max_t(unsigned long, DIV_ROUND_UP(fvco_min_fract, fin) * d_min, 1);
 	m_max = min_t(unsigned long, fvco_max_fract * d_max / fin, 64 << fract_shift);
@@ -337,7 +323,6 @@ static int axi_clkgen_set_rate(struct clk_hw *clk_hw,
 	unsigned long rate, unsigned long parent_rate)
 {
 	struct axi_clkgen *axi_clkgen = clk_hw_to_axi_clkgen(clk_hw);
-	const struct axi_clkgen_limits *limits = &axi_clkgen->limits;
 	unsigned int d, m, dout;
 	struct axi_clkgen_div_params params;
 	uint32_t power = 0;
@@ -347,7 +332,7 @@ static int axi_clkgen_set_rate(struct clk_hw *clk_hw,
 	if (parent_rate == 0 || rate == 0)
 		return -EINVAL;
 
-	axi_clkgen_calc_params(limits, parent_rate, rate, &d, &m, &dout);
+	axi_clkgen_calc_params(parent_rate, rate, &d, &m, &dout);
 
 	if (d == 0 || dout == 0 || m == 0)
 		return -EINVAL;
@@ -384,25 +369,21 @@ static int axi_clkgen_set_rate(struct clk_hw *clk_hw,
 	return 0;
 }
 
-static int axi_clkgen_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long axi_clkgen_round_rate(struct clk_hw *hw, unsigned long rate,
+	unsigned long *parent_rate)
 {
-	struct axi_clkgen *axi_clkgen = clk_hw_to_axi_clkgen(hw);
-	const struct axi_clkgen_limits *limits = &axi_clkgen->limits;
 	unsigned int d, m, dout;
 	unsigned long long tmp;
 
-	axi_clkgen_calc_params(limits, req->best_parent_rate, req->rate,
-			       &d, &m, &dout);
+	axi_clkgen_calc_params(*parent_rate, rate, &d, &m, &dout);
 
 	if (d == 0 || dout == 0 || m == 0)
 		return -EINVAL;
 
-	tmp = (unsigned long long)req->best_parent_rate * m;
+	tmp = (unsigned long long)*parent_rate * m;
 	tmp = DIV_ROUND_CLOSEST_ULL(tmp, dout * d);
 
-	req->rate = min_t(unsigned long long, tmp, LONG_MAX);
-	return 0;
+	return min_t(unsigned long long, tmp, LONG_MAX);
 }
 
 static unsigned int axi_clkgen_get_div(struct axi_clkgen *axi_clkgen,
@@ -412,7 +393,7 @@ static unsigned int axi_clkgen_get_div(struct axi_clkgen *axi_clkgen,
 	unsigned int div;
 
 	axi_clkgen_mmcm_read(axi_clkgen, reg2, &val2);
-	if (val2 & MMCM_CLKOUT_NOCOUNT)
+	if (val2 & BIT(6))
 		return 8;
 
 	axi_clkgen_mmcm_read(axi_clkgen, reg1, &val1);
@@ -420,7 +401,7 @@ static unsigned int axi_clkgen_get_div(struct axi_clkgen *axi_clkgen,
 	div = (val1 & 0x3f) + ((val1 >> 6) & 0x3f);
 	div <<= 3;
 
-	if (val2 & MMCM_CLK_DIV_DIVIDE) {
+	if (val2 & BIT(11)) {
 		if ((val2 & BIT(7)) && (val2 & 0x7000) != 0x1000)
 			div += 8;
 		else
@@ -446,7 +427,7 @@ static unsigned long axi_clkgen_recalc_rate(struct clk_hw *clk_hw,
 		MMCM_REG_CLK_FB2);
 
 	axi_clkgen_mmcm_read(axi_clkgen, MMCM_REG_CLK_DIV, &val);
-	if (val & MMCM_CLK_DIV_NOCOUNT)
+	if (val & BIT(12))
 		d = 1;
 	else
 		d = (val & 0x3f) + ((val >> 6) & 0x3f);
@@ -497,7 +478,7 @@ static u8 axi_clkgen_get_parent(struct clk_hw *clk_hw)
 
 static const struct clk_ops axi_clkgen_ops = {
 	.recalc_rate = axi_clkgen_recalc_rate,
-	.determine_rate = axi_clkgen_determine_rate,
+	.round_rate = axi_clkgen_round_rate,
 	.set_rate = axi_clkgen_set_rate,
 	.enable = axi_clkgen_enable,
 	.disable = axi_clkgen_disable,
@@ -505,25 +486,38 @@ static const struct clk_ops axi_clkgen_ops = {
 	.get_parent = axi_clkgen_get_parent,
 };
 
+static const struct of_device_id axi_clkgen_ids[] = {
+	{
+		.compatible = "adi,axi-clkgen-2.00.a",
+	},
+	{ },
+};
+MODULE_DEVICE_TABLE(of, axi_clkgen_ids);
+
 static int axi_clkgen_probe(struct platform_device *pdev)
 {
-	const struct axi_clkgen_limits *dflt_limits;
+	const struct of_device_id *id;
 	struct axi_clkgen *axi_clkgen;
 	struct clk_init_data init;
 	const char *parent_names[2];
 	const char *clk_name;
+	struct resource *mem;
 	unsigned int i;
 	int ret;
 
-	dflt_limits = device_get_match_data(&pdev->dev);
-	if (!dflt_limits)
+	if (!pdev->dev.of_node)
+		return -ENODEV;
+
+	id = of_match_node(axi_clkgen_ids, pdev->dev.of_node);
+	if (!id)
 		return -ENODEV;
 
 	axi_clkgen = devm_kzalloc(&pdev->dev, sizeof(*axi_clkgen), GFP_KERNEL);
 	if (!axi_clkgen)
 		return -ENOMEM;
 
-	axi_clkgen->base = devm_platform_ioremap_resource(pdev, 0);
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	axi_clkgen->base = devm_ioremap_resource(&pdev->dev, mem);
 	if (IS_ERR(axi_clkgen->base))
 		return PTR_ERR(axi_clkgen->base);
 
@@ -536,8 +530,6 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 		if (!parent_names[i])
 			return -EINVAL;
 	}
-
-	memcpy(&axi_clkgen->limits, dflt_limits, sizeof(axi_clkgen->limits));
 
 	clk_name = pdev->dev.of_node->name;
 	of_property_read_string(pdev->dev.of_node, "clock-output-names",
@@ -555,22 +547,16 @@ static int axi_clkgen_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return devm_of_clk_add_hw_provider(&pdev->dev, of_clk_hw_simple_get,
-					   &axi_clkgen->clk_hw);
+	return of_clk_add_hw_provider(pdev->dev.of_node, of_clk_hw_simple_get,
+				      &axi_clkgen->clk_hw);
 }
 
-static const struct of_device_id axi_clkgen_ids[] = {
-	{
-		.compatible = "adi,zynqmp-axi-clkgen-2.00.a",
-		.data = &axi_clkgen_zynqmp_default_limits,
-	},
-	{
-		.compatible = "adi,axi-clkgen-2.00.a",
-		.data = &axi_clkgen_zynq_default_limits,
-	},
-	{ }
-};
-MODULE_DEVICE_TABLE(of, axi_clkgen_ids);
+static int axi_clkgen_remove(struct platform_device *pdev)
+{
+	of_clk_del_provider(pdev->dev.of_node);
+
+	return 0;
+}
 
 static struct platform_driver axi_clkgen_driver = {
 	.driver = {
@@ -578,6 +564,7 @@ static struct platform_driver axi_clkgen_driver = {
 		.of_match_table = axi_clkgen_ids,
 	},
 	.probe = axi_clkgen_probe,
+	.remove = axi_clkgen_remove,
 };
 module_platform_driver(axi_clkgen_driver);
 

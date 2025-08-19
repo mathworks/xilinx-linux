@@ -44,7 +44,8 @@ nvif_object_ioctl(struct nvif_object *object, void *data, u32 size, void **hack)
 	} else
 		return -ENOSYS;
 
-	return client->driver->ioctl(client->object.priv, data, size, hack);
+	return client->driver->ioctl(client->object.priv, client->super,
+				     data, size, hack);
 }
 
 void
@@ -82,7 +83,7 @@ nvif_object_sclass_get(struct nvif_object *object, struct nvif_sclass **psclass)
 			return ret;
 	}
 
-	*psclass = kcalloc(args->sclass.count, sizeof(**psclass), GFP_KERNEL);
+	*psclass = kzalloc(sizeof(**psclass) * args->sclass.count, GFP_KERNEL);
 	if (*psclass) {
 		for (i = 0; i < args->sclass.count; i++) {
 			(*psclass)[i].oclass = args->sclass.oclass[i].oclass;
@@ -165,83 +166,52 @@ nvif_object_mthd(struct nvif_object *object, u32 mthd, void *data, u32 size)
 }
 
 void
-nvif_object_unmap_handle(struct nvif_object *object)
-{
-	struct {
-		struct nvif_ioctl_v0 ioctl;
-		struct nvif_ioctl_unmap unmap;
-	} args = {
-		.ioctl.type = NVIF_IOCTL_V0_UNMAP,
-	};
-
-	nvif_object_ioctl(object, &args, sizeof(args), NULL);
-}
-
-int
-nvif_object_map_handle(struct nvif_object *object, void *argv, u32 argc,
-		       u64 *handle, u64 *length)
-{
-	struct {
-		struct nvif_ioctl_v0 ioctl;
-		struct nvif_ioctl_map_v0 map;
-	} *args;
-	u32 argn = sizeof(*args) + argc;
-	int ret, maptype;
-
-	if (!(args = kzalloc(argn, GFP_KERNEL)))
-		return -ENOMEM;
-	args->ioctl.type = NVIF_IOCTL_V0_MAP;
-	memcpy(args->map.data, argv, argc);
-
-	ret = nvif_object_ioctl(object, args, argn, NULL);
-	*handle = args->map.handle;
-	*length = args->map.length;
-	maptype = args->map.type;
-	kfree(args);
-	return ret ? ret : (maptype == NVIF_IOCTL_MAP_V0_IO);
-}
-
-void
 nvif_object_unmap(struct nvif_object *object)
 {
-	struct nvif_client *client = object->client;
-	if (object->map.ptr) {
-		if (object->map.size) {
+	if (object->map.size) {
+		struct nvif_client *client = object->client;
+		struct {
+			struct nvif_ioctl_v0 ioctl;
+			struct nvif_ioctl_unmap unmap;
+		} args = {
+			.ioctl.type = NVIF_IOCTL_V0_UNMAP,
+		};
+
+		if (object->map.ptr) {
 			client->driver->unmap(client, object->map.ptr,
 						      object->map.size);
-			object->map.size = 0;
+			object->map.ptr = NULL;
 		}
-		object->map.ptr = NULL;
-		nvif_object_unmap_handle(object);
+
+		nvif_object_ioctl(object, &args, sizeof(args), NULL);
+		object->map.size = 0;
 	}
 }
 
 int
-nvif_object_map(struct nvif_object *object, void *argv, u32 argc)
+nvif_object_map(struct nvif_object *object)
 {
 	struct nvif_client *client = object->client;
-	u64 handle, length;
-	int ret = nvif_object_map_handle(object, argv, argc, &handle, &length);
-	if (ret >= 0) {
-		if (ret) {
-			object->map.ptr = client->driver->map(client,
-							      handle,
-							      length);
-			if (ret = -ENOMEM, object->map.ptr) {
-				object->map.size = length;
-				return 0;
-			}
-		} else {
-			object->map.ptr = (void *)(unsigned long)handle;
+	struct {
+		struct nvif_ioctl_v0 ioctl;
+		struct nvif_ioctl_map_v0 map;
+	} args = {
+		.ioctl.type = NVIF_IOCTL_V0_MAP,
+	};
+	int ret = nvif_object_ioctl(object, &args, sizeof(args), NULL);
+	if (ret == 0) {
+		object->map.size = args.map.length;
+		object->map.ptr = client->driver->map(client, args.map.handle,
+						      object->map.size);
+		if (ret = -ENOMEM, object->map.ptr)
 			return 0;
-		}
-		nvif_object_unmap_handle(object);
+		nvif_object_unmap(object);
 	}
 	return ret;
 }
 
 void
-nvif_object_dtor(struct nvif_object *object)
+nvif_object_fini(struct nvif_object *object)
 {
 	struct {
 		struct nvif_ioctl_v0 ioctl;
@@ -250,7 +220,7 @@ nvif_object_dtor(struct nvif_object *object)
 		.ioctl.type = NVIF_IOCTL_V0_DEL,
 	};
 
-	if (!nvif_object_constructed(object))
+	if (!object->client)
 		return;
 
 	nvif_object_unmap(object);
@@ -259,8 +229,8 @@ nvif_object_dtor(struct nvif_object *object)
 }
 
 int
-nvif_object_ctor(struct nvif_object *parent, const char *name, u32 handle,
-		 s32 oclass, void *data, u32 size, struct nvif_object *object)
+nvif_object_init(struct nvif_object *parent, u32 handle, s32 oclass,
+		 void *data, u32 size, struct nvif_object *object)
 {
 	struct {
 		struct nvif_ioctl_v0 ioctl;
@@ -269,7 +239,6 @@ nvif_object_ctor(struct nvif_object *parent, const char *name, u32 handle,
 	int ret = 0;
 
 	object->client = NULL;
-	object->name = name ? name : "nvifObject";
 	object->handle = handle;
 	object->oclass = oclass;
 	object->map.ptr = NULL;
@@ -277,11 +246,9 @@ nvif_object_ctor(struct nvif_object *parent, const char *name, u32 handle,
 
 	if (parent) {
 		if (!(args = kmalloc(sizeof(*args) + size, GFP_KERNEL))) {
-			nvif_object_dtor(object);
+			nvif_object_fini(object);
 			return -ENOMEM;
 		}
-
-		object->parent = parent->parent;
 
 		args->ioctl.version = 0;
 		args->ioctl.type = NVIF_IOCTL_V0_NEW;
@@ -302,6 +269,6 @@ nvif_object_ctor(struct nvif_object *parent, const char *name, u32 handle,
 	}
 
 	if (ret)
-		nvif_object_dtor(object);
+		nvif_object_fini(object);
 	return ret;
 }

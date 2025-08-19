@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ARM_CMPXCHG_H
 #define __ASM_ARM_CMPXCHG_H
 
@@ -25,8 +24,7 @@
 #define swp_is_buggy
 #endif
 
-static inline unsigned long
-__arch_xchg(unsigned long x, volatile void *ptr, int size)
+static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size)
 {
 	extern void __bad_xchg(volatile void *, int);
 	unsigned long ret;
@@ -115,9 +113,9 @@ __arch_xchg(unsigned long x, volatile void *ptr, int size)
 	return ret;
 }
 
-#define arch_xchg_relaxed(ptr, x) ({					\
-	(__typeof__(*(ptr)))__arch_xchg((unsigned long)(x), (ptr),	\
-					sizeof(*(ptr)));		\
+#define xchg_relaxed(ptr, x) ({						\
+	(__typeof__(*(ptr)))__xchg((unsigned long)(x), (ptr),		\
+				   sizeof(*(ptr)));			\
 })
 
 #include <asm-generic/cmpxchg-local.h>
@@ -129,20 +127,20 @@ __arch_xchg(unsigned long x, volatile void *ptr, int size)
 #error "SMP is not supported on this platform"
 #endif
 
-#define arch_xchg arch_xchg_relaxed
+#define xchg xchg_relaxed
 
 /*
  * cmpxchg_local and cmpxchg64_local are atomic wrt current CPU. Always make
  * them available.
  */
-#define arch_cmpxchg_local(ptr, o, n) ({				\
-	(__typeof(*ptr))__generic_cmpxchg_local((ptr),			\
+#define cmpxchg_local(ptr, o, n) ({					\
+	(__typeof(*ptr))__cmpxchg_local_generic((ptr),			\
 					        (unsigned long)(o),	\
 					        (unsigned long)(n),	\
 					        sizeof(*(ptr)));	\
 })
 
-#define arch_cmpxchg64_local(ptr, o, n) __generic_cmpxchg64_local((ptr), (o), (n))
+#define cmpxchg64_local(ptr, o, n) __cmpxchg64_local_generic((ptr), (o), (n))
 
 #include <asm-generic/cmpxchg.h>
 
@@ -208,7 +206,7 @@ static inline unsigned long __cmpxchg(volatile void *ptr, unsigned long old,
 	return oldval;
 }
 
-#define arch_cmpxchg_relaxed(ptr,o,n) ({				\
+#define cmpxchg_relaxed(ptr,o,n) ({					\
 	(__typeof__(*(ptr)))__cmpxchg((ptr),				\
 				      (unsigned long)(o),		\
 				      (unsigned long)(n),		\
@@ -225,7 +223,7 @@ static inline unsigned long __cmpxchg_local(volatile void *ptr,
 #ifdef CONFIG_CPU_V6	/* min ARCH == ARMv6 */
 	case 1:
 	case 2:
-		ret = __generic_cmpxchg_local(ptr, old, new, size);
+		ret = __cmpxchg_local_generic(ptr, old, new, size);
 		break;
 #endif
 	default:
@@ -235,7 +233,7 @@ static inline unsigned long __cmpxchg_local(volatile void *ptr,
 	return ret;
 }
 
-#define arch_cmpxchg_local(ptr, o, n) ({				\
+#define cmpxchg_local(ptr, o, n) ({					\
 	(__typeof(*ptr))__cmpxchg_local((ptr),				\
 				        (unsigned long)(o),		\
 				        (unsigned long)(n),		\
@@ -267,13 +265,13 @@ static inline unsigned long long __cmpxchg64(unsigned long long *ptr,
 	return oldval;
 }
 
-#define arch_cmpxchg64_relaxed(ptr, o, n) ({				\
+#define cmpxchg64_relaxed(ptr, o, n) ({					\
 	(__typeof__(*(ptr)))__cmpxchg64((ptr),				\
 					(unsigned long long)(o),	\
 					(unsigned long long)(n));	\
 })
 
-#define arch_cmpxchg64_local(ptr, o, n) arch_cmpxchg64_relaxed((ptr), (o), (n))
+#define cmpxchg64_local(ptr, o, n) cmpxchg64_relaxed((ptr), (o), (n))
 
 #endif	/* __LINUX_ARM_ARCH__ >= 6 */
 

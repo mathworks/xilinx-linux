@@ -1,5 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
+ *  This program is free software; you can redistribute it and/or modify it
+ *  under the terms of the GNU General Public License version 2 as published
+ *  by the Free Software Foundation.
  *
  *  Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
@@ -9,13 +11,13 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/clk.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/of_gpio.h>
+#include <linux/of_irq.h>
 #include <linux/of_pci.h>
-#include <linux/platform_device.h>
 
 #include <asm/addrspace.h>
 
@@ -62,7 +64,7 @@
 __iomem void *ltq_pci_mapped_cfg;
 static __iomem void *ltq_pci_membase;
 
-static struct gpio_desc *reset_gpio;
+static int reset_gpio;
 static struct clk *clk_pci, *clk_external;
 static struct resource pci_io_resource;
 static struct resource pci_mem_resource;
@@ -95,7 +97,6 @@ static int ltq_pci_startup(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	const __be32 *req_mask, *bus_clk;
 	u32 temp_buffer;
-	int error;
 
 	/* get our clocks */
 	clk_pci = clk_get(&pdev->dev, NULL);
@@ -118,20 +119,23 @@ static int ltq_pci_startup(struct platform_device *pdev)
 
 	/* and enable the clocks */
 	clk_enable(clk_pci);
-	if (of_property_read_bool(node, "lantiq,external-clock"))
+	if (of_find_property(node, "lantiq,external-clock", NULL))
 		clk_enable(clk_external);
 	else
 		clk_disable(clk_external);
 
 	/* setup reset gpio used by pci */
-	reset_gpio = devm_gpiod_get_optional(&pdev->dev, "reset",
-					     GPIOD_OUT_LOW);
-	error = PTR_ERR_OR_ZERO(reset_gpio);
-	if (error) {
-		dev_err(&pdev->dev, "failed to request gpio: %d\n", error);
-		return error;
+	reset_gpio = of_get_named_gpio(node, "gpio-reset", 0);
+	if (gpio_is_valid(reset_gpio)) {
+		int ret = devm_gpio_request(&pdev->dev,
+						reset_gpio, "pci-reset");
+		if (ret) {
+			dev_err(&pdev->dev,
+				"failed to request gpio %d\n", reset_gpio);
+			return ret;
+		}
+		gpio_direction_output(reset_gpio, 1);
 	}
-	gpiod_set_consumer_name(reset_gpio, "pci_reset");
 
 	/* enable auto-switching between PCI and EBU */
 	ltq_pci_w32(0xa, PCI_CR_CLK_CTRL);
@@ -193,24 +197,28 @@ static int ltq_pci_startup(struct platform_device *pdev)
 	ltq_ebu_w32(ltq_ebu_r32(LTQ_EBU_PCC_IEN) | 0x10, LTQ_EBU_PCC_IEN);
 
 	/* toggle reset pin */
-	if (reset_gpio) {
-		gpiod_set_value_cansleep(reset_gpio, 1);
+	if (gpio_is_valid(reset_gpio)) {
+		__gpio_set_value(reset_gpio, 0);
 		wmb();
 		mdelay(1);
-		gpiod_set_value_cansleep(reset_gpio, 0);
+		__gpio_set_value(reset_gpio, 1);
 	}
 	return 0;
 }
 
 static int ltq_pci_probe(struct platform_device *pdev)
 {
+	struct resource *res_cfg, *res_bridge;
+
 	pci_clear_flags(PCI_PROBE_ONLY);
 
-	ltq_pci_membase = devm_platform_get_and_ioremap_resource(pdev, 1, NULL);
+	res_bridge = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	ltq_pci_membase = devm_ioremap_resource(&pdev->dev, res_bridge);
 	if (IS_ERR(ltq_pci_membase))
 		return PTR_ERR(ltq_pci_membase);
 
-	ltq_pci_mapped_cfg = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	res_cfg = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ltq_pci_mapped_cfg = devm_ioremap_resource(&pdev->dev, res_cfg);
 	if (IS_ERR(ltq_pci_mapped_cfg))
 		return PTR_ERR(ltq_pci_mapped_cfg);
 

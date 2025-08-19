@@ -13,7 +13,6 @@
 
 #include <linux/signal.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -22,9 +21,9 @@
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
-#include <linux/extable.h>
+#include <linux/module.h>
 #include <linux/uaccess.h>
-#include <linux/perf_event.h>
+#include <linux/ptrace.h>
 
 #include <asm/mmu_context.h>
 #include <asm/traps.h>
@@ -47,8 +46,8 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long cause,
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->mm;
 	int code = SEGV_MAPERR;
-	vm_fault_t fault;
-	unsigned int flags = FAULT_FLAG_DEFAULT;
+	int fault;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	cause >>= 2;
 
@@ -84,16 +83,27 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long cause,
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 
-	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
-
+	if (!down_read_trylock(&mm->mmap_sem)) {
+		if (!user_mode(regs) && !search_exception_tables(regs->ea))
+			goto bad_area_nosemaphore;
 retry:
-	vma = lock_mm_and_find_vma(mm, address, regs);
+		down_read(&mm->mmap_sem);
+	}
+
+	vma = find_vma(mm, address);
 	if (!vma)
-		goto bad_area_nosemaphore;
+		goto bad_area;
+	if (vma->vm_start <= address)
+		goto good_area;
+	if (!(vma->vm_flags & VM_GROWSDOWN))
+		goto bad_area;
+	if (expand_stack(vma, address))
+		goto bad_area;
 /*
  * Ok, we have a good vm_area for this memory access, so
  * we can handle it..
  */
+good_area:
 	code = SEGV_ACCERR;
 
 	switch (cause) {
@@ -121,16 +131,9 @@ retry:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags, regs);
+	fault = handle_mm_fault(vma, address, flags);
 
-	if (fault_signal_pending(fault, regs)) {
-		if (!user_mode(regs))
-			goto no_context;
-		return;
-	}
-
-	/* The fault is fully completed (including releasing mmap lock) */
-	if (fault & VM_FAULT_COMPLETED)
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
@@ -143,19 +146,33 @@ retry:
 		BUG();
 	}
 
-	if (fault & VM_FAULT_RETRY) {
-		flags |= FAULT_FLAG_TRIED;
+	/*
+	 * Major/minor page fault accounting is only done on the
+	 * initial attempt. If we go through a retry, it is extremely
+	 * likely that the page will be found in page cache at that point.
+	 */
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (fault & VM_FAULT_MAJOR)
+			current->maj_flt++;
+		else
+			current->min_flt++;
+		if (fault & VM_FAULT_RETRY) {
+			/* Clear FAULT_FLAG_ALLOW_RETRY to avoid any risk
+			 * of starvation. */
+			flags &= ~FAULT_FLAG_ALLOW_RETRY;
+			flags |= FAULT_FLAG_TRIED;
 
-		/*
-		 * No need to mmap_read_unlock(mm) as we would
-		 * have already released it in __lock_page_or_retry
-		 * in mm/filemap.c.
-		 */
+			/*
+			 * No need to up_read(&mm->mmap_sem) as we would
+			 * have already released it in __lock_page_or_retry
+			 * in mm/filemap.c.
+			 */
 
-		goto retry;
+			goto retry;
+		}
 	}
 
-	mmap_read_unlock(mm);
+	up_read(&mm->mmap_sem);
 	return;
 
 /*
@@ -163,7 +180,7 @@ retry:
  * Fix it, but check if it's kernel or user first..
  */
 bad_area:
-	mmap_read_unlock(mm);
+	up_read(&mm->mmap_sem);
 
 bad_area_nosemaphore:
 	/* User mode accesses just cause a SIGSEGV */
@@ -201,14 +218,14 @@ no_context:
  * us unable to handle the page fault gracefully.
  */
 out_of_memory:
-	mmap_read_unlock(mm);
+	up_read(&mm->mmap_sem);
 	if (!user_mode(regs))
 		goto no_context;
 	pagefault_out_of_memory();
 	return;
 
 do_sigbus:
-	mmap_read_unlock(mm);
+	up_read(&mm->mmap_sem);
 
 	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs))
@@ -228,7 +245,6 @@ vmalloc_fault:
 		 */
 		int offset = pgd_index(address);
 		pgd_t *pgd, *pgd_k;
-		p4d_t *p4d, *p4d_k;
 		pud_t *pud, *pud_k;
 		pmd_t *pmd, *pmd_k;
 		pte_t *pte_k;
@@ -240,12 +256,8 @@ vmalloc_fault:
 			goto no_context;
 		set_pgd(pgd, *pgd_k);
 
-		p4d = p4d_offset(pgd, address);
-		p4d_k = p4d_offset(pgd_k, address);
-		if (!p4d_present(*p4d_k))
-			goto no_context;
-		pud = pud_offset(p4d, address);
-		pud_k = pud_offset(p4d_k, address);
+		pud = pud_offset(pgd, address);
+		pud_k = pud_offset(pgd_k, address);
 		if (!pud_present(*pud_k))
 			goto no_context;
 		pmd = pmd_offset(pud, address);
@@ -258,7 +270,7 @@ vmalloc_fault:
 		if (!pte_present(*pte_k))
 			goto no_context;
 
-		flush_tlb_kernel_page(address);
+		flush_tlb_one(address);
 		return;
 	}
 }

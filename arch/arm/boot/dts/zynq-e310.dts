@@ -1,15 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Ettus Research E310
- * Link: https://www.ettus.com/all-products/e310/
  *
- * hdl_project: <usrpe31x>
- * board_revision: <>
+ * Copyright (C) 2018 Analog Devices Inc.
  *
- * Copyright (C) 2018-2019 Analog Devices Inc.
+ * Licensed under the GPL-2.
  */
 /dts-v1/;
-#include "zynq.dtsi"
+/include/ "zynq.dtsi"
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/irq.h>
@@ -31,6 +28,7 @@
 	};
 
 	chosen {
+		linux,stdout-path = "serial0:115200n8";
 		stdout-path = "serial0:115200n8";
 	};
 
@@ -137,7 +135,7 @@
 			compatible = "adi,axi-dmac-1.00.a";
 			reg = <0x7c400000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 57 0>;
 			clocks = <&clkc 16>;
 
 			adi,channels {
@@ -150,6 +148,7 @@
 					adi,source-bus-type = <2>;
 					adi,destination-bus-width = <64>;
 					adi,destination-bus-type = <0>;
+					adi,length-width = <24>;
 				};
 			};
 		};
@@ -158,7 +157,7 @@
 			compatible = "adi,axi-dmac-1.00.a";
 			reg = <0x7c420000 0x10000>;
 			#dma-cells = <1>;
-			interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 56 0>;
 			clocks = <&clkc 16>;
 
 			adi,channels {
@@ -171,6 +170,8 @@
 					adi,source-bus-type = <0>;
 					adi,destination-bus-width = <64>;
 					adi,destination-bus-type = <2>;
+					adi,length-width = <24>;
+					adi,cyclic;
 				};
 			};
 		};
@@ -198,28 +199,28 @@
 	txrx1_tx_led {
 		gpio-hog;
 		gpios = <109 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx1_tx_led";
 	};
 
 	txrx2_tx_led {
 		gpio-hog;
 		gpios = <107 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "txrx2_tx_led";
 	};
 
 	rx1_rx_led {
 		gpio-hog;
 		gpios = <105 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx1_rx_led";
 	};
 
 	rx2_rx_led {
 		gpio-hog;
 		gpios = <104 GPIO_ACTIVE_HIGH>;
-		output-high;
+		output-low;
 		line-name = "rx2_rx_led";
 	};
 };
@@ -231,7 +232,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#clock-cells = <1>;
-		compatible = "adi,ad9361";
+		compatible = "ad9361";
 
 		/* SPI Setup */
 		reg = <0>;

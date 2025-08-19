@@ -12,8 +12,7 @@
 #include <linux/semaphore.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/mtd/partitions.h>
 
 #include <asm/octeon/octeon.h>
@@ -63,7 +62,7 @@ static void octeon_flash_map_copy_to(struct map_info *map, unsigned long to,
 	up(&octeon_bootbus_sem);
 }
 
-/*
+/**
  * Module/ driver initialization.
  *
  * Returns Zero on success

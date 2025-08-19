@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/boards/renesas/rts7751r2d/irq.c
  *
@@ -117,10 +116,10 @@ static unsigned char irl2irq[R2D_NR_IRL];
 
 int rts7751r2d_irq_demux(int irq)
 {
-	if (irq >= R2D_NR_IRL + 16 || irq < 16 || !irl2irq[irq - 16])
+	if (irq >= R2D_NR_IRL || irq < 0 || !irl2irq[irq])
 		return irq;
 
-	return irl2irq[irq - 16];
+	return irl2irq[irq];
 }
 
 /*

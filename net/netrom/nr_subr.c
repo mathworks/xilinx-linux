@@ -1,5 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * Copyright Jonathan Naylor G4KLX (g4klx@g4klx.demon.co.uk)
  */
@@ -123,7 +126,7 @@ void nr_write_internal(struct sock *sk, int frametype)
 	unsigned char  *dptr;
 	int len, timeout;
 
-	len = NR_TRANSPORT_LEN;
+	len = NR_NETWORK_LEN + NR_TRANSPORT_LEN;
 
 	switch (frametype & 0x0F) {
 	case NR_CONNREQ:
@@ -141,8 +144,7 @@ void nr_write_internal(struct sock *sk, int frametype)
 		return;
 	}
 
-	skb = alloc_skb(NR_NETWORK_LEN + len, GFP_ATOMIC);
-	if (!skb)
+	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
 
 	/*
@@ -150,7 +152,7 @@ void nr_write_internal(struct sock *sk, int frametype)
 	 */
 	skb_reserve(skb, NR_NETWORK_LEN);
 
-	dptr = skb_put(skb, len);
+	dptr = skb_put(skb, skb_tailroom(skb));
 
 	switch (frametype & 0x0F) {
 	case NR_CONNREQ:

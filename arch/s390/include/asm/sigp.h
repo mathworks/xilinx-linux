@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __S390_ASM_SIGP_H
 #define __S390_ASM_SIGP_H
 
@@ -41,17 +40,15 @@
 static inline int ____pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 				u32 *status)
 {
-	union register_pair r1 = { .odd = parm, };
+	register unsigned long reg1 asm ("1") = parm;
 	int cc;
 
 	asm volatile(
-		"	sigp	%[r1],%[addr],0(%[order])\n"
-		"	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
-		: [cc] "=&d" (cc), [r1] "+&d" (r1.pair)
-		: [addr] "d" (addr), [order] "a" (order)
-		: "cc");
-	*status = r1.even;
+		"	sigp	%1,%2,0(%3)\n"
+		"	ipm	%0\n"
+		"	srl	%0,28\n"
+		: "=d" (cc), "+d" (reg1) : "d" (addr), "a" (order) : "cc");
+	*status = reg1;
 	return cc;
 }
 
@@ -62,7 +59,7 @@ static inline int __pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 	int cc;
 
 	cc = ____pcpu_sigp(addr, order, parm, &_status);
-	if (status && cc == SIGP_CC_STATUS_STORED)
+	if (status && cc == 1)
 		*status = _status;
 	return cc;
 }

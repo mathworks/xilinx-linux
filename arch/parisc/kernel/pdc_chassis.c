@@ -1,9 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* 
  *    interfaces to Chassis Codes via PDC (firmware)
  *
  *    Copyright (C) 2002 Laurent Canet <canetl@esiee.fr>
  *    Copyright (C) 2002-2006 Thibaut VARENE <varenet@parisc-linux.org>
+ *
+ *    This program is free software; you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License, version 2, as
+ *    published by the Free Software Foundation.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program; if not, write to the Free Software
+ *    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  *    TODO: poll chassis warns, trigger (configurable) machine shutdown when
  *    		needed.
@@ -20,7 +32,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/panic_notifier.h>
 #include <linux/reboot.h>
 #include <linux/notifier.h>
 #include <linux/cache.h>
@@ -31,7 +42,6 @@
 #include <asm/processor.h>
 #include <asm/pdc.h>
 #include <asm/pdcpat.h>
-#include <asm/led.h>
 
 #define PDC_CHASSIS_VER	"0.05"
 
@@ -41,7 +51,7 @@ static unsigned int pdc_chassis_enabled __read_mostly = 1;
 
 /**
  * pdc_chassis_setup() - Enable/disable pdc_chassis code at boot time.
- * @str: configuration param: 0 to disable chassis log
+ * @str configuration param: 0 to disable chassis log
  * @return 1
  */
  
@@ -56,6 +66,7 @@ __setup("pdcchassis=", pdc_chassis_setup);
 
 /** 
  * pdc_chassis_checkold() - Checks for old PDC_CHASSIS compatibility
+ * @pdc_chassis_old: 1 if old pdc chassis style
  * 
  * Currently, only E class and A180 are known to work with this.
  * Inspired by Christoph Plattner
@@ -80,9 +91,6 @@ static void __init pdc_chassis_checkold(void)
 
 /**
  * pdc_chassis_panic_event() - Called by the panic handler.
- * @this: unused
- * @event: unused
- * @ptr: unused
  *
  * As soon as a panic occurs, we should inform the PDC.
  */
@@ -91,7 +99,7 @@ static int pdc_chassis_panic_event(struct notifier_block *this,
 		        unsigned long event, void *ptr)
 {
 	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_PANIC);
-	return NOTIFY_DONE;
+		return NOTIFY_DONE;
 }   
 
 
@@ -102,10 +110,7 @@ static struct notifier_block pdc_chassis_panic_block = {
 
 
 /**
- * pdc_chassis_reboot_event() - Called by the reboot handler.
- * @this: unused
- * @event: unused
- * @ptr: unused
+ * parisc_reboot_event() - Called by the reboot handler.
  *
  * As soon as a reboot occurs, we should inform the PDC.
  */
@@ -114,7 +119,7 @@ static int pdc_chassis_reboot_event(struct notifier_block *this,
 		        unsigned long event, void *ptr)
 {
 	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_SHUTDOWN);
-	return NOTIFY_DONE;
+		return NOTIFY_DONE;
 }   
 
 
@@ -154,7 +159,7 @@ void __init parisc_pdc_chassis_init(void)
 /** 
  * pdc_chassis_send_status() - Sends a predefined message to the chassis,
  * and changes the front panel LEDs according to the new system state
- * @message: Type of message, one of PDC_CHASSIS_DIRECT_* values.
+ * @retval: PDC call return value.
  *
  * Only machines with 64 bits PDC PAT and those reported in
  * pdc_chassis_checkold() are supported atm.
@@ -235,11 +240,6 @@ int pdc_chassis_send_status(int message)
 		} else retval = -1;
 #endif /* CONFIG_64BIT */
 	}	/* if (pdc_chassis_enabled) */
-
-	/* if system has LCD display, update current string */
-	if (retval != -1 && IS_ENABLED(CONFIG_CHASSIS_LCD_LED))
-		lcd_print(NULL);
-
 #endif /* CONFIG_PDC_CHASSIS */
 	return retval;
 }
@@ -266,6 +266,18 @@ static int pdc_chassis_warn_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+static int pdc_chassis_warn_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pdc_chassis_warn_show, NULL);
+}
+
+static const struct file_operations pdc_chassis_warn_fops = {
+	.open		= pdc_chassis_warn_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int __init pdc_chassis_create_procfs(void)
 {
 	unsigned long test;
@@ -280,7 +292,7 @@ static int __init pdc_chassis_create_procfs(void)
 
 	printk(KERN_INFO "Enabling PDC chassis warnings support v%s\n",
 			PDC_CHASSIS_VER);
-	proc_create_single("chassis", 0400, NULL, pdc_chassis_warn_show);
+	proc_create("chassis", 0400, NULL, &pdc_chassis_warn_fops);
 	return 0;
 }
 

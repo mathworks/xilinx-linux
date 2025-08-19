@@ -4,10 +4,10 @@
  *              (C) Copyright 2013, 2015 Linaro Limited
  *              Licensed under the GPL
  *
- * This test demonstrates leapsecond deadlock that is possible
+ * This test demonstrates leapsecond deadlock that is possibe
  * on kernels from 2.6.26 to 3.3.
  *
- * WARNING: THIS WILL LIKELY HARD HANG SYSTEMS AND MAY LOSE DATA
+ * WARNING: THIS WILL LIKELY HARDHANG SYSTEMS AND MAY LOSE DATA
  * RUN AT YOUR OWN RISK!
  *  To build:
  *	$ gcc leapcrash.c -o leapcrash -lrt
@@ -22,7 +22,20 @@
 #include <sys/timex.h>
 #include <string.h>
 #include <signal.h>
+#ifdef KTEST
 #include "../kselftest.h"
+#else
+static inline int ksft_exit_pass(void)
+{
+	exit(0);
+}
+static inline int ksft_exit_fail(void)
+{
+	exit(1);
+}
+#endif
+
+
 
 /* clear NTP time_status & time_state */
 int clear_time_state(void)
@@ -101,7 +114,6 @@ int main(void)
 		}
 		clear_time_state();
 		printf(".");
-		fflush(stdout);
 	}
 	printf("[OK]\n");
 	return ksft_exit_pass();

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * head.S: The initial boot code for the Sparc port of Linux.
  *
@@ -11,7 +10,6 @@
  * CompactPCI platform by Eric Brower, 1999.
  */
 
-#include <linux/export.h>
 #include <linux/version.h>
 #include <linux/init.h>
 
@@ -25,7 +23,8 @@
 #include <asm/winmacro.h>
 #include <asm/thread_info.h>	/* TI_UWINMASK */
 #include <asm/errno.h>
-#include <asm/pgtable.h>	/* PGDIR_SHIFT */
+#include <asm/pgtsrmmu.h>	/* SRMMU_PGDIR_SHIFT */
+#include <asm/export.h>
 
 	.data
 /* The following are used with the prom_vector node-ops to figure out
@@ -273,7 +272,7 @@ not_a_sun4:
 		lda	[%o1] ASI_M_BYPASS, %o2		! This is the 0x0 16MB pgd
 
 		/* Calculate to KERNBASE entry. */
-		add	%o1, KERNBASE >> (PGDIR_SHIFT - 2), %o3
+		add	%o1, KERNBASE >> (SRMMU_PGDIR_SHIFT - 2), %o3
 
 		/* Poke the entry into the calculated address. */
 		sta	%o2, [%o3] ASI_M_BYPASS
@@ -317,7 +316,7 @@ srmmu_not_viking:
 		sll	%g1, 0x8, %g1			! make phys addr for l1 tbl
 
 		lda	[%g1] ASI_M_BYPASS, %g2		! get level1 entry for 0x0
-		add	%g1, KERNBASE >> (PGDIR_SHIFT - 2), %g3
+		add	%g1, KERNBASE >> (SRMMU_PGDIR_SHIFT - 2), %g3
 		sta	%g2, [%g3] ASI_M_BYPASS		! place at KERNBASE entry
 		b	go_to_highmem
 		 nop					! wheee....
@@ -341,7 +340,7 @@ leon_remap:
 		sll	%g1, 0x8, %g1			! make phys addr for l1 tbl
 
 		lda	[%g1] ASI_M_BYPASS, %g2		! get level1 entry for 0x0
-		add	%g1, KERNBASE >> (PGDIR_SHIFT - 2), %g3
+		add	%g1, KERNBASE >> (SRMMU_PGDIR_SHIFT - 2), %g3
 		sta	%g2, [%g3] ASI_M_BYPASS		! place at KERNBASE entry
 		b	go_to_highmem
 		 nop					! wheee....
@@ -515,7 +514,7 @@ continue_boot:
 
 		/* I want a kernel stack NOW! */
 		set	init_thread_union, %g1
-		set	(THREAD_SIZE - STACKFRAME_SZ - TRACEREG_SZ), %g2
+		set	(THREAD_SIZE - STACKFRAME_SZ), %g2
 		add	%g1, %g2, %sp
 		mov	0, %fp			/* And for good luck */
 
@@ -810,3 +809,10 @@ lvl14_save:
 	.word	0
 	.word	0
 	.word	t_irq14
+
+        .section        ".fixup",#alloc,#execinstr
+        .globl  __ret_efault
+__ret_efault:
+        ret
+         restore %g0, -EFAULT, %o0
+EXPORT_SYMBOL(__ret_efault)

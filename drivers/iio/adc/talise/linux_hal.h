@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/spi/spi.h>
 #include <linux/gpio/consumer.h>
@@ -9,9 +8,9 @@
 #define IIO_TALISE_LINUX_HAL_H_
 
 struct adrv9009_hal {
-	struct spi_device	*spi;
+	struct spi_device 	*spi;
 	struct gpio_desc	*reset_gpio;
-	unsigned int		logLevel;
+	unsigned int 		logLevel;
 };
 
 #endif /* IIO_TALISE_LINUX_HAL_H_ */

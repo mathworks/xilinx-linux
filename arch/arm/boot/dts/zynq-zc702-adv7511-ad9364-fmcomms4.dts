@@ -1,24 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Analog Devices AD-FMCOMMS4-EBZ
- * https://wiki.analog.com/resources/eval/user-guides/ad-fmcomms4-ebz
- *
- * hdl_project: <fmcomms2/zc702>
- * board_revision: <>
- *
- * Copyright (C) 2014-2020 Analog Devices Inc.
- */
 /dts-v1/;
 
-#include "zynq-zc702.dtsi"
-#include "zynq-zc702-adv7511.dtsi"
+/include/ "zynq-zc702.dtsi"
+/include/ "zynq-zc702-adv7511.dtsi"
 
 &fpga_axi {
 	rx_dma: dma@7c400000 {
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c400000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <0 57 0>;
 		clocks = <&clkc 16>;
 
 		adi,channels {
@@ -31,6 +21,7 @@
 				adi,source-bus-type = <2>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <0>;
+				adi,length-width = <24>;
 			};
 		};
 	};
@@ -39,7 +30,7 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <0 56 0>;
 		clocks = <&clkc 16>;
 
 		adi,channels {
@@ -52,6 +43,8 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <2>;
+				adi,length-width = <24>;
+				adi,cyclic;
 			};
 		};
 	};
@@ -72,6 +65,9 @@
 		clock-names = "sampl_clk";
 		dmas = <&tx_dma 0>;
 		dma-names = "tx";
+
+		adi,axi-dds-rate = <1>; /* use 1 for 1RX1TX mode */
+		adi,axi-dds-1-rf-channel;
 	};
 };
 

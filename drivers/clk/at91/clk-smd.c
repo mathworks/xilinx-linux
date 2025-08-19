@@ -1,6 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (C) 2013 Boris BREZILLON <b.brezillon@overkiz.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
  */
 
 #include <linux/clk-provider.h>
@@ -11,6 +16,8 @@
 #include <linux/regmap.h>
 
 #include "pmc.h"
+
+#define SMD_SOURCE_MAX		2
 
 #define SMD_DIV_SHIFT		8
 #define SMD_MAX_DIV		0xf
@@ -36,31 +43,26 @@ static unsigned long at91sam9x5_clk_smd_recalc_rate(struct clk_hw *hw,
 	return parent_rate / (smddiv + 1);
 }
 
-static int at91sam9x5_clk_smd_determine_rate(struct clk_hw *hw,
-					     struct clk_rate_request *req)
+static long at91sam9x5_clk_smd_round_rate(struct clk_hw *hw, unsigned long rate,
+					  unsigned long *parent_rate)
 {
 	unsigned long div;
 	unsigned long bestrate;
 	unsigned long tmp;
 
-	if (req->rate >= req->best_parent_rate) {
-		req->rate = req->best_parent_rate;
-		return 0;
-	}
+	if (rate >= *parent_rate)
+		return *parent_rate;
 
-	div = req->best_parent_rate / req->rate;
-	if (div > SMD_MAX_DIV) {
-		req->rate = req->best_parent_rate / (SMD_MAX_DIV + 1);
-		return 0;
-	}
+	div = *parent_rate / rate;
+	if (div > SMD_MAX_DIV)
+		return *parent_rate / (SMD_MAX_DIV + 1);
 
-	bestrate = req->best_parent_rate / div;
-	tmp = req->best_parent_rate / (div + 1);
-	if (bestrate - req->rate > req->rate - tmp)
+	bestrate = *parent_rate / div;
+	tmp = *parent_rate / (div + 1);
+	if (bestrate - rate > rate - tmp)
 		bestrate = tmp;
 
-	req->rate = bestrate;
-	return 0;
+	return bestrate;
 }
 
 static int at91sam9x5_clk_smd_set_parent(struct clk_hw *hw, u8 index)
@@ -103,13 +105,13 @@ static int at91sam9x5_clk_smd_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops at91sam9x5_smd_ops = {
 	.recalc_rate = at91sam9x5_clk_smd_recalc_rate,
-	.determine_rate = at91sam9x5_clk_smd_determine_rate,
+	.round_rate = at91sam9x5_clk_smd_round_rate,
 	.get_parent = at91sam9x5_clk_smd_get_parent,
 	.set_parent = at91sam9x5_clk_smd_set_parent,
 	.set_rate = at91sam9x5_clk_smd_set_rate,
 };
 
-struct clk_hw * __init
+static struct clk_hw * __init
 at91sam9x5_clk_register_smd(struct regmap *regmap, const char *name,
 			    const char **parent_names, u8 num_parents)
 {
@@ -140,3 +142,33 @@ at91sam9x5_clk_register_smd(struct regmap *regmap, const char *name,
 
 	return hw;
 }
+
+static void __init of_at91sam9x5_clk_smd_setup(struct device_node *np)
+{
+	struct clk_hw *hw;
+	unsigned int num_parents;
+	const char *parent_names[SMD_SOURCE_MAX];
+	const char *name = np->name;
+	struct regmap *regmap;
+
+	num_parents = of_clk_get_parent_count(np);
+	if (num_parents == 0 || num_parents > SMD_SOURCE_MAX)
+		return;
+
+	of_clk_parent_fill(np, parent_names, num_parents);
+
+	of_property_read_string(np, "clock-output-names", &name);
+
+	regmap = syscon_node_to_regmap(of_get_parent(np));
+	if (IS_ERR(regmap))
+		return;
+
+	hw = at91sam9x5_clk_register_smd(regmap, name, parent_names,
+					  num_parents);
+	if (IS_ERR(hw))
+		return;
+
+	of_clk_add_hw_provider(np, of_clk_hw_simple_get, hw);
+}
+CLK_OF_DECLARE(at91sam9x5_clk_smd, "atmel,at91sam9x5-clk-smd",
+	       of_at91sam9x5_clk_smd_setup);

@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
+ * Licensed under the GPL
  */
 
 #include <stdio.h>
@@ -35,12 +35,11 @@ static int __init make_uml_dir(void)
 
 		err = -ENOENT;
 		if (home == NULL) {
-			printk(UM_KERN_ERR
-				"%s: no value in environment for $HOME\n",
-				__func__);
+			printk(UM_KERN_ERR "make_uml_dir : no value in "
+			       "environment for $HOME\n");
 			goto err;
 		}
-		strscpy(dir, home, sizeof(dir));
+		strlcpy(dir, home, sizeof(dir));
 		uml_dir++;
 	}
 	strlcat(dir, uml_dir, sizeof(dir));
@@ -51,15 +50,13 @@ static int __init make_uml_dir(void)
 	err = -ENOMEM;
 	uml_dir = malloc(strlen(dir) + 1);
 	if (uml_dir == NULL) {
-		printk(UM_KERN_ERR "%s : malloc failed, errno = %d\n",
-			__func__, errno);
+		printf("make_uml_dir : malloc failed, errno = %d\n", errno);
 		goto err;
 	}
 	strcpy(uml_dir, dir);
 
 	if ((mkdir(uml_dir, 0777) < 0) && (errno != EEXIST)) {
-		printk(UM_KERN_ERR "Failed to mkdir '%s': %s\n",
-			uml_dir, strerror(errno));
+	        printf("Failed to mkdir '%s': %s\n", uml_dir, strerror(errno));
 		err = -errno;
 		goto err_free;
 	}
@@ -97,7 +94,7 @@ static int remove_files_and_dir(char *dir)
 	while ((ent = readdir(directory)) != NULL) {
 		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
 			continue;
-		len = strlen(dir) + strlen("/") + strlen(ent->d_name) + 1;
+		len = strlen(dir) + sizeof("/") + strlen(ent->d_name) + 1;
 		if (len > sizeof(file)) {
 			ret = -E2BIG;
 			goto out;
@@ -135,16 +132,18 @@ out:
  */
 static inline int is_umdir_used(char *dir)
 {
-	char pid[sizeof("nnnnnnnnn")], *end, *file;
-	int fd, p, n, err;
-	size_t filelen = strlen(dir) + sizeof("/pid") + 1;
+	char file[strlen(uml_dir) + UMID_LEN + sizeof("/pid\0")];
+	char pid[sizeof("nnnnn\0")], *end;
+	int dead, fd, p, n, err;
 
-	file = malloc(filelen);
-	if (!file)
-		return -ENOMEM;
+	n = snprintf(file, sizeof(file), "%s/pid", dir);
+	if (n >= sizeof(file)) {
+		printk(UM_KERN_ERR "is_umdir_used - pid filename too long\n");
+		err = -E2BIG;
+		goto out;
+	}
 
-	snprintf(file, filelen, "%s/pid", dir);
-
+	dead = 0;
 	fd = open(file, O_RDONLY);
 	if (fd < 0) {
 		fd = -errno;
@@ -183,7 +182,6 @@ static inline int is_umdir_used(char *dir)
 out_close:
 	close(fd);
 out:
-	free(file);
 	return 0;
 }
 
@@ -209,22 +207,18 @@ static int umdir_take_if_dead(char *dir)
 
 static void __init create_pid_file(void)
 {
-	char pid[sizeof("nnnnnnnnn")], *file;
+	char file[strlen(uml_dir) + UMID_LEN + sizeof("/pid\0")];
+	char pid[sizeof("nnnnn\0")];
 	int fd, n;
 
-	n = strlen(uml_dir) + UMID_LEN + sizeof("/pid");
-	file = malloc(n);
-	if (!file)
+	if (umid_file_name("pid", file, sizeof(file)))
 		return;
-
-	if (umid_file_name("pid", file, n))
-		goto out;
 
 	fd = open(file, O_RDWR | O_CREAT | O_EXCL, 0644);
 	if (fd < 0) {
 		printk(UM_KERN_ERR "Open of machine pid file \"%s\" failed: "
 		       "%s\n", file, strerror(errno));
-		goto out;
+		return;
 	}
 
 	snprintf(pid, sizeof(pid), "%d\n", getpid());
@@ -234,8 +228,6 @@ static void __init create_pid_file(void)
 		       errno);
 
 	close(fd);
-out:
-	free(file);
 }
 
 int __init set_umid(char *name)
@@ -243,7 +235,7 @@ int __init set_umid(char *name)
 	if (strlen(name) > UMID_LEN - 1)
 		return -E2BIG;
 
-	strscpy(umid, name, sizeof(umid));
+	strlcpy(umid, name, sizeof(umid));
 
 	return 0;
 }
@@ -262,7 +254,7 @@ static int __init make_umid(void)
 	make_uml_dir();
 
 	if (*umid == '\0') {
-		strscpy(tmp, uml_dir, sizeof(tmp));
+		strlcpy(tmp, uml_dir, sizeof(tmp));
 		strlcat(tmp, "XXXXXX", sizeof(tmp));
 		fd = mkstemp(tmp);
 		if (fd < 0) {
@@ -359,7 +351,7 @@ char *get_umid(void)
 static int __init set_uml_dir(char *name, int *add)
 {
 	if (*name == '\0') {
-		os_warn("uml_dir can't be an empty string\n");
+		printf("uml_dir can't be an empty string\n");
 		return 0;
 	}
 
@@ -370,7 +362,7 @@ static int __init set_uml_dir(char *name, int *add)
 
 	uml_dir = malloc(strlen(name) + 2);
 	if (uml_dir == NULL) {
-		os_warn("Failed to malloc uml_dir - error = %d\n", errno);
+		printf("Failed to malloc uml_dir - error = %d\n", errno);
 
 		/*
 		 * Return 0 here because do_initcalls doesn't look at
@@ -390,19 +382,13 @@ __uml_setup("uml_dir=", set_uml_dir,
 
 static void remove_umid_dir(void)
 {
-	char *dir, err;
-
-	dir = malloc(strlen(uml_dir) + UMID_LEN + 1);
-	if (!dir)
-		return;
+	char dir[strlen(uml_dir) + UMID_LEN + 1], err;
 
 	sprintf(dir, "%s%s", uml_dir, umid);
 	err = remove_files_and_dir(dir);
 	if (err)
-		os_warn("%s - remove_files_and_dir failed with err = %d\n",
-			__func__, err);
-
-	free(dir);
+		printf("remove_umid_dir - remove_files_and_dir failed with "
+		       "err = %d\n", err);
 }
 
 __uml_exitcall(remove_umid_dir);

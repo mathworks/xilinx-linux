@@ -1,8 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * hid-cp2112.c - Silicon Labs HID USB to SMBus master bridge
  * Copyright (c) 2013,2014 Uplogix, Inc.
  * David Barksdale <dbarksdale@uplogix.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 /*
@@ -11,19 +19,16 @@
  * host communicates with the CP2112 via raw HID reports.
  *
  * Data Sheet:
- *   https://www.silabs.com/Support%20Documents/TechnicalDocs/CP2112.pdf
+ *   http://www.silabs.com/Support%20Documents/TechnicalDocs/CP2112.pdf
  * Programming Interface Specification:
- *   https://www.silabs.com/documents/public/application-notes/an495-cp2112-interface-specification.pdf
+ *   http://www.silabs.com/Support%20Documents/TechnicalDocs/AN495.pdf
  */
 
-#include <linux/bitops.h>
 #include <linux/gpio/driver.h>
 #include <linux/hid.h>
-#include <linux/hidraw.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/nls.h>
-#include <linux/string_choices.h>
 #include <linux/usb/ch9.h>
 #include "hid-ids.h"
 
@@ -31,8 +36,6 @@
 #define CP2112_GPIO_CONFIG_LENGTH		5
 #define CP2112_GPIO_GET_LENGTH			2
 #define CP2112_GPIO_SET_LENGTH			3
-#define CP2112_GPIO_MAX_GPIO			8
-#define CP2112_GPIO_ALL_GPIO_MASK		GENMASK(7, 0)
 
 enum {
 	CP2112_GPIO_CONFIG		= 0x02,
@@ -131,12 +134,10 @@ struct cp2112_xfer_status_report {
 
 struct cp2112_string_report {
 	u8 dummy;		/* force .string to be aligned */
-	struct_group_attr(contents, __packed,
-		u8 report;		/* CP2112_*_STRING */
-		u8 length;		/* length in bytes of everything after .report */
-		u8 type;		/* USB_DT_STRING */
-		wchar_t string[30];	/* UTF16_LITTLE_ENDIAN string */
-	);
+	u8 report;		/* CP2112_*_STRING */
+	u8 length;		/* length in bytes of everyting after .report */
+	u8 type;		/* USB_DT_STRING */
+	wchar_t string[30];	/* UTF16_LITTLE_ENDIAN string */
 } __packed;
 
 /* Number of times to request transfer status before giving up waiting for a
@@ -166,16 +167,11 @@ struct cp2112_device {
 	atomic_t xfer_avail;
 	struct gpio_chip gc;
 	u8 *in_out_buffer;
-	struct mutex lock;
-
-	bool gpio_poll;
-	struct delayed_work gpio_poll_worker;
-	unsigned long irq_mask;
-	u8 gpio_prev_state;
+	spinlock_t lock;
 };
 
-static int gpio_push_pull = CP2112_GPIO_ALL_GPIO_MASK;
-module_param(gpio_push_pull, int, 0644);
+static int gpio_push_pull = 0xFF;
+module_param(gpio_push_pull, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(gpio_push_pull, "GPIO push-pull configuration bitmask");
 
 static int cp2112_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
@@ -183,38 +179,35 @@ static int cp2112_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 	struct cp2112_device *dev = gpiochip_get_data(chip);
 	struct hid_device *hdev = dev->hdev;
 	u8 *buf = dev->in_out_buffer;
+	unsigned long flags;
 	int ret;
 
-	mutex_lock(&dev->lock);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_CONFIG, buf,
 				 CP2112_GPIO_CONFIG_LENGTH, HID_FEATURE_REPORT,
 				 HID_REQ_GET_REPORT);
 	if (ret != CP2112_GPIO_CONFIG_LENGTH) {
 		hid_err(hdev, "error requesting GPIO config: %d\n", ret);
-		if (ret >= 0)
-			ret = -EIO;
 		goto exit;
 	}
 
-	buf[1] &= ~BIT(offset);
+	buf[1] &= ~(1 << offset);
 	buf[2] = gpio_push_pull;
 
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_CONFIG, buf,
 				 CP2112_GPIO_CONFIG_LENGTH, HID_FEATURE_REPORT,
 				 HID_REQ_SET_REPORT);
-	if (ret != CP2112_GPIO_CONFIG_LENGTH) {
+	if (ret < 0) {
 		hid_err(hdev, "error setting GPIO config: %d\n", ret);
-		if (ret >= 0)
-			ret = -EIO;
 		goto exit;
 	}
 
 	ret = 0;
 
 exit:
-	mutex_unlock(&dev->lock);
-	return ret;
+	spin_unlock_irqrestore(&dev->lock, flags);
+	return ret <= 0 ? ret : -EIO;
 }
 
 static void cp2112_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -222,13 +215,14 @@ static void cp2112_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 	struct cp2112_device *dev = gpiochip_get_data(chip);
 	struct hid_device *hdev = dev->hdev;
 	u8 *buf = dev->in_out_buffer;
+	unsigned long flags;
 	int ret;
 
-	mutex_lock(&dev->lock);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	buf[0] = CP2112_GPIO_SET;
-	buf[1] = value ? CP2112_GPIO_ALL_GPIO_MASK : 0;
-	buf[2] = BIT(offset);
+	buf[1] = value ? 0xff : 0;
+	buf[2] = 1 << offset;
 
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_SET, buf,
 				 CP2112_GPIO_SET_LENGTH, HID_FEATURE_REPORT,
@@ -236,17 +230,18 @@ static void cp2112_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 	if (ret < 0)
 		hid_err(hdev, "error setting GPIO values: %d\n", ret);
 
-	mutex_unlock(&dev->lock);
+	spin_unlock_irqrestore(&dev->lock, flags);
 }
 
-static int cp2112_gpio_get_all(struct gpio_chip *chip)
+static int cp2112_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	struct cp2112_device *dev = gpiochip_get_data(chip);
 	struct hid_device *hdev = dev->hdev;
 	u8 *buf = dev->in_out_buffer;
+	unsigned long flags;
 	int ret;
 
-	mutex_lock(&dev->lock);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_GET, buf,
 				 CP2112_GPIO_GET_LENGTH, HID_FEATURE_REPORT,
@@ -257,23 +252,12 @@ static int cp2112_gpio_get_all(struct gpio_chip *chip)
 		goto exit;
 	}
 
-	ret = buf[1];
+	ret = (buf[1] >> offset) & 1;
 
 exit:
-	mutex_unlock(&dev->lock);
+	spin_unlock_irqrestore(&dev->lock, flags);
 
 	return ret;
-}
-
-static int cp2112_gpio_get(struct gpio_chip *chip, unsigned int offset)
-{
-	int ret;
-
-	ret = cp2112_gpio_get_all(chip);
-	if (ret < 0)
-		return ret;
-
-	return (ret >> offset) & 1;
 }
 
 static int cp2112_gpio_direction_output(struct gpio_chip *chip,
@@ -282,9 +266,10 @@ static int cp2112_gpio_direction_output(struct gpio_chip *chip,
 	struct cp2112_device *dev = gpiochip_get_data(chip);
 	struct hid_device *hdev = dev->hdev;
 	u8 *buf = dev->in_out_buffer;
+	unsigned long flags;
 	int ret;
 
-	mutex_lock(&dev->lock);
+	spin_lock_irqsave(&dev->lock, flags);
 
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_CONFIG, buf,
 				 CP2112_GPIO_CONFIG_LENGTH, HID_FEATURE_REPORT,
@@ -305,7 +290,7 @@ static int cp2112_gpio_direction_output(struct gpio_chip *chip,
 		goto fail;
 	}
 
-	mutex_unlock(&dev->lock);
+	spin_unlock_irqrestore(&dev->lock, flags);
 
 	/*
 	 * Set gpio value when output direction is already set,
@@ -316,7 +301,7 @@ static int cp2112_gpio_direction_output(struct gpio_chip *chip,
 	return 0;
 
 fail:
-	mutex_unlock(&dev->lock);
+	spin_unlock_irqrestore(&dev->lock, flags);
 	return ret < 0 ? ret : -EIO;
 }
 
@@ -532,13 +517,15 @@ static int cp2112_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 	hid_dbg(hdev, "I2C %d messages\n", num);
 
 	if (num == 1) {
-		hid_dbg(hdev, "I2C %s %#04x len %d\n",
-			str_read_write(msgs->flags & I2C_M_RD), msgs->addr, msgs->len);
 		if (msgs->flags & I2C_M_RD) {
+			hid_dbg(hdev, "I2C read %#04x len %d\n",
+				msgs->addr, msgs->len);
 			read_length = msgs->len;
 			read_buf = msgs->buf;
 			count = cp2112_read_req(buf, msgs->addr, msgs->len);
 		} else {
+			hid_dbg(hdev, "I2C write %#04x len %d\n",
+				msgs->addr, msgs->len);
 			count = cp2112_i2c_write_req(buf, msgs->addr,
 						     msgs->buf, msgs->len);
 		}
@@ -646,7 +633,7 @@ static int cp2112_xfer(struct i2c_adapter *adap, u16 addr,
 	int ret;
 
 	hid_dbg(hdev, "%s addr 0x%x flags 0x%x cmd 0x%x size %d\n",
-		str_write_read(read_write == I2C_SMBUS_WRITE),
+		read_write == I2C_SMBUS_WRITE ? "write" : "read",
 		addr, flags, command, size);
 
 	switch (size) {
@@ -690,16 +677,8 @@ static int cp2112_xfer(struct i2c_adapter *adap, u16 addr,
 					      (u8 *)&word, 2);
 		break;
 	case I2C_SMBUS_I2C_BLOCK_DATA:
-		if (read_write == I2C_SMBUS_READ) {
-			read_length = data->block[0];
-			count = cp2112_write_read_req(buf, addr, read_length,
-						      command, NULL, 0);
-		} else {
-			count = cp2112_write_req(buf, addr, command,
-						 data->block + 1,
-						 data->block[0]);
-		}
-		break;
+		size = I2C_SMBUS_BLOCK_DATA;
+		/* fallthrough */
 	case I2C_SMBUS_BLOCK_DATA:
 		if (I2C_SMBUS_READ == read_write) {
 			count = cp2112_write_read_req(buf, addr,
@@ -786,14 +765,6 @@ static int cp2112_xfer(struct i2c_adapter *adap, u16 addr,
 		break;
 	case I2C_SMBUS_WORD_DATA:
 		data->word = le16_to_cpup((__le16 *)buf);
-		break;
-	case I2C_SMBUS_I2C_BLOCK_DATA:
-		if (read_length > I2C_SMBUS_BLOCK_MAX) {
-			ret = -EINVAL;
-			goto power_normal;
-		}
-
-		memcpy(data->block + 1, buf, read_length);
 		break;
 	case I2C_SMBUS_BLOCK_DATA:
 		if (read_length > I2C_SMBUS_BLOCK_MAX) {
@@ -893,7 +864,7 @@ static ssize_t name##_show(struct device *kdev, \
 	int ret = cp2112_get_usb_config(hdev, &cfg); \
 	if (ret) \
 		return ret; \
-	return sysfs_emit(buf, format, ##__VA_ARGS__); \
+	return scnprintf(buf, PAGE_SIZE, format, ##__VA_ARGS__); \
 } \
 static DEVICE_ATTR_RW(name);
 
@@ -944,10 +915,18 @@ CP2112_CONFIG_ATTR(release_version, ({
 
 #undef CP2112_CONFIG_ATTR
 
-static ssize_t pstr_store(struct device *kdev, struct device_attribute *kattr,
-			  const char *buf, size_t count, int number)
+struct cp2112_pstring_attribute {
+	struct device_attribute attr;
+	unsigned char report;
+};
+
+static ssize_t pstr_store(struct device *kdev,
+			  struct device_attribute *kattr, const char *buf,
+			  size_t count)
 {
 	struct hid_device *hdev = to_hid_device(kdev);
+	struct cp2112_pstring_attribute *attr =
+		container_of(kattr, struct cp2112_pstring_attribute, attr);
 	struct cp2112_string_report report;
 	int ret;
 
@@ -955,7 +934,7 @@ static ssize_t pstr_store(struct device *kdev, struct device_attribute *kattr,
 
 	ret = utf8s_to_utf16s(buf, count, UTF16_LITTLE_ENDIAN,
 			      report.string, ARRAY_SIZE(report.string));
-	report.report = number;
+	report.report = attr->report;
 	report.length = ret * sizeof(report.string[0]) + 2;
 	report.type = USB_DT_STRING;
 
@@ -973,16 +952,18 @@ static ssize_t pstr_store(struct device *kdev, struct device_attribute *kattr,
 	return count;
 }
 
-static ssize_t pstr_show(struct device *kdev, struct device_attribute *kattr,
-			 char *buf, int number)
+static ssize_t pstr_show(struct device *kdev,
+			 struct device_attribute *kattr, char *buf)
 {
 	struct hid_device *hdev = to_hid_device(kdev);
+	struct cp2112_pstring_attribute *attr =
+		container_of(kattr, struct cp2112_pstring_attribute, attr);
 	struct cp2112_string_report report;
 	u8 length;
 	int ret;
 
-	ret = cp2112_hid_get(hdev, number, (u8 *)&report.contents,
-			     sizeof(report.contents), HID_FEATURE_REPORT);
+	ret = cp2112_hid_get(hdev, attr->report, &report.report,
+			     sizeof(report) - 1, HID_FEATURE_REPORT);
 	if (ret < 3) {
 		hid_err(hdev, "error reading %s string: %d\n", kattr->attr.name,
 			ret);
@@ -1006,16 +987,10 @@ static ssize_t pstr_show(struct device *kdev, struct device_attribute *kattr,
 }
 
 #define CP2112_PSTR_ATTR(name, _report) \
-static ssize_t name##_store(struct device *kdev, struct device_attribute *kattr, \
-			    const char *buf, size_t count) \
-{ \
-	return pstr_store(kdev, kattr, buf, count, _report); \
-} \
-static ssize_t name##_show(struct device *kdev, struct device_attribute *kattr, char *buf) \
-{ \
-	return pstr_show(kdev, kattr, buf, _report); \
-} \
-static DEVICE_ATTR_RW(name);
+static struct cp2112_pstring_attribute dev_attr_##name = { \
+	.attr = __ATTR(name, (S_IWUSR | S_IRUGO), pstr_show, pstr_store), \
+	.report = _report, \
+};
 
 CP2112_PSTR_ATTR(manufacturer,	CP2112_MANUFACTURER_STRING);
 CP2112_PSTR_ATTR(product,	CP2112_PRODUCT_STRING);
@@ -1030,9 +1005,9 @@ static const struct attribute_group cp2112_attr_group = {
 		&dev_attr_max_power.attr,
 		&dev_attr_power_mode.attr,
 		&dev_attr_release_version.attr,
-		&dev_attr_manufacturer.attr,
-		&dev_attr_product.attr,
-		&dev_attr_serial.attr,
+		&dev_attr_manufacturer.attr.attr,
+		&dev_attr_product.attr.attr,
+		&dev_attr_serial.attr.attr,
 		NULL
 	}
 };
@@ -1057,7 +1032,7 @@ static void chmod_sysfs_attrs(struct hid_device *hdev)
 	}
 
 	for (attr = cp2112_attr_group.attrs; *attr; ++attr) {
-		umode_t mode = (buf[1] & 1) ? 0644 : 0444;
+		umode_t mode = (buf[1] & 1) ? S_IWUSR | S_IRUGO : S_IRUGO;
 		ret = sysfs_chmod_file(&hdev->dev.kobj, *attr, mode);
 		if (ret < 0)
 			hid_err(hdev, "error chmoding sysfs file %s\n",
@@ -1066,134 +1041,11 @@ static void chmod_sysfs_attrs(struct hid_device *hdev)
 	}
 }
 
-static void cp2112_gpio_irq_ack(struct irq_data *d)
-{
-}
-
-static void cp2112_gpio_irq_mask(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct cp2112_device *dev = gpiochip_get_data(gc);
-	irq_hw_number_t hwirq = irqd_to_hwirq(d);
-
-	__clear_bit(hwirq, &dev->irq_mask);
-	gpiochip_disable_irq(gc, hwirq);
-}
-
-static void cp2112_gpio_irq_unmask(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct cp2112_device *dev = gpiochip_get_data(gc);
-	irq_hw_number_t hwirq = irqd_to_hwirq(d);
-
-	gpiochip_enable_irq(gc, hwirq);
-	__set_bit(hwirq, &dev->irq_mask);
-}
-
-static void cp2112_gpio_poll_callback(struct work_struct *work)
-{
-	struct cp2112_device *dev = container_of(work, struct cp2112_device,
-						 gpio_poll_worker.work);
-	struct irq_data *d;
-	u8 gpio_mask;
-	u32 irq_type;
-	int irq, virq, ret;
-
-	ret = cp2112_gpio_get_all(&dev->gc);
-	if (ret == -ENODEV) /* the hardware has been disconnected */
-		return;
-	if (ret < 0)
-		goto exit;
-
-	gpio_mask = ret;
-	for_each_set_bit(virq, &dev->irq_mask, CP2112_GPIO_MAX_GPIO) {
-		irq = irq_find_mapping(dev->gc.irq.domain, virq);
-		if (!irq)
-			continue;
-
-		d = irq_get_irq_data(irq);
-		if (!d)
-			continue;
-
-		irq_type = irqd_get_trigger_type(d);
-
-		if (gpio_mask & BIT(virq)) {
-			/* Level High */
-
-			if (irq_type & IRQ_TYPE_LEVEL_HIGH)
-				handle_nested_irq(irq);
-
-			if ((irq_type & IRQ_TYPE_EDGE_RISING) &&
-			    !(dev->gpio_prev_state & BIT(virq)))
-				handle_nested_irq(irq);
-		} else {
-			/* Level Low */
-
-			if (irq_type & IRQ_TYPE_LEVEL_LOW)
-				handle_nested_irq(irq);
-
-			if ((irq_type & IRQ_TYPE_EDGE_FALLING) &&
-			    (dev->gpio_prev_state & BIT(virq)))
-				handle_nested_irq(irq);
-		}
-	}
-
-	dev->gpio_prev_state = gpio_mask;
-
-exit:
-	if (dev->gpio_poll)
-		schedule_delayed_work(&dev->gpio_poll_worker, 10);
-}
-
-
-static unsigned int cp2112_gpio_irq_startup(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct cp2112_device *dev = gpiochip_get_data(gc);
-
-	INIT_DELAYED_WORK(&dev->gpio_poll_worker, cp2112_gpio_poll_callback);
-
-	if (!dev->gpio_poll) {
-		dev->gpio_poll = true;
-		schedule_delayed_work(&dev->gpio_poll_worker, 0);
-	}
-
-	cp2112_gpio_irq_unmask(d);
-	return 0;
-}
-
-static void cp2112_gpio_irq_shutdown(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct cp2112_device *dev = gpiochip_get_data(gc);
-
-	cp2112_gpio_irq_mask(d);
-	cancel_delayed_work_sync(&dev->gpio_poll_worker);
-}
-
-static int cp2112_gpio_irq_type(struct irq_data *d, unsigned int type)
-{
-	return 0;
-}
-
-static const struct irq_chip cp2112_gpio_irqchip = {
-	.name = "cp2112-gpio",
-	.irq_startup = cp2112_gpio_irq_startup,
-	.irq_shutdown = cp2112_gpio_irq_shutdown,
-	.irq_ack = cp2112_gpio_irq_ack,
-	.irq_mask = cp2112_gpio_irq_mask,
-	.irq_unmask = cp2112_gpio_irq_unmask,
-	.irq_set_type = cp2112_gpio_irq_type,
-	.flags = IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
-};
-
 static int cp2112_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	struct cp2112_device *dev;
 	u8 buf[3];
 	struct cp2112_smbus_config_report config;
-	struct gpio_irq_chip *girq;
 	int ret;
 
 	dev = devm_kzalloc(&hdev->dev, sizeof(*dev), GFP_KERNEL);
@@ -1205,7 +1057,7 @@ static int cp2112_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (!dev->in_out_buffer)
 		return -ENOMEM;
 
-	mutex_init(&dev->lock);
+	spin_lock_init(&dev->lock);
 
 	ret = hid_parse(hdev);
 	if (ret) {
@@ -1271,8 +1123,7 @@ static int cp2112_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	dev->adap.algo_data	= dev;
 	dev->adap.dev.parent	= &hdev->dev;
 	snprintf(dev->adap.name, sizeof(dev->adap.name),
-		 "CP2112 SMBus Bridge on hidraw%d",
-		 ((struct hidraw *)hdev->hidraw)->minor);
+		 "CP2112 SMBus Bridge on hiddev%d", hdev->minor);
 	dev->hwversion = buf[2];
 	init_waitqueue_head(&dev->wait);
 
@@ -1293,19 +1144,9 @@ static int cp2112_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	dev->gc.set			= cp2112_gpio_set;
 	dev->gc.get			= cp2112_gpio_get;
 	dev->gc.base			= -1;
-	dev->gc.ngpio			= CP2112_GPIO_MAX_GPIO;
+	dev->gc.ngpio			= 8;
 	dev->gc.can_sleep		= 1;
 	dev->gc.parent			= &hdev->dev;
-
-	girq = &dev->gc.irq;
-	gpio_irq_chip_set_chip(girq, &cp2112_gpio_irqchip);
-	/* The event comes from the outside so no parent handler */
-	girq->parent_handler = NULL;
-	girq->num_parents = 0;
-	girq->parents = NULL;
-	girq->default_type = IRQ_TYPE_NONE;
-	girq->handler = handle_simple_irq;
-	girq->threaded = true;
 
 	ret = gpiochip_add_data(&dev->gc, dev);
 	if (ret < 0) {
@@ -1342,14 +1183,8 @@ static void cp2112_remove(struct hid_device *hdev)
 	struct cp2112_device *dev = hid_get_drvdata(hdev);
 
 	sysfs_remove_group(&hdev->dev.kobj, &cp2112_attr_group);
-	i2c_del_adapter(&dev->adap);
-
-	if (dev->gpio_poll) {
-		dev->gpio_poll = false;
-		cancel_delayed_work_sync(&dev->gpio_poll_worker);
-	}
-
 	gpiochip_remove(&dev->gc);
+	i2c_del_adapter(&dev->adap);
 	/* i2c_del_adapter has finished removing all i2c devices from our
 	 * adapter. Well behaved devices should no longer call our cp2112_xfer
 	 * and should have waited for any pending calls to finish. It has also

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * SMP support for power macintosh.
  *
@@ -16,13 +15,16 @@
  *
  * Support for DayStar quad CPU cards
  * Copyright (C) XLR8, Inc. 1994-2000
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version
+ *  2 of the License, or (at your option) any later version.
  */
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/sched/hotplug.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
-#include <linux/irqdomain.h>
 #include <linux/kernel_stat.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -31,15 +33,16 @@
 #include <linux/hardirq.h>
 #include <linux/cpu.h>
 #include <linux/compiler.h>
-#include <linux/pgtable.h>
 
 #include <asm/ptrace.h>
 #include <linux/atomic.h>
 #include <asm/code-patching.h>
 #include <asm/irq.h>
 #include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/sections.h>
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/machdep.h>
 #include <asm/pmac_feature.h>
@@ -49,7 +52,6 @@
 #include <asm/keylargo.h>
 #include <asm/pmac_low_i2c.h>
 #include <asm/pmac_pfunc.h>
-#include <asm/inst.h>
 
 #include "pmac.h"
 
@@ -62,6 +64,7 @@
 #endif
 
 extern void __secondary_start_pmac_0(void);
+extern int pmac_pfunc_base_install(void);
 
 static void (*pmac_tb_freeze)(int freeze);
 static u64 timebase;
@@ -146,7 +149,6 @@ static inline void psurge_clr_ipi(int cpu)
 		switch(psurge_type) {
 		case PSURGE_DUAL:
 			out_8(psurge_sec_intr, ~0);
-			break;
 		case PSURGE_NONE:
 			break;
 		default:
@@ -169,7 +171,7 @@ static irqreturn_t psurge_ipi_intr(int irq, void *d)
 	return IRQ_HANDLED;
 }
 
-static void smp_psurge_cause_ipi(int cpu)
+static void smp_psurge_cause_ipi(int cpu, unsigned long data)
 {
 	psurge_set_ipi(cpu);
 }
@@ -186,7 +188,7 @@ static const struct irq_domain_ops psurge_host_ops = {
 	.map	= psurge_host_map,
 };
 
-static int __init psurge_secondary_ipi_init(void)
+static int psurge_secondary_ipi_init(void)
 {
 	int rc = -ENOMEM;
 
@@ -270,6 +272,10 @@ static void __init smp_psurge_probe(void)
 {
 	int i, ncpus;
 	struct device_node *dn;
+
+	/* We don't do SMP on the PPC601 -- paulus */
+	if (PVR_VER(mfspr(SPRN_PVR)) == 1)
+		return;
 
 	/*
 	 * The powersurge cpu board can be used in the generation
@@ -397,19 +403,21 @@ static int __init smp_psurge_kick_cpu(int nr)
 	return 0;
 }
 
+static struct irqaction psurge_irqaction = {
+	.handler = psurge_ipi_intr,
+	.flags = IRQF_PERCPU | IRQF_NO_THREAD,
+	.name = "primary IPI",
+};
+
 static void __init smp_psurge_setup_cpu(int cpu_nr)
 {
-	unsigned long flags = IRQF_PERCPU | IRQF_NO_THREAD;
-	int irq;
-
 	if (cpu_nr != 0 || !psurge_start)
 		return;
 
 	/* reset the entry point so if we get another intr we won't
 	 * try to startup again */
 	out_be32(psurge_start, 0x100);
-	irq = irq_create_mapping(NULL, 30);
-	if (request_irq(irq, psurge_ipi_intr, flags, "primary IPI", NULL))
+	if (setup_irq(irq_create_mapping(NULL, 30), &psurge_irqaction))
 		printk(KERN_ERR "Couldn't get primary IPI interrupt");
 }
 
@@ -438,7 +446,6 @@ void __init smp_psurge_give_timebase(void)
 struct smp_ops_t psurge_smp_ops = {
 	.message_pass	= NULL,	/* Use smp_muxed_ipi_message_pass */
 	.cause_ipi	= smp_psurge_cause_ipi,
-	.cause_nmi_ipi	= NULL,
 	.probe		= smp_psurge_probe,
 	.kick_cpu	= smp_psurge_kick_cpu,
 	.setup_cpu	= smp_psurge_setup_cpu,
@@ -656,13 +663,13 @@ static void smp_core99_gpio_tb_freeze(int freeze)
 
 #endif /* !CONFIG_PPC64 */
 
+/* L2 and L3 cache settings to pass from CPU0 to CPU1 on G4 cpus */
+volatile static long int core99_l2_cache;
+volatile static long int core99_l3_cache;
+
 static void core99_init_caches(int cpu)
 {
 #ifndef CONFIG_PPC64
-	/* L2 and L3 cache settings to pass from CPU0 to CPU1 on G4 cpus */
-	static long int core99_l2_cache;
-	static long int core99_l3_cache;
-
 	if (!cpu_has_feature(CPU_FTR_L2CR))
 		return;
 
@@ -706,12 +713,11 @@ static void __init smp_core99_setup(int ncpus)
 		struct device_node *cpus =
 			of_find_node_by_path("/cpus");
 		if (cpus &&
-		    of_property_read_bool(cpus, "platform-cpu-timebase")) {
+		    of_get_property(cpus, "platform-cpu-timebase", NULL)) {
 			pmac_tb_freeze = smp_core99_pfunc_tb_freeze;
 			printk(KERN_INFO "Processor timebase sync using"
 			       " platform function\n");
 		}
-		of_node_put(cpus);
 	}
 
 #else /* CONFIG_PPC64 */
@@ -766,8 +772,8 @@ static void __init smp_core99_probe(void)
 	if (ppc_md.progress) ppc_md.progress("smp_core99_probe", 0x345);
 
 	/* Count CPUs in the device-tree */
-	for_each_node_by_type(cpus, "cpu")
-		++ncpus;
+       	for (cpus = NULL; (cpus = of_find_node_by_type(cpus, "cpu")) != NULL;)
+	       	++ncpus;
 
 	printk(KERN_INFO "PowerMac SMP probe found %d cpus\n", ncpus);
 
@@ -825,7 +831,8 @@ static int smp_core99_kick_cpu(int nr)
 	mdelay(1);
 
 	/* Restore our exception vector */
-	patch_instruction(vector, ppc_inst(save_vector));
+	*vector = save_vector;
+	flush_icache_range((unsigned long) vector, (unsigned long) vector + 4);
 
 	local_irq_restore(flags);
 	if (ppc_md.progress) ppc_md.progress("smp_core99_kick_cpu done", 0x347);
@@ -876,6 +883,8 @@ static int smp_core99_cpu_online(unsigned int cpu)
 
 static void __init smp_core99_bringup_done(void)
 {
+	extern void g5_phy_disable_cpu1(void);
+
 	/* Close i2c bus if it was used for tb sync */
 	if (pmac_tb_clock_chip_host)
 		pmac_i2c_close(pmac_tb_clock_chip_host);
@@ -911,14 +920,12 @@ static int smp_core99_cpu_disable(void)
 
 	mpic_cpu_set_priority(0xf);
 
-	cleanup_cpu_mmu_context();
-
 	return 0;
 }
 
 #ifdef CONFIG_PPC32
 
-static void pmac_cpu_offline_self(void)
+static void pmac_cpu_die(void)
 {
 	int cpu = smp_processor_id();
 
@@ -928,12 +935,12 @@ static void pmac_cpu_offline_self(void)
 	generic_set_cpu_dead(cpu);
 	smp_wmb();
 	mb();
-	low_cpu_offline_self();
+	low_cpu_die();
 }
 
 #else /* CONFIG_PPC32 */
 
-static void pmac_cpu_offline_self(void)
+static void pmac_cpu_die(void)
 {
 	int cpu = smp_processor_id();
 
@@ -1018,7 +1025,7 @@ void __init pmac_setup_smp(void)
 #endif /* CONFIG_PPC_PMAC32_PSURGE */
 
 #ifdef CONFIG_HOTPLUG_CPU
-	smp_ops->cpu_offline_self = pmac_cpu_offline_self;
+	ppc_md.cpu_die = pmac_cpu_die;
 #endif
 }
 

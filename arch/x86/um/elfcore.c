@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/elf.h>
 #include <linux/coredump.h>
 #include <linux/fs.h>
@@ -7,7 +6,7 @@
 #include <asm/elf.h>
 
 
-Elf32_Half elf_core_extra_phdrs(struct coredump_params *cprm)
+Elf32_Half elf_core_extra_phdrs(void)
 {
 	return vsyscall_ehdr ? (((struct elfhdr *)vsyscall_ehdr)->e_phnum) : 0;
 }
@@ -60,7 +59,7 @@ int elf_core_write_extra_data(struct coredump_params *cprm)
 	return 1;
 }
 
-size_t elf_core_extra_data_size(struct coredump_params *cprm)
+size_t elf_core_extra_data_size(void)
 {
 	if ( vsyscall_ehdr ) {
 		const struct elfhdr *const ehdrp =

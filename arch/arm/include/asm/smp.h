@@ -1,8 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  arch/arm/include/asm/smp.h
  *
  *  Copyright (C) 2004-2005 ARM Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #ifndef __ASM_ARM_SMP_H
 #define __ASM_ARM_SMP_H
@@ -25,6 +28,11 @@ struct seq_file;
 extern void show_ipi_list(struct seq_file *, int);
 
 /*
+ * Called from assembly code, this handles an IPI.
+ */
+asmlinkage void do_IPI(int ipinr, struct pt_regs *regs);
+
+/*
  * Called from C code, this handles an IPI.
  */
 void handle_IPI(int ipinr, struct pt_regs *regs);
@@ -34,16 +42,17 @@ void handle_IPI(int ipinr, struct pt_regs *regs);
  */
 extern void smp_init_cpus(void);
 
+
 /*
- * Register IPI interrupts with the arch SMP code
+ * Provide a function to raise an IPI cross call on CPUs in callmap.
  */
-extern void set_smp_ipi_range(int ipi_base, int nr_ipi);
+extern void set_smp_cross_call(void (*)(const struct cpumask *, unsigned int));
 
 /*
  * Called from platform specific assembly code, this is the
  * secondary CPU entry point.
  */
-asmlinkage void secondary_start_kernel(struct task_struct *task);
+asmlinkage void secondary_start_kernel(void);
 
 
 /*
@@ -51,20 +60,20 @@ asmlinkage void secondary_start_kernel(struct task_struct *task);
  */
 struct secondary_data {
 	union {
-		struct mpu_rgn_info *mpu_rgn_info;
+		unsigned long mpu_rgn_szr;
 		u64 pgdir;
 	};
 	unsigned long swapper_pg_dir;
 	void *stack;
-	struct task_struct *task;
 };
 extern struct secondary_data secondary_data;
+extern volatile int pen_release;
 extern void secondary_startup(void);
 extern void secondary_startup_arm(void);
 
 extern int __cpu_disable(void);
 
-static inline void __cpu_die(unsigned int cpu) { }
+extern void __cpu_die(unsigned int cpu);
 
 extern void arch_send_call_function_single_ipi(int cpu);
 extern void arch_send_call_function_ipi_mask(const struct cpumask *mask);
@@ -108,11 +117,14 @@ struct of_cpu_method {
 
 #define CPU_METHOD_OF_DECLARE(name, _method, _ops)			\
 	static const struct of_cpu_method __cpu_method_of_table_##name	\
-		__used __section("__cpu_method_of_table")		\
+		__used __section(__cpu_method_of_table)			\
 		= { .method = _method, .ops = _ops }
 /*
  * set platform specific SMP operations
  */
 extern void smp_set_ops(const struct smp_operations *);
+
+extern int set_ipi_handler(int ipinr, void *handler, char *desc);
+extern void clear_ipi_handler(int ipinr);
 
 #endif /* ifndef __ASM_ARM_SMP_H */

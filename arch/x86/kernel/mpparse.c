@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	Intel Multiprocessor Specification 1.1 and 1.4
  *	compliant MP-table parsing routines.
@@ -11,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/bootmem.h>
 #include <linux/memblock.h>
 #include <linux/kernel_stat.h>
 #include <linux/mc146818rtc.h>
@@ -19,15 +19,14 @@
 #include <linux/smp.h>
 #include <linux/pci.h>
 
-#include <asm/i8259.h>
-#include <asm/io_apic.h>
-#include <asm/acpi.h>
 #include <asm/irqdomain.h>
 #include <asm/mtrr.h>
 #include <asm/mpspec.h>
+#include <asm/pgalloc.h>
+#include <asm/io_apic.h>
 #include <asm/proto.h>
 #include <asm/bios_ebda.h>
-#include <asm/e820/api.h>
+#include <asm/e820.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
 
@@ -46,8 +45,14 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 	return sum & 0xFF;
 }
 
+int __init default_mpc_apic_id(struct mpc_cpu *m)
+{
+	return m->apicid;
+}
+
 static void __init MP_processor_info(struct mpc_cpu *m)
 {
+	int apicid;
 	char *bootup_cpu = "";
 
 	if (!(m->cpuflag & CPU_ENABLED)) {
@@ -55,15 +60,19 @@ static void __init MP_processor_info(struct mpc_cpu *m)
 		return;
 	}
 
-	if (m->cpuflag & CPU_BOOTPROCESSOR)
+	apicid = x86_init.mpparse.mpc_apic_id(m);
+
+	if (m->cpuflag & CPU_BOOTPROCESSOR) {
 		bootup_cpu = " (Bootup-CPU)";
+		boot_cpu_physical_apicid = m->apicid;
+	}
 
 	pr_info("Processor #%d%s\n", m->apicid, bootup_cpu);
-	generic_processor_info(m->apicid);
+	generic_processor_info(apicid, m->apicver);
 }
 
 #ifdef CONFIG_X86_IO_APIC
-static void __init mpc_oem_bus_info(struct mpc_bus *m, char *str)
+void __init default_mpc_oem_bus_info(struct mpc_bus *m, char *str)
 {
 	memcpy(str, m->bustype, 6);
 	str[6] = 0;
@@ -74,7 +83,7 @@ static void __init MP_bus_info(struct mpc_bus *m)
 {
 	char str[7];
 
-	mpc_oem_bus_info(m, str);
+	x86_init.mpparse.mpc_oem_bus_info(m, str);
 
 #if MAX_MP_BUSSES < 256
 	if (m->busid >= MAX_MP_BUSSES) {
@@ -90,6 +99,9 @@ static void __init MP_bus_info(struct mpc_bus *m)
 		mp_bus_id_to_type[m->busid] = MP_BUS_ISA;
 #endif
 	} else if (strncmp(str, BUSTYPE_PCI, sizeof(BUSTYPE_PCI) - 1) == 0) {
+		if (x86_init.mpparse.mpc_oem_pci_bus)
+			x86_init.mpparse.mpc_oem_pci_bus(m);
+
 		clear_bit(m->busid, mp_bus_not_pci);
 #ifdef CONFIG_EISA
 		mp_bus_id_to_type[m->busid] = MP_BUS_PCI;
@@ -185,6 +197,8 @@ static void __init smp_dump_mptable(struct mpc_table *mpc, unsigned char *mpt)
 			1, mpc, mpc->length, 1);
 }
 
+void __init default_smp_read_mpc_oem(struct mpc_table *mpc) { }
+
 static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 {
 	char str[16];
@@ -203,7 +217,14 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 	if (early)
 		return 1;
 
-	/* Now process the configuration blocks. */
+	if (mpc->oemptr)
+		x86_init.mpparse.smp_read_mpc_oem(mpc);
+
+	/*
+	 *      Now process the configuration blocks.
+	 */
+	x86_init.mpparse.mpc_record(0);
+
 	while (count < mpc->length) {
 		switch (*mpt) {
 		case MP_PROCESSOR:
@@ -234,6 +255,7 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 			count = mpc->length;
 			break;
 		}
+		x86_init.mpparse.mpc_record(1);
 	}
 
 	if (!num_processors)
@@ -247,7 +269,7 @@ static int __init ELCR_trigger(unsigned int irq)
 {
 	unsigned int port;
 
-	port = PIC_ELCR1 + (irq >> 3);
+	port = 0x4d0 + (irq >> 3);
 	return (inb(port) >> (irq & 7)) & 1;
 }
 
@@ -258,7 +280,7 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 	int ELCR_fallback = 0;
 
 	intsrc.type = MP_INTSRC;
-	intsrc.irqflag = MP_IRQTRIG_DEFAULT | MP_IRQPOL_DEFAULT;
+	intsrc.irqflag = 0;	/* conforming */
 	intsrc.srcbus = 0;
 	intsrc.dstapic = mpc_ioapic_id(0);
 
@@ -289,7 +311,7 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 		case 2:
 			if (i == 0 || i == 13)
 				continue;	/* IRQ0 & IRQ13 not connected */
-			fallthrough;
+			/* fall through */
 		default:
 			if (i == 2)
 				continue;	/* IRQ2 is never connected */
@@ -301,13 +323,10 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 			 *  copy that information over to the MP table in the
 			 *  irqflag field (level sensitive, active high polarity).
 			 */
-			if (ELCR_trigger(i)) {
-				intsrc.irqflag = MP_IRQTRIG_LEVEL |
-						 MP_IRQPOL_ACTIVE_HIGH;
-			} else {
-				intsrc.irqflag = MP_IRQTRIG_DEFAULT |
-						 MP_IRQPOL_DEFAULT;
-			}
+			if (ELCR_trigger(i))
+				intsrc.irqflag = 13;
+			else
+				intsrc.irqflag = 0;
 		}
 
 		intsrc.srcbusirq = i;
@@ -333,7 +352,7 @@ static void __init construct_ioapic_table(int mpc_default_type)
 	default:
 		pr_err("???\nUnknown standard configuration %d\n",
 		       mpc_default_type);
-		fallthrough;
+		/* fall through */
 	case 1:
 	case 5:
 		memcpy(bus.bustype, "ISA   ", 6);
@@ -375,6 +394,11 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	int i;
 
 	/*
+	 * local APIC has default address
+	 */
+	mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
+
+	/*
 	 * 2 CPUs, numbered 0 & 1.
 	 */
 	processor.type = MP_PROCESSOR;
@@ -382,7 +406,7 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	processor.apicver = mpc_default_type > 4 ? 0x10 : 0x01;
 	processor.cpuflag = CPU_ENABLED;
 	processor.cpufeature = (boot_cpu_data.x86 << 8) |
-	    (boot_cpu_data.x86_model << 4) | boot_cpu_data.x86_stepping;
+	    (boot_cpu_data.x86_model << 4) | boot_cpu_data.x86_mask;
 	processor.featureflag = boot_cpu_data.x86_capability[CPUID_1_EDX];
 	processor.reserved[0] = 0;
 	processor.reserved[1] = 0;
@@ -394,7 +418,7 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	construct_ioapic_table(mpc_default_type);
 
 	lintsrc.type = MP_LINTSRC;
-	lintsrc.irqflag = MP_IRQTRIG_DEFAULT | MP_IRQPOL_DEFAULT;
+	lintsrc.irqflag = 0;		/* conforming */
 	lintsrc.srcbusid = 0;
 	lintsrc.srcbusirq = 0;
 	lintsrc.destapic = MP_APIC_ALL;
@@ -405,17 +429,16 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	}
 }
 
-static unsigned long mpf_base;
-static bool mpf_found;
+static struct mpf_intel *mpf_found;
 
 static unsigned long __init get_mpc_size(unsigned long physptr)
 {
 	struct mpc_table *mpc;
 	unsigned long size;
 
-	mpc = early_memremap(physptr, PAGE_SIZE);
+	mpc = early_ioremap(physptr, PAGE_SIZE);
 	size = mpc->length;
-	early_memunmap(mpc, PAGE_SIZE);
+	early_iounmap(mpc, PAGE_SIZE);
 	apic_printk(APIC_VERBOSE, "  mpc: %lx-%lx\n", physptr, physptr + size);
 
 	return size;
@@ -427,8 +450,7 @@ static int __init check_physptr(struct mpf_intel *mpf, unsigned int early)
 	unsigned long size;
 
 	size = get_mpc_size(mpf->physptr);
-	mpc = early_memremap(mpf->physptr, size);
-
+	mpc = early_ioremap(mpf->physptr, size);
 	/*
 	 * Read the physical hardware table.  Anything here will
 	 * override the defaults.
@@ -439,10 +461,10 @@ static int __init check_physptr(struct mpf_intel *mpf, unsigned int early)
 #endif
 		pr_err("BIOS bug, MP table errors detected!...\n");
 		pr_cont("... disabling SMP support. (tell your hw vendor)\n");
-		early_memunmap(mpc, size);
+		early_iounmap(mpc, size);
 		return -1;
 	}
-	early_memunmap(mpc, size);
+	early_iounmap(mpc, size);
 
 	if (early)
 		return -1;
@@ -475,12 +497,12 @@ static int __init check_physptr(struct mpf_intel *mpf, unsigned int early)
  */
 void __init default_get_smp_config(unsigned int early)
 {
-	struct mpf_intel *mpf;
+	struct mpf_intel *mpf = mpf_found;
 
 	if (!smp_found_config)
 		return;
 
-	if (!mpf_found)
+	if (!mpf)
 		return;
 
 	if (acpi_lapic && early)
@@ -492,12 +514,6 @@ void __init default_get_smp_config(unsigned int early)
 	 */
 	if (acpi_lapic && acpi_ioapic)
 		return;
-
-	mpf = early_memremap(mpf_base, sizeof(*mpf));
-	if (!mpf) {
-		pr_err("MPTABLE: error mapping MP table\n");
-		return;
-	}
 
 	pr_info("Intel MultiProcessor Specification v1.%d\n",
 		mpf->specification);
@@ -513,11 +529,13 @@ void __init default_get_smp_config(unsigned int early)
 	/*
 	 * Now see if we need to read further.
 	 */
-	if (mpf->feature1) {
+	if (mpf->feature1 != 0) {
 		if (early) {
-			/* Local APIC has default address */
-			register_lapic_address(APIC_DEFAULT_PHYS_BASE);
-			goto out;
+			/*
+			 * local APIC has default address
+			 */
+			mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
+			return;
 		}
 
 		pr_info("Default MP configuration #%d\n", mpf->feature1);
@@ -525,7 +543,7 @@ void __init default_get_smp_config(unsigned int early)
 
 	} else if (mpf->physptr) {
 		if (check_physptr(mpf, early))
-			goto out;
+			return;
 	} else
 		BUG();
 
@@ -534,8 +552,6 @@ void __init default_get_smp_config(unsigned int early)
 	/*
 	 * Only use the first configuration found.
 	 */
-out:
-	early_memunmap(mpf, sizeof(*mpf));
 }
 
 static void __init smp_reserve_memory(struct mpf_intel *mpf)
@@ -545,16 +561,15 @@ static void __init smp_reserve_memory(struct mpf_intel *mpf)
 
 static int __init smp_scan_config(unsigned long base, unsigned long length)
 {
-	unsigned int *bp;
+	unsigned int *bp = phys_to_virt(base);
 	struct mpf_intel *mpf;
-	int ret = 0;
+	unsigned long mem;
 
 	apic_printk(APIC_VERBOSE, "Scan for SMP in [mem %#010lx-%#010lx]\n",
 		    base, base + length - 1);
 	BUILD_BUG_ON(sizeof(*mpf) != 16);
 
 	while (length > 0) {
-		bp = early_memremap(base, length);
 		mpf = (struct mpf_intel *)bp;
 		if ((*bp == SMP_MAGIC_IDENT) &&
 		    (mpf->length == 1) &&
@@ -564,27 +579,24 @@ static int __init smp_scan_config(unsigned long base, unsigned long length)
 #ifdef CONFIG_X86_LOCAL_APIC
 			smp_found_config = 1;
 #endif
-			mpf_base = base;
-			mpf_found = true;
+			mpf_found = mpf;
 
-			pr_info("found SMP MP-table at [mem %#010lx-%#010lx]\n",
-				base, base + sizeof(*mpf) - 1);
+			pr_info("found SMP MP-table at [mem %#010llx-%#010llx] mapped at [%p]\n",
+				(unsigned long long) virt_to_phys(mpf),
+				(unsigned long long) virt_to_phys(mpf) +
+				sizeof(*mpf) - 1, mpf);
 
-			memblock_reserve(base, sizeof(*mpf));
+			mem = virt_to_phys(mpf);
+			memblock_reserve(mem, sizeof(*mpf));
 			if (mpf->physptr)
 				smp_reserve_memory(mpf);
 
-			ret = 1;
+			return 1;
 		}
-		early_memunmap(bp, length);
-
-		if (ret)
-			break;
-
-		base += 16;
+		bp += 4;
 		length -= 16;
 	}
-	return ret;
+	return 0;
 }
 
 void __init default_find_smp_config(void)
@@ -635,7 +647,7 @@ static int  __init get_MP_intsrc_index(struct mpc_intsrc *m)
 	if (m->irqtype != mp_INT)
 		return 0;
 
-	if (m->irqflag != (MP_IRQTRIG_LEVEL | MP_IRQPOL_ACTIVE_LOW))
+	if (m->irqflag != 0x0f)
 		return 0;
 
 	/* not legacy */
@@ -644,8 +656,7 @@ static int  __init get_MP_intsrc_index(struct mpc_intsrc *m)
 		if (mp_irqs[i].irqtype != mp_INT)
 			continue;
 
-		if (mp_irqs[i].irqflag != (MP_IRQTRIG_LEVEL |
-					   MP_IRQPOL_ACTIVE_LOW))
+		if (mp_irqs[i].irqflag != 0x0f)
 			continue;
 
 		if (mp_irqs[i].srcbus != m->srcbus)
@@ -756,8 +767,7 @@ static int  __init replace_intsrc_all(struct mpc_table *mpc,
 		if (mp_irqs[i].irqtype != mp_INT)
 			continue;
 
-		if (mp_irqs[i].irqflag != (MP_IRQTRIG_LEVEL |
-					   MP_IRQPOL_ACTIVE_LOW))
+		if (mp_irqs[i].irqflag != 0x0f)
 			continue;
 
 		if (nr_m_spare > 0) {
@@ -816,10 +826,10 @@ static int __init parse_alloc_mptable_opt(char *p)
 }
 early_param("alloc_mptable", parse_alloc_mptable_opt);
 
-void __init e820__memblock_alloc_reserved_mpc_new(void)
+void __init early_reserve_e820_mpc_new(void)
 {
 	if (enable_update_mptable && alloc_mptable)
-		mpc_new_phys = e820__memblock_alloc_reserved(mpc_new_length, 4);
+		mpc_new_phys = early_reserve_e820(mpc_new_length, 4);
 }
 
 static int __init update_mp_table(void)
@@ -828,40 +838,29 @@ static int __init update_mp_table(void)
 	char oem[10];
 	struct mpf_intel *mpf;
 	struct mpc_table *mpc, *mpc_new;
-	unsigned long size;
 
 	if (!enable_update_mptable)
 		return 0;
 
-	if (!mpf_found)
+	mpf = mpf_found;
+	if (!mpf)
 		return 0;
-
-	mpf = early_memremap(mpf_base, sizeof(*mpf));
-	if (!mpf) {
-		pr_err("MPTABLE: mpf early_memremap() failed\n");
-		return 0;
-	}
 
 	/*
 	 * Now see if we need to go further.
 	 */
-	if (mpf->feature1)
-		goto do_unmap_mpf;
+	if (mpf->feature1 != 0)
+		return 0;
 
 	if (!mpf->physptr)
-		goto do_unmap_mpf;
+		return 0;
 
-	size = get_mpc_size(mpf->physptr);
-	mpc = early_memremap(mpf->physptr, size);
-	if (!mpc) {
-		pr_err("MPTABLE: mpc early_memremap() failed\n");
-		goto do_unmap_mpf;
-	}
+	mpc = phys_to_virt(mpf->physptr);
 
 	if (!smp_check_mpc(mpc, oem, str))
-		goto do_unmap_mpc;
+		return 0;
 
-	pr_info("mpf: %llx\n", (u64)mpf_base);
+	pr_info("mpf: %llx\n", (u64)virt_to_phys(mpf));
 	pr_info("physptr: %x\n", mpf->physptr);
 
 	if (mpc_new_phys && mpc->length > mpc_new_length) {
@@ -879,32 +878,21 @@ static int __init update_mp_table(void)
 		new = mpf_checksum((unsigned char *)mpc, mpc->length);
 		if (old == new) {
 			pr_info("mpc is readonly, please try alloc_mptable instead\n");
-			goto do_unmap_mpc;
+			return 0;
 		}
 		pr_info("use in-position replacing\n");
 	} else {
-		mpc_new = early_memremap(mpc_new_phys, mpc_new_length);
-		if (!mpc_new) {
-			pr_err("MPTABLE: new mpc early_memremap() failed\n");
-			goto do_unmap_mpc;
-		}
 		mpf->physptr = mpc_new_phys;
+		mpc_new = phys_to_virt(mpc_new_phys);
 		memcpy(mpc_new, mpc, mpc->length);
-		early_memunmap(mpc, size);
 		mpc = mpc_new;
-		size = mpc_new_length;
 		/* check if we can modify that */
 		if (mpc_new_phys - mpf->physptr) {
 			struct mpf_intel *mpf_new;
 			/* steal 16 bytes from [0, 1k) */
-			mpf_new = early_memremap(0x400 - 16, sizeof(*mpf_new));
-			if (!mpf_new) {
-				pr_err("MPTABLE: new mpf early_memremap() failed\n");
-				goto do_unmap_mpc;
-			}
 			pr_info("mpf new: %x\n", 0x400 - 16);
+			mpf_new = phys_to_virt(0x400 - 16);
 			memcpy(mpf_new, mpf, 16);
-			early_memunmap(mpf, sizeof(*mpf));
 			mpf = mpf_new;
 			mpf->physptr = mpc_new_phys;
 		}
@@ -920,12 +908,6 @@ static int __init update_mp_table(void)
 	 * may need pci=routeirq for all coverage
 	 */
 	replace_intsrc_all(mpc, mpc_new_phys, mpc_new_length);
-
-do_unmap_mpc:
-	early_memunmap(mpc, size);
-
-do_unmap_mpf:
-	early_memunmap(mpf, sizeof(*mpf));
 
 	return 0;
 }

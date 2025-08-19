@@ -1,7 +1,10 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* -----------------------------------------------------------------------
  *
  *   Copyright 2009-2014 Intel Corporation; author H. Peter Anvin
+ *
+ *   This file is part of the Linux kernel, and is made available under
+ *   the terms of the GNU General Public License version 2 or (at your
+ *   option) any later version; incorporated herein by reference.
  *
  * ----------------------------------------------------------------------- */
 
@@ -32,7 +35,7 @@ intcall:
 	movw	%dx, %si
 	movw	%sp, %di
 	movw	$11, %cx
-	rep; movsl
+	rep; movsd
 
 	/* Pop full state from the stack */
 	popal
@@ -67,7 +70,7 @@ intcall:
 	jz	4f
 	movw	%sp, %si
 	movw	$11, %cx
-	rep; movsl
+	rep; movsd
 4:	addw	$44, %sp
 
 	/* Restore state and return */

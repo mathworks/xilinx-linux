@@ -33,6 +33,8 @@
 
 #define pr_fmt(fmt) "xen-pvscsi: " fmt
 
+#include <stdarg.h>
+
 #include <linux/module.h>
 #include <linux/utsname.h>
 #include <linux/interrupt.h>
@@ -89,6 +91,7 @@ struct vscsibk_info {
 	unsigned int irq;
 
 	struct vscsiif_back_ring ring;
+	int ring_error;
 
 	spinlock_t ring_lock;
 	atomic_t nr_unreplied_reqs;
@@ -97,8 +100,6 @@ struct vscsibk_info {
 	struct list_head v2p_entry_lists;
 
 	wait_queue_head_t waiting_to_free;
-
-	struct gnttab_page_cache free_pages;
 };
 
 /* theoretical maximum of grants for one request */
@@ -133,8 +134,11 @@ struct vscsibk_pend {
 	struct page *pages[VSCSI_MAX_GRANTS];
 
 	struct se_cmd se_cmd;
+};
 
-	struct completion tmr_done;
+struct scsiback_tmr {
+	atomic_t tmr_complete;
+	wait_queue_head_t tmr_wait;
 };
 
 #define VSCSI_DEFAULT_SESSION_TAGS	128
@@ -188,6 +192,10 @@ module_param_named(max_buffer_pages, scsiback_max_buffer_pages, int, 0644);
 MODULE_PARM_DESC(max_buffer_pages,
 "Maximum number of free pages to keep in backend buffer");
 
+static DEFINE_SPINLOCK(free_pages_lock);
+static int free_pages_num;
+static LIST_HEAD(scsiback_free_pages);
+
 /* Global spinlock to protect scsiback TPG list */
 static DEFINE_MUTEX(scsiback_mutex);
 static LIST_HEAD(scsiback_list);
@@ -201,6 +209,41 @@ static void scsiback_put(struct vscsibk_info *info)
 {
 	if (atomic_dec_and_test(&info->nr_unreplied_reqs))
 		wake_up(&info->waiting_to_free);
+}
+
+static void put_free_pages(struct page **page, int num)
+{
+	unsigned long flags;
+	int i = free_pages_num + num, n = num;
+
+	if (num == 0)
+		return;
+	if (i > scsiback_max_buffer_pages) {
+		n = min(num, i - scsiback_max_buffer_pages);
+		gnttab_free_pages(n, page + num - n);
+		n = num - n;
+	}
+	spin_lock_irqsave(&free_pages_lock, flags);
+	for (i = 0; i < n; i++)
+		list_add(&page[i]->lru, &scsiback_free_pages);
+	free_pages_num += n;
+	spin_unlock_irqrestore(&free_pages_lock, flags);
+}
+
+static int get_free_page(struct page **page)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&free_pages_lock, flags);
+	if (list_empty(&scsiback_free_pages)) {
+		spin_unlock_irqrestore(&free_pages_lock, flags);
+		return gnttab_alloc_pages(1, page);
+	}
+	page[0] = list_first_entry(&scsiback_free_pages, struct page, lru);
+	list_del(&page[0]->lru);
+	free_pages_num--;
+	spin_unlock_irqrestore(&free_pages_lock, flags);
+	return 0;
 }
 
 static unsigned long vaddr_page(struct page *page)
@@ -220,10 +263,10 @@ static void scsiback_print_status(char *sense_buffer, int errors,
 {
 	struct scsiback_tpg *tpg = pending_req->v2p->tpg;
 
-	pr_err("[%s:%d] cmnd[0]=%02x -> st=%02x msg=%02x host=%02x\n",
+	pr_err("[%s:%d] cmnd[0]=%02x -> st=%02x msg=%02x host=%02x drv=%02x\n",
 	       tpg->tport->tport_name, pending_req->v2p->lun,
-	       pending_req->cmnd[0], errors & 0xff, COMMAND_COMPLETE,
-	       host_byte(errors));
+	       pending_req->cmnd[0], status_byte(errors), msg_byte(errors),
+	       host_byte(errors), driver_byte(errors));
 }
 
 static void scsiback_fast_flush_area(struct vscsibk_pend *req)
@@ -263,8 +306,7 @@ static void scsiback_fast_flush_area(struct vscsibk_pend *req)
 		BUG_ON(err);
 	}
 
-	gnttab_page_cache_put(&req->info->free_pages, req->pages,
-			      req->n_grants);
+	put_free_pages(req->pages, req->n_grants);
 	req->n_grants = 0;
 }
 
@@ -278,70 +320,6 @@ static void scsiback_free_translation_entry(struct kref *kref)
 	mutex_unlock(&tpg->tv_tpg_mutex);
 
 	kfree(entry);
-}
-
-static int32_t scsiback_result(int32_t result)
-{
-	int32_t host_status;
-
-	switch (XEN_VSCSIIF_RSLT_HOST(result)) {
-	case DID_OK:
-		host_status = XEN_VSCSIIF_RSLT_HOST_OK;
-		break;
-	case DID_NO_CONNECT:
-		host_status = XEN_VSCSIIF_RSLT_HOST_NO_CONNECT;
-		break;
-	case DID_BUS_BUSY:
-		host_status = XEN_VSCSIIF_RSLT_HOST_BUS_BUSY;
-		break;
-	case DID_TIME_OUT:
-		host_status = XEN_VSCSIIF_RSLT_HOST_TIME_OUT;
-		break;
-	case DID_BAD_TARGET:
-		host_status = XEN_VSCSIIF_RSLT_HOST_BAD_TARGET;
-		break;
-	case DID_ABORT:
-		host_status = XEN_VSCSIIF_RSLT_HOST_ABORT;
-		break;
-	case DID_PARITY:
-		host_status = XEN_VSCSIIF_RSLT_HOST_PARITY;
-		break;
-	case DID_ERROR:
-		host_status = XEN_VSCSIIF_RSLT_HOST_ERROR;
-		break;
-	case DID_RESET:
-		host_status = XEN_VSCSIIF_RSLT_HOST_RESET;
-		break;
-	case DID_BAD_INTR:
-		host_status = XEN_VSCSIIF_RSLT_HOST_BAD_INTR;
-		break;
-	case DID_PASSTHROUGH:
-		host_status = XEN_VSCSIIF_RSLT_HOST_PASSTHROUGH;
-		break;
-	case DID_SOFT_ERROR:
-		host_status = XEN_VSCSIIF_RSLT_HOST_SOFT_ERROR;
-		break;
-	case DID_IMM_RETRY:
-		host_status = XEN_VSCSIIF_RSLT_HOST_IMM_RETRY;
-		break;
-	case DID_REQUEUE:
-		host_status = XEN_VSCSIIF_RSLT_HOST_REQUEUE;
-		break;
-	case DID_TRANSPORT_DISRUPTED:
-		host_status = XEN_VSCSIIF_RSLT_HOST_TRANSPORT_DISRUPTED;
-		break;
-	case DID_TRANSPORT_FAILFAST:
-		host_status = XEN_VSCSIIF_RSLT_HOST_TRANSPORT_FAILFAST;
-		break;
-	case DID_TRANSPORT_MARGINAL:
-		host_status = XEN_VSCSIIF_RSLT_HOST_TRANSPORT_MARGINAL;
-		break;
-	default:
-		host_status = XEN_VSCSIIF_RSLT_HOST_ERROR;
-		break;
-	}
-
-	return (host_status << 16) | (result & 0x00ffff);
 }
 
 static void scsiback_send_response(struct vscsibk_info *info,
@@ -359,7 +337,7 @@ static void scsiback_send_response(struct vscsibk_info *info,
 	ring_res = RING_GET_RESPONSE(&info->ring, info->ring.rsp_prod_pvt);
 	info->ring.rsp_prod_pvt++;
 
-	ring_res->rslt   = scsiback_result(result);
+	ring_res->rslt   = result;
 	ring_res->rqid   = rqid;
 
 	if (sense_buffer != NULL &&
@@ -422,18 +400,21 @@ static void scsiback_cmd_exec(struct vscsibk_pend *pending_req)
 {
 	struct se_cmd *se_cmd = &pending_req->se_cmd;
 	struct se_session *sess = pending_req->v2p->tpg->tpg_nexus->tvn_se_sess;
+	int rc;
 
 	scsiback_get(pending_req->info);
 	se_cmd->tag = pending_req->rqid;
-	target_init_cmd(se_cmd, sess, pending_req->sense_buffer,
-			pending_req->v2p->lun, pending_req->data_len, 0,
-			pending_req->sc_data_direction, TARGET_SCF_ACK_KREF);
-
-	if (target_submit_prep(se_cmd, pending_req->cmnd, pending_req->sgl,
-			       pending_req->n_sg, NULL, 0, NULL, 0, GFP_KERNEL))
-		return;
-
-	target_submit(se_cmd);
+	rc = target_submit_cmd_map_sgls(se_cmd, sess, pending_req->cmnd,
+			pending_req->sense_buffer, pending_req->v2p->lun,
+			pending_req->data_len, 0,
+			pending_req->sc_data_direction, TARGET_SCF_ACK_KREF,
+			pending_req->sgl, pending_req->n_sg,
+			NULL, 0, NULL, 0);
+	if (rc < 0) {
+		transport_send_check_condition_and_sense(se_cmd,
+				TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE, 0);
+		transport_generic_free_cmd(se_cmd, 0);
+	}
 }
 
 static int scsiback_gnttab_data_map_batch(struct gnttab_map_grant_ref *map,
@@ -445,12 +426,12 @@ static int scsiback_gnttab_data_map_batch(struct gnttab_map_grant_ref *map,
 		return 0;
 
 	err = gnttab_map_refs(map, NULL, pg, cnt);
+	BUG_ON(err);
 	for (i = 0; i < cnt; i++) {
 		if (unlikely(map[i].status != GNTST_okay)) {
 			pr_err("invalid buffer -- could not remap it\n");
 			map[i].handle = SCSIBACK_INVALID_HANDLE;
-			if (!err)
-				err = -ENOMEM;
+			err = -ENOMEM;
 		} else {
 			get_page(pg[i]);
 		}
@@ -468,8 +449,8 @@ static int scsiback_gnttab_data_map_list(struct vscsibk_pend *pending_req,
 	struct vscsibk_info *info = pending_req->info;
 
 	for (i = 0; i < cnt; i++) {
-		if (gnttab_page_cache_get(&info->free_pages, pg + mapcount)) {
-			gnttab_page_cache_put(&info->free_pages, pg, mapcount);
+		if (get_free_page(pg + mapcount)) {
+			put_free_pages(pg, mapcount);
 			pr_err("no grant page\n");
 			return -ENOMEM;
 		}
@@ -618,28 +599,36 @@ static void scsiback_device_action(struct vscsibk_pend *pending_req,
 	struct scsiback_tpg *tpg = pending_req->v2p->tpg;
 	struct scsiback_nexus *nexus = tpg->tpg_nexus;
 	struct se_cmd *se_cmd = &pending_req->se_cmd;
+	struct scsiback_tmr *tmr;
 	u64 unpacked_lun = pending_req->v2p->lun;
-	int rc, err = XEN_VSCSIIF_RSLT_RESET_FAILED;
+	int rc, err = FAILED;
 
-	init_completion(&pending_req->tmr_done);
+	tmr = kzalloc(sizeof(struct scsiback_tmr), GFP_KERNEL);
+	if (!tmr) {
+		target_put_sess_cmd(se_cmd);
+		goto err;
+	}
+
+	init_waitqueue_head(&tmr->tmr_wait);
 
 	rc = target_submit_tmr(&pending_req->se_cmd, nexus->tvn_se_sess,
 			       &pending_req->sense_buffer[0],
-			       unpacked_lun, NULL, act, GFP_KERNEL,
+			       unpacked_lun, tmr, act, GFP_KERNEL,
 			       tag, TARGET_SCF_ACK_KREF);
 	if (rc)
 		goto err;
 
-	wait_for_completion(&pending_req->tmr_done);
+	wait_event(tmr->tmr_wait, atomic_read(&tmr->tmr_complete));
 
 	err = (se_cmd->se_tmr_req->response == TMR_FUNCTION_COMPLETE) ?
-		XEN_VSCSIIF_RSLT_RESET_SUCCESS : XEN_VSCSIIF_RSLT_RESET_FAILED;
+		SUCCESS : FAILED;
 
 	scsiback_do_resp_with_sense(NULL, err, 0, pending_req);
-	transport_generic_free_cmd(&pending_req->se_cmd, 0);
+	transport_generic_free_cmd(&pending_req->se_cmd, 1);
 	return;
-
 err:
+	if (tmr)
+		kfree(tmr);
 	scsiback_do_resp_with_sense(NULL, err, 0, pending_req);
 }
 
@@ -676,9 +665,9 @@ static struct vscsibk_pend *scsiback_get_pend_req(struct vscsiif_back_ring *ring
 	struct scsiback_nexus *nexus = tpg->tpg_nexus;
 	struct se_session *se_sess = nexus->tvn_se_sess;
 	struct vscsibk_pend *req;
-	int tag, cpu, i;
+	int tag, i;
 
-	tag = sbitmap_queue_get(&se_sess->sess_tag_pool, &cpu);
+	tag = percpu_ida_alloc(&se_sess->sess_tag_pool, TASK_RUNNING);
 	if (tag < 0) {
 		pr_err("Unable to obtain tag for vscsiif_request\n");
 		return ERR_PTR(-ENOMEM);
@@ -687,7 +676,6 @@ static struct vscsibk_pend *scsiback_get_pend_req(struct vscsiif_back_ring *ring
 	req = &((struct vscsibk_pend *)se_sess->sess_cmd_map)[tag];
 	memset(req, 0, sizeof(*req));
 	req->se_cmd.map_tag = tag;
-	req->se_cmd.map_cpu = cpu;
 
 	for (i = 0; i < VSCSI_MAX_GRANTS; i++)
 		req->grant_handles[i] = SCSIBACK_INVALID_HANDLE;
@@ -744,8 +732,7 @@ static struct vscsibk_pend *prepare_pending_reqs(struct vscsibk_info *info,
 	return pending_req;
 }
 
-static int scsiback_do_cmd_fn(struct vscsibk_info *info,
-			      unsigned int *eoi_flags)
+static int scsiback_do_cmd_fn(struct vscsibk_info *info)
 {
 	struct vscsiif_back_ring *ring = &info->ring;
 	struct vscsiif_request ring_req;
@@ -762,12 +749,11 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 		rc = ring->rsp_prod_pvt;
 		pr_warn("Dom%d provided bogus ring requests (%#x - %#x = %u). Halting ring processing\n",
 			   info->domid, rp, rc, rp - rc);
-		return -EINVAL;
+		info->ring_error = 1;
+		return 0;
 	}
 
 	while ((rc != rp)) {
-		*eoi_flags &= ~XEN_EOI_FLAG_SPURIOUS;
-
 		if (RING_REQUEST_CONS_OVERFLOW(ring, rc))
 			break;
 
@@ -781,10 +767,10 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 				result = DID_NO_CONNECT;
 				break;
 			default:
-				result = DID_ERROR;
+				result = DRIVER_ERROR;
 				break;
 			}
-			scsiback_send_response(info, NULL, result << 16, 0,
+			scsiback_send_response(info, NULL, result << 24, 0,
 					       ring_req.rqid);
 			return 1;
 		}
@@ -794,7 +780,7 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 			if (scsiback_gnttab_data_map(&ring_req, pending_req)) {
 				scsiback_fast_flush_area(pending_req);
 				scsiback_do_resp_with_sense(NULL,
-						DID_ERROR << 16, 0, pending_req);
+						DRIVER_ERROR << 24, 0, pending_req);
 				transport_generic_free_cmd(&pending_req->se_cmd, 0);
 			} else {
 				scsiback_cmd_exec(pending_req);
@@ -809,7 +795,7 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 			break;
 		default:
 			pr_err_ratelimited("invalid request\n");
-			scsiback_do_resp_with_sense(NULL, DID_ERROR << 16, 0,
+			scsiback_do_resp_with_sense(NULL, DRIVER_ERROR << 24, 0,
 						    pending_req);
 			transport_generic_free_cmd(&pending_req->se_cmd, 0);
 			break;
@@ -819,8 +805,6 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 		cond_resched();
 	}
 
-	gnttab_page_cache_shrink(&info->free_pages, scsiback_max_buffer_pages);
-
 	RING_FINAL_CHECK_FOR_REQUESTS(&info->ring, more_to_do);
 	return more_to_do;
 }
@@ -828,15 +812,12 @@ static int scsiback_do_cmd_fn(struct vscsibk_info *info,
 static irqreturn_t scsiback_irq_fn(int irq, void *dev_id)
 {
 	struct vscsibk_info *info = dev_id;
-	int rc;
-	unsigned int eoi_flags = XEN_EOI_FLAG_SPURIOUS;
 
-	while ((rc = scsiback_do_cmd_fn(info, &eoi_flags)) > 0)
+	if (info->ring_error)
+		return IRQ_HANDLED;
+
+	while (scsiback_do_cmd_fn(info))
 		cond_resched();
-
-	/* In case of a ring error we keep the event channel masked. */
-	if (!rc)
-		xen_irq_lateeoi(irq, eoi_flags);
 
 	return IRQ_HANDLED;
 }
@@ -858,7 +839,7 @@ static int scsiback_init_sring(struct vscsibk_info *info, grant_ref_t ring_ref,
 	sring = (struct vscsiif_sring *)area;
 	BACK_RING_INIT(&info->ring, sring, PAGE_SIZE);
 
-	err = bind_interdomain_evtchn_to_irq_lateeoi(info->dev, evtchn);
+	err = bind_interdomain_evtchn_to_irq(info->domid, evtchn);
 	if (err < 0)
 		goto unmap_page;
 
@@ -883,8 +864,7 @@ unmap_page:
 static int scsiback_map(struct vscsibk_info *info)
 {
 	struct xenbus_device *dev = info->dev;
-	unsigned int ring_ref;
-	evtchn_port_t evtchn;
+	unsigned int ring_ref, evtchn;
 	int err;
 
 	err = xenbus_gather(XBT_NIL, dev->otherend,
@@ -1010,6 +990,12 @@ out_free:
 	return err;
 }
 
+static void __scsiback_del_translation_entry(struct v2p_entry *entry)
+{
+	list_del(&entry->l);
+	kref_put(&entry->kref, scsiback_free_translation_entry);
+}
+
 /*
   Delete the translation entry specified
 */
@@ -1018,20 +1004,18 @@ static int scsiback_del_translation_entry(struct vscsibk_info *info,
 {
 	struct v2p_entry *entry;
 	unsigned long flags;
+	int ret = 0;
 
 	spin_lock_irqsave(&info->v2p_lock, flags);
 	/* Find out the translation entry specified */
 	entry = scsiback_chk_translation_entry(info, v);
 	if (entry)
-		list_del(&entry->l);
+		__scsiback_del_translation_entry(entry);
+	else
+		ret = -ENOENT;
 
 	spin_unlock_irqrestore(&info->v2p_lock, flags);
-
-	if (!entry)
-		return -ENOENT;
-
-	kref_put(&entry->kref, scsiback_free_translation_entry);
-	return 0;
+	return ret;
 }
 
 static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
@@ -1039,7 +1023,6 @@ static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
 {
 	struct v2p_entry *entry;
 	unsigned long flags;
-	int err;
 
 	if (try) {
 		spin_lock_irqsave(&info->v2p_lock, flags);
@@ -1055,11 +1038,8 @@ static void scsiback_do_add_lun(struct vscsibk_info *info, const char *state,
 			scsiback_del_translation_entry(info, vir);
 		}
 	} else if (!try) {
-		err = xenbus_printf(XBT_NIL, info->dev->nodename, state,
+		xenbus_printf(XBT_NIL, info->dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 	}
 }
 
@@ -1098,14 +1078,11 @@ static void scsiback_do_1lun_hotplug(struct vscsibk_info *info, int op,
 	snprintf(str, sizeof(str), "vscsi-devs/%s/p-dev", ent);
 	val = xenbus_read(XBT_NIL, dev->nodename, str, NULL);
 	if (IS_ERR(val)) {
-		err = xenbus_printf(XBT_NIL, dev->nodename, state,
+		xenbus_printf(XBT_NIL, dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 		return;
 	}
-	strscpy(phy, val, VSCSI_NAMELEN);
+	strlcpy(phy, val, VSCSI_NAMELEN);
 	kfree(val);
 
 	/* virtual SCSI device */
@@ -1113,11 +1090,8 @@ static void scsiback_do_1lun_hotplug(struct vscsibk_info *info, int op,
 	err = xenbus_scanf(XBT_NIL, dev->nodename, str, "%u:%u:%u:%u",
 			   &vir.hst, &vir.chn, &vir.tgt, &vir.lun);
 	if (XENBUS_EXIST_ERR(err)) {
-		err = xenbus_printf(XBT_NIL, dev->nodename, state,
+		xenbus_printf(XBT_NIL, dev->nodename, state,
 			      "%d", XenbusStateClosed);
-		if (err)
-			xenbus_dev_error(info->dev, err,
-				"%s: writing %s", __func__, state);
 		return;
 	}
 
@@ -1210,7 +1184,7 @@ static void scsiback_frontend_changed(struct xenbus_device *dev,
 		xenbus_switch_state(dev, XenbusStateClosed);
 		if (xenbus_dev_is_online(dev))
 			break;
-		fallthrough;	/* if not online */
+		/* fall through if not online */
 	case XenbusStateUnknown:
 		device_unregister(&dev->dev);
 		break;
@@ -1235,22 +1209,17 @@ static void scsiback_release_translation_entry(struct vscsibk_info *info)
 {
 	struct v2p_entry *entry, *tmp;
 	struct list_head *head = &(info->v2p_entry_lists);
-	struct list_head tmp_list;
 	unsigned long flags;
 
 	spin_lock_irqsave(&info->v2p_lock, flags);
 
-	list_cut_before(&tmp_list, head, head);
+	list_for_each_entry_safe(entry, tmp, head, l)
+		__scsiback_del_translation_entry(entry);
 
 	spin_unlock_irqrestore(&info->v2p_lock, flags);
-
-	list_for_each_entry_safe(entry, tmp, &tmp_list, l) {
-		list_del(&entry->l);
-		kref_put(&entry->kref, scsiback_free_translation_entry);
-	}
 }
 
-static void scsiback_remove(struct xenbus_device *dev)
+static int scsiback_remove(struct xenbus_device *dev)
 {
 	struct vscsibk_info *info = dev_get_drvdata(&dev->dev);
 
@@ -1259,9 +1228,9 @@ static void scsiback_remove(struct xenbus_device *dev)
 
 	scsiback_release_translation_entry(info);
 
-	gnttab_page_cache_shrink(&info->free_pages, 0);
-
 	dev_set_drvdata(&dev->dev, NULL);
+
+	return 0;
 }
 
 static int scsiback_probe(struct xenbus_device *dev,
@@ -1283,13 +1252,13 @@ static int scsiback_probe(struct xenbus_device *dev,
 
 	info->domid = dev->otherend_id;
 	spin_lock_init(&info->ring_lock);
+	info->ring_error = 0;
 	atomic_set(&info->nr_unreplied_reqs, 0);
 	init_waitqueue_head(&info->waiting_to_free);
 	info->dev = dev;
 	info->irq = 0;
 	INIT_LIST_HEAD(&info->v2p_entry_lists);
 	spin_lock_init(&info->v2p_lock);
-	gnttab_page_cache_init(&info->free_pages);
 
 	err = xenbus_printf(XBT_NIL, dev->nodename, "feature-sg-grant", "%u",
 			    SG_ALL);
@@ -1407,6 +1376,11 @@ static void scsiback_drop_tport(struct se_wwn *wwn)
 	kfree(tport);
 }
 
+static u32 scsiback_tpg_get_inst_index(struct se_portal_group *se_tpg)
+{
+	return 1;
+}
+
 static int scsiback_check_stop_free(struct se_cmd *se_cmd)
 {
 	return transport_generic_free_cmd(se_cmd, 0);
@@ -1414,7 +1388,20 @@ static int scsiback_check_stop_free(struct se_cmd *se_cmd)
 
 static void scsiback_release_cmd(struct se_cmd *se_cmd)
 {
-	target_free_tag(se_cmd->se_sess, se_cmd);
+	struct se_session *se_sess = se_cmd->se_sess;
+	struct se_tmr_req *se_tmr = se_cmd->se_tmr_req;
+
+	if (se_tmr && se_cmd->se_cmd_flags & SCF_SCSI_TMR_CDB) {
+		struct scsiback_tmr *tmr = se_tmr->fabric_tmr_ptr;
+		kfree(tmr);
+	}
+
+	percpu_ida_free(&se_sess->sess_tag_pool, se_cmd->map_tag);
+}
+
+static u32 scsiback_sess_get_index(struct se_session *se_sess)
+{
+	return 0;
 }
 
 static int scsiback_write_pending(struct se_cmd *se_cmd)
@@ -1422,6 +1409,20 @@ static int scsiback_write_pending(struct se_cmd *se_cmd)
 	/* Go ahead and process the write immediately */
 	target_execute_cmd(se_cmd);
 
+	return 0;
+}
+
+static int scsiback_write_pending_status(struct se_cmd *se_cmd)
+{
+	return 0;
+}
+
+static void scsiback_set_default_node_attrs(struct se_node_acl *nacl)
+{
+}
+
+static int scsiback_get_cmd_state(struct se_cmd *se_cmd)
+{
 	return 0;
 }
 
@@ -1443,7 +1444,8 @@ static int scsiback_queue_status(struct se_cmd *se_cmd)
 	if (se_cmd->sense_buffer &&
 	    ((se_cmd->se_cmd_flags & SCF_TRANSPORT_TASK_SENSE) ||
 	     (se_cmd->se_cmd_flags & SCF_EMULATED_TASK_SENSE)))
-		pending_req->result = SAM_STAT_CHECK_CONDITION;
+		pending_req->result = (DRIVER_SENSE << 24) |
+				      SAM_STAT_CHECK_CONDITION;
 	else
 		pending_req->result = se_cmd->scsi_status;
 
@@ -1453,10 +1455,11 @@ static int scsiback_queue_status(struct se_cmd *se_cmd)
 
 static void scsiback_queue_tm_rsp(struct se_cmd *se_cmd)
 {
-	struct vscsibk_pend *pending_req = container_of(se_cmd,
-				struct vscsibk_pend, se_cmd);
+	struct se_tmr_req *se_tmr = se_cmd->se_tmr_req;
+	struct scsiback_tmr *tmr = se_tmr->fabric_tmr_ptr;
 
-	complete(&pending_req->tmr_done);
+	atomic_set(&tmr->tmr_complete, 1);
+	wake_up(&tmr->tmr_wait);
 }
 
 static void scsiback_aborted_task(struct se_cmd *se_cmd)
@@ -1537,7 +1540,7 @@ static int scsiback_make_nexus(struct scsiback_tpg *tpg,
 		goto out_unlock;
 	}
 
-	tv_nexus->tvn_se_sess = target_setup_session(&tpg->se_tpg,
+	tv_nexus->tvn_se_sess = target_alloc_session(&tpg->se_tpg,
 						     VSCSI_DEFAULT_SESSION_TAGS,
 						     sizeof(struct vscsibk_pend),
 						     TARGET_PROT_NORMAL, name,
@@ -1592,7 +1595,7 @@ static int scsiback_drop_nexus(struct scsiback_tpg *tpg)
 	/*
 	 * Release the SCSI I_T Nexus to the emulated xen-pvscsi Target Port
 	 */
-	target_remove_session(se_sess);
+	transport_deregister_session(tv_nexus->tvn_se_sess);
 	tpg->tpg_nexus = NULL;
 	mutex_unlock(&tpg->tv_tpg_mutex);
 
@@ -1718,6 +1721,11 @@ static struct configfs_attribute *scsiback_wwn_attrs[] = {
 	NULL,
 };
 
+static char *scsiback_get_fabric_name(void)
+{
+	return "xen-pvscsi";
+}
+
 static int scsiback_port_link(struct se_portal_group *se_tpg,
 			       struct se_lun *lun)
 {
@@ -1743,7 +1751,9 @@ static void scsiback_port_unlink(struct se_portal_group *se_tpg,
 }
 
 static struct se_portal_group *
-scsiback_make_tpg(struct se_wwn *wwn, const char *name)
+scsiback_make_tpg(struct se_wwn *wwn,
+		   struct config_group *group,
+		   const char *name)
 {
 	struct scsiback_tport *tport = container_of(wwn,
 			struct scsiback_tport, tport_wwn);
@@ -1804,17 +1814,30 @@ static int scsiback_check_true(struct se_portal_group *se_tpg)
 	return 1;
 }
 
+static int scsiback_check_false(struct se_portal_group *se_tpg)
+{
+	return 0;
+}
+
 static const struct target_core_fabric_ops scsiback_ops = {
 	.module				= THIS_MODULE,
-	.fabric_name			= "xen-pvscsi",
+	.name				= "xen-pvscsi",
+	.get_fabric_name		= scsiback_get_fabric_name,
 	.tpg_get_wwn			= scsiback_get_fabric_wwn,
 	.tpg_get_tag			= scsiback_get_tag,
 	.tpg_check_demo_mode		= scsiback_check_true,
 	.tpg_check_demo_mode_cache	= scsiback_check_true,
+	.tpg_check_demo_mode_write_protect = scsiback_check_false,
+	.tpg_check_prod_mode_write_protect = scsiback_check_false,
+	.tpg_get_inst_index		= scsiback_tpg_get_inst_index,
 	.check_stop_free		= scsiback_check_stop_free,
 	.release_cmd			= scsiback_release_cmd,
+	.sess_get_index			= scsiback_sess_get_index,
 	.sess_get_initiator_sid		= NULL,
 	.write_pending			= scsiback_write_pending,
+	.write_pending_status		= scsiback_write_pending_status,
+	.set_default_node_attributes	= scsiback_set_default_node_attrs,
+	.get_cmd_state			= scsiback_get_cmd_state,
 	.queue_data_in			= scsiback_queue_data_in,
 	.queue_status			= scsiback_queue_status,
 	.queue_tm_rsp			= scsiback_queue_tm_rsp,
@@ -1875,6 +1898,13 @@ out:
 
 static void __exit scsiback_exit(void)
 {
+	struct page *page;
+
+	while (free_pages_num) {
+		if (get_free_page(&page))
+			BUG();
+		gnttab_free_pages(1, &page);
+	}
 	target_unregister_template(&scsiback_ops);
 	xenbus_unregister_driver(&scsiback_driver);
 }

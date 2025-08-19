@@ -1,10 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * otg.c - DesignWare USB3 DRD Controller OTG file
  *
  * Copyright (C) 2016 Xilinx, Inc. All rights reserved.
  *
  * Author:  Manish Narani <mnarani@xilinx.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2  of
+ * the License as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -12,10 +20,10 @@
 #include <linux/dma-mapping.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/sched/signal.h>
 #include <linux/sched.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
+#include <linux/version.h>
 #include <linux/sysfs.h>
 
 #include <linux/usb.h>
@@ -288,8 +296,8 @@ static int start_host(struct dwc3_otg *otg)
 	int flg;
 	u32 octl;
 	u32 osts;
-	u32 ocfg;
 	u32 dctl;
+	u32 event_addr;
 	struct usb_hcd *hcd;
 	struct xhci_hcd *xhci;
 
@@ -298,19 +306,17 @@ static int start_host(struct dwc3_otg *otg)
 	if (!otg->otg.host)
 		return -ENODEV;
 
-	/*
-	 * Prevent the host USBCMD.HCRST from resetting OTG core by setting
-	 * OCFG.OTGSftRstMsk
-	 */
-	ocfg = otg_read(otg, OCFG);
-	ocfg |= DWC3_OCFG_SFTRSTMASK;
-	otg_write(otg, OCFG, ocfg);
-
 	dctl = otg_read(otg, DCTL);
 	if (dctl & DWC3_DCTL_RUN_STOP) {
 		otg_dbg(otg, "Disabling the RUN/STOP bit\n");
 		dctl &= ~DWC3_DCTL_RUN_STOP;
 		otg_write(otg, DCTL, dctl);
+	}
+
+	event_addr = dwc3_readl(otg->dwc->regs, DWC3_GEVNTADRLO(0));
+	if (event_addr != 0x0) {
+		otg_dbg(otg, "Freeing the device event buffers\n");
+		dwc3_free_event_buffers(otg->dwc);
 	}
 
 	if (!set_peri_mode(otg, PERI_MODE_HOST)) {
@@ -330,6 +336,7 @@ static int start_host(struct dwc3_otg *otg)
 	/* Start host driver */
 
 	*(struct xhci_hcd **)hcd->hcd_priv = xhci;
+	otg_dbg(otg, "1- calling usb_add_hcd() irq=%d\n", otg->hcd_irq);
 	ret = usb_add_hcd(hcd, otg->hcd_irq, IRQF_SHARED);
 	if (ret) {
 		otg_err(otg, "%s: failed to start primary hcd, ret=%d\n",
@@ -337,8 +344,9 @@ static int start_host(struct dwc3_otg *otg)
 		return ret;
 	}
 
+	*(struct xhci_hcd **)xhci->shared_hcd->hcd_priv = xhci;
 	if (xhci->shared_hcd) {
-		*(struct xhci_hcd **)xhci->shared_hcd->hcd_priv = xhci;
+		otg_dbg(otg, "2- calling usb_add_hcd() irq=%d\n", otg->hcd_irq);
 		ret = usb_add_hcd(xhci->shared_hcd, otg->hcd_irq, IRQF_SHARED);
 		if (ret) {
 			otg_err(otg,
@@ -397,11 +405,6 @@ static int stop_host(struct dwc3_otg *otg)
 	otg_dbg(otg, "%s: turn off host %s\n",
 		__func__, otg->otg.host->bus_name);
 
-	if (work_pending(&otg->hp_work.work)) {
-		while (!cancel_delayed_work(&otg->hp_work))
-			msleep(20);
-	}
-
 	hcd = container_of(otg->otg.host, struct usb_hcd, self);
 	xhci = hcd_to_xhci(hcd);
 
@@ -437,8 +440,7 @@ int dwc3_otg_host_release(struct usb_hcd *hcd)
 
 		if (__usb_get_extra_descriptor(udev->rawdescriptors[0],
 				le16_to_cpu(udev->config[0].desc.wTotalLength),
-				USB_DT_OTG, (void **)&desc, sizeof(*desc)) ==
-				0) {
+				USB_DT_OTG, (void **) &desc) == 0) {
 			int err;
 
 			dev_info(&udev->dev, "found OTG descriptor\n");
@@ -487,7 +489,15 @@ static void host_release(struct dwc3_otg *otg)
 static void dwc3_otg_setup_event_buffers(struct dwc3_otg *otg)
 {
 	if (dwc3_readl(otg->dwc->regs, DWC3_GEVNTADRLO(0)) == 0x0) {
+		int ret;
 
+		otg_dbg(otg, "allocating the event buffer\n");
+		ret = dwc3_alloc_event_buffers(otg->dwc,
+				DWC3_EVENT_BUFFERS_SIZE);
+		if (ret) {
+			dev_err(otg->dwc->dev,
+					"failed to allocate event buffers\n");
+		}
 		otg_dbg(otg, "setting up event buffers\n");
 		dwc3_event_buffers_setup(otg->dwc);
 	}
@@ -498,19 +508,10 @@ static void start_peripheral(struct dwc3_otg *otg)
 {
 	struct usb_gadget *gadget = otg->otg.gadget;
 	struct dwc3 *dwc = otg->dwc;
-	u32 ocfg;
 
 	otg_dbg(otg, "\n");
 	if (!gadget)
 		return;
-
-	/*
-	 * Prevent the gadget DCTL.CSFTRST from resetting OTG core by setting
-	 * OCFG.OTGSftRstMsk
-	 */
-	ocfg = otg_read(otg, OCFG);
-	ocfg |= DWC3_OCFG_SFTRSTMASK;
-	otg_write(otg, OCFG, ocfg);
 
 	if (!set_peri_mode(otg, PERI_MODE_PERIPHERAL))
 		otg_err(otg, "Failed to set peripheral mode\n");
@@ -520,8 +521,6 @@ static void start_peripheral(struct dwc3_otg *otg)
 		return;
 	}
 
-	set_capabilities(otg);
-
 	dwc3_otg_setup_event_buffers(otg);
 
 	if (dwc->gadget_driver) {
@@ -530,14 +529,14 @@ static void start_peripheral(struct dwc3_otg *otg)
 
 		spin_lock(&otg->lock);
 		dep = dwc->eps[0];
-
-		ret = __dwc3_gadget_ep_enable(dep, DWC3_DEPCFG_ACTION_INIT);
+		ret = __dwc3_gadget_ep_enable(dep, dep->endpoint.desc, NULL,
+				false, false);
 		if (ret)
 			goto err0;
 
 		dep = dwc->eps[1];
-
-		ret = __dwc3_gadget_ep_enable(dep, DWC3_DEPCFG_ACTION_INIT);
+		ret = __dwc3_gadget_ep_enable(dep, dep->endpoint.desc, NULL,
+				false, false);
 		if (ret)
 			goto err1;
 
@@ -559,12 +558,7 @@ static void start_peripheral(struct dwc3_otg *otg)
 
 	otg->peripheral_started = 1;
 
-	/*
-	 * During HNP the bus shouldn't be idle for more than 155 ms, so
-	 * give enough time for the host to load the stack before start
-	 * triggerring events
-	 */
-	msleep(500);
+	msleep(20);
 
 	return;
 err1:
@@ -983,19 +977,16 @@ static enum usb_otg_state do_a_peripheral(struct dwc3_otg *otg)
 {
 	int rc;
 	u32 otg_mask;
-	u32 user_mask;
 	u32 otg_events = 0;
-	u32 user_events = 0;
 
 	otg_dbg(otg, "");
 	otg_mask = OEVT_CONN_ID_STS_CHNG_EVNT |
 		OEVT_A_DEV_SESS_END_DET_EVNT |
 		OEVT_A_DEV_B_DEV_HOST_END_EVNT;
-	user_mask = USER_HNP_END_SESSION;
 
 	rc = sleep_until_event(otg,
-			otg_mask, user_mask,
-			&otg_events, &user_events, 0);
+			otg_mask, 0,
+			&otg_events, NULL, 0);
 	if (rc < 0)
 		return OTG_STATE_UNDEFINED;
 
@@ -1009,9 +1000,6 @@ static enum usb_otg_state do_a_peripheral(struct dwc3_otg *otg)
 
 	} else if (otg_events & OEVT_A_DEV_B_DEV_HOST_END_EVNT) {
 		otg_dbg(otg, "OEVT_A_DEV_B_DEV_HOST_END_EVNT\n");
-		return OTG_STATE_A_WAIT_VRISE;
-	} else if (user_events & USER_HNP_END_SESSION) {
-		otg_dbg(otg, "USER_HNP_END_SESSION\n");
 		return OTG_STATE_A_WAIT_VRISE;
 	}
 
@@ -1143,7 +1131,7 @@ static enum usb_otg_state do_b_wait_acon(struct dwc3_otg *otg)
 		OEVT_B_DEV_B_HOST_END_EVNT |
 		OEVT_B_DEV_VBUS_CHNG_EVNT |
 		OEVT_HOST_ROLE_REQ_INIT_EVNT;
-	user_mask = USER_A_CONN_EVENT | USER_HNP_END_SESSION;
+	user_mask = USER_A_CONN_EVENT;
 
 again:
 	rc = sleep_until_event(otg,
@@ -1171,9 +1159,6 @@ again:
 	} else if (user_events & USER_A_CONN_EVENT) {
 		otg_dbg(otg, "A-device connected\n");
 		return OTG_STATE_B_HOST;
-	} else if (user_events & USER_HNP_END_SESSION) {
-		otg_dbg(otg, "USER_HNP_END_SESSION\n");
-		return OTG_STATE_B_PERIPHERAL;
 	}
 
 	/* Invalid state */
@@ -1194,7 +1179,6 @@ static enum usb_otg_state do_b_host(struct dwc3_otg *otg)
 		OEVT_B_DEV_B_HOST_END_EVNT |
 		OEVT_B_DEV_VBUS_CHNG_EVNT |
 		OEVT_HOST_ROLE_REQ_INIT_EVNT;
-	user_mask = USER_HNP_END_SESSION;
 
 again:
 	rc = sleep_until_event(otg,
@@ -1219,9 +1203,6 @@ again:
 			otg_dbg(otg, "Session not valid\n");
 			return OTG_STATE_B_IDLE;
 		}
-	} else if (user_events & USER_HNP_END_SESSION) {
-		otg_dbg(otg, "USER_HNP_END_SESSION\n");
-		return OTG_STATE_B_PERIPHERAL;
 	}
 
 	/* Invalid state */
@@ -1670,7 +1651,7 @@ static int dwc3_otg_notify_connect(struct usb_phy *phy,
 		/* descriptor may appear anywhere in config */
 		err = __usb_get_extra_descriptor(udev->rawdescriptors[0],
 				le16_to_cpu(udev->config[0].desc.wTotalLength),
-				USB_DT_OTG, (void **)&desc, sizeof(*desc));
+				USB_DT_OTG, (void **) &desc);
 		if (err || !(desc->bmAttributes & USB_OTG_HNP))
 			return 0;
 
@@ -1719,6 +1700,7 @@ static void dwc3_otg_set_peripheral(struct usb_otg *_otg, int yes)
 
 	set_peri_mode(otg, yes);
 }
+EXPORT_SYMBOL(dwc3_otg_set_peripheral);
 
 static int dwc3_otg_set_periph(struct usb_otg *_otg, struct usb_gadget *gadget)
 {
@@ -1742,6 +1724,7 @@ static int dwc3_otg_set_periph(struct usb_otg *_otg, struct usb_gadget *gadget)
 
 	otg->otg.gadget = gadget;
 	otg->otg.gadget->hnp_polling_support = 1;
+	otg->otg.state = OTG_STATE_B_IDLE;
 
 	start_main_thread(otg);
 	return 0;
@@ -1759,7 +1742,7 @@ static int dwc3_otg_set_host(struct usb_otg *_otg, struct usb_bus *host)
 	otg = otg_to_dwc3_otg(_otg);
 	otg_dbg(otg, "\n");
 
-	if (host == (struct usb_bus *)0xdeadbeef) {
+	if ((long)host == 1) {
 		dwc3_otg_set_peripheral(_otg, 0);
 		return 0;
 	}
@@ -1858,6 +1841,7 @@ static int otg_end_session(struct usb_otg *otg)
 {
 	return dwc3_otg_end_session(otg);
 }
+EXPORT_SYMBOL(otg_end_session);
 
 static int dwc3_otg_received_host_release(struct usb_otg *x)
 {
@@ -1970,45 +1954,12 @@ static ssize_t store_hnp(struct device *dev, struct device_attribute *attr,
 	}
 
 	dev_info(dev, "b_hnp_enable is FALSE\n");
-	dwc->gadget->host_request_flag = 1;
+	dwc->gadget.host_request_flag = 1;
 
 	usb_put_phy(phy);
 	return count;
 }
 static DEVICE_ATTR(hnp, 0220, NULL, store_hnp);
-
-static ssize_t store_hnp_end(struct device *dev, struct device_attribute *attr,
-			     const char *buf, size_t count)
-{
-	struct usb_phy *phy;
-	struct usb_otg *otg;
-	unsigned long flags;
-	struct dwc3_otg *dwc_otg;
-
-	phy = usb_get_phy(USB_PHY_TYPE_USB3);
-	if (IS_ERR(phy) || !phy) {
-		if (!IS_ERR(phy))
-			usb_put_phy(phy);
-		return count;
-	}
-
-	otg = phy->otg;
-	if (!otg) {
-		usb_put_phy(phy);
-		return count;
-	}
-
-	dwc_otg = otg_to_dwc3_otg(otg);
-
-	spin_lock_irqsave(&dwc_otg->lock, flags);
-	dwc_otg->user_events |= USER_HNP_END_SESSION;
-	wakeup_main_thread(dwc_otg);
-	spin_unlock_irqrestore(&dwc_otg->lock, flags);
-
-	usb_put_phy(phy);
-	return count;
-}
-static DEVICE_ATTR(hnp_end, 0220, NULL, store_hnp_end);
 
 static ssize_t store_a_hnp_reqd(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
@@ -2042,7 +1993,6 @@ void dwc_usb3_remove_dev_files(struct device *dev)
 	device_remove_file(dev, &dev_attr_end);
 	device_remove_file(dev, &dev_attr_srp);
 	device_remove_file(dev, &dev_attr_hnp);
-	device_remove_file(dev, &dev_attr_hnp_end);
 }
 
 int dwc3_otg_create_dev_files(struct device *dev)
@@ -2050,10 +2000,6 @@ int dwc3_otg_create_dev_files(struct device *dev)
 	int retval;
 
 	retval = device_create_file(dev, &dev_attr_hnp);
-	if (retval)
-		goto fail;
-
-	retval = device_create_file(dev, &dev_attr_hnp_end);
 	if (retval)
 		goto fail;
 
@@ -2080,7 +2026,7 @@ fail:
 	return retval;
 }
 
-void dwc3_otg_init(struct dwc3 *dwc)
+int dwc3_otg_init(struct dwc3 *dwc)
 {
 	struct dwc3_otg *otg;
 	int err;
@@ -2100,14 +2046,12 @@ void dwc3_otg_init(struct dwc3 *dwc)
 		 * situation, just continue probe the dwc3 driver without otg.
 		 */
 		dev_dbg(dwc->dev, "dwc3_otg address space is not supported\n");
-		return;
+		return 0;
 	}
 
 	otg = kzalloc(sizeof(*otg), GFP_KERNEL);
-	if (!otg) {
-		dev_err(otg->dev, "failed to allocate memroy\n");
-		return;
-	}
+	if (!otg)
+		return -ENOMEM;
 
 	dwc->otg = otg;
 	otg->dev = dwc->dev;
@@ -2154,27 +2098,11 @@ void dwc3_otg_init(struct dwc3 *dwc)
 
 	dwc3_otg_enable_irq(otg);
 
-	err = dwc3_gadget_init(dwc);
-	if (err) {
-		if (err != -EPROBE_DEFER)
-			dev_err(otg->otg.usb_phy->dev,
-				"failed to initialize gadget\n");
-		goto exit;
-	}
-
-	err = dwc3_host_init(dwc);
-	if (err) {
-		if (err != -EPROBE_DEFER)
-			dev_err(otg->otg.usb_phy->dev,
-				"failed to initialize host\n");
-		goto exit;
-	}
-
-	return;
-
+	return 0;
 exit:
 	kfree(otg->otg.usb_phy);
 	kfree(otg);
+	return err;
 }
 
 void dwc3_otg_exit(struct dwc3 *dwc)

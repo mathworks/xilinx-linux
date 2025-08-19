@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: MIT */
 /******************************************************************************
  * event_channel.h
  *
@@ -220,7 +219,7 @@ struct evtchn_expand_array {
 #define EVTCHNOP_set_priority    13
 struct evtchn_set_priority {
 	/* IN parameters. */
-	evtchn_port_t port;
+	uint32_t port;
 	uint32_t priority;
 };
 

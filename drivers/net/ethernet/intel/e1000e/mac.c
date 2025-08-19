@@ -1,5 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 1999 - 2018 Intel Corporation. */
+/* Intel PRO/1000 Linux driver
+ * Copyright(c) 1999 - 2015 Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * The full GNU General Public License is included in this distribution in
+ * the file called "COPYING".
+ *
+ * Contact Information:
+ * Linux NICS <linux.nics@intel.com>
+ * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+ * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+ */
 
 #include "e1000.h"
 
@@ -406,15 +424,19 @@ s32 e1000e_check_for_copper_link(struct e1000_hw *hw)
 	 */
 	if (!mac->get_link_status)
 		return 0;
-	mac->get_link_status = false;
 
 	/* First we want to see if the MII Status Register reports
 	 * link.  If so, then we want to get the current speed/duplex
 	 * of the PHY.
 	 */
 	ret_val = e1000e_phy_has_link_generic(hw, 1, 0, &link);
-	if (ret_val || !link)
-		goto out;
+	if (ret_val)
+		return ret_val;
+
+	if (!link)
+		return 0;	/* No link detected */
+
+	mac->get_link_status = false;
 
 	/* Check if there was DownShift, must be checked
 	 * immediately after link-up
@@ -442,10 +464,6 @@ s32 e1000e_check_for_copper_link(struct e1000_hw *hw)
 	if (ret_val)
 		e_dbg("Error configuring flow control\n");
 
-	return ret_val;
-
-out:
-	mac->get_link_status = true;
 	return ret_val;
 }
 
@@ -797,7 +815,7 @@ static s32 e1000_poll_fiber_serdes_link_generic(struct e1000_hw *hw)
 	 * milliseconds even if the other end is doing it in SW).
 	 */
 	for (i = 0; i < FIBER_LINK_UP_LIMIT; i++) {
-		usleep_range(10000, 11000);
+		usleep_range(10000, 20000);
 		status = er32(STATUS);
 		if (status & E1000_STATUS_LU)
 			break;
@@ -957,7 +975,7 @@ s32 e1000e_force_mac_fc(struct e1000_hw *hw)
 	 *      1:  Rx flow control is enabled (we can receive pause
 	 *          frames but not send pause frames).
 	 *      2:  Tx flow control is enabled (we can send pause frames
-	 *          but we do not receive pause frames).
+	 *          frames but we do not receive pause frames).
 	 *      3:  Both Rx and Tx flow control (symmetric) is enabled.
 	 *  other:  No other values should be possible at this point.
 	 */
@@ -1363,7 +1381,7 @@ s32 e1000e_get_hw_semaphore(struct e1000_hw *hw)
 		if (!(swsm & E1000_SWSM_SMBI))
 			break;
 
-		udelay(100);
+		usleep_range(50, 100);
 		i++;
 	}
 
@@ -1381,7 +1399,7 @@ s32 e1000e_get_hw_semaphore(struct e1000_hw *hw)
 		if (er32(SWSM) & E1000_SWSM_SWESMBI)
 			break;
 
-		udelay(100);
+		usleep_range(50, 100);
 	}
 
 	if (i == timeout) {

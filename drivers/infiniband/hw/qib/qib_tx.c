@@ -82,6 +82,7 @@ int qib_disarm_piobufs_ifneeded(struct qib_ctxtdata *rcd)
 	struct qib_devdata *dd = rcd->dd;
 	unsigned i;
 	unsigned last;
+	unsigned n = 0;
 
 	last = rcd->pio_base + rcd->piocnt;
 	/*
@@ -101,8 +102,10 @@ int qib_disarm_piobufs_ifneeded(struct qib_ctxtdata *rcd)
 	}
 	spin_lock_irq(&dd->pioavail_lock);
 	for (i = rcd->pio_base; i < last; i++) {
-		if (__test_and_clear_bit(i, dd->pio_need_disarm))
+		if (__test_and_clear_bit(i, dd->pio_need_disarm)) {
+			n++;
 			dd->f_sendctrl(rcd->ppd, QIB_SENDCTRL_DISARM_BUF(i));
+		}
 	}
 	spin_unlock_irq(&dd->pioavail_lock);
 	return 0;
@@ -176,6 +179,8 @@ void qib_disarm_piobufs_set(struct qib_devdata *dd, unsigned long *mask,
 		pppd[i] = NULL;
 
 	for (i = 0; i < cnt; i++) {
+		int which;
+
 		if (!test_bit(i, mask))
 			continue;
 		/*
@@ -196,7 +201,9 @@ void qib_disarm_piobufs_set(struct qib_devdata *dd, unsigned long *mask,
 		    (!test_bit(i << 1, dd->pioavailkernel) &&
 		     find_ctxt(dd, i))) {
 			__set_bit(i, dd->pio_need_disarm);
+			which = 0;
 		} else {
+			which = 1;
 			dd->f_sendctrl(dd->pport, QIB_SENDCTRL_DISARM_BUF(i));
 		}
 		spin_unlock_irqrestore(&dd->pioavail_lock, flags);
@@ -374,7 +381,6 @@ void qib_sendbuf_done(struct qib_devdata *dd, unsigned n)
  * @start: the starting send buffer number
  * @len: the number of send buffers
  * @avail: true if the buffers are available for kernel use, false otherwise
- * @rcd: the context pointer
  */
 void qib_chg_pioavailkernel(struct qib_devdata *dd, unsigned start,
 	unsigned len, u32 avail, struct qib_ctxtdata *rcd)
@@ -546,9 +552,9 @@ void qib_hol_up(struct qib_pportdata *ppd)
 /*
  * This is only called via the timer.
  */
-void qib_hol_event(struct timer_list *t)
+void qib_hol_event(unsigned long opaque)
 {
-	struct qib_pportdata *ppd = from_timer(ppd, t, hol_timer);
+	struct qib_pportdata *ppd = (struct qib_pportdata *)opaque;
 
 	/* If hardware error, etc, skip. */
 	if (!(ppd->dd->flags & QIB_INITTED))

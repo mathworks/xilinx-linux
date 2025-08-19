@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * LED MTD trigger
  *
@@ -9,6 +8,11 @@
  * Copyright 2006 Openedhand Ltd.
  *
  * Author: Richard Purdie <rpurdie@openedhand.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  */
 
 #include <linux/kernel.h>
@@ -22,8 +26,12 @@ DEFINE_LED_TRIGGER(ledtrig_nand);
 
 void ledtrig_mtd_activity(void)
 {
-	led_trigger_blink_oneshot(ledtrig_mtd, BLINK_DELAY, BLINK_DELAY, 0);
-	led_trigger_blink_oneshot(ledtrig_nand, BLINK_DELAY, BLINK_DELAY, 0);
+	unsigned long blink_delay = BLINK_DELAY;
+
+	led_trigger_blink_oneshot(ledtrig_mtd,
+				  &blink_delay, &blink_delay, 0);
+	led_trigger_blink_oneshot(ledtrig_nand,
+				  &blink_delay, &blink_delay, 0);
 }
 EXPORT_SYMBOL(ledtrig_mtd_activity);
 

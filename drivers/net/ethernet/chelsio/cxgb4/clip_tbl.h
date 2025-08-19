@@ -10,11 +10,9 @@
  *  release for licensing terms and conditions.
  */
 
-#include <linux/refcount.h>
-
 struct clip_entry {
 	spinlock_t lock;	/* Hold while modifying clip reference */
-	refcount_t refcnt;
+	atomic_t refcnt;
 	struct list_head list;
 	union {
 		struct sockaddr_in addr;
@@ -29,7 +27,7 @@ struct clip_tbl {
 	atomic_t nfree;
 	struct list_head ce_free_head;
 	void *cl_list;
-	struct list_head hash_list[];
+	struct list_head hash_list[0];
 };
 
 enum {

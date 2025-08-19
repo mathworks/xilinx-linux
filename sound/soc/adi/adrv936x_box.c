@@ -38,9 +38,9 @@ static struct snd_soc_jack_pin headset_jack_pins[] = {
 	}
 };
 
-struct adrv936x_simple_card_data {
+struct simple_card_data {
 	struct snd_soc_card snd_card;
-	struct adrv936x_box_simple_dai_props {
+	struct simple_dai_props {
 		struct asoc_simple_dai cpu_dai;
 		struct asoc_simple_dai codec_dai;
 		unsigned int mclk_fs;
@@ -53,17 +53,15 @@ struct adrv936x_simple_card_data {
 	struct snd_soc_dai_link dai_link[];	/* dynamically allocated */
 };
 
-#define ADRV936X_BOX_DRIVER_NAME	"asoc-simple-card-adrv936x-box"
-
-#define adrv936x_box_simple_priv_to_dev(priv) ((priv)->snd_card.dev)
-#define adrv936x_box_simple_priv_to_link(priv, i) ((priv)->snd_card.dai_link + i)
-#define adrv936x_box_simple_priv_to_props(priv, i) ((priv)->dai_props + i)
+#define simple_priv_to_dev(priv) ((priv)->snd_card.dev)
+#define simple_priv_to_link(priv, i) ((priv)->snd_card.dai_link + i)
+#define simple_priv_to_props(priv, i) ((priv)->dai_props + i)
 
 static int adrv9363x_box_card_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct adrv936x_simple_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct adrv936x_box_simple_dai_props *dai_props =
+	struct simple_card_data *priv =	snd_soc_card_get_drvdata(rtd->card);
+	struct simple_dai_props *dai_props =
 		&priv->dai_props[rtd->num];
 	int ret;
 
@@ -81,8 +79,8 @@ static int adrv9363x_box_card_startup(struct snd_pcm_substream *substream)
 static void adrv9363x_box_card_shutdown(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct adrv936x_simple_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct adrv936x_box_simple_dai_props *dai_props =
+	struct simple_card_data *priv =	snd_soc_card_get_drvdata(rtd->card);
+	struct simple_dai_props *dai_props =
 		&priv->dai_props[rtd->num];
 
 	clk_disable_unprepare(dai_props->cpu_dai.clk);
@@ -94,10 +92,10 @@ static int adrv9363x_box_card_hw_params(struct snd_pcm_substream *substream,
 				      struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
-	struct adrv936x_simple_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct adrv936x_box_simple_dai_props *dai_props = &priv->dai_props[rtd->num];
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct simple_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
+	struct simple_dai_props *dai_props = &priv->dai_props[rtd->num];
 	unsigned int mclk, mclk_fs = 0;
 	int ret = 0;
 
@@ -188,11 +186,10 @@ err:
 
 static int adrv9363x_box_card_dai_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct adrv936x_simple_card_data *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec = asoc_rtd_to_codec(rtd, 0);
-	struct snd_soc_dai *cpu = asoc_rtd_to_cpu(rtd, 0);
-	struct snd_soc_component *component;
-	struct adrv936x_box_simple_dai_props *dai_props;
+	struct simple_card_data *priv =	snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dai *codec = rtd->codec_dai;
+	struct snd_soc_dai *cpu = rtd->cpu_dai;
+	struct simple_dai_props *dai_props;
 	int ret;
 
 	dai_props = &priv->dai_props[rtd->num];
@@ -229,14 +226,7 @@ static int adrv9363x_box_card_dai_init(struct snd_soc_pcm_runtime *rtd)
 				       &simple_card_mic_jack_gpio);
 	}
 
-	component = snd_soc_rtdcom_lookup(rtd, ADRV936X_BOX_DRIVER_NAME);
-	if (!component) {
-		dev_err(adrv936x_box_simple_priv_to_dev(priv),
-			"Could not find SoC component\n");
-		return -EFAULT;
-	}
-
-	adau17x1_set_micbias_voltage(component,
+	adau17x1_set_micbias_voltage(rtd->codec,
 		ADAU17X1_MICBIAS_0_65_AVDD);
 
 	snd_soc_dapm_force_enable_pin(&rtd->card->dapm, "MICBIAS");
@@ -309,20 +299,21 @@ adrv9363x_box_card_sub_parse_of(struct device_node *np,
 }
 
 static int adrv9363x_box_card_parse_daifmt(struct device_node *node,
-					 struct adrv936x_simple_card_data *priv,
+					 struct simple_card_data *priv,
 					 struct device_node *codec,
 					 char *prefix, int idx)
 {
-	struct snd_soc_dai_link *dai_link = adrv936x_box_simple_priv_to_link(priv, idx);
-	struct device *dev = adrv936x_box_simple_priv_to_dev(priv);
+	struct snd_soc_dai_link *dai_link = simple_priv_to_link(priv, idx);
+	struct device *dev = simple_priv_to_dev(priv);
 	struct device_node *bitclkmaster = NULL;
 	struct device_node *framemaster = NULL;
 	unsigned int daifmt;
 
-	daifmt = snd_soc_daifmt_parse_format(node, prefix);
+	daifmt = snd_soc_of_parse_daifmt(node, prefix,
+					 &bitclkmaster, &framemaster);
+	daifmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
 
-	snd_soc_daifmt_parse_clock_provider_as_phandle(node, prefix, &bitclkmaster, &framemaster);
-	if (!bitclkmaster && !framemaster) {
+	if (strlen(prefix) && !bitclkmaster && !framemaster) {
 		/*
 		 * No dai-link level and master setting was not found from
 		 * sound node level, revert back to legacy DT parsing and
@@ -330,11 +321,15 @@ static int adrv9363x_box_card_parse_daifmt(struct device_node *node,
 		 */
 		dev_dbg(dev, "Revert to legacy daifmt parsing\n");
 
-		daifmt |= snd_soc_daifmt_parse_clock_provider_as_flag(codec, NULL);
+		daifmt = snd_soc_of_parse_daifmt(codec, NULL, NULL, NULL) |
+			(daifmt & ~SND_SOC_DAIFMT_CLOCK_MASK);
 	} else {
-		daifmt |= snd_soc_daifmt_clock_provider_from_bitmap(
-				((codec == bitclkmaster) << 4) | (codec == framemaster));
-
+		if (codec == bitclkmaster)
+			daifmt |= (codec == framemaster) ?
+				SND_SOC_DAIFMT_CBM_CFM : SND_SOC_DAIFMT_CBM_CFS;
+		else
+			daifmt |= (codec == framemaster) ?
+				SND_SOC_DAIFMT_CBS_CFM : SND_SOC_DAIFMT_CBS_CFS;
 	}
 
 	dai_link->dai_fmt = daifmt;
@@ -346,13 +341,13 @@ static int adrv9363x_box_card_parse_daifmt(struct device_node *node,
 }
 
 static int adrv9363x_box_card_dai_link_of(struct device_node *node,
-					struct adrv936x_simple_card_data *priv,
+					struct simple_card_data *priv,
 					int idx,
 					bool is_top_level_node)
 {
-	struct device *dev = adrv936x_box_simple_priv_to_dev(priv);
-	struct snd_soc_dai_link *dai_link = adrv936x_box_simple_priv_to_link(priv, idx);
-	struct adrv936x_box_simple_dai_props *dai_props = adrv936x_box_simple_priv_to_props(priv, idx);
+	struct device *dev = simple_priv_to_dev(priv);
+	struct snd_soc_dai_link *dai_link = simple_priv_to_link(priv, idx);
+	struct simple_dai_props *dai_props = simple_priv_to_props(priv, idx);
 	struct device_node *cpu = NULL;
 	struct device_node *plat = NULL;
 	struct device_node *codec = NULL;
@@ -390,19 +385,19 @@ static int adrv9363x_box_card_dai_link_of(struct device_node *node,
 		dai_props->mclk_fs = val;
 
 	ret = adrv9363x_box_card_sub_parse_of(cpu, &dai_props->cpu_dai,
-					    &dai_link->cpus[0].of_node,
-					    &dai_link->cpus[0].dai_name,
+					    &dai_link->cpu_of_node,
+					    &dai_link->cpu_dai_name,
 					    &cpu_args);
 	if (ret < 0)
 		goto dai_link_of_err;
 
 	ret = adrv9363x_box_card_sub_parse_of(codec, &dai_props->codec_dai,
-					    &dai_link->codecs[0].of_node,
-					    &dai_link->codecs[0].dai_name, NULL);
+					    &dai_link->codec_of_node,
+					    &dai_link->codec_dai_name, NULL);
 	if (ret < 0)
 		goto dai_link_of_err;
 
-	if (!dai_link->cpus[0].dai_name || !dai_link->codecs[0].dai_name) {
+	if (!dai_link->cpu_dai_name || !dai_link->codec_dai_name) {
 		ret = -EINVAL;
 		goto dai_link_of_err;
 	}
@@ -412,24 +407,24 @@ static int adrv9363x_box_card_dai_link_of(struct device_node *node,
 
 		ret = of_parse_phandle_with_args(plat, "sound-dai",
 						 "#sound-dai-cells", 0, &args);
-		dai_link->platforms[0].of_node = args.np;
+		dai_link->platform_of_node = args.np;
 	} else {
 		/* Assumes platform == cpu */
-		dai_link->platforms[0].of_node = dai_link->cpus[0].of_node;
+		dai_link->platform_of_node = dai_link->cpu_of_node;
 	}
 
 	/* DAI link name is created from CPU/CODEC dai name */
 	name = devm_kzalloc(dev,
-			    strlen(dai_link->cpus[0].dai_name)   +
-			    strlen(dai_link->codecs[0].dai_name) + 2,
+			    strlen(dai_link->cpu_dai_name)   +
+			    strlen(dai_link->codec_dai_name) + 2,
 			    GFP_KERNEL);
 	if (!name) {
 		ret = -ENOMEM;
 		goto dai_link_of_err;
 	}
 
-	sprintf(name, "%s-%s", dai_link->cpus[0].dai_name,
-				dai_link->codecs[0].dai_name);
+	sprintf(name, "%s-%s", dai_link->cpu_dai_name,
+				dai_link->codec_dai_name);
 	dai_link->name = dai_link->stream_name = name;
 	dai_link->ops = &adrv9363x_box_card_ops;
 	dai_link->init = adrv9363x_box_card_dai_init;
@@ -437,10 +432,10 @@ static int adrv9363x_box_card_dai_link_of(struct device_node *node,
 	dev_dbg(dev, "\tname : %s\n", dai_link->stream_name);
 	dev_dbg(dev, "\tformat : %04x\n", dai_link->dai_fmt);
 	dev_dbg(dev, "\tcpu : %s / %d\n",
-		dai_link->cpus[0].dai_name,
+		dai_link->cpu_dai_name,
 		dai_props->cpu_dai.sysclk);
 	dev_dbg(dev, "\tcodec : %s / %d\n",
-		dai_link->codecs[0].dai_name,
+		dai_link->codec_dai_name,
 		dai_props->codec_dai.sysclk);
 
 	/*
@@ -453,7 +448,7 @@ static int adrv9363x_box_card_dai_link_of(struct device_node *node,
 	 *	fmt_multiple_name()
 	 */
 	if (!cpu_args)
-		dai_link->cpus[0].dai_name = NULL;
+		dai_link->cpu_dai_name = NULL;
 
 dai_link_of_err:
 	of_node_put(cpu);
@@ -463,9 +458,9 @@ dai_link_of_err:
 }
 
 static int adrv9363x_box_card_parse_of(struct device_node *node,
-				     struct adrv936x_simple_card_data *priv)
+				     struct simple_card_data *priv)
 {
-	struct device *dev = adrv936x_box_simple_priv_to_dev(priv);
+	struct device *dev = simple_priv_to_dev(priv);
 	enum of_gpio_flags flags;
 	u32 val;
 	int ret;
@@ -549,8 +544,8 @@ static int adrv9363x_box_card_unref(struct snd_soc_card *card)
 	for (num_links = 0, dai_link = card->dai_link;
 	     num_links < card->num_links;
 	     num_links++, dai_link++) {
-		of_node_put(dai_link->cpus[0].of_node);
-		of_node_put(dai_link->codecs[0].of_node);
+		of_node_put(dai_link->cpu_of_node);
+		of_node_put(dai_link->codec_of_node);
 	}
 	return 0;
 }
@@ -574,20 +569,18 @@ static int headset_init(struct snd_soc_component *component)
 }
 
 static struct snd_soc_aux_dev headset_dev = {
-	.dlc = {
-		.name = "Headset Chip",
-		.dai_name = "ts3a227e.0-003b"
-	},
+	.name = "Headset Chip",
 	.init = headset_init,
+	.codec_name = "ts3a227e.0-003b"
 };
 
 static int adrv9363x_box_card_probe(struct platform_device *pdev)
 {
-	struct adrv936x_simple_card_data *priv;
+	struct simple_card_data *priv;
 	struct snd_soc_dai_link *dai_link;
 	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
-	int num_links, ret, i;
+	int num_links, ret;
 
 	/* Get the number of DAI links */
 	if (np && of_get_child_by_name(np, "simple-audio-card,dai-link"))
@@ -601,29 +594,6 @@ static int adrv9363x_box_card_probe(struct platform_device *pdev)
 			GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
-
-	/* allocate one of each platforms, cpus & codecs for each link */
-	for (i = 0; i < num_links; i++) {
-		dai_link = &priv->dai_link[i];
-		dai_link->cpus = devm_kzalloc(dev, sizeof(*dai_link->cpus),
-					      GFP_KERNEL);
-		if (!dai_link->cpus)
-			return -ENOMEM;
-		dai_link->num_cpus = 1;
-
-		dai_link->codecs = devm_kzalloc(dev, sizeof(*dai_link->codecs),
-						GFP_KERNEL);
-		if (!dai_link->codecs)
-			return -ENOMEM;
-		dai_link->num_codecs = 1;
-
-		dai_link->platforms = devm_kzalloc(dev,
-						   sizeof(*dai_link->platforms),
-						   GFP_KERNEL);
-		if (!dai_link->platforms)
-			return -ENOMEM;
-		dai_link->num_platforms = 1;
-	}
 
 	/* Init snd_soc_card */
 	priv->snd_card.owner = THIS_MODULE;
@@ -674,10 +644,10 @@ static int adrv9363x_box_card_probe(struct platform_device *pdev)
 		priv->snd_card.name	= (cinfo->card) ? cinfo->card : cinfo->name;
 		dai_link->name		= cinfo->name;
 		dai_link->stream_name	= cinfo->name;
-		dai_link->platforms[0].name	= cinfo->platform;
-		dai_link->codecs[0].name	= cinfo->codec;
-		dai_link->cpus[0].dai_name	= cinfo->cpu_dai.name;
-		dai_link->codecs[0].dai_name = cinfo->codec_dai.name;
+		dai_link->platform_name	= cinfo->platform;
+		dai_link->codec_name	= cinfo->codec;
+		dai_link->cpu_dai_name	= cinfo->cpu_dai.name;
+		dai_link->codec_dai_name = cinfo->codec_dai.name;
 		dai_link->dai_fmt	= cinfo->daifmt;
 		dai_link->init		= adrv9363x_box_card_dai_init;
 		memcpy(&priv->dai_props->cpu_dai, &cinfo->cpu_dai,
@@ -701,7 +671,7 @@ err:
 static int adrv9363x_box_card_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
-	struct adrv936x_simple_card_data *priv = snd_soc_card_get_drvdata(card);
+	struct simple_card_data *priv = snd_soc_card_get_drvdata(card);
 
 	if (gpio_is_valid(priv->gpio_hp_det))
 		snd_soc_jack_free_gpios(&simple_card_hp_jack, 1,
@@ -721,7 +691,7 @@ MODULE_DEVICE_TABLE(of, adrv9363x_box_of_match);
 
 static struct platform_driver adrv9363x_box_card = {
 	.driver = {
-		.name = ADRV936X_BOX_DRIVER_NAME,
+		.name = "asoc-simple-card-adrv936x-box",
 		.of_match_table = adrv9363x_box_of_match,
 	},
 	.probe = adrv9363x_box_card_probe,

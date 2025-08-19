@@ -30,7 +30,7 @@
 
 #include <linux/firmware.h>
 #include <linux/module.h>
-
+#include <drm/drmP.h>
 #include <drm/drm.h>
 
 #include "radeon.h"
@@ -152,12 +152,10 @@ int radeon_uvd_init(struct radeon_device *rdev)
 
 			rdev->uvd.fw_header_present = true;
 
-			family_id = (__force u32)(hdr->ucode_version) & 0xff;
-			version_major = (le32_to_cpu((__force __le32)(hdr->ucode_version))
-							 >> 24) & 0xff;
-			version_minor = (le32_to_cpu((__force __le32)(hdr->ucode_version))
-							 >> 8) & 0xff;
-			DRM_INFO("Found UVD firmware Version: %u.%u Family ID: %u\n",
+			family_id = le32_to_cpu(hdr->ucode_version) & 0xff;
+			version_major = (le32_to_cpu(hdr->ucode_version) >> 24) & 0xff;
+			version_minor = (le32_to_cpu(hdr->ucode_version) >> 8) & 0xff;
+			DRM_INFO("Found UVD firmware Version: %hu.%hu Family ID: %hu\n",
 				 version_major, version_minor, family_id);
 
 			/*
@@ -288,7 +286,7 @@ int radeon_uvd_resume(struct radeon_device *rdev)
 	if (rdev->uvd.vcpu_bo == NULL)
 		return -EINVAL;
 
-	memcpy_toio((void __iomem *)rdev->uvd.cpu_addr, rdev->uvd_fw->data, rdev->uvd_fw->size);
+	memcpy(rdev->uvd.cpu_addr, rdev->uvd_fw->data, rdev->uvd_fw->size);
 
 	size = radeon_bo_size(rdev->uvd.vcpu_bo);
 	size -= rdev->uvd_fw->size;
@@ -296,7 +294,7 @@ int radeon_uvd_resume(struct radeon_device *rdev)
 	ptr = rdev->uvd.cpu_addr;
 	ptr += rdev->uvd_fw->size;
 
-	memset_io((void __iomem *)ptr, 0, size);
+	memset(ptr, 0, size);
 
 	return 0;
 }
@@ -456,7 +454,7 @@ static int radeon_uvd_validate_codec(struct radeon_cs_parser *p,
 		if (p->rdev->family >= CHIP_PALM)
 			return 0;
 
-		fallthrough;
+		/* fall through */
 	default:
 		DRM_ERROR("UVD codec not supported by hardware %d!\n",
 			  stream_type);
@@ -469,12 +467,23 @@ static int radeon_uvd_cs_msg(struct radeon_cs_parser *p, struct radeon_bo *bo,
 {
 	int32_t *msg, msg_type, handle;
 	unsigned img_size = 0;
+	struct fence *f;
 	void *ptr;
+
 	int i, r;
 
 	if (offset & 0x3F) {
 		DRM_ERROR("UVD messages must be 64 byte aligned!\n");
 		return -EINVAL;
+	}
+
+	f = reservation_object_get_excl(bo->tbo.resv);
+	if (f) {
+		r = radeon_fence_wait((struct radeon_fence *)f, false);
+		if (r) {
+			DRM_ERROR("Failed waiting for UVD message (%d)!\n", r);
+			return r;
+		}
 	}
 
 	r = radeon_bo_kmap(bo, &ptr);
@@ -489,7 +498,6 @@ static int radeon_uvd_cs_msg(struct radeon_cs_parser *p, struct radeon_bo *bo,
 	handle = msg[2];
 
 	if (handle == 0) {
-		radeon_bo_kunmap(bo);
 		DRM_ERROR("Invalid UVD handle!\n");
 		return -EINVAL;
 	}
@@ -552,10 +560,12 @@ static int radeon_uvd_cs_msg(struct radeon_cs_parser *p, struct radeon_bo *bo,
 		return 0;
 
 	default:
+
 		DRM_ERROR("Illegal UVD message type (%d)!\n", msg_type);
+		return -EINVAL;
 	}
 
-	radeon_bo_kunmap(bo);
+	BUG();
 	return -EINVAL;
 }
 
@@ -771,7 +781,7 @@ int radeon_uvd_get_create_msg(struct radeon_device *rdev, int ring,
 	uint64_t offs = radeon_bo_size(rdev->uvd.vcpu_bo) -
 		RADEON_GPU_PAGE_SIZE;
 
-	uint32_t __iomem *msg = (void __iomem *)(rdev->uvd.cpu_addr + offs);
+	uint32_t *msg = rdev->uvd.cpu_addr + offs;
 	uint64_t addr = rdev->uvd.gpu_addr + offs;
 
 	int r, i;
@@ -781,19 +791,19 @@ int radeon_uvd_get_create_msg(struct radeon_device *rdev, int ring,
 		return r;
 
 	/* stitch together an UVD create msg */
-	writel((__force u32)cpu_to_le32(0x00000de4), &msg[0]);
-	writel(0x0, (void __iomem *)&msg[1]);
-	writel((__force u32)cpu_to_le32(handle), &msg[2]);
-	writel(0x0, &msg[3]);
-	writel(0x0, &msg[4]);
-	writel(0x0, &msg[5]);
-	writel(0x0, &msg[6]);
-	writel((__force u32)cpu_to_le32(0x00000780), &msg[7]);
-	writel((__force u32)cpu_to_le32(0x00000440), &msg[8]);
-	writel(0x0, &msg[9]);
-	writel((__force u32)cpu_to_le32(0x01b37000), &msg[10]);
+	msg[0] = cpu_to_le32(0x00000de4);
+	msg[1] = cpu_to_le32(0x00000000);
+	msg[2] = cpu_to_le32(handle);
+	msg[3] = cpu_to_le32(0x00000000);
+	msg[4] = cpu_to_le32(0x00000000);
+	msg[5] = cpu_to_le32(0x00000000);
+	msg[6] = cpu_to_le32(0x00000000);
+	msg[7] = cpu_to_le32(0x00000780);
+	msg[8] = cpu_to_le32(0x00000440);
+	msg[9] = cpu_to_le32(0x00000000);
+	msg[10] = cpu_to_le32(0x01b37000);
 	for (i = 11; i < 1024; ++i)
-		writel(0x0, &msg[i]);
+		msg[i] = cpu_to_le32(0x0);
 
 	r = radeon_uvd_send_msg(rdev, ring, addr, fence);
 	radeon_bo_unreserve(rdev->uvd.vcpu_bo);
@@ -807,7 +817,7 @@ int radeon_uvd_get_destroy_msg(struct radeon_device *rdev, int ring,
 	uint64_t offs = radeon_bo_size(rdev->uvd.vcpu_bo) -
 		RADEON_GPU_PAGE_SIZE;
 
-	uint32_t __iomem *msg = (void __iomem *)(rdev->uvd.cpu_addr + offs);
+	uint32_t *msg = rdev->uvd.cpu_addr + offs;
 	uint64_t addr = rdev->uvd.gpu_addr + offs;
 
 	int r, i;
@@ -817,12 +827,12 @@ int radeon_uvd_get_destroy_msg(struct radeon_device *rdev, int ring,
 		return r;
 
 	/* stitch together an UVD destroy msg */
-	writel((__force u32)cpu_to_le32(0x00000de4), &msg[0]);
-	writel((__force u32)cpu_to_le32(0x00000002), &msg[1]);
-	writel((__force u32)cpu_to_le32(handle), &msg[2]);
-	writel(0x0, &msg[3]);
+	msg[0] = cpu_to_le32(0x00000de4);
+	msg[1] = cpu_to_le32(0x00000002);
+	msg[2] = cpu_to_le32(handle);
+	msg[3] = cpu_to_le32(0x00000000);
 	for (i = 4; i < 1024; ++i)
-		writel(0x0, &msg[i]);
+		msg[i] = cpu_to_le32(0x0);
 
 	r = radeon_uvd_send_msg(rdev, ring, addr, fence);
 	radeon_bo_unreserve(rdev->uvd.vcpu_bo);
@@ -985,7 +995,7 @@ int radeon_uvd_calc_upll_dividers(struct radeon_device *rdev,
 		/* calc dclk divider with current vco freq */
 		dclk_div = radeon_uvd_calc_upll_post_div(vco_freq, dclk,
 							 pd_min, pd_even);
-		if (dclk_div > pd_max)
+		if (vclk_div > pd_max)
 			break; /* vco is too big, it has to stop */
 
 		/* calc score with current vco freq */

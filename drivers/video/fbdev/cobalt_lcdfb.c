@@ -1,9 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Cobalt/SEAD3 LCD frame buffer driver.
  *
  *  Copyright (C) 2008  Yoichi Yuasa <yuasa@linux-mips.org>
  *  Copyright (C) 2012  MIPS Technologies, Inc.
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 #include <linux/delay.h>
 #include <linux/fb.h>
@@ -13,7 +26,6 @@
 #include <linux/uaccess.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
-#include <linux/sched/signal.h>
 
 /*
  * Cursor position address
@@ -113,7 +125,7 @@ static void lcd_clear(struct fb_info *info)
 	lcd_write_control(info, LCD_RESET);
 }
 
-static const struct fb_fix_screeninfo cobalt_lcdfb_fix = {
+static struct fb_fix_screeninfo cobalt_lcdfb_fix = {
 	.id		= "cobalt-lcd",
 	.type		= FB_TYPE_TEXT,
 	.type_aux	= FB_AUX_TEXT_MDA,
@@ -128,9 +140,6 @@ static ssize_t cobalt_lcdfb_read(struct fb_info *info, char __user *buf,
 	char src[LCD_CHARS_MAX];
 	unsigned long pos;
 	int len, retval = 0;
-
-	if (!info->screen_base)
-		return -ENODEV;
 
 	pos = *ppos;
 	if (pos >= LCD_CHARS_MAX || count == 0)
@@ -177,9 +186,6 @@ static ssize_t cobalt_lcdfb_write(struct fb_info *info, const char __user *buf,
 	char dst[LCD_CHARS_MAX];
 	unsigned long pos;
 	int len, retval = 0;
-
-	if (!info->screen_base)
-		return -ENODEV;
 
 	pos = *ppos;
 	if (pos >= LCD_CHARS_MAX || count == 0)
@@ -275,7 +281,7 @@ static int cobalt_lcdfb_cursor(struct fb_info *info, struct fb_cursor *cursor)
 	return 0;
 }
 
-static const struct fb_ops cobalt_lcd_fbops = {
+static struct fb_ops cobalt_lcd_fbops = {
 	.owner		= THIS_MODULE,
 	.fb_read	= cobalt_lcdfb_read,
 	.fb_write	= cobalt_lcdfb_write,
@@ -302,17 +308,13 @@ static int cobalt_lcdfb_probe(struct platform_device *dev)
 	info->screen_size = resource_size(res);
 	info->screen_base = devm_ioremap(&dev->dev, res->start,
 					 info->screen_size);
-	if (!info->screen_base) {
-		framebuffer_release(info);
-		return -ENOMEM;
-	}
-
 	info->fbops = &cobalt_lcd_fbops;
 	info->fix = cobalt_lcdfb_fix;
 	info->fix.smem_start = res->start;
 	info->fix.smem_len = info->screen_size;
 	info->pseudo_palette = NULL;
 	info->par = NULL;
+	info->flags = FBINFO_DEFAULT;
 
 	retval = register_framebuffer(info);
 	if (retval < 0) {
@@ -329,7 +331,7 @@ static int cobalt_lcdfb_probe(struct platform_device *dev)
 	return 0;
 }
 
-static void cobalt_lcdfb_remove(struct platform_device *dev)
+static int cobalt_lcdfb_remove(struct platform_device *dev)
 {
 	struct fb_info *info;
 
@@ -338,11 +340,13 @@ static void cobalt_lcdfb_remove(struct platform_device *dev)
 		unregister_framebuffer(info);
 		framebuffer_release(info);
 	}
+
+	return 0;
 }
 
 static struct platform_driver cobalt_lcdfb_driver = {
 	.probe	= cobalt_lcdfb_probe,
-	.remove_new = cobalt_lcdfb_remove,
+	.remove	= cobalt_lcdfb_remove,
 	.driver	= {
 		.name	= "cobalt-lcd",
 	},

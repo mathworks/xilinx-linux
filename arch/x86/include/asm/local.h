@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_LOCAL_H
 #define _ASM_X86_LOCAL_H
 
@@ -53,7 +52,7 @@ static inline void local_sub(long i, local_t *l)
  */
 static inline bool local_sub_and_test(long i, local_t *l)
 {
-	return GEN_BINARY_RMWcc(_ASM_SUB, l->a.counter, e, "er", i);
+	GEN_BINARY_RMWcc(_ASM_SUB, l->a.counter, "er", i, "%0", e);
 }
 
 /**
@@ -66,7 +65,7 @@ static inline bool local_sub_and_test(long i, local_t *l)
  */
 static inline bool local_dec_and_test(local_t *l)
 {
-	return GEN_UNARY_RMWcc(_ASM_DEC, l->a.counter, e);
+	GEN_UNARY_RMWcc(_ASM_DEC, l->a.counter, "%0", e);
 }
 
 /**
@@ -79,7 +78,7 @@ static inline bool local_dec_and_test(local_t *l)
  */
 static inline bool local_inc_and_test(local_t *l)
 {
-	return GEN_UNARY_RMWcc(_ASM_INC, l->a.counter, e);
+	GEN_UNARY_RMWcc(_ASM_INC, l->a.counter, "%0", e);
 }
 
 /**
@@ -93,7 +92,7 @@ static inline bool local_inc_and_test(local_t *l)
  */
 static inline bool local_add_negative(long i, local_t *l)
 {
-	return GEN_BINARY_RMWcc(_ASM_ADD, l->a.counter, s, "er", i);
+	GEN_BINARY_RMWcc(_ASM_ADD, l->a.counter, "er", i, "%0", s);
 }
 
 /**
@@ -120,17 +119,8 @@ static inline long local_sub_return(long i, local_t *l)
 #define local_inc_return(l)  (local_add_return(1, l))
 #define local_dec_return(l)  (local_sub_return(1, l))
 
-static inline long local_cmpxchg(local_t *l, long old, long new)
-{
-	return cmpxchg_local(&l->a.counter, old, new);
-}
-
-static inline bool local_try_cmpxchg(local_t *l, long *old, long new)
-{
-	return try_cmpxchg_local(&l->a.counter,
-				 (typeof(l->a.counter) *) old, new);
-}
-
+#define local_cmpxchg(l, o, n) \
+	(cmpxchg_local(&((l)->a.counter), (o), (n)))
 /* Always has a lock prefix */
 #define local_xchg(l, n) (xchg(&((l)->a.counter), (n)))
 

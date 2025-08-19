@@ -1,12 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PERF_UI_H_
 #define _PERF_UI_H_ 1
 
-#include "../util/mutex.h"
+#include <pthread.h>
 #include <stdbool.h>
 #include <linux/compiler.h>
 
-extern struct mutex ui__lock;
+extern pthread_mutex_t ui__lock;
 extern void *perf_gtk_handle;
 
 extern int use_browser;
@@ -30,8 +29,5 @@ void ui__refresh_dimensions(bool force);
 struct option;
 
 int stdio__config_color(const struct option *opt, const char *mode, int unset);
-
-void pthread__block_sigwinch(void);
-void pthread__unblock_sigwinch(void);
 
 #endif /* _PERF_UI_H_ */

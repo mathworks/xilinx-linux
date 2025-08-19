@@ -1,9 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * PIC32 Quad SPI controller driver.
  *
  * Purna Chandra Mandal <purna.mandal@microchip.com>
  * Copyright (c) 2016, Microchip Technology Inc.
+ *
+ * This program is free software; you can distribute it and/or modify it
+ * under the terms of the GNU General Public License (Version 2) as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * for more details.
  */
 
 #include <linux/clk.h>
@@ -139,7 +147,7 @@ struct pic32_sqi {
 	void __iomem		*regs;
 	struct clk		*sys_clk;
 	struct clk		*base_clk; /* drives spi clock */
-	struct spi_controller	*host;
+	struct spi_master	*master;
 	int			irq;
 	struct completion	xfer_done;
 	struct ring_desc	*ring;
@@ -267,7 +275,7 @@ static int pic32_sqi_one_transfer(struct pic32_sqi *sqi,
 	u32 nbits;
 
 	/* Device selection */
-	bd_ctrl = spi_get_chipselect(spi, 0) << BD_DEVSEL_SHIFT;
+	bd_ctrl = spi->chip_select << BD_DEVSEL_SHIFT;
 
 	/* half-duplex: select transfer buffer, direction and lane */
 	if (xfer->rx_buf) {
@@ -316,9 +324,9 @@ static int pic32_sqi_one_transfer(struct pic32_sqi *sqi,
 	return 0;
 }
 
-static int pic32_sqi_prepare_hardware(struct spi_controller *host)
+static int pic32_sqi_prepare_hardware(struct spi_master *master)
 {
-	struct pic32_sqi *sqi = spi_controller_get_devdata(host);
+	struct pic32_sqi *sqi = spi_master_get_devdata(master);
 
 	/* enable spi interface */
 	pic32_setbits(sqi->regs + PESQI_CONF_REG, PESQI_EN);
@@ -328,7 +336,7 @@ static int pic32_sqi_prepare_hardware(struct spi_controller *host)
 	return 0;
 }
 
-static bool pic32_sqi_can_dma(struct spi_controller *host,
+static bool pic32_sqi_can_dma(struct spi_master *master,
 			      struct spi_device *spi,
 			      struct spi_transfer *x)
 {
@@ -336,7 +344,7 @@ static bool pic32_sqi_can_dma(struct spi_controller *host,
 	return true;
 }
 
-static int pic32_sqi_one_message(struct spi_controller *host,
+static int pic32_sqi_one_message(struct spi_master *master,
 				 struct spi_message *msg)
 {
 	struct spi_device *spi = msg->spi;
@@ -347,7 +355,7 @@ static int pic32_sqi_one_message(struct spi_controller *host,
 	unsigned long timeout;
 	u32 val;
 
-	sqi = spi_controller_get_devdata(host);
+	sqi = spi_master_get_devdata(master);
 
 	reinit_completion(&sqi->xfer_done);
 	msg->actual_length = 0;
@@ -412,7 +420,7 @@ static int pic32_sqi_one_message(struct spi_controller *host,
 	/* wait for xfer completion */
 	timeout = wait_for_completion_timeout(&sqi->xfer_done, 5 * HZ);
 	if (timeout == 0) {
-		dev_err(&sqi->host->dev, "wait timedout/interrupted\n");
+		dev_err(&sqi->master->dev, "wait timedout/interrupted\n");
 		ret = -ETIMEDOUT;
 		msg->status = ret;
 	} else {
@@ -434,14 +442,14 @@ xfer_out:
 		/* release ring descr */
 		ring_desc_put(sqi, rdesc);
 	}
-	spi_finalize_current_message(spi->controller);
+	spi_finalize_current_message(spi->master);
 
 	return ret;
 }
 
-static int pic32_sqi_unprepare_hardware(struct spi_controller *host)
+static int pic32_sqi_unprepare_hardware(struct spi_master *master)
 {
-	struct pic32_sqi *sqi = spi_controller_get_devdata(host);
+	struct pic32_sqi *sqi = spi_master_get_devdata(master);
 
 	/* disable clk */
 	pic32_clrbits(sqi->regs + PESQI_CLK_CTRL_REG, PESQI_CLK_EN);
@@ -458,18 +466,18 @@ static int ring_desc_ring_alloc(struct pic32_sqi *sqi)
 	int i;
 
 	/* allocate coherent DMAable memory for hardware buffer descriptors. */
-	sqi->bd = dma_alloc_coherent(&sqi->host->dev,
-				     sizeof(*bd) * PESQI_BD_COUNT,
-				     &sqi->bd_dma, GFP_KERNEL);
+	sqi->bd = dma_zalloc_coherent(&sqi->master->dev,
+				      sizeof(*bd) * PESQI_BD_COUNT,
+				      &sqi->bd_dma, GFP_DMA32);
 	if (!sqi->bd) {
-		dev_err(&sqi->host->dev, "failed allocating dma buffer\n");
+		dev_err(&sqi->master->dev, "failed allocating dma buffer\n");
 		return -ENOMEM;
 	}
 
 	/* allocate software ring descriptors */
 	sqi->ring = kcalloc(PESQI_BD_COUNT, sizeof(*rdesc), GFP_KERNEL);
 	if (!sqi->ring) {
-		dma_free_coherent(&sqi->host->dev,
+		dma_free_coherent(&sqi->master->dev,
 				  sizeof(*bd) * PESQI_BD_COUNT,
 				  sqi->bd, sqi->bd_dma);
 		return -ENOMEM;
@@ -498,7 +506,7 @@ static int ring_desc_ring_alloc(struct pic32_sqi *sqi)
 
 static void ring_desc_ring_free(struct pic32_sqi *sqi)
 {
-	dma_free_coherent(&sqi->host->dev,
+	dma_free_coherent(&sqi->master->dev,
 			  sizeof(struct buf_desc) * PESQI_BD_COUNT,
 			  sqi->bd, sqi->bd_dma);
 	kfree(sqi->ring);
@@ -568,28 +576,31 @@ static void pic32_sqi_hw_init(struct pic32_sqi *sqi)
 
 static int pic32_sqi_probe(struct platform_device *pdev)
 {
-	struct spi_controller *host;
+	struct spi_master *master;
 	struct pic32_sqi *sqi;
+	struct resource *reg;
 	int ret;
 
-	host = spi_alloc_host(&pdev->dev, sizeof(*sqi));
-	if (!host)
+	master = spi_alloc_master(&pdev->dev, sizeof(*sqi));
+	if (!master)
 		return -ENOMEM;
 
-	sqi = spi_controller_get_devdata(host);
-	sqi->host = host;
+	sqi = spi_master_get_devdata(master);
+	sqi->master = master;
 
-	sqi->regs = devm_platform_ioremap_resource(pdev, 0);
+	reg = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	sqi->regs = devm_ioremap_resource(&pdev->dev, reg);
 	if (IS_ERR(sqi->regs)) {
 		ret = PTR_ERR(sqi->regs);
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	/* irq */
 	sqi->irq = platform_get_irq(pdev, 0);
 	if (sqi->irq < 0) {
+		dev_err(&pdev->dev, "no irq found\n");
 		ret = sqi->irq;
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	/* clocks */
@@ -597,27 +608,27 @@ static int pic32_sqi_probe(struct platform_device *pdev)
 	if (IS_ERR(sqi->sys_clk)) {
 		ret = PTR_ERR(sqi->sys_clk);
 		dev_err(&pdev->dev, "no sys_clk ?\n");
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	sqi->base_clk = devm_clk_get(&pdev->dev, "spi_ck");
 	if (IS_ERR(sqi->base_clk)) {
 		ret = PTR_ERR(sqi->base_clk);
 		dev_err(&pdev->dev, "no base clk ?\n");
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	ret = clk_prepare_enable(sqi->sys_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "sys clk enable failed\n");
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	ret = clk_prepare_enable(sqi->base_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "base clk enable failed\n");
 		clk_disable_unprepare(sqi->sys_clk);
-		goto err_free_host;
+		goto err_free_master;
 	}
 
 	init_completion(&sqi->xfer_done);
@@ -640,24 +651,24 @@ static int pic32_sqi_probe(struct platform_device *pdev)
 		goto err_free_ring;
 	}
 
-	/* register host */
-	host->num_chipselect	= 2;
-	host->max_speed_hz	= clk_get_rate(sqi->base_clk);
-	host->dma_alignment	= 32;
-	host->max_dma_len	= PESQI_BD_BUF_LEN_MAX;
-	host->dev.of_node	= pdev->dev.of_node;
-	host->mode_bits		= SPI_MODE_3 | SPI_MODE_0 | SPI_TX_DUAL |
+	/* register master */
+	master->num_chipselect	= 2;
+	master->max_speed_hz	= clk_get_rate(sqi->base_clk);
+	master->dma_alignment	= 32;
+	master->max_dma_len	= PESQI_BD_BUF_LEN_MAX;
+	master->dev.of_node	= of_node_get(pdev->dev.of_node);
+	master->mode_bits	= SPI_MODE_3 | SPI_MODE_0 | SPI_TX_DUAL |
 				  SPI_RX_DUAL | SPI_TX_QUAD | SPI_RX_QUAD;
-	host->flags		= SPI_CONTROLLER_HALF_DUPLEX;
-	host->can_dma		= pic32_sqi_can_dma;
-	host->bits_per_word_mask	= SPI_BPW_RANGE_MASK(8, 32);
-	host->transfer_one_message	= pic32_sqi_one_message;
-	host->prepare_transfer_hardware	= pic32_sqi_prepare_hardware;
-	host->unprepare_transfer_hardware	= pic32_sqi_unprepare_hardware;
+	master->flags		= SPI_MASTER_HALF_DUPLEX;
+	master->can_dma		= pic32_sqi_can_dma;
+	master->bits_per_word_mask	= SPI_BPW_RANGE_MASK(8, 32);
+	master->transfer_one_message	= pic32_sqi_one_message;
+	master->prepare_transfer_hardware	= pic32_sqi_prepare_hardware;
+	master->unprepare_transfer_hardware	= pic32_sqi_unprepare_hardware;
 
-	ret = devm_spi_register_controller(&pdev->dev, host);
+	ret = devm_spi_register_master(&pdev->dev, master);
 	if (ret) {
-		dev_err(&host->dev, "failed registering spi host\n");
+		dev_err(&master->dev, "failed registering spi master\n");
 		free_irq(sqi->irq, sqi);
 		goto err_free_ring;
 	}
@@ -673,12 +684,12 @@ err_disable_clk:
 	clk_disable_unprepare(sqi->base_clk);
 	clk_disable_unprepare(sqi->sys_clk);
 
-err_free_host:
-	spi_controller_put(host);
+err_free_master:
+	spi_master_put(master);
 	return ret;
 }
 
-static void pic32_sqi_remove(struct platform_device *pdev)
+static int pic32_sqi_remove(struct platform_device *pdev)
 {
 	struct pic32_sqi *sqi = platform_get_drvdata(pdev);
 
@@ -689,6 +700,8 @@ static void pic32_sqi_remove(struct platform_device *pdev)
 	/* disable clk */
 	clk_disable_unprepare(sqi->base_clk);
 	clk_disable_unprepare(sqi->sys_clk);
+
+	return 0;
 }
 
 static const struct of_device_id pic32_sqi_of_ids[] = {
@@ -703,7 +716,7 @@ static struct platform_driver pic32_sqi_driver = {
 		.of_match_table = of_match_ptr(pic32_sqi_of_ids),
 	},
 	.probe = pic32_sqi_probe,
-	.remove_new = pic32_sqi_remove,
+	.remove = pic32_sqi_remove,
 };
 
 module_platform_driver(pic32_sqi_driver);

@@ -1,19 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _RAID10_H
 #define _RAID10_H
-
-/* Note: raid10_info.rdev can be set to NULL asynchronously by
- * raid10_remove_disk.
- * There are three safe ways to access raid10_info.rdev.
- * 1/ when holding mddev->reconfig_mutex
- * 2/ when resync/recovery/reshape is known to be happening - i.e. in code
- *    that is called as part of performing resync/recovery/reshape.
- * 3/ while holding rcu_read_lock(), use rcu_dereference to get the pointer
- *    and if it is non-NULL, increment rdev->nr_pending before dropping the
- *    RCU lock.
- * When .rdev is set to NULL, the nr_pending count checked again and if it has
- * been incremented, the pointer is put back in .rdev.
- */
 
 struct raid10_info {
 	struct md_rdev	*rdev, *replacement;
@@ -75,8 +61,9 @@ struct r10conf {
 
 	/* queue pending writes and submit them on unplug */
 	struct bio_list		pending_bio_list;
+	int			pending_count;
 
-	seqlock_t		resync_lock;
+	spinlock_t		resync_lock;
 	atomic_t		nr_pending;
 	int			nr_waiting;
 	int			nr_queued;
@@ -92,21 +79,14 @@ struct r10conf {
 						   */
 	wait_queue_head_t	wait_barrier;
 
-	mempool_t		r10bio_pool;
-	mempool_t		r10buf_pool;
+	mempool_t		*r10bio_pool;
+	mempool_t		*r10buf_pool;
 	struct page		*tmppage;
-	struct bio_set		bio_split;
 
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.
 	 */
-	struct md_thread __rcu	*thread;
-
-	/*
-	 * Keep track of cluster resync window to send to other nodes.
-	 */
-	sector_t		cluster_sync_low;
-	sector_t		cluster_sync_high;
+	struct md_thread	*thread;
 };
 
 /*
@@ -152,7 +132,7 @@ struct r10bio {
 		};
 		sector_t	addr;
 		int		devnum;
-	} devs[];
+	} devs[0];
 };
 
 /* bits for r10bio.state */
@@ -176,8 +156,5 @@ enum r10bio_state {
  * flag is set
  */
 	R10BIO_Previous,
-/* failfast devices did receive failfast requests. */
-	R10BIO_FailFast,
-	R10BIO_Discard,
 };
 #endif

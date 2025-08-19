@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file adi_hal.h
  * \brief Contains Talise ADI HAL function prototypes type definitions for adi_hal.c
@@ -9,8 +8,6 @@
 
 #ifndef _ADI_HAL_H_
 #define _ADI_HAL_H_
-
-#pragma GCC diagnostic ignored "-Wvla"
 
 /* include standard types and definitions */
 #include <linux/kernel.h>

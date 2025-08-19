@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	Declarations of X.25 Packet Layer type objects.
  *
@@ -12,7 +11,6 @@
 #define _X25_H 
 #include <linux/x25.h>
 #include <linux/slab.h>
-#include <linux/refcount.h>
 #include <net/sock.h>
 
 #define	X25_ADDR_LEN			16
@@ -62,8 +60,7 @@ enum {
 	X25_STATE_1,		/* Awaiting Call Accepted */
 	X25_STATE_2,		/* Awaiting Clear Confirmation */
 	X25_STATE_3,		/* Data Transfer */
-	X25_STATE_4,		/* Awaiting Reset Confirmation */
-	X25_STATE_5		/* Call Accepted / Call Connected pending */
+	X25_STATE_4		/* Awaiting Reset Confirmation */
 };
 
 enum {
@@ -132,7 +129,7 @@ struct x25_route {
 	struct x25_address	address;
 	unsigned int		sigdigits;
 	struct net_device	*dev;
-	refcount_t		refcnt;
+	atomic_t		refcnt;
 };
 
 struct x25_neigh {
@@ -144,7 +141,7 @@ struct x25_neigh {
 	unsigned long		t20;
 	struct timer_list	t20timer;
 	unsigned long		global_facil_mask;
-	refcount_t		refcnt;
+	atomic_t		refcnt;
 };
 
 struct x25_sock {
@@ -177,7 +174,10 @@ struct x25_forward {
 	atomic_t		refcnt;
 };
 
-#define x25_sk(ptr) container_of_const(ptr, struct x25_sock, sk)
+static inline struct x25_sock *x25_sk(const struct sock *sk)
+{
+	return (struct x25_sock *)sk;
+}
 
 /* af_x25.c */
 extern int  sysctl_x25_restart_request_timeout;
@@ -242,12 +242,12 @@ void x25_link_free(void);
 /* x25_neigh.c */
 static __inline__ void x25_neigh_hold(struct x25_neigh *nb)
 {
-	refcount_inc(&nb->refcnt);
+	atomic_inc(&nb->refcnt);
 }
 
 static __inline__ void x25_neigh_put(struct x25_neigh *nb)
 {
-	if (refcount_dec_and_test(&nb->refcnt))
+	if (atomic_dec_and_test(&nb->refcnt))
 		kfree(nb);
 }
 
@@ -265,12 +265,12 @@ void x25_route_free(void);
 
 static __inline__ void x25_route_hold(struct x25_route *rt)
 {
-	refcount_inc(&rt->refcnt);
+	atomic_inc(&rt->refcnt);
 }
 
 static __inline__ void x25_route_put(struct x25_route *rt)
 {
-	if (refcount_dec_and_test(&rt->refcnt))
+	if (atomic_dec_and_test(&rt->refcnt))
 		kfree(rt);
 }
 
@@ -298,10 +298,10 @@ void x25_check_rbuf(struct sock *);
 
 /* sysctl_net_x25.c */
 #ifdef CONFIG_SYSCTL
-int x25_register_sysctl(void);
+void x25_register_sysctl(void);
 void x25_unregister_sysctl(void);
 #else
-static inline int x25_register_sysctl(void) { return 0; };
+static inline void x25_register_sysctl(void) {};
 static inline void x25_unregister_sysctl(void) {};
 #endif /* CONFIG_SYSCTL */
 

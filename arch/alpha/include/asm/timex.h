@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/include/asm-alpha/timex.h
  *
@@ -28,6 +27,5 @@ static inline cycles_t get_cycles (void)
 	__asm__ __volatile__ ("rpcc %0" : "=r"(ret));
 	return ret;
 }
-#define get_cycles get_cycles
 
 #endif

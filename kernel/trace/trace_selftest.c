@@ -1,7 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
 /* Include in trace.c */
 
-#include <uapi/linux/sched/types.h>
 #include <linux/stringify.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
@@ -23,7 +21,7 @@ static inline int trace_valid_entry(struct trace_entry *entry)
 	return 0;
 }
 
-static int trace_test_buffer_cpu(struct array_buffer *buf, int cpu)
+static int trace_test_buffer_cpu(struct trace_buffer *buf, int cpu)
 {
 	struct ring_buffer_event *event;
 	struct trace_entry *entry;
@@ -60,7 +58,7 @@ static int trace_test_buffer_cpu(struct array_buffer *buf, int cpu)
  * Test the trace buffer to see if all the elements
  * are still sane.
  */
-static int __maybe_unused trace_test_buffer(struct array_buffer *buf, unsigned long *count)
+static int trace_test_buffer(struct trace_buffer *buf, unsigned long *count)
 {
 	unsigned long flags, cnt = 0;
 	int cpu, ret = 0;
@@ -107,7 +105,7 @@ static int trace_selftest_test_probe1_cnt;
 static void trace_selftest_test_probe1_func(unsigned long ip,
 					    unsigned long pip,
 					    struct ftrace_ops *op,
-					    struct ftrace_regs *fregs)
+					    struct pt_regs *pt_regs)
 {
 	trace_selftest_test_probe1_cnt++;
 }
@@ -116,7 +114,7 @@ static int trace_selftest_test_probe2_cnt;
 static void trace_selftest_test_probe2_func(unsigned long ip,
 					    unsigned long pip,
 					    struct ftrace_ops *op,
-					    struct ftrace_regs *fregs)
+					    struct pt_regs *pt_regs)
 {
 	trace_selftest_test_probe2_cnt++;
 }
@@ -125,7 +123,7 @@ static int trace_selftest_test_probe3_cnt;
 static void trace_selftest_test_probe3_func(unsigned long ip,
 					    unsigned long pip,
 					    struct ftrace_ops *op,
-					    struct ftrace_regs *fregs)
+					    struct pt_regs *pt_regs)
 {
 	trace_selftest_test_probe3_cnt++;
 }
@@ -134,7 +132,7 @@ static int trace_selftest_test_global_cnt;
 static void trace_selftest_test_global_func(unsigned long ip,
 					    unsigned long pip,
 					    struct ftrace_ops *op,
-					    struct ftrace_regs *fregs)
+					    struct pt_regs *pt_regs)
 {
 	trace_selftest_test_global_cnt++;
 }
@@ -143,21 +141,24 @@ static int trace_selftest_test_dyn_cnt;
 static void trace_selftest_test_dyn_func(unsigned long ip,
 					 unsigned long pip,
 					 struct ftrace_ops *op,
-					 struct ftrace_regs *fregs)
+					 struct pt_regs *pt_regs)
 {
 	trace_selftest_test_dyn_cnt++;
 }
 
 static struct ftrace_ops test_probe1 = {
 	.func			= trace_selftest_test_probe1_func,
+	.flags			= FTRACE_OPS_FL_RECURSION_SAFE,
 };
 
 static struct ftrace_ops test_probe2 = {
 	.func			= trace_selftest_test_probe2_func,
+	.flags			= FTRACE_OPS_FL_RECURSION_SAFE,
 };
 
 static struct ftrace_ops test_probe3 = {
 	.func			= trace_selftest_test_probe3_func,
+	.flags			= FTRACE_OPS_FL_RECURSION_SAFE,
 };
 
 static void print_counts(void)
@@ -271,7 +272,7 @@ static int trace_selftest_ops(struct trace_array *tr, int cnt)
 		goto out_free;
 	if (cnt > 1) {
 		if (trace_selftest_test_global_cnt == 0)
-			goto out_free;
+			goto out;
 	}
 	if (trace_selftest_test_dyn_cnt == 0)
 		goto out_free;
@@ -285,40 +286,6 @@ static int trace_selftest_ops(struct trace_array *tr, int cnt)
 	if (trace_selftest_test_probe2_cnt != 2)
 		goto out_free;
 	if (trace_selftest_test_probe3_cnt != 4)
-		goto out_free;
-
-	/* Remove trace function from probe 3 */
-	func1_name = "!" __stringify(DYN_FTRACE_TEST_NAME);
-	len1 = strlen(func1_name);
-
-	ftrace_set_filter(&test_probe3, func1_name, len1, 0);
-
-	DYN_FTRACE_TEST_NAME();
-
-	print_counts();
-
-	if (trace_selftest_test_probe1_cnt != 3)
-		goto out_free;
-	if (trace_selftest_test_probe2_cnt != 2)
-		goto out_free;
-	if (trace_selftest_test_probe3_cnt != 4)
-		goto out_free;
-	if (cnt > 1) {
-		if (trace_selftest_test_global_cnt == 0)
-			goto out_free;
-	}
-	if (trace_selftest_test_dyn_cnt == 0)
-		goto out_free;
-
-	DYN_FTRACE_TEST_NAME2();
-
-	print_counts();
-
-	if (trace_selftest_test_probe1_cnt != 3)
-		goto out_free;
-	if (trace_selftest_test_probe2_cnt != 3)
-		goto out_free;
-	if (trace_selftest_test_probe3_cnt != 5)
 		goto out_free;
 
 	ret = 0;
@@ -393,7 +360,7 @@ static int trace_selftest_startup_dynamic_tracing(struct tracer *trace,
 	msleep(100);
 
 	/* we should have nothing in the buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
 	if (ret)
 		goto out;
 
@@ -414,7 +381,7 @@ static int trace_selftest_startup_dynamic_tracing(struct tracer *trace,
 	ftrace_enabled = 0;
 
 	/* check the trace buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
 
 	ftrace_enabled = 1;
 	tracing_start();
@@ -448,7 +415,7 @@ static int trace_selftest_recursion_cnt;
 static void trace_selftest_test_recursion_func(unsigned long ip,
 					       unsigned long pip,
 					       struct ftrace_ops *op,
-					       struct ftrace_regs *fregs)
+					       struct pt_regs *pt_regs)
 {
 	/*
 	 * This function is registered without the recursion safe flag.
@@ -463,7 +430,7 @@ static void trace_selftest_test_recursion_func(unsigned long ip,
 static void trace_selftest_test_recursion_safe_func(unsigned long ip,
 						    unsigned long pip,
 						    struct ftrace_ops *op,
-						    struct ftrace_regs *fregs)
+						    struct pt_regs *pt_regs)
 {
 	/*
 	 * We said we would provide our own recursion. By calling
@@ -479,11 +446,11 @@ static void trace_selftest_test_recursion_safe_func(unsigned long ip,
 
 static struct ftrace_ops test_rec_probe = {
 	.func			= trace_selftest_test_recursion_func,
-	.flags			= FTRACE_OPS_FL_RECURSION,
 };
 
 static struct ftrace_ops test_recsafe_probe = {
 	.func			= trace_selftest_test_recursion_safe_func,
+	.flags			= FTRACE_OPS_FL_RECURSION_SAFE,
 };
 
 static int
@@ -523,13 +490,8 @@ trace_selftest_function_recursion(void)
 	unregister_ftrace_function(&test_rec_probe);
 
 	ret = -1;
-	/*
-	 * Recursion allows for transitions between context,
-	 * and may call the callback twice.
-	 */
-	if (trace_selftest_recursion_cnt != 1 &&
-	    trace_selftest_recursion_cnt != 2) {
-		pr_cont("*callback not called once (or twice) (%d)* ",
+	if (trace_selftest_recursion_cnt != 1) {
+		pr_cont("*callback not called once (%d)* ",
 			trace_selftest_recursion_cnt);
 		goto out;
 	}
@@ -582,11 +544,9 @@ static enum {
 static void trace_selftest_test_regs_func(unsigned long ip,
 					  unsigned long pip,
 					  struct ftrace_ops *op,
-					  struct ftrace_regs *fregs)
+					  struct pt_regs *pt_regs)
 {
-	struct pt_regs *regs = ftrace_get_regs(fregs);
-
-	if (regs)
+	if (pt_regs)
 		trace_selftest_regs_stat = TRACE_SELFTEST_REGS_FOUND;
 	else
 		trace_selftest_regs_stat = TRACE_SELFTEST_REGS_NOT_FOUND;
@@ -594,7 +554,7 @@ static void trace_selftest_test_regs_func(unsigned long ip,
 
 static struct ftrace_ops test_regs_probe = {
 	.func		= trace_selftest_test_regs_func,
-	.flags		= FTRACE_OPS_FL_SAVE_REGS,
+	.flags		= FTRACE_OPS_FL_RECURSION_SAFE | FTRACE_OPS_FL_SAVE_REGS,
 };
 
 static int
@@ -720,7 +680,7 @@ trace_selftest_startup_function(struct tracer *trace, struct trace_array *tr)
 	ftrace_enabled = 0;
 
 	/* check the trace buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
 
 	ftrace_enabled = 1;
 	trace->reset(tr);
@@ -779,15 +739,6 @@ static int trace_graph_entry_watchdog(struct ftrace_graph_ent *trace)
 	return trace_graph_entry(trace);
 }
 
-static struct fgraph_ops fgraph_ops __initdata  = {
-	.entryfunc		= &trace_graph_entry_watchdog,
-	.retfunc		= &trace_graph_return,
-};
-
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
-static struct ftrace_ops direct;
-#endif
-
 /*
  * Pretty much the same than for the function tracer from which the selftest
  * has been borrowed.
@@ -798,7 +749,6 @@ trace_selftest_startup_function_graph(struct tracer *trace,
 {
 	int ret;
 	unsigned long count;
-	char *func_name __maybe_unused;
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 	if (ftrace_filter_param) {
@@ -811,9 +761,10 @@ trace_selftest_startup_function_graph(struct tracer *trace,
 	 * Simulate the init() callback but we attach a watchdog callback
 	 * to detect and recover from possible hangs
 	 */
-	tracing_reset_online_cpus(&tr->array_buffer);
+	tracing_reset_online_cpus(&tr->trace_buffer);
 	set_graph_array(tr);
-	ret = register_ftrace_graph(&fgraph_ops);
+	ret = register_ftrace_graph(&trace_graph_return,
+				    &trace_graph_entry_watchdog);
 	if (ret) {
 		warn_failed_init_tracer(trace, ret);
 		goto out;
@@ -825,7 +776,7 @@ trace_selftest_startup_function_graph(struct tracer *trace,
 
 	/* Have we just recovered from a hang? */
 	if (graph_hang_thresh > GRAPH_MAX_FUNC_TEST) {
-		disable_tracing_selftest("recovering from a hang");
+		tracing_selftest_disabled = true;
 		ret = -1;
 		goto out;
 	}
@@ -833,12 +784,9 @@ trace_selftest_startup_function_graph(struct tracer *trace,
 	tracing_stop();
 
 	/* check the trace buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
 
-	/* Need to also simulate the tr->reset to remove this fgraph_ops */
-	tracing_stop_cmdline_record();
-	unregister_ftrace_graph(&fgraph_ops);
-
+	trace->reset(tr);
 	tracing_start();
 
 	if (!ret && !count) {
@@ -847,72 +795,8 @@ trace_selftest_startup_function_graph(struct tracer *trace,
 		goto out;
 	}
 
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
-	/*
-	 * These tests can take some time to run. Make sure on non PREEMPT
-	 * kernels, we do not trigger the softlockup detector.
-	 */
-	cond_resched();
-
-	tracing_reset_online_cpus(&tr->array_buffer);
-	set_graph_array(tr);
-
-	/*
-	 * Some archs *cough*PowerPC*cough* add characters to the
-	 * start of the function names. We simply put a '*' to
-	 * accommodate them.
-	 */
-	func_name = "*" __stringify(DYN_FTRACE_TEST_NAME);
-	ftrace_set_global_filter(func_name, strlen(func_name), 1);
-
-	/*
-	 * Register direct function together with graph tracer
-	 * and make sure we get graph trace.
-	 */
-	ftrace_set_filter_ip(&direct, (unsigned long)DYN_FTRACE_TEST_NAME, 0, 0);
-	ret = register_ftrace_direct(&direct,
-				     (unsigned long)ftrace_stub_direct_tramp);
-	if (ret)
-		goto out;
-
-	cond_resched();
-
-	ret = register_ftrace_graph(&fgraph_ops);
-	if (ret) {
-		warn_failed_init_tracer(trace, ret);
-		goto out;
-	}
-
-	DYN_FTRACE_TEST_NAME();
-
-	count = 0;
-
-	tracing_stop();
-	/* check the trace buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
-
-	unregister_ftrace_graph(&fgraph_ops);
-
-	ret = unregister_ftrace_direct(&direct,
-				       (unsigned long)ftrace_stub_direct_tramp,
-				       true);
-	if (ret)
-		goto out;
-
-	cond_resched();
-
-	tracing_start();
-
-	if (!ret && !count) {
-		ret = -1;
-		goto out;
-	}
-
-	/* Enable tracing on all functions again */
-	ftrace_set_global_filter(NULL, 0, 1);
-#endif
-
 	/* Don't test dynamic tracing, the function tracer already did */
+
 out:
 	/* Stop it if we failed */
 	if (ret)
@@ -955,7 +839,7 @@ trace_selftest_startup_irqsoff(struct tracer *trace, struct trace_array *tr)
 	/* stop the tracing. */
 	tracing_stop();
 	/* check both trace buffers */
-	ret = trace_test_buffer(&tr->array_buffer, NULL);
+	ret = trace_test_buffer(&tr->trace_buffer, NULL);
 	if (!ret)
 		ret = trace_test_buffer(&tr->max_buffer, &count);
 	trace->reset(tr);
@@ -981,7 +865,7 @@ trace_selftest_startup_preemptoff(struct tracer *trace, struct trace_array *tr)
 	int ret;
 
 	/*
-	 * Now that the big kernel lock is no longer preemptible,
+	 * Now that the big kernel lock is no longer preemptable,
 	 * and this is called with the BKL held, it will always
 	 * fail. If preemption is already disabled, simply
 	 * pass the test. When the BKL is removed, or becomes
@@ -1017,7 +901,7 @@ trace_selftest_startup_preemptoff(struct tracer *trace, struct trace_array *tr)
 	/* stop the tracing. */
 	tracing_stop();
 	/* check both trace buffers */
-	ret = trace_test_buffer(&tr->array_buffer, NULL);
+	ret = trace_test_buffer(&tr->trace_buffer, NULL);
 	if (!ret)
 		ret = trace_test_buffer(&tr->max_buffer, &count);
 	trace->reset(tr);
@@ -1043,7 +927,7 @@ trace_selftest_startup_preemptirqsoff(struct tracer *trace, struct trace_array *
 	int ret;
 
 	/*
-	 * Now that the big kernel lock is no longer preemptible,
+	 * Now that the big kernel lock is no longer preemptable,
 	 * and this is called with the BKL held, it will always
 	 * fail. If preemption is already disabled, simply
 	 * pass the test. When the BKL is removed, or becomes
@@ -1083,7 +967,7 @@ trace_selftest_startup_preemptirqsoff(struct tracer *trace, struct trace_array *
 	/* stop the tracing. */
 	tracing_stop();
 	/* check both trace buffers */
-	ret = trace_test_buffer(&tr->array_buffer, NULL);
+	ret = trace_test_buffer(&tr->trace_buffer, NULL);
 	if (ret)
 		goto out;
 
@@ -1113,7 +997,7 @@ trace_selftest_startup_preemptirqsoff(struct tracer *trace, struct trace_array *
 	/* stop the tracing. */
 	tracing_stop();
 	/* check both trace buffers */
-	ret = trace_test_buffer(&tr->array_buffer, NULL);
+	ret = trace_test_buffer(&tr->trace_buffer, NULL);
 	if (ret)
 		goto out;
 
@@ -1243,7 +1127,7 @@ trace_selftest_startup_wakeup(struct tracer *trace, struct trace_array *tr)
 	/* stop the tracing. */
 	tracing_stop();
 	/* check both trace buffers */
-	ret = trace_test_buffer(&tr->array_buffer, NULL);
+	ret = trace_test_buffer(&tr->trace_buffer, NULL);
 	if (!ret)
 		ret = trace_test_buffer(&tr->max_buffer, &count);
 
@@ -1265,6 +1149,38 @@ trace_selftest_startup_wakeup(struct tracer *trace, struct trace_array *tr)
 }
 #endif /* CONFIG_SCHED_TRACER */
 
+#ifdef CONFIG_CONTEXT_SWITCH_TRACER
+int
+trace_selftest_startup_sched_switch(struct tracer *trace, struct trace_array *tr)
+{
+	unsigned long count;
+	int ret;
+
+	/* start the tracing */
+	ret = tracer_init(trace, tr);
+	if (ret) {
+		warn_failed_init_tracer(trace, ret);
+		return ret;
+	}
+
+	/* Sleep for a 1/10 of a second */
+	msleep(100);
+	/* stop the tracing. */
+	tracing_stop();
+	/* check the trace buffer */
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
+	trace->reset(tr);
+	tracing_start();
+
+	if (!ret && !count) {
+		printk(KERN_CONT ".. no entries found ..");
+		ret = -1;
+	}
+
+	return ret;
+}
+#endif /* CONFIG_CONTEXT_SWITCH_TRACER */
+
 #ifdef CONFIG_BRANCH_TRACER
 int
 trace_selftest_startup_branch(struct tracer *trace, struct trace_array *tr)
@@ -1284,7 +1200,7 @@ trace_selftest_startup_branch(struct tracer *trace, struct trace_array *tr)
 	/* stop the tracing. */
 	tracing_stop();
 	/* check the trace buffer */
-	ret = trace_test_buffer(&tr->array_buffer, &count);
+	ret = trace_test_buffer(&tr->trace_buffer, &count);
 	trace->reset(tr);
 	tracing_start();
 

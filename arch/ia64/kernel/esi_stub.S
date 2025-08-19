@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ESI call stub.
  *
@@ -34,9 +33,9 @@
 #define PSR_BITS_TO_SET							\
 	(IA64_PSR_BN)
 
-#include <linux/export.h>
 #include <asm/processor.h>
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 /*
  * Inputs:

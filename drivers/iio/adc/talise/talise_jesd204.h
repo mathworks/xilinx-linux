@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file talise_jesd204.h
  * \brief Contains Talise JESD204b data path related function prototypes for
  *        talise_jesd204.c
  *
- * Talise API version: 3.6.2.1
+ * Talise API version: 3.4.0.0
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -709,7 +708,7 @@ uint32_t TALISE_getDfrmIrqSource(taliseDevice_t *device, taliseDeframerSel_t def
  * \dep_end
  *
  * \param device is a pointer to the device settings structure
- * \param deframer selects the deframer to interrogate.
+ * \param deframerSelect selects the deframer to interrogate.
  * \param deframerInputsMask is a pointer to the deframer inputs bitmask
  *        indicating the input that is reporting an error. Note that these are
  *        not phyiscal lanes, but are inputs to the deframer after the lane
@@ -740,7 +739,6 @@ talRecoveryActions_t talFindDfrmrLaneCntErr(taliseDevice_t *device,  taliseDefra
  *
  * \param device is a pointer to the device settings structure
  * \param dfrmErrAddress deframer register address to interrogate.
- * \param nibbleToUse specify nibble to use
  * \param deframerInputsMask is a pointer to the deframer inputs bitmask
  *        indicating the input that is reporting an error. Note that these are
  *        not phyiscal lanes, but are inputs to the deframer after the lane

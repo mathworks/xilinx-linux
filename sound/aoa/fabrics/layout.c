@@ -1,8 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Apple Onboard Audio driver -- layout/machine id fabric
  *
  * Copyright 2006-2008 Johannes Berg <johannes@sipsolutions.net>
+ *
+ * GPL v2, can be found in COPYING.
+ *
  *
  * This fabric module looks for sound codecs based on the
  * layout-id or device-id property in the device tree.
@@ -655,7 +657,7 @@ static int n##_control_put(struct snd_kcontrol *kcontrol,		\
 			!!ucontrol->value.integer.value[0]);		\
 	return 1;							\
 }									\
-static const struct snd_kcontrol_new n##_ctl = {			\
+static struct snd_kcontrol_new n##_ctl = {				\
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,				\
 	.name = description,						\
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,                      \
@@ -705,7 +707,7 @@ static int detect_choice_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static const struct snd_kcontrol_new headphone_detect_choice = {
+static struct snd_kcontrol_new headphone_detect_choice = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Headphone Detect Autoswitch",
 	.info = control_info,
@@ -715,7 +717,7 @@ static const struct snd_kcontrol_new headphone_detect_choice = {
 	.private_value = 0,
 };
 
-static const struct snd_kcontrol_new lineout_detect_choice = {
+static struct snd_kcontrol_new lineout_detect_choice = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Line-Out Detect Autoswitch",
 	.info = control_info,
@@ -747,7 +749,7 @@ static int detected_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static const struct snd_kcontrol_new headphone_detected = {
+static struct snd_kcontrol_new headphone_detected = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Headphone Detected",
 	.info = control_info,
@@ -756,7 +758,7 @@ static const struct snd_kcontrol_new headphone_detected = {
 	.private_value = 0,
 };
 
-static const struct snd_kcontrol_new lineout_detected = {
+static struct snd_kcontrol_new lineout_detected = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Line-Out Detected",
 	.info = control_info,
@@ -774,7 +776,7 @@ static int check_codec(struct aoa_codec *codec,
 	struct codec_connection *cc;
 
 	/* if the codec has a 'codec' node, we require a reference */
-	if (of_node_name_eq(codec->node, "codec")) {
+	if (codec->node && (strcmp(codec->node->name, "codec") == 0)) {
 		snprintf(propname, sizeof(propname),
 			 "platform-%s-codec-ref", codec->name);
 		ref = of_get_property(ldev->sound, propname, NULL);
@@ -948,7 +950,7 @@ static void layout_attached_codec(struct aoa_codec *codec)
 				ldev->gpio.methods->set_lineout(codec->gpio, 1);
 			ctl = snd_ctl_new1(&lineout_ctl, codec->gpio);
 			if (cc->connected & CC_LINEOUT_LABELLED_HEADPHONE)
-				strscpy(ctl->id.name,
+				strlcpy(ctl->id.name,
 					"Headphone Switch", sizeof(ctl->id.name));
 			ldev->lineout_ctrl = ctl;
 			aoa_snd_ctl_add(ctl);
@@ -962,14 +964,14 @@ static void layout_attached_codec(struct aoa_codec *codec)
 				ctl = snd_ctl_new1(&lineout_detect_choice,
 						   ldev);
 				if (cc->connected & CC_LINEOUT_LABELLED_HEADPHONE)
-					strscpy(ctl->id.name,
+					strlcpy(ctl->id.name,
 						"Headphone Detect Autoswitch",
 						sizeof(ctl->id.name));
 				aoa_snd_ctl_add(ctl);
 				ctl = snd_ctl_new1(&lineout_detected,
 						   ldev);
 				if (cc->connected & CC_LINEOUT_LABELLED_HEADPHONE)
-					strscpy(ctl->id.name,
+					strlcpy(ctl->id.name,
 						"Headphone Detected",
 						sizeof(ctl->id.name));
 				ldev->lineout_detected_ctrl = ctl;
@@ -1006,8 +1008,8 @@ static int aoa_fabric_layout_probe(struct soundbus_dev *sdev)
 		return -ENODEV;
 
 	/* by breaking out we keep a reference */
-	for_each_child_of_node(sdev->ofdev.dev.of_node, sound) {
-		if (of_node_is_type(sound, "soundchip"))
+	while ((sound = of_get_next_child(sdev->ofdev.dev.of_node, sound))) {
+		if (sound->type && strcasecmp(sound->type, "soundchip") == 0)
 			break;
 	}
 	if (!sound)
@@ -1094,7 +1096,7 @@ static int aoa_fabric_layout_probe(struct soundbus_dev *sdev)
 	return -ENODEV;
 }
 
-static void aoa_fabric_layout_remove(struct soundbus_dev *sdev)
+static int aoa_fabric_layout_remove(struct soundbus_dev *sdev)
 {
 	struct layout_dev *ldev = dev_get_drvdata(&sdev->ofdev.dev);
 	int i;
@@ -1123,6 +1125,7 @@ static void aoa_fabric_layout_remove(struct soundbus_dev *sdev)
 	kfree(ldev);
 	sdev->pcmid = -1;
 	sdev->pcmname = NULL;
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

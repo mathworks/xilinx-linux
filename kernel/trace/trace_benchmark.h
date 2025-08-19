@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM benchmark
 
@@ -7,28 +6,26 @@
 
 #include <linux/tracepoint.h>
 
-extern int trace_benchmark_reg(void);
+extern void trace_benchmark_reg(void);
 extern void trace_benchmark_unreg(void);
 
 #define BENCHMARK_EVENT_STRLEN		128
 
 TRACE_EVENT_FN(benchmark_event,
 
-	TP_PROTO(const char *str, u64 delta),
+	TP_PROTO(const char *str),
 
-	TP_ARGS(str, delta),
+	TP_ARGS(str),
 
 	TP_STRUCT__entry(
 		__array(	char,	str,	BENCHMARK_EVENT_STRLEN	)
-		__field(	u64,	delta)
 	),
 
 	TP_fast_assign(
 		memcpy(__entry->str, str, BENCHMARK_EVENT_STRLEN);
-		__entry->delta = delta;
 	),
 
-	TP_printk("%s delta=%llu", __entry->str, __entry->delta),
+	TP_printk("%s", __entry->str),
 
 	trace_benchmark_reg, trace_benchmark_unreg
 );

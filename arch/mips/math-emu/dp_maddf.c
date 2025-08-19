@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * IEEE754 floating point arithmetic
  * double precision: MADDF.f (Fused Multiply Add)
@@ -7,49 +6,30 @@
  * MIPS floating point support
  * Copyright (C) 2015 Imagination Technologies, Ltd.
  * Author: Markos Chandras <markos.chandras@imgtec.com>
+ *
+ *  This program is free software; you can distribute it and/or modify it
+ *  under the terms of the GNU General Public License as published by the
+ *  Free Software Foundation; version 2 of the License.
  */
 
 #include "ieee754dp.h"
 
-
-/* 128 bits shift right logical with rounding. */
-static void srl128(u64 *hptr, u64 *lptr, int count)
-{
-	u64 low;
-
-	if (count >= 128) {
-		*lptr = *hptr != 0 || *lptr != 0;
-		*hptr = 0;
-	} else if (count >= 64) {
-		if (count == 64) {
-			*lptr = *hptr | (*lptr != 0);
-		} else {
-			low = *lptr;
-			*lptr = *hptr >> (count - 64);
-			*lptr |= (*hptr << (128 - count)) != 0 || low != 0;
-		}
-		*hptr = 0;
-	} else {
-		low = *lptr;
-		*lptr = low >> count | *hptr << (64 - count);
-		*lptr |= (low << (64 - count)) != 0;
-		*hptr = *hptr >> count;
-	}
-}
+enum maddf_flags {
+	maddf_negate_product	= 1 << 0,
+};
 
 static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 				 union ieee754dp y, enum maddf_flags flags)
 {
 	int re;
 	int rs;
-	unsigned int lxm;
-	unsigned int hxm;
-	unsigned int lym;
-	unsigned int hym;
+	u64 rm;
+	unsigned lxm;
+	unsigned hxm;
+	unsigned lym;
+	unsigned hym;
 	u64 lrm;
 	u64 hrm;
-	u64 lzm;
-	u64 hzm;
 	u64 t;
 	u64 at;
 	int s;
@@ -68,40 +48,52 @@ static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 
 	ieee754_clearcx();
 
-	rs = xs ^ ys;
-	if (flags & MADDF_NEGATE_PRODUCT)
-		rs ^= 1;
-	if (flags & MADDF_NEGATE_ADDITION)
-		zs ^= 1;
-
-	/*
-	 * Handle the cases when at least one of x, y or z is a NaN.
-	 * Order of precedence is sNaN, qNaN and z, x, y.
-	 */
-	if (zc == IEEE754_CLASS_SNAN)
+	switch (zc) {
+	case IEEE754_CLASS_SNAN:
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
 		return ieee754dp_nanxcpt(z);
-	if (xc == IEEE754_CLASS_SNAN)
-		return ieee754dp_nanxcpt(x);
-	if (yc == IEEE754_CLASS_SNAN)
-		return ieee754dp_nanxcpt(y);
-	if (zc == IEEE754_CLASS_QNAN)
-		return z;
-	if (xc == IEEE754_CLASS_QNAN)
-		return x;
-	if (yc == IEEE754_CLASS_QNAN)
-		return y;
-
-	if (zc == IEEE754_CLASS_DNORM)
+	case IEEE754_CLASS_DNORM:
 		DPDNORMZ;
-	/* ZERO z cases are handled separately below */
+	/* QNAN is handled separately below */
+	}
 
 	switch (CLPAIR(xc, yc)) {
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_SNAN):
+		return ieee754dp_nanxcpt(y);
+
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_QNAN):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_ZERO):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_NORM):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_DNORM):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_INF):
+		return ieee754dp_nanxcpt(x);
+
+	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_QNAN):
+	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_QNAN):
+	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_QNAN):
+	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_QNAN):
+		return y;
+
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_QNAN):
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_ZERO):
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_NORM):
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_DNORM):
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_INF):
+		return x;
+
 
 	/*
 	 * Infinity handling
 	 */
 	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_ZERO):
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_INF):
+		if (zc == IEEE754_CLASS_QNAN)
+			return z;
 		ieee754_setcx(IEEE754_INVALID_OPERATION);
 		return ieee754dp_indef();
 
@@ -110,20 +102,9 @@ static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_NORM):
 	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_DNORM):
 	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_INF):
-		if ((zc == IEEE754_CLASS_INF) && (zs != rs)) {
-			/*
-			 * Cases of addition of infinities with opposite signs
-			 * or subtraction of infinities with same signs.
-			 */
-			ieee754_setcx(IEEE754_INVALID_OPERATION);
-			return ieee754dp_indef();
-		}
-		/*
-		 * z is here either not an infinity, or an infinity having the
-		 * same sign as product (x*y). The result must be an infinity,
-		 * and its sign is determined only by the sign of product (x*y).
-		 */
-		return ieee754dp_inf(rs);
+		if (zc == IEEE754_CLASS_QNAN)
+			return z;
+		return ieee754dp_inf(xs ^ ys);
 
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_ZERO):
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_NORM):
@@ -132,41 +113,34 @@ static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_ZERO):
 		if (zc == IEEE754_CLASS_INF)
 			return ieee754dp_inf(zs);
-		if (zc == IEEE754_CLASS_ZERO) {
-			/* Handle cases +0 + (-0) and similar ones. */
-			if (zs == rs)
-				/*
-				 * Cases of addition of zeros of equal signs
-				 * or subtraction of zeroes of opposite signs.
-				 * The sign of the resulting zero is in any
-				 * such case determined only by the sign of z.
-				 */
-				return z;
-
-			return ieee754dp_zero(ieee754_csr.rm == FPU_CSR_RD);
-		}
-		/* x*y is here 0, and z is not 0, so just return z */
+		/* Multiplication is 0 so just return z */
 		return z;
 
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_DNORM):
 		DPDNORMX;
-		fallthrough;
+
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_DNORM):
-		if (zc == IEEE754_CLASS_INF)
+		if (zc == IEEE754_CLASS_QNAN)
+			return z;
+		else if (zc == IEEE754_CLASS_INF)
 			return ieee754dp_inf(zs);
 		DPDNORMY;
 		break;
 
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_NORM):
-		if (zc == IEEE754_CLASS_INF)
+		if (zc == IEEE754_CLASS_QNAN)
+			return z;
+		else if (zc == IEEE754_CLASS_INF)
 			return ieee754dp_inf(zs);
 		DPDNORMX;
 		break;
 
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_NORM):
-		if (zc == IEEE754_CLASS_INF)
+		if (zc == IEEE754_CLASS_QNAN)
+			return z;
+		else if (zc == IEEE754_CLASS_INF)
 			return ieee754dp_inf(zs);
-		/* continue to real computations */
+		/* fall through to real computations */
 	}
 
 	/* Finally get to do some computation */
@@ -182,14 +156,20 @@ static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 	assert(ym & DP_HIDDEN_BIT);
 
 	re = xe + ye;
+	rs = xs ^ ys;
+	if (flags & maddf_negate_product)
+		rs ^= 1;
 
 	/* shunt to top of word */
 	xm <<= 64 - (DP_FBITS + 1);
 	ym <<= 64 - (DP_FBITS + 1);
 
 	/*
-	 * Multiply 64 bits xm and ym to give 128 bits result in hrm:lrm.
+	 * Multiply 64 bits xm, ym to give high 64 bits rm with stickness.
 	 */
+
+	/* 32 * 32 => 64 */
+#define DPXMULT(x, y)	((u64)(x) * (u64)y)
 
 	lxm = xm;
 	hxm = xm >> 32;
@@ -215,110 +195,78 @@ static union ieee754dp _dp_maddf(union ieee754dp z, union ieee754dp x,
 
 	hrm = hrm + (t >> 32);
 
-	/* Put explicit bit at bit 126 if necessary */
-	if ((int64_t)hrm < 0) {
-		lrm = (hrm << 63) | (lrm >> 1);
-		hrm = hrm >> 1;
+	rm = hrm | (lrm != 0);
+
+	/*
+	 * Sticky shift down to normal rounding precision.
+	 */
+	if ((s64) rm < 0) {
+		rm = (rm >> (64 - (DP_FBITS + 1 + 3))) |
+		     ((rm << (DP_FBITS + 1 + 3)) != 0);
 		re++;
+	} else {
+		rm = (rm >> (64 - (DP_FBITS + 1 + 3 + 1))) |
+		     ((rm << (DP_FBITS + 1 + 3 + 1)) != 0);
 	}
+	assert(rm & (DP_HIDDEN_BIT << 3));
 
-	assert(hrm & (1 << 62));
+	/* And now the addition */
+	assert(zm & DP_HIDDEN_BIT);
 
-	if (zc == IEEE754_CLASS_ZERO) {
-		/*
-		 * Move explicit bit from bit 126 to bit 55 since the
-		 * ieee754dp_format code expects the mantissa to be
-		 * 56 bits wide (53 + 3 rounding bits).
-		 */
-		srl128(&hrm, &lrm, (126 - 55));
-		return ieee754dp_format(rs, re, lrm);
-	}
+	/*
+	 * Provide guard,round and stick bit space.
+	 */
+	zm <<= 3;
 
-	/* Move explicit bit from bit 52 to bit 126 */
-	lzm = 0;
-	hzm = zm << 10;
-	assert(hzm & (1 << 62));
-
-	/* Make the exponents the same */
 	if (ze > re) {
 		/*
 		 * Have to shift y fraction right to align.
 		 */
 		s = ze - re;
-		srl128(&hrm, &lrm, s);
+		rm = XDPSRS(rm, s);
 		re += s;
 	} else if (re > ze) {
 		/*
 		 * Have to shift x fraction right to align.
 		 */
 		s = re - ze;
-		srl128(&hzm, &lzm, s);
+		zm = XDPSRS(zm, s);
 		ze += s;
 	}
 	assert(ze == re);
 	assert(ze <= DP_EMAX);
 
-	/* Do the addition */
 	if (zs == rs) {
 		/*
-		 * Generate 128 bit result by adding two 127 bit numbers
-		 * leaving result in hzm:lzm, zs and ze.
+		 * Generate 28 bit result of adding two 27 bit numbers
+		 * leaving result in xm, xs and xe.
 		 */
-		hzm = hzm + hrm + (lzm > (lzm + lrm));
-		lzm = lzm + lrm;
-		if ((int64_t)hzm < 0) {        /* carry out */
-			srl128(&hzm, &lzm, 1);
+		zm = zm + rm;
+
+		if (zm >> (DP_FBITS + 1 + 3)) { /* carry out */
+			zm = XDPSRS1(zm);
 			ze++;
 		}
 	} else {
-		if (hzm > hrm || (hzm == hrm && lzm >= lrm)) {
-			hzm = hzm - hrm - (lzm < lrm);
-			lzm = lzm - lrm;
+		if (zm >= rm) {
+			zm = zm - rm;
 		} else {
-			hzm = hrm - hzm - (lrm < lzm);
-			lzm = lrm - lzm;
+			zm = rm - zm;
 			zs = rs;
 		}
-		if (lzm == 0 && hzm == 0)
+		if (zm == 0)
 			return ieee754dp_zero(ieee754_csr.rm == FPU_CSR_RD);
 
 		/*
-		 * Put explicit bit at bit 126 if necessary.
+		 * Normalize to rounding precision.
 		 */
-		if (hzm == 0) {
-			/* left shift by 63 or 64 bits */
-			if ((int64_t)lzm < 0) {
-				/* MSB of lzm is the explicit bit */
-				hzm = lzm >> 1;
-				lzm = lzm << 63;
-				ze -= 63;
-			} else {
-				hzm = lzm;
-				lzm = 0;
-				ze -= 64;
-			}
-		}
-
-		t = 0;
-		while ((hzm >> (62 - t)) == 0)
-			t++;
-
-		assert(t <= 62);
-		if (t) {
-			hzm = hzm << t | lzm >> (64 - t);
-			lzm = lzm << t;
-			ze -= t;
+		while ((zm >> (DP_FBITS + 3)) == 0) {
+			zm <<= 1;
+			ze--;
 		}
 	}
 
-	/*
-	 * Move explicit bit from bit 126 to bit 55 since the
-	 * ieee754dp_format code expects the mantissa to be
-	 * 56 bits wide (53 + 3 rounding bits).
-	 */
-	srl128(&hzm, &lzm, (126 - 55));
-
-	return ieee754dp_format(zs, ze, lzm);
+	return ieee754dp_format(zs, ze, zm);
 }
 
 union ieee754dp ieee754dp_maddf(union ieee754dp z, union ieee754dp x,
@@ -330,29 +278,5 @@ union ieee754dp ieee754dp_maddf(union ieee754dp z, union ieee754dp x,
 union ieee754dp ieee754dp_msubf(union ieee754dp z, union ieee754dp x,
 				union ieee754dp y)
 {
-	return _dp_maddf(z, x, y, MADDF_NEGATE_PRODUCT);
-}
-
-union ieee754dp ieee754dp_madd(union ieee754dp z, union ieee754dp x,
-				union ieee754dp y)
-{
-	return _dp_maddf(z, x, y, 0);
-}
-
-union ieee754dp ieee754dp_msub(union ieee754dp z, union ieee754dp x,
-				union ieee754dp y)
-{
-	return _dp_maddf(z, x, y, MADDF_NEGATE_ADDITION);
-}
-
-union ieee754dp ieee754dp_nmadd(union ieee754dp z, union ieee754dp x,
-				union ieee754dp y)
-{
-	return _dp_maddf(z, x, y, MADDF_NEGATE_PRODUCT|MADDF_NEGATE_ADDITION);
-}
-
-union ieee754dp ieee754dp_nmsub(union ieee754dp z, union ieee754dp x,
-				union ieee754dp y)
-{
-	return _dp_maddf(z, x, y, MADDF_NEGATE_PRODUCT);
+	return _dp_maddf(z, x, y, maddf_negate_product);
 }

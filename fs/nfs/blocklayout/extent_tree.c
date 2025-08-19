@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014-2016 Christoph Hellwig.
  */
@@ -582,7 +581,7 @@ retry:
 		if (!arg->layoutupdate_pages)
 			return -ENOMEM;
 
-		start_p = __vmalloc(buffer_size, GFP_NOFS);
+		start_p = __vmalloc(buffer_size, GFP_NOFS, PAGE_KERNEL);
 		if (!start_p) {
 			kfree(arg->layoutupdate_pages);
 			return -ENOMEM;

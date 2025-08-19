@@ -1,7 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2008-2009 Patrick McHardy <kaber@trash.net>
  * Copyright (c) 2013 Eric Leblond <eric@regit.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Development of this code funded by Astaro AG (http://www.astaro.com/)
  */
@@ -18,7 +21,7 @@
 #include <linux/icmpv6.h>
 
 const struct nla_policy nft_reject_policy[NFTA_REJECT_MAX + 1] = {
-	[NFTA_REJECT_TYPE]		= NLA_POLICY_MAX(NLA_BE32, 255),
+	[NFTA_REJECT_TYPE]		= { .type = NLA_U32 },
 	[NFTA_REJECT_ICMP_CODE]		= { .type = NLA_U8 },
 };
 EXPORT_SYMBOL_GPL(nft_reject_policy);
@@ -30,8 +33,7 @@ int nft_reject_validate(const struct nft_ctx *ctx,
 	return nft_chain_validate_hooks(ctx->chain,
 					(1 << NF_INET_LOCAL_IN) |
 					(1 << NF_INET_FORWARD) |
-					(1 << NF_INET_LOCAL_OUT) |
-					(1 << NF_INET_PRE_ROUTING));
+					(1 << NF_INET_LOCAL_OUT));
 }
 EXPORT_SYMBOL_GPL(nft_reject_validate);
 
@@ -40,7 +42,11 @@ int nft_reject_init(const struct nft_ctx *ctx,
 		    const struct nlattr * const tb[])
 {
 	struct nft_reject *priv = nft_expr_priv(expr);
-	int icmp_code;
+	int err;
+
+	err = nft_reject_validate(ctx, expr, NULL);
+	if (err < 0)
+		return err;
 
 	if (tb[NFTA_REJECT_TYPE] == NULL)
 		return -EINVAL;
@@ -48,17 +54,9 @@ int nft_reject_init(const struct nft_ctx *ctx,
 	priv->type = ntohl(nla_get_be32(tb[NFTA_REJECT_TYPE]));
 	switch (priv->type) {
 	case NFT_REJECT_ICMP_UNREACH:
-	case NFT_REJECT_ICMPX_UNREACH:
 		if (tb[NFTA_REJECT_ICMP_CODE] == NULL)
 			return -EINVAL;
-
-		icmp_code = nla_get_u8(tb[NFTA_REJECT_ICMP_CODE]);
-		if (priv->type == NFT_REJECT_ICMPX_UNREACH &&
-		    icmp_code > NFT_REJECT_ICMPX_MAX)
-			return -EINVAL;
-
-		priv->icmp_code = icmp_code;
-		break;
+		priv->icmp_code = nla_get_u8(tb[NFTA_REJECT_ICMP_CODE]);
 	case NFT_REJECT_TCP_RST:
 		break;
 	default:
@@ -69,8 +67,7 @@ int nft_reject_init(const struct nft_ctx *ctx,
 }
 EXPORT_SYMBOL_GPL(nft_reject_init);
 
-int nft_reject_dump(struct sk_buff *skb,
-		    const struct nft_expr *expr, bool reset)
+int nft_reject_dump(struct sk_buff *skb, const struct nft_expr *expr)
 {
 	const struct nft_reject *priv = nft_expr_priv(expr);
 
@@ -79,7 +76,6 @@ int nft_reject_dump(struct sk_buff *skb,
 
 	switch (priv->type) {
 	case NFT_REJECT_ICMP_UNREACH:
-	case NFT_REJECT_ICMPX_UNREACH:
 		if (nla_put_u8(skb, NFTA_REJECT_ICMP_CODE, priv->icmp_code))
 			goto nla_put_failure;
 		break;
@@ -103,8 +99,7 @@ static u8 icmp_code_v4[NFT_REJECT_ICMPX_MAX + 1] = {
 
 int nft_reject_icmp_code(u8 code)
 {
-	if (WARN_ON_ONCE(code > NFT_REJECT_ICMPX_MAX))
-		return ICMP_NET_UNREACH;
+	BUG_ON(code > NFT_REJECT_ICMPX_MAX);
 
 	return icmp_code_v4[code];
 }
@@ -121,8 +116,7 @@ static u8 icmp_code_v6[NFT_REJECT_ICMPX_MAX + 1] = {
 
 int nft_reject_icmpv6_code(u8 code)
 {
-	if (WARN_ON_ONCE(code > NFT_REJECT_ICMPX_MAX))
-		return ICMPV6_NOROUTE;
+	BUG_ON(code > NFT_REJECT_ICMPX_MAX);
 
 	return icmp_code_v6[code];
 }
@@ -131,4 +125,3 @@ EXPORT_SYMBOL_GPL(nft_reject_icmpv6_code);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Patrick McHardy <kaber@trash.net>");
-MODULE_DESCRIPTION("Netfilter x_tables over nftables module");

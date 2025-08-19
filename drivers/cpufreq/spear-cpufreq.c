@@ -18,7 +18,7 @@
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -39,7 +39,7 @@ static struct clk *spear1340_cpu_get_possible_parent(unsigned long newfreq)
 	 * In SPEAr1340, cpu clk's parent sys clk can take input from
 	 * following sources
 	 */
-	static const char * const sys_clk_src[] = {
+	const char *sys_clk_src[] = {
 		"sys_syn_clk",
 		"pll1_clk",
 		"pll2_clk",
@@ -153,14 +153,13 @@ static int spear_cpufreq_target(struct cpufreq_policy *policy,
 static int spear_cpufreq_init(struct cpufreq_policy *policy)
 {
 	policy->clk = spear_cpufreq.clk;
-	cpufreq_generic_init(policy, spear_cpufreq.freq_tbl,
+	return cpufreq_generic_init(policy, spear_cpufreq.freq_tbl,
 			spear_cpufreq.transition_latency);
-	return 0;
 }
 
 static struct cpufreq_driver spear_cpufreq_driver = {
 	.name		= "cpufreq-spear",
-	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK,
+	.flags		= CPUFREQ_STICKY | CPUFREQ_NEED_INITIAL_FREQ_CHECK,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= spear_cpufreq_target,
 	.get		= cpufreq_generic_get,
@@ -178,7 +177,7 @@ static int spear_cpufreq_probe(struct platform_device *pdev)
 
 	np = of_cpu_device_node_get(0);
 	if (!np) {
-		pr_err("No cpu node found\n");
+		pr_err("No cpu node found");
 		return -ENODEV;
 	}
 
@@ -188,7 +187,7 @@ static int spear_cpufreq_probe(struct platform_device *pdev)
 
 	prop = of_find_property(np, "cpufreq_tbl", NULL);
 	if (!prop || !prop->value) {
-		pr_err("Invalid cpufreq_tbl\n");
+		pr_err("Invalid cpufreq_tbl");
 		ret = -ENODEV;
 		goto out_put_node;
 	}
@@ -196,7 +195,7 @@ static int spear_cpufreq_probe(struct platform_device *pdev)
 	cnt = prop->length / sizeof(u32);
 	val = prop->value;
 
-	freq_tbl = kcalloc(cnt + 1, sizeof(*freq_tbl), GFP_KERNEL);
+	freq_tbl = kzalloc(sizeof(*freq_tbl) * (cnt + 1), GFP_KERNEL);
 	if (!freq_tbl) {
 		ret = -ENOMEM;
 		goto out_put_node;

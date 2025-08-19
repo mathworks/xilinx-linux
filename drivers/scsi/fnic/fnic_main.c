@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2008 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
+ *
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 #include <linux/module.h>
 #include <linux/mempool.h>
@@ -37,8 +49,8 @@
 
 static struct kmem_cache *fnic_sgl_cache[FNIC_SGL_NUM_CACHES];
 static struct kmem_cache *fnic_io_req_cache;
-static LIST_HEAD(fnic_list);
-static DEFINE_SPINLOCK(fnic_list_lock);
+LIST_HEAD(fnic_list);
+DEFINE_SPINLOCK(fnic_list_lock);
 
 /* Supported devices by fnic module */
 static struct pci_device_id fnic_id_table[] = {
@@ -56,11 +68,6 @@ MODULE_DEVICE_TABLE(pci, fnic_id_table);
 unsigned int fnic_log_level;
 module_param(fnic_log_level, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(fnic_log_level, "bit mask of fnic logging levels");
-
-
-unsigned int io_completions = FNIC_DFLT_IO_COMPLETIONS;
-module_param(io_completions, int, S_IRUGO|S_IWUSR);
-MODULE_PARM_DESC(io_completions, "Max CQ entries to process at a time");
 
 unsigned int fnic_trace_max_pages = 16;
 module_param(fnic_trace_max_pages, uint, S_IRUGO|S_IWUSR);
@@ -95,11 +102,10 @@ static int fnic_slave_alloc(struct scsi_device *sdev)
 	return 0;
 }
 
-static const struct scsi_host_template fnic_host_template = {
+static struct scsi_host_template fnic_host_template = {
 	.module = THIS_MODULE,
 	.name = DRV_NAME,
 	.queuecommand = fnic_queuecommand,
-	.eh_timed_out = fc_eh_timed_out,
 	.eh_abort_handler = fnic_abort_cmd,
 	.eh_device_reset_handler = fnic_device_reset,
 	.eh_host_reset_handler = fnic_host_reset,
@@ -108,11 +114,11 @@ static const struct scsi_host_template fnic_host_template = {
 	.this_id = -1,
 	.cmd_per_lun = 3,
 	.can_queue = FNIC_DFLT_IO_REQ,
+	.use_clustering = ENABLE_CLUSTERING,
 	.sg_tablesize = FNIC_MAX_SG_DESC_CNT,
 	.max_sectors = 0xffff,
-	.shost_groups = fnic_host_groups,
+	.shost_attrs = fnic_attrs,
 	.track_queue_depth = 1,
-	.cmd_size = sizeof(struct fnic_cmd_priv),
 };
 
 static void
@@ -169,24 +175,11 @@ static void fnic_get_host_speed(struct Scsi_Host *shost)
 
 	/* Add in other values as they get defined in fw */
 	switch (port_speed) {
-	case DCEM_PORTSPEED_10G:
+	case 10000:
 		fc_host_speed(shost) = FC_PORTSPEED_10GBIT;
 		break;
-	case DCEM_PORTSPEED_20G:
-		fc_host_speed(shost) = FC_PORTSPEED_20GBIT;
-		break;
-	case DCEM_PORTSPEED_25G:
-		fc_host_speed(shost) = FC_PORTSPEED_25GBIT;
-		break;
-	case DCEM_PORTSPEED_40G:
-	case DCEM_PORTSPEED_4x10G:
-		fc_host_speed(shost) = FC_PORTSPEED_40GBIT;
-		break;
-	case DCEM_PORTSPEED_100G:
-		fc_host_speed(shost) = FC_PORTSPEED_100GBIT;
-		break;
 	default:
-		fc_host_speed(shost) = FC_PORTSPEED_UNKNOWN;
+		fc_host_speed(shost) = FC_PORTSPEED_10GBIT;
 		break;
 	}
 }
@@ -403,18 +396,18 @@ static int fnic_notify_set(struct fnic *fnic)
 	return err;
 }
 
-static void fnic_notify_timer(struct timer_list *t)
+static void fnic_notify_timer(unsigned long data)
 {
-	struct fnic *fnic = from_timer(fnic, t, notify_timer);
+	struct fnic *fnic = (struct fnic *)data;
 
 	fnic_handle_link_event(fnic);
 	mod_timer(&fnic->notify_timer,
 		  round_jiffies(jiffies + FNIC_NOTIFY_TIMER_PERIOD));
 }
 
-static void fnic_fip_notify_timer(struct timer_list *t)
+static void fnic_fip_notify_timer(unsigned long data)
 {
-	struct fnic *fnic = from_timer(fnic, t, fip_timer);
+	struct fnic *fnic = (struct fnic *)data;
 
 	fnic_handle_fip_timer(fnic);
 }
@@ -432,7 +425,7 @@ static void fnic_notify_timer_start(struct fnic *fnic)
 	default:
 		/* Using intr for notification for INTx/MSI-X */
 		break;
-	}
+	};
 }
 
 static int fnic_dev_wait(struct vnic_dev *vdev,
@@ -497,7 +490,7 @@ static int fnic_cleanup(struct fnic *fnic)
 	}
 
 	/* Clean up completed IOs and FCS frames */
-	fnic_wq_copy_cmpl_handler(fnic, io_completions);
+	fnic_wq_copy_cmpl_handler(fnic, -1);
 	fnic_wq_cmpl_handler(fnic, -1);
 	fnic_rq_cmpl_handler(fnic, -1);
 
@@ -541,40 +534,8 @@ static u8 *fnic_get_mac(struct fc_lport *lport)
 
 static void fnic_set_vlan(struct fnic *fnic, u16 vlan_id)
 {
-	vnic_dev_set_default_vlan(fnic->vdev, vlan_id);
-}
-
-static int fnic_scsi_drv_init(struct fnic *fnic)
-{
-	struct Scsi_Host *host = fnic->lport->host;
-
-	/* Configure maximum outstanding IO reqs*/
-	if (fnic->config.io_throttle_count != FNIC_UCSM_DFLT_THROTTLE_CNT_BLD)
-		host->can_queue = min_t(u32, FNIC_MAX_IO_REQ,
-					max_t(u32, FNIC_MIN_IO_REQ,
-					fnic->config.io_throttle_count));
-
-	fnic->fnic_max_tag_id = host->can_queue;
-	host->max_lun = fnic->config.luns_per_tgt;
-	host->max_id = FNIC_MAX_FCP_TARGET;
-	host->max_cmd_len = FCOE_MAX_CMD_LEN;
-
-	host->nr_hw_queues = fnic->wq_copy_count;
-	if (host->nr_hw_queues > 1)
-		shost_printk(KERN_ERR, host,
-				"fnic: blk-mq is not supported");
-
-	host->nr_hw_queues = fnic->wq_copy_count = 1;
-
-	shost_printk(KERN_INFO, host,
-			"fnic: can_queue: %d max_lun: %llu",
-			host->can_queue, host->max_lun);
-
-	shost_printk(KERN_INFO, host,
-			"fnic: max_id: %d max_cmd_len: %d nr_hw_queues: %d",
-			host->max_id, host->max_cmd_len, host->nr_hw_queues);
-
-	return 0;
+	u16 old_vlan;
+	old_vlan = vnic_dev_set_default_vlan(fnic->vdev, vlan_id);
 }
 
 static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -602,14 +563,17 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	fnic->lport = lp;
 	fnic->ctlr.lp = lp;
 
-	fnic->link_events = 0;
-
 	snprintf(fnic->name, sizeof(fnic->name) - 1, "%s%d", DRV_NAME,
 		 host->host_no);
 
 	host->transportt = fnic_fc_transport;
 
-	fnic_stats_debugfs_init(fnic);
+	err = fnic_stats_debugfs_init(fnic);
+	if (err) {
+		shost_printk(KERN_ERR, fnic->lport->host,
+				"Failed to initialize debugfs for stats\n");
+		fnic_stats_debugfs_remove(fnic);
+	}
 
 	/* Setup PCI resources */
 	pci_set_drvdata(pdev, fnic);
@@ -633,16 +597,31 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_master(pdev);
 
 	/* Query PCI controller on system for DMA addressing
-	 * limitation for the device.  Try 47-bit first, and
-	 * fail to 32-bit. Cisco VIC supports 47 bits only.
+	 * limitation for the device.  Try 64-bit first, and
+	 * fail to 32-bit.
 	 */
-	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(47));
+	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
 	if (err) {
-		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (err) {
 			shost_printk(KERN_ERR, fnic->lport->host,
 				     "No usable DMA configuration "
 				     "aborting\n");
+			goto err_out_release_regions;
+		}
+		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+		if (err) {
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "Unable to obtain 32-bit DMA "
+				     "for consistent allocations, aborting.\n");
+			goto err_out_release_regions;
+		}
+	} else {
+		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+		if (err) {
+			shost_printk(KERN_ERR, fnic->lport->host,
+				     "Unable to obtain 64-bit DMA "
+				     "for consistent allocations, aborting.\n");
 			goto err_out_release_regions;
 		}
 	}
@@ -676,20 +655,12 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_iounmap;
 	}
 
-	err = vnic_dev_cmd_init(fnic->vdev);
-	if (err) {
-		shost_printk(KERN_ERR, fnic->lport->host,
-				"vnic_dev_cmd_init() returns %d, aborting\n",
-				err);
-		goto err_out_vnic_unregister;
-	}
-
 	err = fnic_dev_wait(fnic->vdev, vnic_dev_open,
-			    vnic_dev_open_done, CMD_OPENF_RQ_ENABLE_THEN_POST);
+			    vnic_dev_open_done, 0);
 	if (err) {
 		shost_printk(KERN_ERR, fnic->lport->host,
 			     "vNIC dev open failed, aborting.\n");
-		goto err_out_dev_cmd_deinit;
+		goto err_out_vnic_unregister;
 	}
 
 	err = vnic_dev_init(fnic->vdev, 0);
@@ -717,7 +688,17 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_dev_close;
 	}
 
-	fnic_scsi_drv_init(fnic);
+	/* Configure Maximum Outstanding IO reqs*/
+	if (fnic->config.io_throttle_count != FNIC_UCSM_DFLT_THROTTLE_CNT_BLD) {
+		host->can_queue = min_t(u32, FNIC_MAX_IO_REQ,
+					max_t(u32, FNIC_MIN_IO_REQ,
+					fnic->config.io_throttle_count));
+	}
+	fnic->fnic_max_tag_id = host->can_queue;
+
+	host->max_lun = fnic->config.luns_per_tgt;
+	host->max_id = FNIC_MAX_FCP_TARGET;
+	host->max_cmd_len = FCOE_MAX_CMD_LEN;
 
 	fnic_get_res_counts(fnic);
 
@@ -754,9 +735,6 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	for (i = 0; i < FNIC_IO_LOCKS; i++)
 		spin_lock_init(&fnic->io_req_lock[i]);
 
-	spin_lock_init(&fnic->sgreset_lock);
-
-	err = -ENOMEM;
 	fnic->io_req_pool = mempool_create_slab_pool(2, fnic_io_req_cache);
 	if (!fnic->io_req_pool)
 		goto err_out_free_resources;
@@ -788,7 +766,8 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		vnic_dev_add_addr(fnic->vdev, fnic->ctlr.ctl_src_addr);
 		fnic->set_vlan = fnic_set_vlan;
 		fcoe_ctlr_init(&fnic->ctlr, FIP_MODE_AUTO);
-		timer_setup(&fnic->fip_timer, fnic_fip_notify_timer, 0);
+		setup_timer(&fnic->fip_timer, fnic_fip_notify_timer,
+							(unsigned long)fnic);
 		spin_lock_init(&fnic->vlans_lock);
 		INIT_WORK(&fnic->fip_frame_work, fnic_handle_fip_frame);
 		INIT_WORK(&fnic->event_work, fnic_handle_event);
@@ -819,11 +798,11 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Setup notify timer when using MSI interrupts */
 	if (vnic_dev_get_intr_mode(fnic->vdev) == VNIC_DEV_INTR_MODE_MSI)
-		timer_setup(&fnic->notify_timer, fnic_notify_timer, 0);
+		setup_timer(&fnic->notify_timer,
+			    fnic_notify_timer, (unsigned long)fnic);
 
 	/* allocate RQ buffers and post them to RQ*/
 	for (i = 0; i < fnic->rq_count; i++) {
-		vnic_rq_enable(&fnic->rq[i]);
 		err = vnic_rq_fill(&fnic->rq[i], fnic_alloc_rq_frame);
 		if (err) {
 			shost_printk(KERN_ERR, fnic->lport->host,
@@ -898,10 +877,14 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Enable all queues */
 	for (i = 0; i < fnic->raw_wq_count; i++)
 		vnic_wq_enable(&fnic->wq[i]);
+	for (i = 0; i < fnic->rq_count; i++)
+		vnic_rq_enable(&fnic->rq[i]);
 	for (i = 0; i < fnic->wq_copy_count; i++)
 		vnic_wq_copy_enable(&fnic->wq_copy[i]);
 
 	fc_fabric_login(lp);
+
+	vnic_dev_enable(fnic->vdev);
 
 	err = fnic_request_intr(fnic);
 	if (err) {
@@ -909,8 +892,6 @@ static int fnic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			     "Unable to request irq.\n");
 		goto err_out_free_exch_mgr;
 	}
-
-	vnic_dev_enable(fnic->vdev);
 
 	for (i = 0; i < fnic->intr_count; i++)
 		vnic_intr_unmask(&fnic->intr[i]);
@@ -940,7 +921,6 @@ err_out_clear_intr:
 	fnic_clear_intr_mode(fnic);
 err_out_dev_close:
 	vnic_dev_close(fnic->vdev);
-err_out_dev_cmd_deinit:
 err_out_vnic_unregister:
 	vnic_dev_unregister(fnic->vdev);
 err_out_iounmap:
@@ -1114,6 +1094,9 @@ static int __init fnic_init_module(void)
 		goto err_create_fnic_workq;
 	}
 
+	spin_lock_init(&fnic_list_lock);
+	INIT_LIST_HEAD(&fnic_list);
+
 	fnic_fip_queue = create_singlethread_workqueue("fnic_fip_q");
 	if (!fnic_fip_queue) {
 		printk(KERN_ERR PFX "fnic FIP work queue create failed\n");
@@ -1159,8 +1142,10 @@ static void __exit fnic_cleanup_module(void)
 {
 	pci_unregister_driver(&fnic_driver);
 	destroy_workqueue(fnic_event_queue);
-	if (fnic_fip_queue)
+	if (fnic_fip_queue) {
+		flush_workqueue(fnic_fip_queue);
 		destroy_workqueue(fnic_fip_queue);
+	}
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_MAX]);
 	kmem_cache_destroy(fnic_sgl_cache[FNIC_SGL_CACHE_DFLT]);
 	kmem_cache_destroy(fnic_io_req_cache);
@@ -1172,3 +1157,4 @@ static void __exit fnic_cleanup_module(void)
 
 module_init(fnic_init_module);
 module_exit(fnic_cleanup_module);
+

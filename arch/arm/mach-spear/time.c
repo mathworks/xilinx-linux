@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/plat-spear/time.c
  *
  * Copyright (C) 2010 ST Microelectronics
  * Shiraz Hashim<shiraz.linux.kernel@gmail.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 #include <linux/clk.h>
@@ -90,7 +93,7 @@ static void __init spear_clocksource_init(void)
 		200, 16, clocksource_mmio_readw_up);
 }
 
-static inline void spear_timer_shutdown(struct clock_event_device *evt)
+static inline void timer_shutdown(struct clock_event_device *evt)
 {
 	u16 val = readw(gpt_base + CR(CLKEVT));
 
@@ -101,7 +104,7 @@ static inline void spear_timer_shutdown(struct clock_event_device *evt)
 
 static int spear_shutdown(struct clock_event_device *evt)
 {
-	spear_timer_shutdown(evt);
+	timer_shutdown(evt);
 
 	return 0;
 }
@@ -111,7 +114,7 @@ static int spear_set_oneshot(struct clock_event_device *evt)
 	u16 val;
 
 	/* stop the timer */
-	spear_timer_shutdown(evt);
+	timer_shutdown(evt);
 
 	val = readw(gpt_base + CR(CLKEVT));
 	val |= CTRL_ONE_SHOT;
@@ -126,7 +129,7 @@ static int spear_set_periodic(struct clock_event_device *evt)
 	u16 val;
 
 	/* stop the timer */
-	spear_timer_shutdown(evt);
+	timer_shutdown(evt);
 
 	period = clk_get_rate(gpt_clk) / HZ;
 	period >>= CTRL_PRESCALER16;
@@ -178,6 +181,12 @@ static irqreturn_t spear_timer_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static struct irqaction spear_timer_irq = {
+	.name = "timer",
+	.flags = IRQF_TIMER,
+	.handler = spear_timer_interrupt
+};
+
 static void __init spear_clockevent_init(int irq)
 {
 	u32 tick_rate;
@@ -192,11 +201,10 @@ static void __init spear_clockevent_init(int irq)
 
 	clockevents_config_and_register(&clkevt, tick_rate, 3, 0xfff0);
 
-	if (request_irq(irq, spear_timer_interrupt, IRQF_TIMER, "timer", NULL))
-		pr_err("Failed to request irq %d (timer)\n", irq);
+	setup_irq(irq, &spear_timer_irq);
 }
 
-static const struct of_device_id timer_of_match[] __initconst = {
+static const struct of_device_id const timer_of_match[] __initconst = {
 	{ .compatible = "st,spear-timer", },
 	{ },
 };
@@ -215,17 +223,17 @@ void __init spear_setup_of_timer(void)
 	irq = irq_of_parse_and_map(np, 0);
 	if (!irq) {
 		pr_err("%s: No irq passed for timer via DT\n", __func__);
-		goto err_put_np;
+		return;
 	}
 
 	gpt_base = of_iomap(np, 0);
 	if (!gpt_base) {
 		pr_err("%s: of iomap failed\n", __func__);
-		goto err_put_np;
+		return;
 	}
 
 	gpt_clk = clk_get_sys("gpt0", NULL);
-	if (IS_ERR(gpt_clk)) {
+	if (!gpt_clk) {
 		pr_err("%s:couldn't get clk for gpt\n", __func__);
 		goto err_iomap;
 	}
@@ -236,8 +244,6 @@ void __init spear_setup_of_timer(void)
 		goto err_prepare_enable_clk;
 	}
 
-	of_node_put(np);
-
 	spear_clockevent_init(irq);
 	spear_clocksource_init();
 
@@ -247,6 +253,4 @@ err_prepare_enable_clk:
 	clk_put(gpt_clk);
 err_iomap:
 	iounmap(gpt_base);
-err_put_np:
-	of_node_put(np);
 }

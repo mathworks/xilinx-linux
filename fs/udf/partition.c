@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * partition.c
  *
@@ -6,6 +5,11 @@
  *      Partition handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
+ *      This file is distributed under the terms of the GNU General Public
+ *      License (GPL). Copies of the GPL can be obtained from:
+ *              ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *      Each contributing author retains all rights to their own work.
+ *
  *  (C) 1998-2001 Ben Fennema
  *
  * HISTORY
@@ -28,7 +32,7 @@ uint32_t udf_get_pblock(struct super_block *sb, uint32_t block,
 	struct udf_sb_info *sbi = UDF_SB(sb);
 	struct udf_part_map *map;
 	if (partition >= sbi->s_partitions) {
-		udf_debug("block=%u, partition=%u, offset=%u: invalid partition\n",
+		udf_debug("block=%d, partition=%d, offset=%d: invalid partition\n",
 			  block, partition, offset);
 		return 0xFFFFFFFF;
 	}
@@ -50,19 +54,18 @@ uint32_t udf_get_pblock_virt15(struct super_block *sb, uint32_t block,
 	struct udf_part_map *map;
 	struct udf_virtual_data *vdata;
 	struct udf_inode_info *iinfo = UDF_I(sbi->s_vat_inode);
-	int err;
 
 	map = &sbi->s_partmaps[partition];
 	vdata = &map->s_type_specific.s_virtual;
 
 	if (block > vdata->s_num_entries) {
-		udf_debug("Trying to access block beyond end of VAT (%u max %u)\n",
+		udf_debug("Trying to access block beyond end of VAT (%d max %d)\n",
 			  block, vdata->s_num_entries);
 		return 0xFFFFFFFF;
 	}
 
 	if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {
-		loc = le32_to_cpu(((__le32 *)(iinfo->i_data +
+		loc = le32_to_cpu(((__le32 *)(iinfo->i_ext.i_data +
 			vdata->s_start_offset))[block]);
 		goto translate;
 	}
@@ -76,10 +79,12 @@ uint32_t udf_get_pblock_virt15(struct super_block *sb, uint32_t block,
 		index = vdata->s_start_offset / sizeof(uint32_t) + block;
 	}
 
-	bh = udf_bread(sbi->s_vat_inode, newblock, 0, &err);
+	loc = udf_block_map(sbi->s_vat_inode, newblock);
+
+	bh = sb_bread(sb, loc);
 	if (!bh) {
-		udf_debug("get_pblock(UDF_VIRTUAL_MAP:%p,%u,%u)\n",
-			  sb, block, partition);
+		udf_debug("get_pblock(UDF_VIRTUAL_MAP:%p,%d,%d) VAT: %d[%d]\n",
+			  sb, block, partition, loc, index);
 		return 0xFFFFFFFF;
 	}
 

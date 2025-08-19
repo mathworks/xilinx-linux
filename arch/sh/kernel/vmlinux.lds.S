@@ -1,10 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ld script to make SuperH Linux kernel
  * Written by Niibe Yutaka and Paul Mundt
  */
+#ifdef CONFIG_SUPERH64
+#define LOAD_OFFSET	PAGE_OFFSET
+OUTPUT_ARCH(sh:sh5)
+#else
+#define LOAD_OFFSET	0
 OUTPUT_ARCH(sh)
-#define RUNTIME_DISCARD_EXIT
+#endif
+
 #include <asm/thread_info.h>
 #include <asm/cache.h>
 #include <asm/vmlinux.lds.h>
@@ -22,14 +27,16 @@ SECTIONS
 
 	_text = .;		/* Text and read-only data */
 
-	.empty_zero_page : AT(ADDR(.empty_zero_page)) {
+	.empty_zero_page : AT(ADDR(.empty_zero_page) - LOAD_OFFSET) {
 		*(.empty_zero_page)
 	} = 0
 
-	.text : AT(ADDR(.text)) {
+	.text : AT(ADDR(.text) - LOAD_OFFSET) {
 		HEAD_TEXT
 		TEXT_TEXT
+		EXTRA_TEXT
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -40,10 +47,11 @@ SECTIONS
 	} = 0x0009
 
 	EXCEPTION_TABLE(16)
+	NOTES
 
 	_sdata = .;
 	RO_DATA(PAGE_SIZE)
-	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
+	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
 	_edata = .;
 
 	DWARF_EH_FRAME
@@ -54,7 +62,7 @@ SECTIONS
 	INIT_DATA_SECTION(16)
 
 	. = ALIGN(4);
-	.machvec.init : AT(ADDR(.machvec.init)) {
+	.machvec.init : AT(ADDR(.machvec.init) - LOAD_OFFSET) {
 		__machvec_start = .;
 		*(.machvec.init)
 		__machvec_end = .;
@@ -66,8 +74,8 @@ SECTIONS
 	 * .exit.text is discarded at runtime, not link time, to deal with
 	 * references from __bug_table
 	 */
-	.exit.text : AT(ADDR(.exit.text)) { EXIT_TEXT }
-	.exit.data : AT(ADDR(.exit.data)) { EXIT_DATA }
+	.exit.text : AT(ADDR(.exit.text) - LOAD_OFFSET) { EXIT_TEXT }
+	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) { EXIT_DATA }
 
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;
@@ -76,7 +84,6 @@ SECTIONS
 
 	STABS_DEBUG
 	DWARF_DEBUG
-	ELF_DETAILS
 
 	DISCARDS
 }

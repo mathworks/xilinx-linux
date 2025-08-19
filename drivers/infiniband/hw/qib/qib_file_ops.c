@@ -40,10 +40,10 @@
 #include <linux/highmem.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
+#include <asm/pgtable.h>
 #include <linux/delay.h>
 #include <linux/export.h>
 #include <linux/uio.h>
-#include <linux/pgtable.h>
 
 #include <rdma/ib.h>
 
@@ -58,7 +58,7 @@ static int qib_open(struct inode *, struct file *);
 static int qib_close(struct inode *, struct file *);
 static ssize_t qib_write(struct file *, const char __user *, size_t, loff_t *);
 static ssize_t qib_write_iter(struct kiocb *, struct iov_iter *);
-static __poll_t qib_poll(struct file *, struct poll_table_struct *);
+static unsigned int qib_poll(struct file *, struct poll_table_struct *);
 static int qib_mmapf(struct file *, struct vm_area_struct *);
 
 /*
@@ -153,7 +153,7 @@ static int qib_get_base_info(struct file *fp, void __user *ubase,
 		kinfo->spi_tidcnt += dd->rcvtidcnt % subctxt_cnt;
 	/*
 	 * for this use, may be cfgctxts summed over all chips that
-	 * are configured and present
+	 * are are configured and present
 	 */
 	kinfo->spi_nctxts = dd->cfgctxts;
 	/* unit (chip/board) our context is on */
@@ -343,7 +343,7 @@ static int qib_tid_update(struct qib_ctxtdata *rcd, struct file *fp,
 
 	/* virtual address of first page in transfer */
 	vaddr = ti->tidvaddr;
-	if (!access_ok((void __user *) vaddr,
+	if (!access_ok(VERIFY_WRITE, (void __user *) vaddr,
 		       cnt * PAGE_SIZE)) {
 		ret = -EFAULT;
 		goto done;
@@ -364,8 +364,6 @@ static int qib_tid_update(struct qib_ctxtdata *rcd, struct file *fp,
 		goto done;
 	}
 	for (i = 0; i < cnt; i++, vaddr += PAGE_SIZE) {
-		dma_addr_t daddr;
-
 		for (; ntids--; tid++) {
 			if (tid == tidcnt)
 				tid = 0;
@@ -382,14 +380,12 @@ static int qib_tid_update(struct qib_ctxtdata *rcd, struct file *fp,
 			ret = -ENOMEM;
 			break;
 		}
-		ret = qib_map_page(dd->pcidev, pagep[i], &daddr);
-		if (ret)
-			break;
-
 		tidlist[i] = tid + tidoff;
 		/* we "know" system pages and TID pages are same size */
 		dd->pageshadow[ctxttid + tid] = pagep[i];
-		dd->physshadow[ctxttid + tid] = daddr;
+		dd->physshadow[ctxttid + tid] =
+			qib_map_page(dd->pcidev, pagep[i], 0, PAGE_SIZE,
+				     PCI_DMA_FROMDEVICE);
 		/*
 		 * don't need atomic or it's overhead
 		 */
@@ -429,8 +425,8 @@ cleanup:
 				dd->f_put_tid(dd, &tidbase[tid],
 					      RCVHQ_RCV_TYPE_EXPECTED,
 					      dd->tidinvalid);
-				dma_unmap_page(&dd->pcidev->dev, phys,
-					       PAGE_SIZE, DMA_FROM_DEVICE);
+				pci_unmap_page(dd->pcidev, phys, PAGE_SIZE,
+					       PCI_DMA_FROMDEVICE);
 				dd->pageshadow[ctxttid + tid] = NULL;
 			}
 		}
@@ -447,7 +443,7 @@ cleanup:
 			ret = -EFAULT;
 			goto cleanup;
 		}
-		if (copy_to_user(u64_to_user_ptr(ti->tidmap),
+		if (copy_to_user((void __user *) (unsigned long) ti->tidmap,
 				 tidmap, sizeof(tidmap))) {
 			ret = -EFAULT;
 			goto cleanup;
@@ -484,7 +480,7 @@ static int qib_tid_free(struct qib_ctxtdata *rcd, unsigned subctxt,
 			const struct qib_tid_info *ti)
 {
 	int ret = 0;
-	u32 tid, ctxttid, limit, tidcnt;
+	u32 tid, ctxttid, cnt, limit, tidcnt;
 	struct qib_devdata *dd = rcd->dd;
 	u64 __iomem *tidbase;
 	unsigned long tidmap[8];
@@ -494,7 +490,7 @@ static int qib_tid_free(struct qib_ctxtdata *rcd, unsigned subctxt,
 		goto done;
 	}
 
-	if (copy_from_user(tidmap, u64_to_user_ptr(ti->tidmap),
+	if (copy_from_user(tidmap, (void __user *)(unsigned long)ti->tidmap,
 			   sizeof(tidmap))) {
 		ret = -EFAULT;
 		goto done;
@@ -520,7 +516,7 @@ static int qib_tid_free(struct qib_ctxtdata *rcd, unsigned subctxt,
 		/* just in case size changes in future */
 		limit = tidcnt;
 	tid = find_first_bit(tidmap, limit);
-	for (; tid < limit; tid++) {
+	for (cnt = 0; tid < limit; tid++) {
 		/*
 		 * small optimization; if we detect a run of 3 or so without
 		 * any set, use find_first_bit again.  That's mainly to
@@ -530,7 +526,7 @@ static int qib_tid_free(struct qib_ctxtdata *rcd, unsigned subctxt,
 		 */
 		if (!test_bit(tid, tidmap))
 			continue;
-
+		cnt++;
 		if (dd->pageshadow[ctxttid + tid]) {
 			struct page *p;
 			dma_addr_t phys;
@@ -544,8 +540,8 @@ static int qib_tid_free(struct qib_ctxtdata *rcd, unsigned subctxt,
 			 */
 			dd->f_put_tid(dd, &tidbase[tid],
 				      RCVHQ_RCV_TYPE_EXPECTED, dd->tidinvalid);
-			dma_unmap_page(&dd->pcidev->dev, phys, PAGE_SIZE,
-				       DMA_FROM_DEVICE);
+			pci_unmap_page(dd->pcidev, phys, PAGE_SIZE,
+				       PCI_DMA_FROMDEVICE);
 			qib_release_user_pages(&p, 1);
 		}
 	}
@@ -572,16 +568,20 @@ done:
 static int qib_set_part_key(struct qib_ctxtdata *rcd, u16 key)
 {
 	struct qib_pportdata *ppd = rcd->ppd;
-	int i, pidx = -1;
-	bool any = false;
+	int i, any = 0, pidx = -1;
 	u16 lkey = key & 0x7FFF;
+	int ret;
 
-	if (lkey == (QIB_DEFAULT_P_KEY & 0x7FFF))
+	if (lkey == (QIB_DEFAULT_P_KEY & 0x7FFF)) {
 		/* nothing to do; this key always valid */
-		return 0;
+		ret = 0;
+		goto bail;
+	}
 
-	if (!lkey)
-		return -EINVAL;
+	if (!lkey) {
+		ret = -EINVAL;
+		goto bail;
+	}
 
 	/*
 	 * Set the full membership bit, because it has to be
@@ -594,14 +594,18 @@ static int qib_set_part_key(struct qib_ctxtdata *rcd, u16 key)
 	for (i = 0; i < ARRAY_SIZE(rcd->pkeys); i++) {
 		if (!rcd->pkeys[i] && pidx == -1)
 			pidx = i;
-		if (rcd->pkeys[i] == key)
-			return -EEXIST;
+		if (rcd->pkeys[i] == key) {
+			ret = -EEXIST;
+			goto bail;
+		}
 	}
-	if (pidx == -1)
-		return -EBUSY;
-	for (i = 0; i < ARRAY_SIZE(ppd->pkeys); i++) {
+	if (pidx == -1) {
+		ret = -EBUSY;
+		goto bail;
+	}
+	for (any = i = 0; i < ARRAY_SIZE(ppd->pkeys); i++) {
 		if (!ppd->pkeys[i]) {
-			any = true;
+			any++;
 			continue;
 		}
 		if (ppd->pkeys[i] == key) {
@@ -609,34 +613,44 @@ static int qib_set_part_key(struct qib_ctxtdata *rcd, u16 key)
 
 			if (atomic_inc_return(pkrefs) > 1) {
 				rcd->pkeys[pidx] = key;
-				return 0;
+				ret = 0;
+				goto bail;
+			} else {
+				/*
+				 * lost race, decrement count, catch below
+				 */
+				atomic_dec(pkrefs);
+				any++;
 			}
-			/*
-			 * lost race, decrement count, catch below
-			 */
-			atomic_dec(pkrefs);
-			any = true;
 		}
-		if ((ppd->pkeys[i] & 0x7FFF) == lkey)
+		if ((ppd->pkeys[i] & 0x7FFF) == lkey) {
 			/*
 			 * It makes no sense to have both the limited and
 			 * full membership PKEY set at the same time since
 			 * the unlimited one will disable the limited one.
 			 */
-			return -EEXIST;
+			ret = -EEXIST;
+			goto bail;
+		}
 	}
-	if (!any)
-		return -EBUSY;
-	for (i = 0; i < ARRAY_SIZE(ppd->pkeys); i++) {
+	if (!any) {
+		ret = -EBUSY;
+		goto bail;
+	}
+	for (any = i = 0; i < ARRAY_SIZE(ppd->pkeys); i++) {
 		if (!ppd->pkeys[i] &&
 		    atomic_inc_return(&ppd->pkeyrefs[i]) == 1) {
 			rcd->pkeys[pidx] = key;
 			ppd->pkeys[i] = key;
 			(void) ppd->dd->f_set_ib_cfg(ppd, QIB_IB_CFG_PKEYS, 0);
-			return 0;
+			ret = 0;
+			goto bail;
 		}
 	}
-	return -EBUSY;
+	ret = -EBUSY;
+
+bail:
+	return ret;
 }
 
 /**
@@ -682,7 +696,14 @@ static void qib_clean_part_key(struct qib_ctxtdata *rcd,
 			       struct qib_devdata *dd)
 {
 	int i, j, pchanged = 0;
+	u64 oldpkey;
 	struct qib_pportdata *ppd = rcd->ppd;
+
+	/* for debugging only */
+	oldpkey = (u64) ppd->pkeys[0] |
+		((u64) ppd->pkeys[1] << 16) |
+		((u64) ppd->pkeys[2] << 32) |
+		((u64) ppd->pkeys[3] << 48);
 
 	for (i = 0; i < ARRAY_SIZE(rcd->pkeys); i++) {
 		if (!rcd->pkeys[i])
@@ -733,7 +754,7 @@ static int qib_mmap_mem(struct vm_area_struct *vma, struct qib_ctxtdata *rcd,
 		}
 
 		/* don't allow them to later change with mprotect */
-		vm_flags_clear(vma, VM_MAYWRITE);
+		vma->vm_flags &= ~VM_MAYWRITE;
 	}
 
 	pfn = virt_to_phys(kvaddr) >> PAGE_SHIFT;
@@ -769,7 +790,7 @@ static int mmap_ureg(struct vm_area_struct *vma, struct qib_devdata *dd,
 		phys = dd->physaddr + ureg;
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-		vm_flags_set(vma, VM_DONTCOPY | VM_DONTEXPAND);
+		vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
 		ret = io_remap_pfn_range(vma, vma->vm_start,
 					 phys >> PAGE_SHIFT,
 					 vma->vm_end - vma->vm_start,
@@ -810,7 +831,8 @@ static int mmap_piobufs(struct vm_area_struct *vma,
 	 * don't allow them to later change to readable with mprotect (for when
 	 * not initially mapped readable, as is normally the case)
 	 */
-	vm_flags_mod(vma, VM_DONTCOPY | VM_DONTEXPAND, VM_MAYREAD);
+	vma->vm_flags &= ~VM_MAYREAD;
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
 
 	/* We used PAT if wc_cookie == 0 */
 	if (!dd->wc_cookie)
@@ -850,8 +872,8 @@ static int mmap_rcvegrbufs(struct vm_area_struct *vma,
 		ret = -EPERM;
 		goto bail;
 	}
-	/* don't allow them to later change to writable with mprotect */
-	vm_flags_clear(vma, VM_MAYWRITE);
+	/* don't allow them to later change to writeable with mprotect */
+	vma->vm_flags &= ~VM_MAYWRITE;
 
 	start = vma->vm_start;
 
@@ -871,7 +893,7 @@ bail:
 /*
  * qib_file_vma_fault - handle a VMA page fault.
  */
-static vm_fault_t qib_file_vma_fault(struct vm_fault *vmf)
+static int qib_file_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct page *page;
 
@@ -940,10 +962,10 @@ static int mmap_kvaddr(struct vm_area_struct *vma, u64 pgaddr,
 			goto bail;
 		}
 		/*
-		 * Don't allow permission to later change to writable
+		 * Don't allow permission to later change to writeable
 		 * with mprotect.
 		 */
-		vm_flags_clear(vma, VM_MAYWRITE);
+		vma->vm_flags &= ~VM_MAYWRITE;
 	} else
 		goto bail;
 	len = vma->vm_end - vma->vm_start;
@@ -954,7 +976,7 @@ static int mmap_kvaddr(struct vm_area_struct *vma, u64 pgaddr,
 
 	vma->vm_pgoff = (unsigned long) addr >> PAGE_SHIFT;
 	vma->vm_ops = &qib_file_vm_ops;
-	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	ret = 1;
 
 bail:
@@ -1077,18 +1099,18 @@ bail:
 	return ret;
 }
 
-static __poll_t qib_poll_urgent(struct qib_ctxtdata *rcd,
+static unsigned int qib_poll_urgent(struct qib_ctxtdata *rcd,
 				    struct file *fp,
 				    struct poll_table_struct *pt)
 {
 	struct qib_devdata *dd = rcd->dd;
-	__poll_t pollflag;
+	unsigned pollflag;
 
 	poll_wait(fp, &rcd->wait, pt);
 
 	spin_lock_irq(&dd->uctxt_lock);
 	if (rcd->urgent != rcd->urgent_poll) {
-		pollflag = EPOLLIN | EPOLLRDNORM;
+		pollflag = POLLIN | POLLRDNORM;
 		rcd->urgent_poll = rcd->urgent;
 	} else {
 		pollflag = 0;
@@ -1099,12 +1121,12 @@ static __poll_t qib_poll_urgent(struct qib_ctxtdata *rcd,
 	return pollflag;
 }
 
-static __poll_t qib_poll_next(struct qib_ctxtdata *rcd,
+static unsigned int qib_poll_next(struct qib_ctxtdata *rcd,
 				  struct file *fp,
 				  struct poll_table_struct *pt)
 {
 	struct qib_devdata *dd = rcd->dd;
-	__poll_t pollflag;
+	unsigned pollflag;
 
 	poll_wait(fp, &rcd->wait, pt);
 
@@ -1114,26 +1136,26 @@ static __poll_t qib_poll_next(struct qib_ctxtdata *rcd,
 		dd->f_rcvctrl(rcd->ppd, QIB_RCVCTRL_INTRAVAIL_ENB, rcd->ctxt);
 		pollflag = 0;
 	} else
-		pollflag = EPOLLIN | EPOLLRDNORM;
+		pollflag = POLLIN | POLLRDNORM;
 	spin_unlock_irq(&dd->uctxt_lock);
 
 	return pollflag;
 }
 
-static __poll_t qib_poll(struct file *fp, struct poll_table_struct *pt)
+static unsigned int qib_poll(struct file *fp, struct poll_table_struct *pt)
 {
 	struct qib_ctxtdata *rcd;
-	__poll_t pollflag;
+	unsigned pollflag;
 
 	rcd = ctxt_fp(fp);
 	if (!rcd)
-		pollflag = EPOLLERR;
+		pollflag = POLLERR;
 	else if (rcd->poll_type == QIB_POLL_TYPE_URGENT)
 		pollflag = qib_poll_urgent(rcd, fp, pt);
 	else  if (rcd->poll_type == QIB_POLL_TYPE_ANYRCV)
 		pollflag = qib_poll_next(rcd, fp, pt);
 	else /* invalid */
-		pollflag = EPOLLERR;
+		pollflag = POLLERR;
 
 	return pollflag;
 }
@@ -1141,7 +1163,7 @@ static __poll_t qib_poll(struct file *fp, struct poll_table_struct *pt)
 static void assign_ctxt_affinity(struct file *fp, struct qib_devdata *dd)
 {
 	struct qib_filedata *fd = fp->private_data;
-	const unsigned int weight = current->nr_cpus_allowed;
+	const unsigned int weight = cpumask_weight(&current->cpus_allowed);
 	const struct cpumask *local_mask = cpumask_of_pcibus(dd->pcidev->bus);
 	int local_cpu;
 
@@ -1320,7 +1342,7 @@ static int setup_ctxt(struct qib_pportdata *ppd, int ctxt,
 	rcd->tid_pg_list = ptmp;
 	rcd->pid = current->pid;
 	init_waitqueue_head(&dd->rcd[ctxt]->wait);
-	get_task_comm(rcd->comm, current);
+	strlcpy(rcd->comm, current->comm, sizeof(rcd->comm));
 	ctxt_fp(fp) = rcd;
 	qib_stats.sps_ctxts++;
 	dd->freectxts--;
@@ -1622,8 +1644,9 @@ static int qib_assign_ctxt(struct file *fp, const struct qib_user_info *uinfo)
 		ret = find_free_ctxt(i_minor - 1, fp, uinfo);
 	else {
 		int unit;
-		const unsigned int cpu = cpumask_first(current->cpus_ptr);
-		const unsigned int weight = current->nr_cpus_allowed;
+		const unsigned int cpu = cpumask_first(&current->cpus_allowed);
+		const unsigned int weight =
+			cpumask_weight(&current->cpus_allowed);
 
 		if (weight == 1 && !test_bit(cpu, qib_cpulist))
 			if (!find_hca(cpu, &unit) && unit >= 0)
@@ -1757,8 +1780,7 @@ bail:
 }
 
 /**
- * unlock_expected_tids - unlock any expected TID entries context still had
- * in use
+ * unlock_exptid - unlock any expected TID entries context still had in use
  * @rcd: ctxt
  *
  * We don't actually update the chip here, because we do a bulk update
@@ -1768,7 +1790,7 @@ static void unlock_expected_tids(struct qib_ctxtdata *rcd)
 {
 	struct qib_devdata *dd = rcd->dd;
 	int ctxt_tidbase = rcd->ctxt * dd->rcvtidcnt;
-	int i, maxtid = ctxt_tidbase + dd->rcvtidcnt;
+	int i, cnt = 0, maxtid = ctxt_tidbase + dd->rcvtidcnt;
 
 	for (i = ctxt_tidbase; i < maxtid; i++) {
 		struct page *p = dd->pageshadow[i];
@@ -1780,19 +1802,22 @@ static void unlock_expected_tids(struct qib_ctxtdata *rcd)
 		phys = dd->physshadow[i];
 		dd->physshadow[i] = dd->tidinvalid;
 		dd->pageshadow[i] = NULL;
-		dma_unmap_page(&dd->pcidev->dev, phys, PAGE_SIZE,
-			       DMA_FROM_DEVICE);
+		pci_unmap_page(dd->pcidev, phys, PAGE_SIZE,
+			       PCI_DMA_FROMDEVICE);
 		qib_release_user_pages(&p, 1);
+		cnt++;
 	}
 }
 
 static int qib_close(struct inode *in, struct file *fp)
 {
+	int ret = 0;
 	struct qib_filedata *fd;
 	struct qib_ctxtdata *rcd;
 	struct qib_devdata *dd;
 	unsigned long flags;
 	unsigned ctxt;
+	pid_t pid;
 
 	mutex_lock(&qib_mutex);
 
@@ -1834,6 +1859,7 @@ static int qib_close(struct inode *in, struct file *fp)
 	spin_lock_irqsave(&dd->uctxt_lock, flags);
 	ctxt = rcd->ctxt;
 	dd->rcd[ctxt] = NULL;
+	pid = rcd->pid;
 	rcd->pid = 0;
 	spin_unlock_irqrestore(&dd->uctxt_lock, flags);
 
@@ -1871,7 +1897,7 @@ static int qib_close(struct inode *in, struct file *fp)
 
 bail:
 	kfree(fd);
-	return 0;
+	return ret;
 }
 
 static int qib_ctxt_info(struct file *fp, struct qib_ctxt_info __user *uinfo)
@@ -2040,11 +2066,8 @@ static ssize_t qib_write(struct file *fp, const char __user *data,
 	ssize_t ret = 0;
 	void *dest;
 
-	if (!ib_safe_file_access(fp)) {
-		pr_err_once("qib_write: process %d (%s) changed security contexts after opening file descriptor, this is not allowed.\n",
-			    task_tgid_vnr(current), current->comm);
+	if (WARN_ON_ONCE(!ib_safe_file_access(fp)))
 		return -EACCES;
-	}
 
 	if (count < sizeof(cmd.type)) {
 		ret = -EINVAL;
@@ -2169,8 +2192,8 @@ static ssize_t qib_write(struct file *fp, const char __user *data,
 		ret = qib_do_user_init(fp, &cmd.cmd.user_info);
 		if (ret)
 			goto bail;
-		ret = qib_get_base_info(fp, u64_to_user_ptr(
-					  cmd.cmd.user_info.spu_base_info),
+		ret = qib_get_base_info(fp, (void __user *) (unsigned long)
+					cmd.cmd.user_info.spu_base_info,
 					cmd.cmd.user_info.spu_base_info_size);
 		break;
 
@@ -2244,15 +2267,13 @@ static ssize_t qib_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct qib_ctxtdata *rcd = ctxt_fp(iocb->ki_filp);
 	struct qib_user_sdma_queue *pq = fp->pq;
 
-	if (!from->user_backed || !from->nr_segs || !pq)
+	if (!iter_is_iovec(from) || !from->nr_segs || !pq)
 		return -EINVAL;
-
-	return qib_user_sdma_writev(rcd, pq, iter_iov(from), from->nr_segs);
+			 
+	return qib_user_sdma_writev(rcd, pq, from->iov, from->nr_segs);
 }
 
-static const struct class qib_class = {
-	.name = "ipath",
-};
+static struct class *qib_class;
 static dev_t qib_dev;
 
 int qib_cdev_init(int minor, const char *name,
@@ -2283,7 +2304,7 @@ int qib_cdev_init(int minor, const char *name,
 		goto err_cdev;
 	}
 
-	device = device_create(&qib_class, NULL, dev, NULL, "%s", name);
+	device = device_create(qib_class, NULL, dev, NULL, "%s", name);
 	if (!IS_ERR(device))
 		goto done;
 	ret = PTR_ERR(device);
@@ -2327,8 +2348,9 @@ int __init qib_dev_init(void)
 		goto done;
 	}
 
-	ret = class_register(&qib_class);
-	if (ret) {
+	qib_class = class_create(THIS_MODULE, "ipath");
+	if (IS_ERR(qib_class)) {
+		ret = PTR_ERR(qib_class);
 		pr_err("Could not create device class (err %d)\n", -ret);
 		unregister_chrdev_region(qib_dev, QIB_NMINORS);
 	}
@@ -2339,8 +2361,10 @@ done:
 
 void qib_dev_cleanup(void)
 {
-	if (class_is_registered(&qib_class))
-		class_unregister(&qib_class);
+	if (qib_class) {
+		class_destroy(qib_class);
+		qib_class = NULL;
+	}
 
 	unregister_chrdev_region(qib_dev, QIB_NMINORS);
 }

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * FPU state and register content conversion primitives
  *
@@ -27,7 +26,7 @@ static inline void convert_vx_to_fp(freg_t *fprs, __vector128 *vxrs)
 	int i;
 
 	for (i = 0; i < __NUM_FPRS; i++)
-		fprs[i].ui = vxrs[i].high;
+		fprs[i] = *(freg_t *)(vxrs + i);
 }
 
 static inline void convert_fp_to_vx(__vector128 *vxrs, freg_t *fprs)
@@ -35,7 +34,7 @@ static inline void convert_fp_to_vx(__vector128 *vxrs, freg_t *fprs)
 	int i;
 
 	for (i = 0; i < __NUM_FPRS; i++)
-		vxrs[i].high = fprs[i].ui;
+		*(freg_t *)(vxrs + i) = fprs[i];
 }
 
 static inline void fpregs_store(_s390_fp_regs *fpregs, struct fpu *fpu)

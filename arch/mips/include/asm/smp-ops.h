@@ -13,7 +13,7 @@
 
 #include <linux/errno.h>
 
-#include <asm/mips-cps.h>
+#include <asm/mips-cm.h>
 
 #ifdef CONFIG_SMP
 
@@ -26,25 +26,20 @@ struct plat_smp_ops {
 	void (*send_ipi_mask)(const struct cpumask *mask, unsigned int action);
 	void (*init_secondary)(void);
 	void (*smp_finish)(void);
-	int (*boot_secondary)(int cpu, struct task_struct *idle);
+	void (*boot_secondary)(int cpu, struct task_struct *idle);
 	void (*smp_setup)(void);
 	void (*prepare_cpus)(unsigned int max_cpus);
-	void (*prepare_boot_cpu)(void);
 #ifdef CONFIG_HOTPLUG_CPU
 	int (*cpu_disable)(void);
 	void (*cpu_die)(unsigned int cpu);
-	void (*cleanup_dead_cpu)(unsigned cpu);
-#endif
-#ifdef CONFIG_KEXEC
-	void (*kexec_nonboot_cpu)(void);
 #endif
 };
 
-extern void register_smp_ops(const struct plat_smp_ops *ops);
+extern void register_smp_ops(struct plat_smp_ops *ops);
 
 static inline void plat_smp_setup(void)
 {
-	extern const struct plat_smp_ops *mp_ops;	/* private */
+	extern struct plat_smp_ops *mp_ops;	/* private */
 
 	mp_ops->smp_setup();
 }
@@ -62,7 +57,7 @@ static inline void plat_smp_setup(void)
 	/* UP, nothing to do ...  */
 }
 
-static inline void register_smp_ops(const struct plat_smp_ops *ops)
+static inline void register_smp_ops(struct plat_smp_ops *ops)
 {
 }
 
@@ -71,9 +66,25 @@ static inline void register_smp_ops(const struct plat_smp_ops *ops)
 static inline int register_up_smp_ops(void)
 {
 #ifdef CONFIG_SMP_UP
-	extern const struct plat_smp_ops up_smp_ops;
+	extern struct plat_smp_ops up_smp_ops;
 
 	register_smp_ops(&up_smp_ops);
+
+	return 0;
+#else
+	return -ENODEV;
+#endif
+}
+
+static inline int register_cmp_smp_ops(void)
+{
+#ifdef CONFIG_MIPS_CMP
+	extern struct plat_smp_ops cmp_smp_ops;
+
+	if (!mips_cm_present())
+		return -ENODEV;
+
+	register_smp_ops(&cmp_smp_ops);
 
 	return 0;
 #else
@@ -84,10 +95,7 @@ static inline int register_up_smp_ops(void)
 static inline int register_vsmp_smp_ops(void)
 {
 #ifdef CONFIG_MIPS_MT_SMP
-	extern const struct plat_smp_ops vsmp_smp_ops;
-
-	if (!cpu_has_mipsmt)
-		return -ENODEV;
+	extern struct plat_smp_ops vsmp_smp_ops;
 
 	register_smp_ops(&vsmp_smp_ops);
 

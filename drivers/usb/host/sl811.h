@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * SL811HS register declarations and HCD data structures
  *
@@ -123,6 +122,7 @@ struct sl811 {
 	void __iomem		*addr_reg;
 	void __iomem		*data_reg;
 	struct sl811_platform_data	*board;
+	struct dentry 		*debug_file;
 
 	unsigned long		stat_insrmv;
 	unsigned long		stat_wake;

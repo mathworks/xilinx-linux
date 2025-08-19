@@ -31,8 +31,7 @@ nv4c_pci_func = {
 };
 
 int
-nv4c_pci_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-	     struct nvkm_pci **ppci)
+nv4c_pci_new(struct nvkm_device *device, int index, struct nvkm_pci **ppci)
 {
-	return nvkm_pci_new_(&nv4c_pci_func, device, type, inst, ppci);
+	return nvkm_pci_new_(&nv4c_pci_func, device, index, ppci);
 }

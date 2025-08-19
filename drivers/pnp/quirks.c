@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  This file contains quirk handling code for PnP devices
  *  Some devices do not report all their resources, and need to have extra
@@ -21,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/pnp.h>
 #include <linux/io.h>
+#include <linux/kallsyms.h>
 #include "base.h"
 
 static void quirk_awe32_add_ports(struct pnp_dev *dev,
@@ -226,10 +226,13 @@ static void quirk_ad1815_mpu_resources(struct pnp_dev *dev)
 	dev_info(&dev->dev, "made independent IRQ optional\n");
 }
 
+#include <linux/pci.h>
+
 static void quirk_system_pci_resources(struct pnp_dev *dev)
 {
 	struct pci_dev *pdev = NULL;
-	struct resource *res, *r;
+	struct resource *res;
+	resource_size_t pnp_start, pnp_end, pci_start, pci_end;
 	int i, j;
 
 	/*
@@ -242,26 +245,32 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 	 * so they won't be claimed by the PNP system driver.
 	 */
 	for_each_pci_dev(pdev) {
-		pci_dev_for_each_resource(pdev, r, i) {
-			unsigned long type = resource_type(r);
+		for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
+			unsigned long flags, type;
 
-			if (!(type == IORESOURCE_IO || type == IORESOURCE_MEM) ||
-			    resource_size(r) == 0)
+			flags = pci_resource_flags(pdev, i);
+			type = flags & (IORESOURCE_IO | IORESOURCE_MEM);
+			if (!type || pci_resource_len(pdev, i) == 0)
 				continue;
 
-			if (r->flags & IORESOURCE_UNSET)
+			if (flags & IORESOURCE_UNSET)
 				continue;
 
+			pci_start = pci_resource_start(pdev, i);
+			pci_end = pci_resource_end(pdev, i);
 			for (j = 0;
 			     (res = pnp_get_resource(dev, type, j)); j++) {
 				if (res->start == 0 && res->end == 0)
 					continue;
 
+				pnp_start = res->start;
+				pnp_end = res->end;
+
 				/*
 				 * If the PNP region doesn't overlap the PCI
 				 * region at all, there's no problem.
 				 */
-				if (!resource_overlaps(res, r))
+				if (pnp_end < pci_start || pnp_start > pci_end)
 					continue;
 
 				/*
@@ -271,7 +280,8 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 				 * PNP device describes a bridge with PCI
 				 * behind it.
 				 */
-				if (res->start <= r->start && res->end >= r->end)
+				if (pnp_start <= pci_start &&
+				    pnp_end >= pci_end)
 					continue;
 
 				/*
@@ -280,8 +290,9 @@ static void quirk_system_pci_resources(struct pnp_dev *dev)
 				 * driver from requesting its resources.
 				 */
 				dev_warn(&dev->dev,
-					 "disabling %pR because it overlaps %s BAR %d %pR\n",
-					 res, pci_name(pdev), i, r);
+					 "disabling %pR because it overlaps "
+					 "%s BAR %d %pR\n", res,
+					 pci_name(pdev), i, &pdev->resource[i]);
 				res->flags |= IORESOURCE_DISABLED;
 			}
 		}
@@ -447,7 +458,7 @@ void pnp_fixup_device(struct pnp_dev *dev)
 	for (f = pnp_fixups; *f->id; f++) {
 		if (!compare_pnp_id(dev->id, f->id))
 			continue;
-		pnp_dbg(&dev->dev, "%s: calling %pS\n", f->id,
+		pnp_dbg(&dev->dev, "%s: calling %pF\n", f->id,
 			f->quirk_function);
 		f->quirk_function(dev);
 	}

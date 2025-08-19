@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_STRBUF_H
 #define __PERF_STRBUF_H
 
@@ -12,7 +11,7 @@
  *    build complex strings/buffers whose final size isn't easily known.
  *
  *    It is NOT legal to copy the ->buf pointer away.
- *    `strbuf_detach' is the operation that detaches a buffer from its shell
+ *    `strbuf_detach' is the operation that detachs a buffer from its shell
  *    while keeping the shell valid wrt its invariants.
  *
  * 2. the ->buf member is a byte array that has at least ->len + 1 bytes
@@ -43,7 +42,6 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
-#include <linux/compiler.h>
 #include <sys/types.h>
 
 extern char strbuf_slopbuf[];
@@ -87,7 +85,8 @@ static inline int strbuf_addstr(struct strbuf *sb, const char *s) {
 	return strbuf_add(sb, s, strlen(s));
 }
 
-int strbuf_addf(struct strbuf *sb, const char *fmt, ...) __printf(2, 3);
+__attribute__((format(printf,2,3)))
+int strbuf_addf(struct strbuf *sb, const char *fmt, ...);
 
 /* XXX: if read fails, any partial read is undone */
 ssize_t strbuf_read(struct strbuf *, int fd, ssize_t hint);

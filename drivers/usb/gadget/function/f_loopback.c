@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_loopback.c - USB peripheral loopback configuration driver
  *
  * Copyright (C) 2003-2008 David Brownell
  * Copyright (C) 2008 by Nokia Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 /* #define VERBOSE_DEBUG */
@@ -207,11 +211,13 @@ autoconf_fail:
 	ss_loop_sink_desc.bEndpointAddress = fs_loop_sink_desc.bEndpointAddress;
 
 	ret = usb_assign_descriptors(f, fs_loopback_descs, hs_loopback_descs,
-			ss_loopback_descs, ss_loopback_descs);
+			ss_loopback_descs, NULL);
 	if (ret)
 		return ret;
 
-	DBG(cdev, "%s: IN/%s, OUT/%s\n",
+	DBG(cdev, "%s speed %s: IN/%s, OUT/%s\n",
+	    (gadget_is_superspeed(c->cdev->gadget) ? "super" :
+	     (gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full")),
 			f->name, loop->in_ep->name, loop->out_ep->name);
 	return 0;
 }
@@ -272,7 +278,7 @@ static void loopback_complete(struct usb_ep *ep, struct usb_request *req)
 	default:
 		ERROR(cdev, "%s loop complete --> %d, %d/%d\n", ep->name,
 				status, req->actual, req->length);
-		fallthrough;
+		/* FALLTHROUGH */
 
 	/* NOTE:  since this driver doesn't maintain an explicit record
 	 * of requests it submitted (just maintains qlen count), we
@@ -550,7 +556,7 @@ static struct configfs_attribute *lb_attrs[] = {
 	NULL,
 };
 
-static const struct config_item_type lb_func_type = {
+static struct config_item_type lb_func_type = {
 	.ct_item_ops    = &lb_item_ops,
 	.ct_attrs	= lb_attrs,
 	.ct_owner       = THIS_MODULE,

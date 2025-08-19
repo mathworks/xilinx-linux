@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Signal Handling for ARC
  *
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * vineetg: Jan 2010 (Restarting of timer related syscalls)
  *
@@ -49,11 +52,8 @@
 #include <linux/personality.h>
 #include <linux/uaccess.h>
 #include <linux/syscalls.h>
-#include <linux/resume_user_mode.h>
-#include <linux/sched/task_stack.h>
-
+#include <linux/tracehook.h>
 #include <asm/ucontext.h>
-#include <asm/entry.h>
 
 struct rt_sigframe {
 	struct siginfo info;
@@ -61,41 +61,6 @@ struct rt_sigframe {
 #define MAGIC_SIGALTSTK		0x07302004
 	unsigned int sigret_magic;
 };
-
-static int save_arcv2_regs(struct sigcontext *mctx, struct pt_regs *regs)
-{
-	int err = 0;
-#ifndef CONFIG_ISA_ARCOMPACT
-	struct user_regs_arcv2 v2abi;
-
-	v2abi.r30 = regs->r30;
-#ifdef CONFIG_ARC_HAS_ACCL_REGS
-	v2abi.r58 = regs->r58;
-	v2abi.r59 = regs->r59;
-#else
-	v2abi.r58 = v2abi.r59 = 0;
-#endif
-	err = __copy_to_user(&mctx->v2abi, &v2abi, sizeof(v2abi));
-#endif
-	return err;
-}
-
-static int restore_arcv2_regs(struct sigcontext *mctx, struct pt_regs *regs)
-{
-	int err = 0;
-#ifndef CONFIG_ISA_ARCOMPACT
-	struct user_regs_arcv2 v2abi;
-
-	err = __copy_from_user(&v2abi, &mctx->v2abi, sizeof(v2abi));
-
-	regs->r30 = v2abi.r30;
-#ifdef CONFIG_ARC_HAS_ACCL_REGS
-	regs->r58 = v2abi.r58;
-	regs->r59 = v2abi.r59;
-#endif
-#endif
-	return err;
-}
 
 static int
 stash_usr_regs(struct rt_sigframe __user *sf, struct pt_regs *regs,
@@ -130,13 +95,9 @@ stash_usr_regs(struct rt_sigframe __user *sf, struct pt_regs *regs,
 
 	err = __copy_to_user(&(sf->uc.uc_mcontext.regs.scratch), &uregs.scratch,
 			     sizeof(sf->uc.uc_mcontext.regs.scratch));
-
-	if (is_isa_arcv2())
-		err |= save_arcv2_regs(&(sf->uc.uc_mcontext), regs);
-
 	err |= __copy_to_user(&sf->uc.uc_sigmask, set, sizeof(sigset_t));
 
-	return err ? -EFAULT : 0;
+	return err;
 }
 
 static int restore_usr_regs(struct pt_regs *regs, struct rt_sigframe __user *sf)
@@ -149,12 +110,8 @@ static int restore_usr_regs(struct pt_regs *regs, struct rt_sigframe __user *sf)
 	err |= __copy_from_user(&uregs.scratch,
 				&(sf->uc.uc_mcontext.regs.scratch),
 				sizeof(sf->uc.uc_mcontext.regs.scratch));
-
-	if (is_isa_arcv2())
-		err |= restore_arcv2_regs(&(sf->uc.uc_mcontext), regs);
-
 	if (err)
-		return -EFAULT;
+		return err;
 
 	set_current_blocked(&set);
 	regs->bta	= uregs.scratch.bta;
@@ -210,7 +167,7 @@ SYSCALL_DEFINE0(rt_sigreturn)
 
 	sf = (struct rt_sigframe __force __user *)(regs->sp);
 
-	if (!access_ok(sf, sizeof(*sf)))
+	if (!access_ok(VERIFY_READ, sf, sizeof(*sf)))
 		goto badframe;
 
 	if (__get_user(magic, &sf->sigret_magic))
@@ -238,7 +195,7 @@ SYSCALL_DEFINE0(rt_sigreturn)
 	return regs->r0;
 
 badframe:
-	force_sig(SIGSEGV);
+	force_sig(SIGSEGV, current);
 	return 0;
 }
 
@@ -260,7 +217,7 @@ static inline void __user *get_sigframe(struct ksignal *ksig,
 	frame = (void __user *)((sp - framesize) & ~7);
 
 	/* Check that we can actually write to the signal frame */
-	if (!access_ok(frame, framesize))
+	if (!access_ok(VERIFY_WRITE, frame, framesize))
 		frame = NULL;
 
 	return frame;
@@ -303,7 +260,7 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 		regs->r2 = (unsigned long)&sf->uc;
 
 		/*
-		 * small optim to avoid unconditionally calling do_sigaltstack
+		 * small optim to avoid unconditonally calling do_sigaltstack
 		 * in sigreturn path, now that we only have rt_sigreturn
 		 */
 		magic = MAGIC_SIGALTSTK;
@@ -320,7 +277,7 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 	regs->ret = (unsigned long)ksig->ka.sa.sa_handler;
 
 	/*
-	 * handler returns using sigreturn stub provided already by userspace
+	 * handler returns using sigreturn stub provided already by userpsace
 	 * If not, nuke the process right away
 	 */
 	if(!(ksig->ka.sa.sa_flags & SA_RESTORER))
@@ -365,7 +322,7 @@ static void arc_restart_syscall(struct k_sigaction *ka, struct pt_regs *regs)
 			regs->r0 = -EINTR;
 			break;
 		}
-		fallthrough;
+		/* fallthrough */
 
 	case -ERESTARTNOINTR:
 		/*
@@ -406,7 +363,7 @@ void do_signal(struct pt_regs *regs)
 
 	restart_scall = in_syscall(regs) && syscall_restartable(regs);
 
-	if (test_thread_flag(TIF_SIGPENDING) && get_signal(&ksig)) {
+	if (get_signal(&ksig)) {
 		if (restart_scall) {
 			arc_restart_syscall(&ksig.ka, regs);
 			syscall_wont_restart(regs);	/* No more restarts */
@@ -435,9 +392,9 @@ void do_signal(struct pt_regs *regs)
 void do_notify_resume(struct pt_regs *regs)
 {
 	/*
-	 * ASM glue guarantees that this is only called when returning to
+	 * ASM glue gaurantees that this is only called when returning to
 	 * user mode
 	 */
-	if (test_thread_flag(TIF_NOTIFY_RESUME))
-		resume_user_mode_work(regs);
+	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME))
+		tracehook_notify_resume(regs);
 }

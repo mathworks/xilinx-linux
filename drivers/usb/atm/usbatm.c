@@ -1,10 +1,24 @@
-// SPDX-License-Identifier: GPL-2.0+
 /******************************************************************************
  *  usbatm.c - Generic USB xDSL driver core
  *
  *  Copyright (C) 2001, Alcatel
  *  Copyright (C) 2003, Duncan Sands, SolNegro, Josep Comas
  *  Copyright (C) 2004, David Woodhouse, Roman Kagan
+ *
+ *  This program is free software; you can redistribute it and/or modify it
+ *  under the terms of the GNU General Public License as published by the Free
+ *  Software Foundation; either version 2 of the License, or (at your option)
+ *  any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but WITHOUT
+ *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ *  more details.
+ *
+ *  You should have received a copy of the GNU General Public License along with
+ *  this program; if not, write to the Free Software Foundation, Inc., 59
+ *  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ *
  ******************************************************************************/
 
 /*
@@ -50,7 +64,7 @@
 
 #include "usbatm.h"
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <linux/crc32.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -60,7 +74,7 @@
 #include <linux/moduleparam.h>
 #include <linux/netdevice.h>
 #include <linux/proc_fs.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
@@ -79,7 +93,8 @@ static int usbatm_print_packet(struct usbatm_data *instance, const unsigned char
 #endif
 
 #define DRIVER_AUTHOR	"Johan Verrept, Duncan Sands <duncan.sands@free.fr>"
-#define DRIVER_DESC	"Generic USB ATM/DSL I/O"
+#define DRIVER_VERSION	"1.10"
+#define DRIVER_DESC	"Generic USB ATM/DSL I/O, version " DRIVER_VERSION
 
 static const char usbatm_driver_name[] = "usbatm";
 
@@ -159,7 +174,7 @@ static int usbatm_atm_ioctl(struct atm_dev *atm_dev, unsigned int cmd, void __us
 static int usbatm_atm_send(struct atm_vcc *vcc, struct sk_buff *skb);
 static int usbatm_atm_proc_read(struct atm_dev *atm_dev, loff_t *pos, char *page);
 
-static const struct atmdev_ops usbatm_atm_devops = {
+static struct atmdev_ops usbatm_atm_devops = {
 	.dev_close	= usbatm_atm_dev_close,
 	.open		= usbatm_atm_open,
 	.close		= usbatm_atm_close,
@@ -249,7 +264,7 @@ static void usbatm_complete(struct urb *urb)
 	/* vdbg("%s: urb 0x%p, status %d, actual_length %d",
 	     __func__, urb, status, urb->actual_length); */
 
-	/* Can be invoked from task context, protect against interrupts */
+	/* usually in_interrupt(), but not always */
 	spin_lock_irqsave(&channel->lock, flags);
 
 	/* must add to the back when receiving; doesn't matter when sending */
@@ -511,10 +526,9 @@ static unsigned int usbatm_write_cells(struct usbatm_data *instance,
 **  receive  **
 **************/
 
-static void usbatm_rx_process(struct tasklet_struct *t)
+static void usbatm_rx_process(unsigned long data)
 {
-	struct usbatm_data *instance = from_tasklet(instance, t,
-						    rx_channel.tasklet);
+	struct usbatm_data *instance = (struct usbatm_data *)data;
 	struct urb *urb;
 
 	while ((urb = usbatm_pop_urb(&instance->rx_channel))) {
@@ -565,10 +579,9 @@ static void usbatm_rx_process(struct tasklet_struct *t)
 **  send  **
 ***********/
 
-static void usbatm_tx_process(struct tasklet_struct *t)
+static void usbatm_tx_process(unsigned long data)
 {
-	struct usbatm_data *instance = from_tasklet(instance, t,
-						    tx_channel.tasklet);
+	struct usbatm_data *instance = (struct usbatm_data *)data;
 	struct sk_buff *skb = instance->current_skb;
 	struct urb *urb = NULL;
 	const unsigned int buf_size = instance->tx_channel.buf_size;
@@ -969,7 +982,7 @@ static int usbatm_do_heavy_init(void *arg)
 	instance->thread = NULL;
 	mutex_unlock(&instance->serialize);
 
-	kthread_complete_and_exit(&instance->thread_exited, ret);
+	complete_and_exit(&instance->thread_exited, ret);
 }
 
 static int usbatm_heavy_init(struct usbatm_data *instance)
@@ -991,18 +1004,18 @@ static int usbatm_heavy_init(struct usbatm_data *instance)
 	return 0;
 }
 
-static void usbatm_tasklet_schedule(struct timer_list *t)
+static void usbatm_tasklet_schedule(unsigned long data)
 {
-	struct usbatm_channel *channel = from_timer(channel, t, delay);
-
-	tasklet_schedule(&channel->tasklet);
+	tasklet_schedule((struct tasklet_struct *) data);
 }
 
 static void usbatm_init_channel(struct usbatm_channel *channel)
 {
 	spin_lock_init(&channel->lock);
 	INIT_LIST_HEAD(&channel->list);
-	timer_setup(&channel->delay, usbatm_tasklet_schedule, 0);
+	channel->delay.function = usbatm_tasklet_schedule;
+	channel->delay.data = (unsigned long) &channel->tasklet;
+	init_timer(&channel->delay);
 }
 
 int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
@@ -1015,18 +1028,16 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 	int error = -ENOMEM;
 	int i, length;
 	unsigned int maxpacket, num_packets;
-	size_t size;
 
 	/* instance init */
-	size = struct_size(instance, urbs, num_rcv_urbs + num_snd_urbs);
-	instance = kzalloc(size, GFP_KERNEL);
+	instance = kzalloc(sizeof(*instance) + sizeof(struct urb *) * (num_rcv_urbs + num_snd_urbs), GFP_KERNEL);
 	if (!instance)
 		return -ENOMEM;
 
 	/* public fields */
 
 	instance->driver = driver;
-	strscpy(instance->driver_name, driver->driver_name,
+	strlcpy(instance->driver_name, driver->driver_name,
 		sizeof(instance->driver_name));
 
 	instance->usb_dev = usb_dev;
@@ -1073,8 +1084,8 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 
 	usbatm_init_channel(&instance->rx_channel);
 	usbatm_init_channel(&instance->tx_channel);
-	tasklet_setup(&instance->rx_channel.tasklet, usbatm_rx_process);
-	tasklet_setup(&instance->tx_channel.tasklet, usbatm_tx_process);
+	tasklet_init(&instance->rx_channel.tasklet, usbatm_rx_process, (unsigned long)instance);
+	tasklet_init(&instance->tx_channel.tasklet, usbatm_tx_process, (unsigned long)instance);
 	instance->rx_channel.stride = ATM_CELL_SIZE + driver->rx_padding;
 	instance->tx_channel.stride = ATM_CELL_SIZE + driver->tx_padding;
 	instance->rx_channel.usbatm = instance->tx_channel.usbatm = instance;
@@ -1091,7 +1102,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 			snd_buf_bytes - (snd_buf_bytes % instance->tx_channel.stride));
 
 	/* rx buffer size must be a positive multiple of the endpoint maxpacket */
-	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint);
+	maxpacket = usb_maxpacket(usb_dev, instance->rx_channel.endpoint, 0);
 
 	if ((maxpacket < 1) || (maxpacket > UDSL_MAX_BUF_SIZE)) {
 		dev_err(dev, "%s: invalid endpoint %02x!\n", __func__,
@@ -1279,8 +1290,8 @@ EXPORT_SYMBOL_GPL(usbatm_usb_disconnect);
 
 static int __init usbatm_usb_init(void)
 {
-	if (sizeof(struct usbatm_control) > sizeof_field(struct sk_buff, cb)) {
-		pr_err("%s unusable with this kernel!\n", usbatm_driver_name);
+	if (sizeof(struct usbatm_control) > FIELD_SIZEOF(struct sk_buff, cb)) {
+		printk(KERN_ERR "%s unusable with this kernel!\n", usbatm_driver_name);
 		return -EIO;
 	}
 
@@ -1304,6 +1315,7 @@ module_exit(usbatm_usb_exit);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
+MODULE_VERSION(DRIVER_VERSION);
 
 /************
 **  debug  **

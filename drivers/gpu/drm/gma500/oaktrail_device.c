@@ -1,25 +1,39 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /**************************************************************************
  * Copyright (c) 2011, Intel Corporation.
  * All Rights Reserved.
  *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+ *
  **************************************************************************/
 
-#include <linux/delay.h>
-#include <linux/dmi.h>
+#include <linux/backlight.h>
 #include <linux/module.h>
-
+#include <linux/dmi.h>
+#include <drm/drmP.h>
 #include <drm/drm.h>
-
-#include "intel_bios.h"
-#include "mid_bios.h"
+#include <drm/gma_drm.h>
 #include "psb_drv.h"
-#include "psb_intel_reg.h"
 #include "psb_reg.h"
+#include "psb_intel_reg.h"
+#include <asm/intel-mid.h>
+#include <asm/intel_scu_ipc.h>
+#include "mid_bios.h"
+#include "intel_bios.h"
 
 static int oaktrail_output_init(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	if (dev_priv->iLVDS_enable)
 		oaktrail_lvds_init(dev, &dev_priv->mode_dev);
 	else
@@ -36,17 +50,28 @@ static int oaktrail_output_init(struct drm_device *dev)
  *	Provide the low level interfaces for the Moorestown backlight
  */
 
+#ifdef CONFIG_BACKLIGHT_CLASS_DEVICE
+
 #define MRST_BLC_MAX_PWM_REG_FREQ	    0xFFFF
 #define BLC_PWM_PRECISION_FACTOR 100	/* 10000000 */
 #define BLC_PWM_FREQ_CALC_CONSTANT 32
 #define MHz 1000000
 #define BLC_ADJUSTMENT_MAX 100
 
-static void oaktrail_set_brightness(struct drm_device *dev, int level)
+static struct backlight_device *oaktrail_backlight_device;
+static int oaktrail_brightness;
+
+static int oaktrail_set_brightness(struct backlight_device *bd)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_device *dev = bl_get_data(oaktrail_backlight_device);
+	struct drm_psb_private *dev_priv = dev->dev_private;
+	int level = bd->props.brightness;
 	u32 blc_pwm_ctl;
 	u32 max_pwm_blc;
+
+	/* Percentage 1-100% being valid */
+	if (level < 1)
+		level = 1;
 
 	if (gma_power_begin(dev, 0)) {
 		/* Calculate and set the brightness value */
@@ -70,11 +95,21 @@ static void oaktrail_set_brightness(struct drm_device *dev, int level)
 		REG_WRITE(BLC_PWM_CTL, (max_pwm_blc << 16) | blc_pwm_ctl);
 		gma_power_end(dev);
 	}
+	oaktrail_brightness = level;
+	return 0;
 }
 
-static int oaktrail_backlight_init(struct drm_device *dev)
+static int oaktrail_get_brightness(struct backlight_device *bd)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	/* return locally cached var instead of HW read (due to DPST etc.) */
+	/* FIXME: ideally return actual value in case firmware fiddled with
+	   it */
+	return oaktrail_brightness;
+}
+
+static int device_backlight_init(struct drm_device *dev)
+{
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	unsigned long core_clock;
 	u16 bl_max_freq;
 	uint32_t value;
@@ -101,10 +136,43 @@ static int oaktrail_backlight_init(struct drm_device *dev)
 		REG_WRITE(BLC_PWM_CTL, value | (value << 16));
 		gma_power_end(dev);
 	}
-
-	oaktrail_set_brightness(dev, PSB_MAX_BRIGHTNESS);
 	return 0;
 }
+
+static const struct backlight_ops oaktrail_ops = {
+	.get_brightness = oaktrail_get_brightness,
+	.update_status  = oaktrail_set_brightness,
+};
+
+static int oaktrail_backlight_init(struct drm_device *dev)
+{
+	struct drm_psb_private *dev_priv = dev->dev_private;
+	int ret;
+	struct backlight_properties props;
+
+	memset(&props, 0, sizeof(struct backlight_properties));
+	props.max_brightness = 100;
+	props.type = BACKLIGHT_PLATFORM;
+
+	oaktrail_backlight_device = backlight_device_register("oaktrail-bl",
+				NULL, (void *)dev, &oaktrail_ops, &props);
+
+	if (IS_ERR(oaktrail_backlight_device))
+		return PTR_ERR(oaktrail_backlight_device);
+
+	ret = device_backlight_init(dev);
+	if (ret < 0) {
+		backlight_device_unregister(oaktrail_backlight_device);
+		return ret;
+	}
+	oaktrail_backlight_device->props.brightness = 100;
+	oaktrail_backlight_device->props.max_brightness = 100;
+	backlight_update_status(oaktrail_backlight_device);
+	dev_priv->backlight_device = oaktrail_backlight_device;
+	return 0;
+}
+
+#endif
 
 /*
  *	Provide the Moorestown specific chip logic and low level methods
@@ -120,7 +188,7 @@ static int oaktrail_backlight_init(struct drm_device *dev)
  */
 static int oaktrail_save_display_registers(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct psb_save_area *regs = &dev_priv->regs;
 	struct psb_pipe *p = &regs->pipe[0];
 	int i;
@@ -234,7 +302,7 @@ static int oaktrail_save_display_registers(struct drm_device *dev)
  */
 static int oaktrail_restore_display_registers(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct psb_save_area *regs = &dev_priv->regs;
 	struct psb_pipe *p = &regs->pipe[0];
 	u32 pp_stat;
@@ -259,7 +327,7 @@ static int oaktrail_restore_display_registers(struct drm_device *dev)
 
 	/* Actually enable it */
 	PSB_WVDC32(p->dpll, MRST_DPLL_A);
-	udelay(150);
+	DRM_UDELAY(150);
 
 	/* Restore mode */
 	PSB_WVDC32(p->htotal, HTOTAL_A);
@@ -349,7 +417,7 @@ static int oaktrail_restore_display_registers(struct drm_device *dev)
  */
 static int oaktrail_power_down(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	u32 pwr_mask ;
 	u32 pwr_sts;
 
@@ -373,7 +441,7 @@ static int oaktrail_power_down(struct drm_device *dev)
  */
 static int oaktrail_power_up(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	u32 pwr_mask = PSB_PWRGT_DISPLAY_MASK;
 	u32 pwr_sts, pwr_cnt;
 
@@ -445,10 +513,12 @@ static const struct psb_offset oaktrail_regmap[2] = {
 
 static int oaktrail_chip_setup(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 	int ret;
+	
+	if (pci_enable_msi(dev->pdev))
+		dev_warn(dev->dev, "Enabling MSI failed!\n");
 
-	dev_priv->use_msi = true;
 	dev_priv->regmap = oaktrail_regmap;
 
 	ret = mid_chip_setup(dev);
@@ -466,7 +536,7 @@ static int oaktrail_chip_setup(struct drm_device *dev)
 
 static void oaktrail_teardown(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv = to_drm_psb_private(dev);
+	struct drm_psb_private *dev_priv = dev->dev_private;
 
 	gma_intel_teardown_gmbus(dev);
 	oaktrail_hdmi_teardown(dev);
@@ -476,6 +546,7 @@ static void oaktrail_teardown(struct drm_device *dev)
 
 const struct psb_ops oaktrail_chip_ops = {
 	.name = "Oaktrail",
+	.accel_2d = 1,
 	.pipes = 2,
 	.crtcs = 2,
 	.hdmi_mask = (1 << 1),
@@ -487,12 +558,13 @@ const struct psb_ops oaktrail_chip_ops = {
 	.chip_setup = oaktrail_chip_setup,
 	.chip_teardown = oaktrail_teardown,
 	.crtc_helper = &oaktrail_helper_funcs,
+	.crtc_funcs = &psb_intel_crtc_funcs,
 
 	.output_init = oaktrail_output_init,
 
+#ifdef CONFIG_BACKLIGHT_CLASS_DEVICE
 	.backlight_init = oaktrail_backlight_init,
-	.backlight_set = oaktrail_set_brightness,
-	.backlight_name = "oaktrail-bl",
+#endif
 
 	.save_regs = oaktrail_save_display_registers,
 	.restore_regs = oaktrail_restore_display_registers,

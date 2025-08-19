@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_FIREWIRE_H
 #define _LINUX_FIREWIRE_H
 
@@ -150,8 +149,6 @@ static inline void fw_card_put(struct fw_card *card)
 	kref_put(&card->kref, fw_card_release);
 }
 
-int fw_card_read_cycle_time(struct fw_card *card, u32 *cycle_time);
-
 struct fw_attribute_group {
 	struct attribute_group *groups[2];
 	struct attribute_group group;
@@ -208,7 +205,10 @@ struct fw_device {
 	struct fw_attribute_group attribute_group;
 };
 
-#define fw_device(dev)	container_of_const(dev, struct fw_device, device)
+static inline struct fw_device *fw_device(struct device *dev)
+{
+	return container_of(dev, struct fw_device, device);
+}
 
 static inline int fw_device_is_shutdown(struct fw_device *device)
 {
@@ -226,7 +226,10 @@ struct fw_unit {
 	struct fw_attribute_group attribute_group;
 };
 
-#define fw_unit(dev)	container_of_const(dev, struct fw_unit, device)
+static inline struct fw_unit *fw_unit(struct device *dev)
+{
+	return container_of(dev, struct fw_unit, device);
+}
 
 static inline struct fw_unit *fw_unit_get(struct fw_unit *unit)
 {
@@ -240,7 +243,10 @@ static inline void fw_unit_put(struct fw_unit *unit)
 	put_device(&unit->device);
 }
 
-#define fw_parent_device(unit)	fw_device(unit->device.parent)
+static inline struct fw_device *fw_parent_device(struct fw_unit *unit)
+{
+	return fw_device(unit->device.parent);
+}
 
 struct ieee1394_device_id;
 
@@ -261,15 +267,6 @@ typedef void (*fw_packet_callback_t)(struct fw_packet *packet,
 typedef void (*fw_transaction_callback_t)(struct fw_card *card, int rcode,
 					  void *data, size_t length,
 					  void *callback_data);
-typedef void (*fw_transaction_callback_with_tstamp_t)(struct fw_card *card, int rcode,
-					u32 request_tstamp, u32 response_tstamp, void *data,
-					size_t length, void *callback_data);
-
-union fw_transaction_callback {
-	fw_transaction_callback_t without_tstamp;
-	fw_transaction_callback_with_tstamp_t with_tstamp;
-};
-
 /*
  * This callback handles an inbound request subaction.  It is called in
  * RCU read-side context, therefore must not sleep.
@@ -278,8 +275,9 @@ union fw_transaction_callback {
  * Otherwise there is a danger of recursion of inbound and outbound
  * transactions from and to the local node.
  *
- * The callback is responsible that fw_send_response() is called on the @request, except for FCP
- * registers for which the core takes care of that.
+ * The callback is responsible that either fw_send_response() or kfree()
+ * is called on the @request, except for FCP registers for which the core
+ * takes care of that.
  */
 typedef void (*fw_address_callback_t)(struct fw_card *card,
 				      struct fw_request *request,
@@ -321,7 +319,6 @@ struct fw_transaction {
 	struct fw_card *card;
 	bool is_split_transaction;
 	struct timer_list split_timeout_timer;
-	u32 split_timeout_cycle;
 
 	struct fw_packet packet;
 
@@ -329,8 +326,7 @@ struct fw_transaction {
 	 * The data passed to the callback is valid only during the
 	 * callback.
 	 */
-	union fw_transaction_callback callback;
-	bool with_tstamp;
+	fw_transaction_callback_t callback;
 	void *callback_data;
 };
 
@@ -355,72 +351,10 @@ void fw_core_remove_address_handler(struct fw_address_handler *handler);
 void fw_send_response(struct fw_card *card,
 		      struct fw_request *request, int rcode);
 int fw_get_request_speed(struct fw_request *request);
-u32 fw_request_get_timestamp(const struct fw_request *request);
-
-void __fw_send_request(struct fw_card *card, struct fw_transaction *t, int tcode,
-		int destination_id, int generation, int speed, unsigned long long offset,
-		void *payload, size_t length, union fw_transaction_callback callback,
-		bool with_tstamp, void *callback_data);
-
-/**
- * fw_send_request() - submit a request packet for transmission to generate callback for response
- *		       subaction without time stamp.
- * @card:		interface to send the request at
- * @t:			transaction instance to which the request belongs
- * @tcode:		transaction code
- * @destination_id:	destination node ID, consisting of bus_ID and phy_ID
- * @generation:		bus generation in which request and response are valid
- * @speed:		transmission speed
- * @offset:		48bit wide offset into destination's address space
- * @payload:		data payload for the request subaction
- * @length:		length of the payload, in bytes
- * @callback:		function to be called when the transaction is completed
- * @callback_data:	data to be passed to the transaction completion callback
- *
- * A variation of __fw_send_request() to generate callback for response subaction without time
- * stamp.
- */
-static inline void fw_send_request(struct fw_card *card, struct fw_transaction *t, int tcode,
-				   int destination_id, int generation, int speed,
-				   unsigned long long offset, void *payload, size_t length,
-				   fw_transaction_callback_t callback, void *callback_data)
-{
-	union fw_transaction_callback cb = {
-		.without_tstamp = callback,
-	};
-	__fw_send_request(card, t, tcode, destination_id, generation, speed, offset, payload,
-			  length, cb, false, callback_data);
-}
-
-/**
- * fw_send_request_with_tstamp() - submit a request packet for transmission to generate callback for
- *				   response with time stamp.
- * @card:		interface to send the request at
- * @t:			transaction instance to which the request belongs
- * @tcode:		transaction code
- * @destination_id:	destination node ID, consisting of bus_ID and phy_ID
- * @generation:		bus generation in which request and response are valid
- * @speed:		transmission speed
- * @offset:		48bit wide offset into destination's address space
- * @payload:		data payload for the request subaction
- * @length:		length of the payload, in bytes
- * @callback:		function to be called when the transaction is completed
- * @callback_data:	data to be passed to the transaction completion callback
- *
- * A variation of __fw_send_request() to generate callback for response subaction with time stamp.
- */
-static inline void fw_send_request_with_tstamp(struct fw_card *card, struct fw_transaction *t,
-	int tcode, int destination_id, int generation, int speed, unsigned long long offset,
-	void *payload, size_t length, fw_transaction_callback_with_tstamp_t callback,
-	void *callback_data)
-{
-	union fw_transaction_callback cb = {
-		.with_tstamp = callback,
-	};
-	__fw_send_request(card, t, tcode, destination_id, generation, speed, offset, payload,
-			  length, cb, true, callback_data);
-}
-
+void fw_send_request(struct fw_card *card, struct fw_transaction *t,
+		     int tcode, int destination_id, int generation, int speed,
+		     unsigned long long offset, void *payload, size_t length,
+		     fw_transaction_callback_t callback, void *callback_data);
 int fw_cancel_transaction(struct fw_card *card,
 			  struct fw_transaction *transaction);
 int fw_run_transaction(struct fw_card *card, int tcode, int destination_id,
@@ -463,7 +397,7 @@ struct fw_iso_packet {
 	u32 tag:2;		/* tx: Tag in packet header		*/
 	u32 sy:4;		/* tx: Sy in packet header		*/
 	u32 header_length:8;	/* Length of immediate header		*/
-	u32 header[];		/* tx: Top of 1394 isoch. data_block	*/
+	u32 header[0];		/* tx: Top of 1394 isoch. data_block	*/
 };
 
 #define FW_ISO_CONTEXT_TRANSMIT			0
@@ -501,12 +435,6 @@ typedef void (*fw_iso_callback_t)(struct fw_iso_context *context,
 				  void *header, void *data);
 typedef void (*fw_iso_mc_callback_t)(struct fw_iso_context *context,
 				     dma_addr_t completed, void *data);
-
-union fw_iso_callback {
-	fw_iso_callback_t sc;
-	fw_iso_mc_callback_t mc;
-};
-
 struct fw_iso_context {
 	struct fw_card *card;
 	int type;
@@ -514,7 +442,10 @@ struct fw_iso_context {
 	int speed;
 	bool drop_overflow_headers;
 	size_t header_size;
-	union fw_iso_callback callback;
+	union {
+		fw_iso_callback_t sc;
+		fw_iso_mc_callback_t mc;
+	} callback;
 	void *callback_data;
 };
 

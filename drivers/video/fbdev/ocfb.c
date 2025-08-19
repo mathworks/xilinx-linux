@@ -285,16 +285,19 @@ static int ocfb_init_var(struct ocfb_dev *fbdev)
 	return 0;
 }
 
-static const struct fb_ops ocfb_ops = {
+static struct fb_ops ocfb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_setcolreg	= ocfb_setcolreg,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
 static int ocfb_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct ocfb_dev *fbdev;
+	struct resource *res;
 	int fbsize;
 
 	fbdev = devm_kzalloc(&pdev->dev, sizeof(*fbdev), GFP_KERNEL);
@@ -316,7 +319,13 @@ static int ocfb_probe(struct platform_device *pdev)
 	ocfb_init_var(fbdev);
 	ocfb_init_fix(fbdev);
 
-	fbdev->regs = devm_platform_ioremap_resource(pdev, 0);
+	/* Request I/O resource */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "I/O resource request failed\n");
+		return -ENXIO;
+	}
+	fbdev->regs = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(fbdev->regs))
 		return PTR_ERR(fbdev->regs);
 
@@ -368,7 +377,7 @@ err_dma_free:
 	return ret;
 }
 
-static void ocfb_remove(struct platform_device *pdev)
+static int ocfb_remove(struct platform_device *pdev)
 {
 	struct ocfb_dev *fbdev = platform_get_drvdata(pdev);
 
@@ -381,9 +390,11 @@ static void ocfb_remove(struct platform_device *pdev)
 	ocfb_writereg(fbdev, OCFB_CTRL, 0);
 
 	platform_set_drvdata(pdev, NULL);
+
+	return 0;
 }
 
-static const struct of_device_id ocfb_match[] = {
+static struct of_device_id ocfb_match[] = {
 	{ .compatible = "opencores,ocfb", },
 	{},
 };
@@ -391,7 +402,7 @@ MODULE_DEVICE_TABLE(of, ocfb_match);
 
 static struct platform_driver ocfb_driver = {
 	.probe  = ocfb_probe,
-	.remove_new = ocfb_remove,
+	.remove	= ocfb_remove,
 	.driver = {
 		.name = "ocfb_fb",
 		.of_match_table = ocfb_match,

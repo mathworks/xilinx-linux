@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * OpenRISC Linux
  *
@@ -28,10 +27,7 @@
 
 struct sigcontext {
 	struct user_regs_struct regs;  /* needs to be first */
-	union {
-		unsigned long fpcsr;
-		unsigned long oldmask;	/* unused */
-	};
+	unsigned long oldmask;
 };
 
 #endif /* __ASM_OPENRISC_SIGCONTEXT_H */

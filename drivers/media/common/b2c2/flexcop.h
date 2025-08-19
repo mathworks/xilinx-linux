@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Linux driver for digital TV devices equipped with B2C2 FlexcopII(b)/III
  * flexcop.h - private header file for all flexcop-chip-source files
@@ -14,10 +13,10 @@ extern int b2c2_flexcop_debug;
 
 /* debug */
 #ifdef CONFIG_DVB_B2C2_FLEXCOP_DEBUG
-#define dprintk(level, args...) \
-	do { if ((b2c2_flexcop_debug & (level))) printk(args); } while (0)
+#define dprintk(level,args...) \
+	do { if ((b2c2_flexcop_debug & level)) printk(args); } while (0)
 #else
-#define dprintk(level, args...) no_printk(args)
+#define dprintk(level,args...)
 #endif
 
 #define deb_info(args...) dprintk(0x01, args)
@@ -26,6 +25,5 @@ extern int b2c2_flexcop_debug;
 #define deb_ts(args...) dprintk(0x08, args)
 #define deb_sram(args...) dprintk(0x10, args)
 #define deb_rdump(args...) dprintk(0x20, args)
-#define deb_i2c_dump(args...) dprintk(0x40, args)
 
 #endif

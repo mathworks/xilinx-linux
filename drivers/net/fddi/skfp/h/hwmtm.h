@@ -1,8 +1,12 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  *
  *	(C)Copyright 1998,1999 SysKonnect,
  *	a business unit of Schneider & Koch & Co. Datensysteme GmbH.
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  *
  *	The information in this file is provided "AS IS" without warranty.
  *
@@ -164,25 +168,13 @@ struct os_debug {
 #define DB_P	debug
 #endif
 
-#define DB_RX(lev, fmt, ...)						\
-do {									\
-	if (DB_P.d_os.hwm_rx >= (lev))					\
-		printf(fmt "\n", ##__VA_ARGS__);			\
-} while (0)
-#define DB_TX(lev, fmt, ...)						\
-do {									\
-	if (DB_P.d_os.hwm_tx >= (lev))					\
-		printf(fmt "\n", ##__VA_ARGS__);			\
-} while (0)
-#define DB_GEN(lev, fmt, ...)						\
-do {									\
-	if (DB_P.d_os.hwm_gen >= (lev))					\
-		printf(fmt "\n", ##__VA_ARGS__);			\
-} while (0)
+#define DB_RX(a,b,c,lev) if (DB_P.d_os.hwm_rx >= (lev))	printf(a,b,c)
+#define DB_TX(a,b,c,lev) if (DB_P.d_os.hwm_tx >= (lev))	printf(a,b,c)
+#define DB_GEN(a,b,c,lev) if (DB_P.d_os.hwm_gen >= (lev)) printf(a,b,c)
 #else	/* DEBUG */
-#define DB_RX(lev, fmt, ...)	no_printk(fmt "\n", ##__VA_ARGS__)
-#define DB_TX(lev, fmt, ...)	no_printk(fmt "\n", ##__VA_ARGS__)
-#define DB_GEN(lev, fmt, ...)	no_printk(fmt "\n", ##__VA_ARGS__)
+#define DB_RX(a,b,c,lev)
+#define DB_TX(a,b,c,lev)
+#define DB_GEN(a,b,c,lev)
 #endif	/* DEBUG */
 
 #ifndef	SK_BREAK
@@ -348,7 +340,7 @@ do {									\
  *		This macro is invoked by the OS-specific before it left the
  *		function mac_drv_rx_complete. This macro calls mac_drv_fill_rxd
  *		if the number of used RxDs is equal or lower than the
- *		given low water mark.
+ *		the given low water mark.
  *
  * para	low_water	low water mark of used RxD's
  *

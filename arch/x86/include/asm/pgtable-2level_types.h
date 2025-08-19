@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PGTABLE_2LEVEL_DEFS_H
 #define _ASM_X86_PGTABLE_2LEVEL_DEFS_H
 
@@ -8,7 +7,6 @@
 typedef unsigned long	pteval_t;
 typedef unsigned long	pmdval_t;
 typedef unsigned long	pudval_t;
-typedef unsigned long	p4dval_t;
 typedef unsigned long	pgdval_t;
 typedef unsigned long	pgprotval_t;
 
@@ -19,8 +17,6 @@ typedef union {
 #endif	/* !__ASSEMBLY__ */
 
 #define SHARED_KERNEL_PMD	0
-
-#define ARCH_PAGE_TABLE_SYNC_MASK	PGTBL_PMD_MODIFIED
 
 /*
  * traditional i386 two-level paging structure:
@@ -36,8 +32,5 @@ typedef union {
  */
 
 #define PTRS_PER_PTE	1024
-
-/* This covers all VMSPLIT_* and VMSPLIT_*_OPT variants */
-#define PGD_KERNEL_START	(CONFIG_PAGE_OFFSET >> PGDIR_SHIFT)
 
 #endif /* _ASM_X86_PGTABLE_2LEVEL_DEFS_H */

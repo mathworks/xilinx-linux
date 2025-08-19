@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * otg_fsm.c - ChipIdea USB IP core OTG FSM driver
  *
  * Copyright (C) 2014 Freescale Semiconductor, Inc.
  *
  * Author: Jun Li
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 /*
@@ -29,7 +32,7 @@
 
 /* Add for otg: interact with user space app */
 static ssize_t
-a_bus_req_show(struct device *dev, struct device_attribute *attr, char *buf)
+get_a_bus_req(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	char		*next;
 	unsigned	size, t;
@@ -45,7 +48,7 @@ a_bus_req_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static ssize_t
-a_bus_req_store(struct device *dev, struct device_attribute *attr,
+set_a_bus_req(struct device *dev, struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct ci_hdrc *ci = dev_get_drvdata(dev);
@@ -75,10 +78,10 @@ a_bus_req_store(struct device *dev, struct device_attribute *attr,
 
 	return count;
 }
-static DEVICE_ATTR_RW(a_bus_req);
+static DEVICE_ATTR(a_bus_req, S_IRUGO | S_IWUSR, get_a_bus_req, set_a_bus_req);
 
 static ssize_t
-a_bus_drop_show(struct device *dev, struct device_attribute *attr, char *buf)
+get_a_bus_drop(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	char		*next;
 	unsigned	size, t;
@@ -94,7 +97,7 @@ a_bus_drop_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static ssize_t
-a_bus_drop_store(struct device *dev, struct device_attribute *attr,
+set_a_bus_drop(struct device *dev, struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct ci_hdrc	*ci = dev_get_drvdata(dev);
@@ -115,10 +118,11 @@ a_bus_drop_store(struct device *dev, struct device_attribute *attr,
 
 	return count;
 }
-static DEVICE_ATTR_RW(a_bus_drop);
+static DEVICE_ATTR(a_bus_drop, S_IRUGO | S_IWUSR, get_a_bus_drop,
+						set_a_bus_drop);
 
 static ssize_t
-b_bus_req_show(struct device *dev, struct device_attribute *attr, char *buf)
+get_b_bus_req(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	char		*next;
 	unsigned	size, t;
@@ -134,7 +138,7 @@ b_bus_req_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static ssize_t
-b_bus_req_store(struct device *dev, struct device_attribute *attr,
+set_b_bus_req(struct device *dev, struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct ci_hdrc	*ci = dev_get_drvdata(dev);
@@ -159,10 +163,10 @@ b_bus_req_store(struct device *dev, struct device_attribute *attr,
 
 	return count;
 }
-static DEVICE_ATTR_RW(b_bus_req);
+static DEVICE_ATTR(b_bus_req, S_IRUGO | S_IWUSR, get_b_bus_req, set_b_bus_req);
 
 static ssize_t
-a_clr_err_store(struct device *dev, struct device_attribute *attr,
+set_a_clr_err(struct device *dev, struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct ci_hdrc	*ci = dev_get_drvdata(dev);
@@ -179,7 +183,7 @@ a_clr_err_store(struct device *dev, struct device_attribute *attr,
 
 	return count;
 }
-static DEVICE_ATTR_WO(a_clr_err);
+static DEVICE_ATTR(a_clr_err, S_IWUSR, NULL, set_a_clr_err);
 
 static struct attribute *inputs_attrs[] = {
 	&dev_attr_a_bus_req.attr,
@@ -189,7 +193,7 @@ static struct attribute *inputs_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group inputs_attr_group = {
+static struct attribute_group inputs_attr_group = {
 	.name = "inputs",
 	.attrs = inputs_attrs,
 };
@@ -230,8 +234,8 @@ static void ci_otg_add_timer(struct ci_hdrc *ci, enum otg_fsm_timer t)
 				ktime_set(timer_sec, timer_nsec));
 	ci->enabled_otg_timer_bits |= (1 << t);
 	if ((ci->next_otg_timer == NUM_OTG_FSM_TIMERS) ||
-			ktime_after(ci->hr_timeouts[ci->next_otg_timer],
-						ci->hr_timeouts[t])) {
+			(ci->hr_timeouts[ci->next_otg_timer].tv64 >
+						ci->hr_timeouts[t].tv64)) {
 			ci->next_otg_timer = t;
 			hrtimer_start_range_ns(&ci->otg_fsm_hrtimer,
 					ci->hr_timeouts[t], NSEC_PER_MSEC,
@@ -256,10 +260,8 @@ static void ci_otg_del_timer(struct ci_hdrc *ci, enum otg_fsm_timer t)
 	ci->enabled_otg_timer_bits &= ~(1 << t);
 	if (ci->next_otg_timer == t) {
 		if (ci->enabled_otg_timer_bits == 0) {
-			spin_unlock_irqrestore(&ci->lock, flags);
 			/* No enabled timers after delete it */
 			hrtimer_cancel(&ci->otg_fsm_hrtimer);
-			spin_lock_irqsave(&ci->lock, flags);
 			ci->next_otg_timer = NUM_OTG_FSM_TIMERS;
 		} else {
 			/* Find the next timer */
@@ -267,8 +269,8 @@ static void ci_otg_del_timer(struct ci_hdrc *ci, enum otg_fsm_timer t)
 			for_each_set_bit(cur_timer, &enabled_timer_bits,
 							NUM_OTG_FSM_TIMERS) {
 				if ((next_timer == NUM_OTG_FSM_TIMERS) ||
-					ktime_before(ci->hr_timeouts[next_timer],
-					 ci->hr_timeouts[cur_timer]))
+					(ci->hr_timeouts[next_timer].tv64 <
+					ci->hr_timeouts[cur_timer].tv64))
 					next_timer = cur_timer;
 			}
 		}
@@ -395,14 +397,14 @@ static enum hrtimer_restart ci_otg_hrtimer_func(struct hrtimer *t)
 
 	now = ktime_get();
 	for_each_set_bit(cur_timer, &enabled_timer_bits, NUM_OTG_FSM_TIMERS) {
-		if (ktime_compare(now, ci->hr_timeouts[cur_timer]) >= 0) {
+		if (now.tv64 >= ci->hr_timeouts[cur_timer].tv64) {
 			ci->enabled_otg_timer_bits &= ~(1 << cur_timer);
 			if (otg_timer_handlers[cur_timer])
 				ret = otg_timer_handlers[cur_timer](ci);
 		} else {
 			if ((next_timer == NUM_OTG_FSM_TIMERS) ||
-				ktime_before(ci->hr_timeouts[cur_timer],
-					ci->hr_timeouts[next_timer]))
+				(ci->hr_timeouts[cur_timer].tv64 <
+					ci->hr_timeouts[next_timer].tv64))
 				next_timer = cur_timer;
 		}
 	}
@@ -461,9 +463,13 @@ static void ci_otg_drv_vbus(struct otg_fsm *fsm, int on)
 	struct ci_hdrc	*ci = container_of(fsm, struct ci_hdrc, fsm);
 
 	if (on) {
-		/* Enable power */
+		/* Enable power power */
 		hw_write(ci, OP_PORTSC, PORTSC_W1C_BITS | PORTSC_PP,
 							PORTSC_PP);
+
+		if (ci->usb_phy && ci->usb_phy->otg)
+			otg_set_vbus(ci->usb_phy->otg, true);
+
 		if (ci->platdata->reg_vbus) {
 			ret = regulator_enable(ci->platdata->reg_vbus);
 			if (ret) {
@@ -473,10 +479,6 @@ static void ci_otg_drv_vbus(struct otg_fsm *fsm, int on)
 				return;
 			}
 		}
-
-		if (ci->platdata->flags & CI_HDRC_PHY_VBUS_CONTROL)
-			usb_phy_vbus_on(ci->usb_phy);
-
 		/* Disable data pulse irq */
 		hw_write_otgsc(ci, OTGSC_DPIE, 0);
 
@@ -485,9 +487,8 @@ static void ci_otg_drv_vbus(struct otg_fsm *fsm, int on)
 	} else {
 		if (ci->platdata->reg_vbus)
 			regulator_disable(ci->platdata->reg_vbus);
-
-		if (ci->platdata->flags & CI_HDRC_PHY_VBUS_CONTROL)
-			usb_phy_vbus_off(ci->usb_phy);
+		if (ci->usb_phy && ci->usb_phy->otg)
+			otg_set_vbus(ci->usb_phy->otg, false);
 
 		fsm->a_bus_drop = 1;
 		fsm->a_bus_req = 0;

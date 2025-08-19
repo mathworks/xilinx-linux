@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * File: linux/nfsacl.h
  *
@@ -9,13 +8,11 @@
 
 #define NFS_ACL_PROGRAM	100227
 
-#define ACLPROC2_NULL		0
 #define ACLPROC2_GETACL		1
 #define ACLPROC2_SETACL		2
 #define ACLPROC2_GETATTR	3
 #define ACLPROC2_ACCESS		4
 
-#define ACLPROC3_NULL		0
 #define ACLPROC3_GETACL		1
 #define ACLPROC3_SETACL		2
 

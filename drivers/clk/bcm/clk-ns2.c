@@ -1,5 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2015 Broadcom Corporation
+/*
+ * Copyright (C) 2015 Broadcom Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 #include <linux/kernel.h>
 #include <linux/err.h>
@@ -93,7 +103,7 @@ CLK_OF_DECLARE(ns2_genpll_src_clk, "brcm,ns2-genpll-scr",
 
 static const struct iproc_pll_ctrl genpll_sw = {
 	.flags = IPROC_CLK_AON | IPROC_CLK_PLL_SPLIT_STAT_CTRL,
-	.aon = AON_VAL(0x0, 1, 11, 10),
+	.aon = AON_VAL(0x0, 2, 9, 8),
 	.reset = RESET_VAL(0x4, 2, 1),
 	.dig_filter = DF_VAL(0x0, 9, 3, 5, 4, 2, 3),
 	.ndiv_int = REG_VAL(0x8, 4, 10),

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2007,2008 Freescale Semiconductor, Inc. All rights reserved.
  *
@@ -6,13 +5,17 @@
  *
  * Description:
  * MPC512x Shared code
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <linux/clk.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/fsl-diu-fb.h>
 #include <linux/memblock.h>
@@ -21,6 +24,7 @@
 #include <asm/cacheflush.h>
 #include <asm/machdep.h>
 #include <asm/ipic.h>
+#include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/mpc5121.h>
 #include <asm/mpc52xx_psc.h>
@@ -28,6 +32,20 @@
 #include "mpc512x.h"
 
 static struct mpc512x_reset_module __iomem *reset_module_base;
+
+static void __init mpc512x_restart_init(void)
+{
+	struct device_node *np;
+	const char *reset_compat;
+
+	reset_compat = mpc512x_select_reset_compat();
+	np = of_find_compatible_node(NULL, NULL, reset_compat);
+	if (!np)
+		return;
+
+	reset_module_base = of_iomap(np, 0);
+	of_node_put(np);
+}
 
 void __noreturn mpc512x_restart(char *cmd)
 {
@@ -275,7 +293,7 @@ static void __init mpc512x_setup_diu(void)
 
 	/*
 	 * We do not allocate and configure new area for bitmap buffer
-	 * because it would require copying bitmap data (splash image)
+	 * because it would requere copying bitmap data (splash image)
 	 * and so negatively affect boot time. Instead we reserve the
 	 * already configured frame buffer area so that it won't be
 	 * destroyed. The starting address of the area to reserve and
@@ -338,7 +356,7 @@ static void __init mpc512x_declare_of_platform_devices(void)
 
 #define DEFAULT_FIFO_SIZE 16
 
-const char *__init mpc512x_select_psc_compat(void)
+const char *mpc512x_select_psc_compat(void)
 {
 	if (of_machine_is_compatible("fsl,mpc5121"))
 		return "fsl,mpc5121-psc";
@@ -349,7 +367,7 @@ const char *__init mpc512x_select_psc_compat(void)
 	return NULL;
 }
 
-static const char *__init mpc512x_select_reset_compat(void)
+const char *mpc512x_select_reset_compat(void)
 {
 	if (of_machine_is_compatible("fsl,mpc5121"))
 		return "fsl,mpc5121-reset";
@@ -369,8 +387,8 @@ static unsigned int __init get_fifo_size(struct device_node *np,
 	if (fp)
 		return *fp;
 
-	pr_warn("no %s property in %pOF node, defaulting to %d\n",
-		prop_name, np, DEFAULT_FIFO_SIZE);
+	pr_warning("no %s property in %s node, defaulting to %d\n",
+		   prop_name, np->full_name, DEFAULT_FIFO_SIZE);
 
 	return DEFAULT_FIFO_SIZE;
 }
@@ -408,15 +426,15 @@ static void __init mpc512x_psc_fifo_init(void)
 
 		psc = of_iomap(np, 0);
 		if (!psc) {
-			pr_err("%s: Can't map %pOF device\n",
-				__func__, np);
+			pr_err("%s: Can't map %s device\n",
+				__func__, np->full_name);
 			continue;
 		}
 
 		/* FIFO space is 4KiB, check if requested size is available */
 		if ((fifobase + tx_fifo_size + rx_fifo_size) > 0x1000) {
-			pr_err("%s: no fifo space available for %pOF\n",
-				__func__, np);
+			pr_err("%s: no fifo space available for %s\n",
+				__func__, np->full_name);
 			iounmap(psc);
 			/*
 			 * chances are that another device requests less
@@ -439,20 +457,6 @@ static void __init mpc512x_psc_fifo_init(void)
 
 		iounmap(psc);
 	}
-}
-
-static void __init mpc512x_restart_init(void)
-{
-	struct device_node *np;
-	const char *reset_compat;
-
-	reset_compat = mpc512x_select_reset_compat();
-	np = of_find_compatible_node(NULL, NULL, reset_compat);
-	if (!np)
-		return;
-
-	reset_module_base = of_iomap(np, 0);
-	of_node_put(np);
 }
 
 void __init mpc512x_init_early(void)

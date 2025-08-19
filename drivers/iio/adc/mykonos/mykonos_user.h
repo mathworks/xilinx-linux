@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file mykonos_user.h
  *
  * \brief Contains macro definitions and global structure declarations for mykonos_user.c
  *
- * Mykonos API version: 1.5.2.3566
+ * Mykonos API version: 1.5.1.3565
  */
 
 /**

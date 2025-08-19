@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/ioport.h>
 #include <asm/io.h>
 
@@ -13,12 +12,12 @@ static char *pc873xx_names[] = {
 static unsigned int base, model;
 
 
-unsigned int __init pc873xx_get_base(void)
+unsigned int __init pc873xx_get_base()
 {
 	return base;
 }
 
-char *__init pc873xx_get_model(void)
+char *__init pc873xx_get_model()
 {
 	return pc873xx_names[model];
 }

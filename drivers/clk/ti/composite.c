@@ -1,10 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI composite clock support
  *
  * Copyright (C) 2013 Texas Instruments, Inc.
  *
  * Tero Kristo <t-kristo@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
@@ -108,18 +116,53 @@ static inline struct clk_hw *_get_hw(struct clk_hw_omap_comp *clk, int idx)
 
 #define to_clk_hw_comp(_hw) container_of(_hw, struct clk_hw_omap_comp, hw)
 
-static void __init _register_composite(void *user,
+#if defined(CONFIG_ARCH_OMAP3) && defined(CONFIG_ATAGS)
+struct clk *ti_clk_register_composite(struct ti_clk *setup)
+{
+	struct ti_clk_composite *comp;
+	struct clk_hw *gate;
+	struct clk_hw *mux;
+	struct clk_hw *div;
+	int num_parents = 1;
+	const char **parent_names = NULL;
+	struct clk *clk;
+
+	comp = setup->data;
+
+	div = ti_clk_build_component_div(comp->divider);
+	gate = ti_clk_build_component_gate(comp->gate);
+	mux = ti_clk_build_component_mux(comp->mux);
+
+	if (div)
+		parent_names = &comp->divider->parent;
+
+	if (gate)
+		parent_names = &comp->gate->parent;
+
+	if (mux) {
+		num_parents = comp->mux->num_parents;
+		parent_names = comp->mux->parents;
+	}
+
+	clk = clk_register_composite(NULL, setup->name,
+				     parent_names, num_parents, mux,
+				     &ti_clk_mux_ops, div,
+				     &ti_composite_divider_ops, gate,
+				     &ti_composite_gate_ops, 0);
+
+	return clk;
+}
+#endif
+
+static void __init _register_composite(struct clk_hw *hw,
 				       struct device_node *node)
 {
-	struct clk_hw *hw = user;
 	struct clk *clk;
 	struct clk_hw_omap_comp *cclk = to_clk_hw_comp(hw);
 	struct component_clk *comp;
 	int num_parents = 0;
 	const char **parent_names = NULL;
-	const char *name;
 	int i;
-	int ret;
 
 	/* Check for presence of each component clock */
 	for (i = 0; i < CLK_COMPONENT_TYPE_MAX; i++) {
@@ -128,8 +171,8 @@ static void __init _register_composite(void *user,
 
 		comp = _lookup_component(cclk->comp_nodes[i]);
 		if (!comp) {
-			pr_debug("component %s not ready for %pOFn, retry\n",
-				 cclk->comp_nodes[i]->name, node);
+			pr_debug("component %s not ready for %s, retry\n",
+				 cclk->comp_nodes[i]->name, node->name);
 			if (!ti_clk_retry_init(node, hw,
 					       _register_composite))
 				return;
@@ -137,8 +180,8 @@ static void __init _register_composite(void *user,
 			goto cleanup;
 		}
 		if (cclk->comp_clks[comp->type] != NULL) {
-			pr_err("duplicate component types for %pOFn (%s)!\n",
-			       node, component_clk_types[comp->type]);
+			pr_err("duplicate component types for %s (%s)!\n",
+			       node->name, component_clk_types[comp->type]);
 			goto cleanup;
 		}
 
@@ -161,12 +204,11 @@ static void __init _register_composite(void *user,
 	}
 
 	if (!num_parents) {
-		pr_err("%s: no parents found for %pOFn!\n", __func__, node);
+		pr_err("%s: no parents found for %s!\n", __func__, node->name);
 		goto cleanup;
 	}
 
-	name = ti_dt_clk_name(node);
-	clk = clk_register_composite(NULL, name,
+	clk = clk_register_composite(NULL, node->name,
 				     parent_names, num_parents,
 				     _get_hw(cclk, CLK_COMPONENT_TYPE_MUX),
 				     &ti_clk_mux_ops,
@@ -175,14 +217,8 @@ static void __init _register_composite(void *user,
 				     _get_hw(cclk, CLK_COMPONENT_TYPE_GATE),
 				     &ti_composite_gate_ops, 0);
 
-	if (!IS_ERR(clk)) {
-		ret = ti_clk_add_alias(clk, name);
-		if (ret) {
-			clk_unregister(clk);
-			goto cleanup;
-		}
+	if (!IS_ERR(clk))
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
-	}
 
 cleanup:
 	/* Free component clock list entries */
@@ -190,7 +226,6 @@ cleanup:
 		if (!cclk->comp_clks[i])
 			continue;
 		list_del(&cclk->comp_clks[i]->link);
-		kfree(cclk->comp_clks[i]->parent_names);
 		kfree(cclk->comp_clks[i]);
 	}
 
@@ -207,7 +242,7 @@ static void __init of_ti_composite_clk_setup(struct device_node *node)
 	num_clks = of_clk_get_parent_count(node);
 
 	if (!num_clks) {
-		pr_err("composite clk %pOFn must have component(s)\n", node);
+		pr_err("composite clk %s must have component(s)\n", node->name);
 		return;
 	}
 
@@ -243,11 +278,11 @@ int __init ti_clk_add_component(struct device_node *node, struct clk_hw *hw,
 	num_parents = of_clk_get_parent_count(node);
 
 	if (!num_parents) {
-		pr_err("component-clock %pOFn must have parent(s)\n", node);
+		pr_err("component-clock %s must have parent(s)\n", node->name);
 		return -EINVAL;
 	}
 
-	parent_names = kcalloc(num_parents, sizeof(char *), GFP_KERNEL);
+	parent_names = kzalloc((sizeof(char *) * num_parents), GFP_KERNEL);
 	if (!parent_names)
 		return -ENOMEM;
 

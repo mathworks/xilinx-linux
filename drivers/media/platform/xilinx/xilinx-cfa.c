@@ -105,54 +105,39 @@ static int xcfa_s_stream(struct v4l2_subdev *subdev, int enable)
 
 static struct v4l2_mbus_framefmt *
 __xcfa_get_pad_format(struct xcfa_device *xcfa,
-		      struct v4l2_subdev_state *sd_state,
+		      struct v4l2_subdev_pad_config *cfg,
 		      unsigned int pad, u32 which)
 {
-	struct v4l2_mbus_framefmt *format;
-
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		format = v4l2_subdev_get_try_format(&xcfa->xvip.subdev,
-						    sd_state, pad);
-		break;
+		return v4l2_subdev_get_try_format(&xcfa->xvip.subdev, cfg, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		format = &xcfa->formats[pad];
-		break;
+		return &xcfa->formats[pad];
 	default:
-		format = NULL;
-		break;
+		return NULL;
 	}
-
-	return format;
 }
 
 static int xcfa_get_format(struct v4l2_subdev *subdev,
-			   struct v4l2_subdev_state *sd_state,
+			   struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct xcfa_device *xcfa = to_cfa(subdev);
-	struct v4l2_mbus_framefmt *format;
 
-	format = __xcfa_get_pad_format(xcfa, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
-
-	fmt->format = *format;
+	fmt->format = *__xcfa_get_pad_format(xcfa, cfg, fmt->pad, fmt->which);
 
 	return 0;
 }
 
 static int xcfa_set_format(struct v4l2_subdev *subdev,
-			   struct v4l2_subdev_state *sd_state,
+			   struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct xcfa_device *xcfa = to_cfa(subdev);
 	struct v4l2_mbus_framefmt *format;
 	int bayer_phase;
 
-	format = __xcfa_get_pad_format(xcfa, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
+	format = __xcfa_get_pad_format(xcfa, cfg, fmt->pad, fmt->which);
 
 	if (fmt->pad == XVIP_PAD_SOURCE) {
 		fmt->format = *format;
@@ -171,8 +156,7 @@ static int xcfa_set_format(struct v4l2_subdev *subdev,
 	fmt->format = *format;
 
 	/* Propagate the format to the source pad */
-	format = __xcfa_get_pad_format(xcfa, sd_state, XVIP_PAD_SOURCE,
-				       fmt->which);
+	format = __xcfa_get_pad_format(xcfa, cfg, XVIP_PAD_SOURCE, fmt->which);
 
 	xvip_set_format_size(format, fmt);
 
@@ -189,10 +173,10 @@ static int xcfa_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 	struct v4l2_mbus_framefmt *format;
 
 	/* Initialize with default formats */
-	format = v4l2_subdev_get_try_format(subdev, fh->state, XVIP_PAD_SINK);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SINK);
 	*format = xcfa->default_formats[XVIP_PAD_SINK];
 
-	format = v4l2_subdev_get_try_format(subdev, fh->state, XVIP_PAD_SOURCE);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SOURCE);
 	*format = xcfa->default_formats[XVIP_PAD_SOURCE];
 
 	return 0;
@@ -407,4 +391,4 @@ static struct platform_driver xcfa_driver = {
 module_platform_driver(xcfa_driver);
 
 MODULE_DESCRIPTION("Xilinx Color Filter Array Driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

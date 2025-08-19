@@ -13,14 +13,15 @@
 #include <linux/mman.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
-#include <linux/pagemap.h>
 #include <linux/threads.h>
 #include <asm/addrspace.h>
 #include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/cache.h>
 #include <asm/io.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
+#include <asm/pgalloc.h>
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
 
@@ -132,20 +133,15 @@ static void __flush_dcache_page(unsigned long phys)
  * Write back & invalidate the D-cache of the page.
  * (To avoid "alias" issues)
  */
-static void sh7705_flush_dcache_folio(void *arg)
+static void sh7705_flush_dcache_page(void *arg)
 {
-	struct folio *folio = arg;
-	struct address_space *mapping = folio_flush_mapping(folio);
+	struct page *page = arg;
+	struct address_space *mapping = page_mapping(page);
 
 	if (mapping && !mapping_mapped(mapping))
-		clear_bit(PG_dcache_clean, &folio->flags);
-	else {
-		unsigned long pfn = folio_pfn(folio);
-		unsigned int i, nr = folio_nr_pages(folio);
-
-		for (i = 0; i < nr; i++)
-			__flush_dcache_page((pfn + i) * PAGE_SIZE);
-	}
+		clear_bit(PG_dcache_clean, &page->flags);
+	else
+		__flush_dcache_page(__pa(page_address(page)));
 }
 
 static void sh7705_flush_cache_all(void *args)
@@ -181,20 +177,19 @@ static void sh7705_flush_cache_page(void *args)
  * Not entirely sure why this is necessary on SH3 with 32K cache but
  * without it we get occasional "Memory fault" when loading a program.
  */
-static void sh7705_flush_icache_folio(void *arg)
+static void sh7705_flush_icache_page(void *page)
 {
-	struct folio *folio = arg;
-	__flush_purge_region(folio_address(folio), folio_size(folio));
+	__flush_purge_region(page_address(page), PAGE_SIZE);
 }
 
 void __init sh7705_cache_init(void)
 {
 	local_flush_icache_range	= sh7705_flush_icache_range;
-	local_flush_dcache_folio	= sh7705_flush_dcache_folio;
+	local_flush_dcache_page		= sh7705_flush_dcache_page;
 	local_flush_cache_all		= sh7705_flush_cache_all;
 	local_flush_cache_mm		= sh7705_flush_cache_all;
 	local_flush_cache_dup_mm	= sh7705_flush_cache_all;
 	local_flush_cache_range		= sh7705_flush_cache_all;
 	local_flush_cache_page		= sh7705_flush_cache_page;
-	local_flush_icache_folio	= sh7705_flush_icache_folio;
+	local_flush_icache_page		= sh7705_flush_icache_page;
 }

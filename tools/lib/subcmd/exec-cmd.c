@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/compiler.h>
 #include <linux/string.h>
 #include <sys/types.h>
@@ -24,9 +23,6 @@ void exec_cmd_init(const char *exec_name, const char *prefix,
 	subcmd_config.prefix		= prefix;
 	subcmd_config.exec_path		= exec_path;
 	subcmd_config.exec_path_env	= exec_path_env;
-
-	/* Setup environment variable for invoked shell script. */
-	setenv("PREFIX", prefix, 1);
 }
 
 #define is_dir_sep(c) ((c) == '/')
@@ -36,40 +32,38 @@ static int is_absolute_path(const char *path)
 	return path[0] == '/';
 }
 
-static const char *get_pwd_cwd(char *buf, size_t sz)
+static const char *get_pwd_cwd(void)
 {
+	static char cwd[PATH_MAX + 1];
 	char *pwd;
 	struct stat cwd_stat, pwd_stat;
-	if (getcwd(buf, sz) == NULL)
+	if (getcwd(cwd, PATH_MAX) == NULL)
 		return NULL;
 	pwd = getenv("PWD");
-	if (pwd && strcmp(pwd, buf)) {
-		stat(buf, &cwd_stat);
+	if (pwd && strcmp(pwd, cwd)) {
+		stat(cwd, &cwd_stat);
 		if (!stat(pwd, &pwd_stat) &&
 		    pwd_stat.st_dev == cwd_stat.st_dev &&
 		    pwd_stat.st_ino == cwd_stat.st_ino) {
-			strlcpy(buf, pwd, sz);
+			strlcpy(cwd, pwd, PATH_MAX);
 		}
 	}
-	return buf;
+	return cwd;
 }
 
-static const char *make_nonrelative_path(char *buf, size_t sz, const char *path)
+static const char *make_nonrelative_path(const char *path)
 {
+	static char buf[PATH_MAX + 1];
+
 	if (is_absolute_path(path)) {
-		if (strlcpy(buf, path, sz) >= sz)
+		if (strlcpy(buf, path, PATH_MAX) >= PATH_MAX)
 			die("Too long path: %.*s", 60, path);
 	} else {
-		const char *cwd = get_pwd_cwd(buf, sz);
-
+		const char *cwd = get_pwd_cwd();
 		if (!cwd)
 			die("Cannot determine the current working directory");
-
-		if (strlen(cwd) + strlen(path) + 2 >= sz)
+		if (snprintf(buf, PATH_MAX, "%s/%s", cwd, path) >= PATH_MAX)
 			die("Too long path: %.*s", 60, path);
-
-		strcat(buf, "/");
-		strcat(buf, path);
 	}
 	return buf;
 }
@@ -135,11 +129,8 @@ static void add_path(char **out, const char *path)
 	if (path && *path) {
 		if (is_absolute_path(path))
 			astrcat(out, path);
-		else {
-			char buf[PATH_MAX];
-
-			astrcat(out, make_nonrelative_path(buf, sizeof(buf), path));
-		}
+		else
+			astrcat(out, make_nonrelative_path(path));
 
 		astrcat(out, ":");
 	}

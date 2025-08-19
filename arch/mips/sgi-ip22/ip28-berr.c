@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * ip28-berr.c: Bus error handling.
  *
@@ -8,10 +7,7 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/mm.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
-#include <linux/sched/signal.h>
 #include <linux/seq_file.h>
 
 #include <asm/addrspace.h>
@@ -23,7 +19,7 @@
 #include <asm/sgi/ioc.h>
 #include <asm/sgi/ip22.h>
 #include <asm/r4kcache.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/bootinfo.h>
 
 static unsigned int count_be_is_fixup;
@@ -301,6 +297,23 @@ static void print_buserr(const struct pt_regs *regs)
 	       field, regs->cp0_epc, field, regs->regs[31]);
 }
 
+/*
+ * Check, whether MC's (virtual) DMA address caused the bus error.
+ * See "Virtual DMA Specification", Draft 1.5, Feb 13 1992, SGI
+ */
+
+static int addr_is_ram(unsigned long addr, unsigned sz)
+{
+	int i;
+
+	for (i = 0; i < boot_mem_map.nr_map; i++) {
+		unsigned long a = boot_mem_map.map[i].addr;
+		if (a <= addr && addr+sz <= a+boot_mem_map.map[i].size)
+			return 1;
+	}
+	return 0;
+}
+
 static int check_microtlb(u32 hi, u32 lo, unsigned long vaddr)
 {
 	/* This is likely rather similar to correct code ;-) */
@@ -315,7 +328,7 @@ static int check_microtlb(u32 hi, u32 lo, unsigned long vaddr)
 			/* PTEIndex is VPN-low (bits [22:14]/[20:12] ?) */
 			unsigned long pte = (lo >> 6) << 12; /* PTEBase */
 			pte += 8*((vaddr >> pgsz) & 0x1ff);
-			if (page_is_ram(PFN_DOWN(pte))) {
+			if (addr_is_ram(pte, 8)) {
 				/*
 				 * Note: Since DMA hardware does look up
 				 * translation on its own, this PTE *must*
@@ -446,9 +459,9 @@ void ip22_be_interrupt(int irq)
 	if (ip28_be_interrupt(regs) != MIPS_BE_DISCARD) {
 		/* Assume it would be too dangerous to continue ... */
 		die_if_kernel("Oops", regs);
-		force_sig(SIGBUS);
+		force_sig(SIGBUS, current);
 	} else if (debug_be_interrupt)
-		show_regs(regs);
+		show_regs((struct pt_regs *)regs);
 }
 
 static int ip28_be_handler(struct pt_regs *regs, int is_fixup)
@@ -468,7 +481,7 @@ static int ip28_be_handler(struct pt_regs *regs, int is_fixup)
 
 void __init ip22_be_init(void)
 {
-	mips_set_be_handler(ip28_be_handler);
+	board_be_handler = ip28_be_handler;
 }
 
 int ip28_show_be_info(struct seq_file *m)

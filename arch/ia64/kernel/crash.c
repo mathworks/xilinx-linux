@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/ia64/kernel/crash.c
  *
@@ -12,10 +11,9 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 #include <linux/crash_dump.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/kexec.h>
 #include <linux/elfcore.h>
-#include <linux/reboot.h>
 #include <linux/sysctl.h>
 #include <linux/init.h>
 #include <linux/kdebug.h>
@@ -28,6 +26,28 @@ atomic_t kdump_in_progress;
 static int kdump_freeze_monarch;
 static int kdump_on_init = 1;
 static int kdump_on_fatal_mca = 1;
+
+static inline Elf64_Word
+*append_elf_note(Elf64_Word *buf, char *name, unsigned type, void *data,
+		size_t data_len)
+{
+	struct elf_note *note = (struct elf_note *)buf;
+	note->n_namesz = strlen(name) + 1;
+	note->n_descsz = data_len;
+	note->n_type   = type;
+	buf += (sizeof(*note) + 3)/4;
+	memcpy(buf, name, note->n_namesz);
+	buf += (note->n_namesz + 3)/4;
+	memcpy(buf, data, data_len);
+	buf += (data_len + 3)/4;
+	return buf;
+}
+
+static void
+final_note(void *buf)
+{
+	memset(buf, 0, sizeof(struct elf_note));
+}
 
 extern void ia64_dump_cpu_regs(void *);
 
@@ -44,7 +64,7 @@ crash_save_this_cpu(void)
 
 	elf_greg_t *dst = (elf_greg_t *)&(prstatus->pr_reg);
 	memset(prstatus, 0, sizeof(*prstatus));
-	prstatus->common.pr_pid = current->pid;
+	prstatus->pr_pid = current->pid;
 
 	ia64_dump_cpu_regs(dst);
 	cfm = dst[43];
@@ -164,7 +184,7 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 		case DIE_INIT_MONARCH_LEAVE:
 			if (!kdump_freeze_monarch)
 				break;
-			fallthrough;
+			/* fall through */
 		case DIE_INIT_SLAVE_LEAVE:
 		case DIE_INIT_MONARCH_ENTER:
 		case DIE_MCA_RENDZVOUS_LEAVE:
@@ -234,6 +254,15 @@ static struct ctl_table kdump_ctl_table[] = {
 	},
 	{ }
 };
+
+static struct ctl_table sys_table[] = {
+	{
+	  .procname = "kernel",
+	  .mode = 0555,
+	  .child = kdump_ctl_table,
+	},
+	{ }
+};
 #endif
 
 static int
@@ -248,7 +277,7 @@ machine_crash_setup(void)
 	if((ret = register_die_notifier(&kdump_init_notifier_nb)) != 0)
 		return ret;
 #ifdef CONFIG_SYSCTL
-	register_sysctl("kernel", kdump_ctl_table);
+	register_sysctl_table(sys_table);
 #endif
 	return 0;
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* Test context switching to see if the DSCR SPR is correctly preserved
  * when within a transaction.
  *
@@ -31,7 +30,6 @@
 
 #include "utils.h"
 #include "tm.h"
-#include "../pmu/lib.h"
 
 #define SPRN_DSCR       0x03
 
@@ -40,17 +38,16 @@ int test_body(void)
 	uint64_t rv, dscr1 = 1, dscr2, texasr;
 
 	SKIP_IF(!have_htm());
-	SKIP_IF(htm_is_synthetic());
 
 	printf("Check DSCR TM context switch: ");
 	fflush(stdout);
 	for (;;) {
+		rv = 1;
 		asm __volatile__ (
 			/* set a known value into the DSCR */
 			"ld      3, %[dscr1];"
 			"mtspr   %[sprn_dscr], 3;"
 
-			"li      %[rv], 1;"
 			/* start and suspend a transaction */
 			"tbegin.;"
 			"beq     1f;"
@@ -78,6 +75,8 @@ int test_body(void)
 		);
 		assert(rv); /* make sure the transaction aborted */
 		if ((texasr >> 56) != TM_CAUSE_RESCHED) {
+			putchar('.');
+			fflush(stdout);
 			continue;
 		}
 		if (dscr2 != dscr1) {
@@ -90,12 +89,7 @@ int test_body(void)
 	}
 }
 
-static int tm_resched_dscr(void)
+int main(void)
 {
-	return eat_cpu(test_body);
-}
-
-int main(int argc, const char *argv[])
-{
-	return test_harness(tm_resched_dscr, "tm_resched_dscr");
+	return test_harness(test_body, "tm_resched_dscr");
 }

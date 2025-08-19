@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -6,10 +5,7 @@
 #include <linux/workqueue.h>
 #include <linux/kfifo.h>
 #include <linux/mutex.h>
-#include <linux/iio/iio.h>
-#include <linux/iio/buffer.h>
 #include <linux/iio/kfifo_buf.h>
-#include <linux/iio/buffer_impl.h>
 #include <linux/sched.h>
 #include <linux/poll.h>
 
@@ -23,16 +19,9 @@ struct iio_kfifo {
 #define iio_to_kfifo(r) container_of(r, struct iio_kfifo, buffer)
 
 static inline int __iio_allocate_kfifo(struct iio_kfifo *buf,
-			size_t bytes_per_datum, unsigned int length)
+				int bytes_per_datum, int length)
 {
 	if ((length == 0) || (bytes_per_datum == 0))
-		return -EINVAL;
-
-	/*
-	 * Make sure we don't overflow an unsigned int after kfifo rounds up to
-	 * the next power of 2.
-	 */
-	if (roundup_pow_of_two(length) > UINT_MAX / bytes_per_datum)
 		return -EINVAL;
 
 	return __kfifo_alloc((struct __kfifo *)&buf->kf, length,
@@ -75,7 +64,7 @@ static int iio_set_bytes_per_datum_kfifo(struct iio_buffer *r, size_t bpd)
 	return 0;
 }
 
-static int iio_set_length_kfifo(struct iio_buffer *r, unsigned int length)
+static int iio_set_length_kfifo(struct iio_buffer *r, int length)
 {
 	/* Avoid an invalid state */
 	if (length < 2)
@@ -138,16 +127,16 @@ static void iio_kfifo_buffer_release(struct iio_buffer *buffer)
 	kfree(kf);
 }
 
-static size_t iio_kfifo_buf_space_available(struct iio_buffer *r)
+static bool iio_kfifo_buf_space_available(struct iio_buffer *r)
 {
 	struct iio_kfifo *kf = iio_to_kfifo(r);
-	size_t avail;
+	bool full;
 
 	mutex_lock(&kf->user_lock);
-	avail = kfifo_avail(&kf->kf);
+	full = kfifo_is_full(&kf->kf);
 	mutex_unlock(&kf->user_lock);
 
-	return avail;
+	return !full;
 }
 
 static int iio_kfifo_remove_from(struct iio_buffer *r, void *data)
@@ -155,14 +144,14 @@ static int iio_kfifo_remove_from(struct iio_buffer *r, void *data)
 	int ret;
 	struct iio_kfifo *kf = iio_to_kfifo(r);
 
-	if (kfifo_size(&kf->kf) < 1)
+	if (kfifo_size(&kf->kf) < r->bytes_per_datum)
 		return -EBUSY;
 
-	ret = kfifo_out(&kf->kf, data, 1);
-	if (ret != 1)
+	ret = kfifo_out(&kf->kf, data, r->bytes_per_datum);
+	if (ret != r->bytes_per_datum)
 		return -EBUSY;
 
-	wake_up_interruptible_poll(&r->pollq, EPOLLOUT | EPOLLWRNORM);
+	wake_up_interruptible_poll(&r->pollq, POLLOUT | POLLWRNORM);
 
 	return 0;
 }
@@ -229,14 +218,24 @@ static void devm_iio_kfifo_release(struct device *dev, void *res)
 	iio_kfifo_free(*(struct iio_buffer **)res);
 }
 
+static int devm_iio_kfifo_match(struct device *dev, void *res, void *data)
+{
+	struct iio_buffer **r = res;
+
+	if (WARN_ON(!r || !*r))
+		return 0;
+
+	return *r == data;
+}
+
 /**
- * devm_iio_kfifo_allocate - Resource-managed iio_kfifo_allocate()
+ * devm_iio_fifo_allocate - Resource-managed iio_kfifo_allocate()
  * @dev:		Device to allocate kfifo buffer for
  *
  * RETURNS:
  * Pointer to allocated iio_buffer on success, NULL on failure.
  */
-static struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
+struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
 {
 	struct iio_buffer **ptr, *r;
 
@@ -254,37 +253,18 @@ static struct iio_buffer *devm_iio_kfifo_allocate(struct device *dev)
 
 	return r;
 }
+EXPORT_SYMBOL(devm_iio_kfifo_allocate);
 
 /**
- * devm_iio_kfifo_buffer_setup_ext - Allocate a kfifo buffer & attach it to an IIO device
- * @dev: Device object to which to attach the life-time of this kfifo buffer
- * @indio_dev: The device the buffer should be attached to
- * @setup_ops: The setup_ops required to configure the HW part of the buffer (optional)
- * @buffer_attrs: Extra sysfs buffer attributes for this IIO buffer
- *
- * This function allocates a kfifo buffer via devm_iio_kfifo_allocate() and
- * attaches it to the IIO device via iio_device_attach_buffer().
- * This is meant to be a bit of a short-hand/helper function as there are a few
- * drivers that seem to do this.
+ * devm_iio_fifo_free - Resource-managed iio_kfifo_free()
+ * @dev:		Device the buffer belongs to
+ * @r:			The buffer associated with the device
  */
-int devm_iio_kfifo_buffer_setup_ext(struct device *dev,
-				    struct iio_dev *indio_dev,
-				    const struct iio_buffer_setup_ops *setup_ops,
-				    const struct attribute **buffer_attrs)
+void devm_iio_kfifo_free(struct device *dev, struct iio_buffer *r)
 {
-	struct iio_buffer *buffer;
-
-	buffer = devm_iio_kfifo_allocate(dev);
-	if (!buffer)
-		return -ENOMEM;
-
-	indio_dev->modes |= INDIO_BUFFER_SOFTWARE;
-	indio_dev->setup_ops = setup_ops;
-
-	buffer->attrs = buffer_attrs;
-
-	return iio_device_attach_buffer(indio_dev, buffer);
+	WARN_ON(devres_release(dev, devm_iio_kfifo_release,
+			       devm_iio_kfifo_match, r));
 }
-EXPORT_SYMBOL_GPL(devm_iio_kfifo_buffer_setup_ext);
+EXPORT_SYMBOL(devm_iio_kfifo_free);
 
 MODULE_LICENSE("GPL");

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef __MIPS_UAPI_ASM_UCONTEXT_H
 #define __MIPS_UAPI_ASM_UCONTEXT_H
 
@@ -60,7 +59,7 @@ struct ucontext {
 	sigset_t		uc_sigmask;
 
 	/* Extended context structures may follow ucontext */
-	unsigned long long	uc_extcontext[];
+	unsigned long long	uc_extcontext[0];
 };
 
 #endif /* __MIPS_UAPI_ASM_UCONTEXT_H */

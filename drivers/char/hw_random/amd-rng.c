@@ -26,7 +26,6 @@
 
 #include <linux/delay.h>
 #include <linux/hw_random.h>
-#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -56,7 +55,6 @@ MODULE_DEVICE_TABLE(pci, pci_tbl);
 struct amd768_priv {
 	void __iomem *iobase;
 	struct pci_dev *pcidev;
-	u32 pmbase;
 };
 
 static int amd_rng_read(struct hwrng *rng, void *buf, size_t max, bool wait)
@@ -125,9 +123,9 @@ static struct hwrng amd_rng = {
 	.read		= amd_rng_read,
 };
 
-static int __init amd_rng_mod_init(void)
+static int __init mod_init(void)
 {
-	int err;
+	int err = -ENODEV;
 	struct pci_dev *pdev = NULL;
 	const struct pci_device_id *ent;
 	u32 pmbase;
@@ -144,76 +142,43 @@ static int __init amd_rng_mod_init(void)
 found:
 	err = pci_read_config_dword(pdev, 0x58, &pmbase);
 	if (err)
-		goto put_dev;
+		return err;
 
 	pmbase &= 0x0000FF00;
-	if (pmbase == 0) {
-		err = -EIO;
-		goto put_dev;
-	}
+	if (pmbase == 0)
+		return -EIO;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		err = -ENOMEM;
-		goto put_dev;
-	}
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
-	if (!request_region(pmbase + PMBASE_OFFSET, PMBASE_SIZE, DRV_NAME)) {
+	if (!devm_request_region(&pdev->dev, pmbase + PMBASE_OFFSET,
+				PMBASE_SIZE, DRV_NAME)) {
 		dev_err(&pdev->dev, DRV_NAME " region 0x%x already in use!\n",
 			pmbase + 0xF0);
-		err = -EBUSY;
-		goto out;
+		return -EBUSY;
 	}
 
-	priv->iobase = ioport_map(pmbase + PMBASE_OFFSET, PMBASE_SIZE);
+	priv->iobase = devm_ioport_map(&pdev->dev, pmbase + PMBASE_OFFSET,
+			PMBASE_SIZE);
 	if (!priv->iobase) {
 		pr_err(DRV_NAME "Cannot map ioport\n");
-		err = -EINVAL;
-		goto err_iomap;
+		return -ENOMEM;
 	}
 
 	amd_rng.priv = (unsigned long)priv;
-	priv->pmbase = pmbase;
 	priv->pcidev = pdev;
 
 	pr_info(DRV_NAME " detected\n");
-	err = hwrng_register(&amd_rng);
-	if (err) {
-		pr_err(DRV_NAME " registering failed (%d)\n", err);
-		goto err_hwrng;
-	}
-	return 0;
-
-err_hwrng:
-	ioport_unmap(priv->iobase);
-err_iomap:
-	release_region(pmbase + PMBASE_OFFSET, PMBASE_SIZE);
-out:
-	kfree(priv);
-put_dev:
-	pci_dev_put(pdev);
-	return err;
+	return devm_hwrng_register(&pdev->dev, &amd_rng);
 }
 
-static void __exit amd_rng_mod_exit(void)
+static void __exit mod_exit(void)
 {
-	struct amd768_priv *priv;
-
-	priv = (struct amd768_priv *)amd_rng.priv;
-
-	hwrng_unregister(&amd_rng);
-
-	ioport_unmap(priv->iobase);
-
-	release_region(priv->pmbase + PMBASE_OFFSET, PMBASE_SIZE);
-
-	pci_dev_put(priv->pcidev);
-
-	kfree(priv);
 }
 
-module_init(amd_rng_mod_init);
-module_exit(amd_rng_mod_exit);
+module_init(mod_init);
+module_exit(mod_exit);
 
 MODULE_AUTHOR("The Linux Kernel team");
 MODULE_DESCRIPTION("H/W RNG driver for AMD chipsets");

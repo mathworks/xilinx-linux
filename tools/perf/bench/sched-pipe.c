@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * sched-pipe.c
@@ -9,7 +8,10 @@
  *  http://people.redhat.com/mingo/cfs-scheduler/tools/pipe-test-1m.c
  * Ported to perf by Hitoshi Mitake <mitake@dcl.info.waseda.ac.jp>
  */
+#include "../perf.h"
+#include "../util/util.h"
 #include <subcmd/parse-options.h>
+#include "../builtin.h"
 #include "bench.h"
 
 #include <unistd.h>
@@ -74,7 +76,7 @@ static void *worker_thread(void *__tdata)
 	return NULL;
 }
 
-int bench_sched_pipe(int argc, const char **argv)
+int bench_sched_pipe(int argc, const char **argv, const char *prefix __maybe_unused)
 {
 	struct thread_data threads[2], *td;
 	int pipe_1[2], pipe_2[2];
@@ -156,7 +158,7 @@ int bench_sched_pipe(int argc, const char **argv)
 		result_usec += diff.tv_usec;
 
 		printf(" %14s: %lu.%03lu [sec]\n\n", "Total time",
-		       (unsigned long) diff.tv_sec,
+		       diff.tv_sec,
 		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 
 		printf(" %14lf usecs/op\n",
@@ -168,7 +170,7 @@ int bench_sched_pipe(int argc, const char **argv)
 
 	case BENCH_FORMAT_SIMPLE:
 		printf("%lu.%03lu\n",
-		       (unsigned long) diff.tv_sec,
+		       diff.tv_sec,
 		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 		break;
 

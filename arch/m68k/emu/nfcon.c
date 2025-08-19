@@ -49,7 +49,7 @@ static void nfcon_write(struct console *con, const char *str,
 static struct tty_driver *nfcon_device(struct console *con, int *index)
 {
 	*index = 0;
-	return console_is_registered(con) ? nfcon_tty_driver : NULL;
+	return (con->flags & CON_ENABLED) ? nfcon_tty_driver : NULL;
 }
 
 static struct console nf_console = {
@@ -70,22 +70,22 @@ static void nfcon_tty_close(struct tty_struct *tty, struct file *filp)
 {
 }
 
-static ssize_t nfcon_tty_write(struct tty_struct *tty, const u8 *buf,
-			       size_t count)
+static int nfcon_tty_write(struct tty_struct *tty, const unsigned char *buf,
+			   int count)
 {
 	nfputs(buf, count);
 	return count;
 }
 
-static int nfcon_tty_put_char(struct tty_struct *tty, u8 ch)
+static int nfcon_tty_put_char(struct tty_struct *tty, unsigned char ch)
 {
-	u8 temp[2] = { ch, 0 };
+	char temp[2] = { ch, 0 };
 
 	nf_call(stderr_id, virt_to_phys(temp));
 	return 1;
 }
 
-static unsigned int nfcon_tty_write_room(struct tty_struct *tty)
+static int nfcon_tty_write_room(struct tty_struct *tty)
 {
 	return 64;
 }
@@ -107,11 +107,6 @@ static int __init nf_debug_setup(char *arg)
 
 	stderr_id = nf_get_id("NF_STDERR");
 	if (stderr_id) {
-		/*
-		 * The console will be enabled when debug=nfcon is specified
-		 * as a kernel parameter. Since this is a non-standard way
-		 * of enabling consoles, it must be explicitly enabled.
-		 */
 		nf_console.flags |= CON_ENABLED;
 		register_console(&nf_console);
 	}
@@ -125,38 +120,36 @@ early_param("debug", nf_debug_setup);
 
 static int __init nfcon_init(void)
 {
-	struct tty_driver *driver;
 	int res;
 
 	stderr_id = nf_get_id("NF_STDERR");
 	if (!stderr_id)
 		return -ENODEV;
 
-	driver = tty_alloc_driver(1, TTY_DRIVER_REAL_RAW);
-	if (IS_ERR(driver))
-		return PTR_ERR(driver);
+	nfcon_tty_driver = alloc_tty_driver(1);
+	if (!nfcon_tty_driver)
+		return -ENOMEM;
 
 	tty_port_init(&nfcon_tty_port);
 
-	driver->driver_name = "nfcon";
-	driver->name = "nfcon";
-	driver->type = TTY_DRIVER_TYPE_SYSTEM;
-	driver->subtype = SYSTEM_TYPE_TTY;
-	driver->init_termios = tty_std_termios;
+	nfcon_tty_driver->driver_name = "nfcon";
+	nfcon_tty_driver->name = "nfcon";
+	nfcon_tty_driver->type = TTY_DRIVER_TYPE_SYSTEM;
+	nfcon_tty_driver->subtype = SYSTEM_TYPE_TTY;
+	nfcon_tty_driver->init_termios = tty_std_termios;
+	nfcon_tty_driver->flags = TTY_DRIVER_REAL_RAW;
 
-	tty_set_operations(driver, &nfcon_tty_ops);
-	tty_port_link_device(&nfcon_tty_port, driver, 0);
-	res = tty_register_driver(driver);
+	tty_set_operations(nfcon_tty_driver, &nfcon_tty_ops);
+	tty_port_link_device(&nfcon_tty_port, nfcon_tty_driver, 0);
+	res = tty_register_driver(nfcon_tty_driver);
 	if (res) {
 		pr_err("failed to register nfcon tty driver\n");
-		tty_driver_kref_put(driver);
+		put_tty_driver(nfcon_tty_driver);
 		tty_port_destroy(&nfcon_tty_port);
 		return res;
 	}
 
-	nfcon_tty_driver = driver;
-
-	if (!console_is_registered(&nf_console))
+	if (!(nf_console.flags & CON_ENABLED))
 		register_console(&nf_console);
 
 	return 0;
@@ -166,7 +159,7 @@ static void __exit nfcon_exit(void)
 {
 	unregister_console(&nf_console);
 	tty_unregister_driver(nfcon_tty_driver);
-	tty_driver_kref_put(nfcon_tty_driver);
+	put_tty_driver(nfcon_tty_driver);
 	tty_port_destroy(&nfcon_tty_port);
 }
 

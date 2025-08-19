@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MPC8536 DS Board Setup
  *
  * Copyright 2008 Freescale Semiconductor, Inc.
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -12,12 +16,13 @@
 #include <linux/delay.h>
 #include <linux/seq_file.h>
 #include <linux/interrupt.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <mm/mmu_decl.h>
+#include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/mpic.h>
 #include <asm/swiotlb.h>
@@ -52,9 +57,19 @@ static void __init mpc8536_ds_setup_arch(void)
 
 machine_arch_initcall(mpc8536_ds, mpc85xx_common_publish_devices);
 
+machine_arch_initcall(mpc8536_ds, swiotlb_setup_bus_notifier);
+
+/*
+ * Called very early, device-tree isn't unflattened
+ */
+static int __init mpc8536_ds_probe(void)
+{
+	return of_machine_is_compatible("fsl,mpc8536ds");
+}
+
 define_machine(mpc8536_ds) {
 	.name			= "MPC8536 DS",
-	.compatible		= "fsl,mpc8536ds",
+	.probe			= mpc8536_ds_probe,
 	.setup_arch		= mpc8536_ds_setup_arch,
 	.init_IRQ		= mpc8536_ds_pic_init,
 #ifdef CONFIG_PCI
@@ -62,5 +77,6 @@ define_machine(mpc8536_ds) {
 	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

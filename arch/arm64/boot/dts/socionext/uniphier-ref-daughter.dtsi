@@ -1,1 +1,1 @@
-#include <arm/socionext/uniphier-ref-daughter.dtsi>
+../../../../arm/boot/dts/uniphier-ref-daughter.dtsi

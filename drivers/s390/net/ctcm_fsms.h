@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright IBM Corp. 2001, 2007
  * Authors: 	Fritz Elfert (felfert@millenux.com)
@@ -159,6 +158,7 @@ extern const char *ctc_ch_state_names[];
 
 void ctcm_ccw_check_rc(struct channel *ch, int rc, char *msg);
 void ctcm_purge_skb_queue(struct sk_buff_head *q);
+void fsm_action_nop(fsm_instance *fi, int event, void *arg);
 
 /*
  * ----- non-static actions for ctcm channel statemachine -----

@@ -1,10 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
-#include <linux/delay.h>
 
 #include "hdmi.h"
 
@@ -663,11 +670,6 @@ static unsigned long hdmi_8996_pll_recalc_rate(struct clk_hw *hw,
 
 static void hdmi_8996_pll_unprepare(struct clk_hw *hw)
 {
-	struct hdmi_pll_8996 *pll = hw_clk_to_pll(hw);
-	struct hdmi_phy *phy = pll_get_phy(pll);
-
-	hdmi_phy_write(phy, REG_HDMI_8996_PHY_CFG, 0x6);
-	usleep_range(100, 150);
 }
 
 static int hdmi_8996_pll_is_enabled(struct clk_hw *hw)
@@ -682,7 +684,7 @@ static int hdmi_8996_pll_is_enabled(struct clk_hw *hw)
 	return pll_locked;
 }
 
-static const struct clk_ops hdmi_8996_pll_ops = {
+static struct clk_ops hdmi_8996_pll_ops = {
 	.set_rate = hdmi_8996_pll_set_clk_rate,
 	.round_rate = hdmi_8996_pll_round_rate,
 	.recalc_rate = hdmi_8996_pll_recalc_rate,
@@ -691,13 +693,15 @@ static const struct clk_ops hdmi_8996_pll_ops = {
 	.is_enabled = hdmi_8996_pll_is_enabled,
 };
 
-static const struct clk_init_data pll_init = {
+static const char * const hdmi_pll_parents[] = {
+	"xo",
+};
+
+static struct clk_init_data pll_init = {
 	.name = "hdmipll",
 	.ops = &hdmi_8996_pll_ops,
-	.parent_data = (const struct clk_parent_data[]){
-		{ .fw_name = "xo", .name = "xo_board" },
-	},
-	.num_parents = 1,
+	.parent_names = hdmi_pll_parents,
+	.num_parents = ARRAY_SIZE(hdmi_pll_parents),
 	.flags = CLK_IGNORE_UNUSED,
 };
 
@@ -705,7 +709,8 @@ int msm_hdmi_pll_8996_init(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct hdmi_pll_8996 *pll;
-	int i, ret;
+	struct clk *clk;
+	int i;
 
 	pll = devm_kzalloc(dev, sizeof(*pll), GFP_KERNEL);
 	if (!pll)
@@ -713,35 +718,30 @@ int msm_hdmi_pll_8996_init(struct platform_device *pdev)
 
 	pll->pdev = pdev;
 
-	pll->mmio_qserdes_com = msm_ioremap(pdev, "hdmi_pll");
+	pll->mmio_qserdes_com = msm_ioremap(pdev, "hdmi_pll", "HDMI_PLL");
 	if (IS_ERR(pll->mmio_qserdes_com)) {
-		DRM_DEV_ERROR(dev, "failed to map pll base\n");
+		dev_err(dev, "failed to map pll base\n");
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < HDMI_NUM_TX_CHANNEL; i++) {
-		char name[32];
+		char name[32], label[32];
 
 		snprintf(name, sizeof(name), "hdmi_tx_l%d", i);
+		snprintf(label, sizeof(label), "HDMI_TX_L%d", i);
 
-		pll->mmio_qserdes_tx[i] = msm_ioremap(pdev, name);
+		pll->mmio_qserdes_tx[i] = msm_ioremap(pdev, name, label);
 		if (IS_ERR(pll->mmio_qserdes_tx[i])) {
-			DRM_DEV_ERROR(dev, "failed to map pll base\n");
+			dev_err(dev, "failed to map pll base\n");
 			return -ENOMEM;
 		}
 	}
 	pll->clk_hw.init = &pll_init;
 
-	ret = devm_clk_hw_register(dev, &pll->clk_hw);
-	if (ret) {
-		DRM_DEV_ERROR(dev, "failed to register pll clock\n");
-		return ret;
-	}
-
-	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, &pll->clk_hw);
-	if (ret) {
-		DRM_DEV_ERROR(dev, "%s: failed to register clk provider: %d\n", __func__, ret);
-		return ret;
+	clk = devm_clk_register(dev, &pll->clk_hw);
+	if (IS_ERR(clk)) {
+		dev_err(dev, "failed to register pll clock\n");
+		return -EINVAL;
 	}
 
 	return 0;
@@ -753,7 +753,9 @@ static const char * const hdmi_phy_8996_reg_names[] = {
 };
 
 static const char * const hdmi_phy_8996_clk_names[] = {
-	"iface", "ref",
+	"mmagic_iface_clk",
+	"iface_clk",
+	"ref_clk",
 };
 
 const struct hdmi_phy_cfg msm_hdmi_phy_8996_cfg = {

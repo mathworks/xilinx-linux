@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef BCM63XX_ENET_H_
 #define BCM63XX_ENET_H_
 
@@ -9,6 +8,7 @@
 #include <linux/platform_device.h>
 
 #include <bcm63xx_regs.h>
+#include <bcm63xx_irq.h>
 #include <bcm63xx_io.h>
 #include <bcm63xx_iudma.h>
 
@@ -193,6 +193,9 @@ struct bcm_enet_mib_counters {
 
 struct bcm_enet_priv {
 
+	/* mac id (from platform device id) */
+	int mac_id;
+
 	/* base remapped address of device */
 	void __iomem *base;
 
@@ -230,17 +233,11 @@ struct bcm_enet_priv {
 	/* next dirty rx descriptor to refill */
 	int rx_dirty_desc;
 
-	/* size of allocated rx buffers */
-	unsigned int rx_buf_size;
+	/* size of allocated rx skbs */
+	unsigned int rx_skb_size;
 
-	/* allocated rx buffer offset */
-	unsigned int rx_buf_offset;
-
-	/* size of allocated rx frag */
-	unsigned int rx_frag_size;
-
-	/* list of buffer given to hw for rx */
-	void **rx_buf;
+	/* list of skb given to hw for rx */
+	struct sk_buff **rx_skb;
 
 	/* used when rx skb allocation failed, so we defer rx queue
 	 * refill */

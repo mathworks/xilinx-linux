@@ -23,15 +23,15 @@
  * This library provides runtime configurable encoding/decoding of binary
  * Bose-Chaudhuri-Hocquenghem (BCH) codes.
  *
- * Call bch_init to get a pointer to a newly allocated bch_control structure for
+ * Call init_bch to get a pointer to a newly allocated bch_control structure for
  * the given m (Galois field order), t (error correction capability) and
  * (optional) primitive polynomial parameters.
  *
- * Call bch_encode to compute and store ecc parity bytes to a given buffer.
- * Call bch_decode to detect and locate errors in received data.
+ * Call encode_bch to compute and store ecc parity bytes to a given buffer.
+ * Call decode_bch to detect and locate errors in received data.
  *
  * On systems supporting hw BCH features, intermediate results may be provided
- * to bch_decode in order to skip certain steps. See bch_decode() documentation
+ * to decode_bch in order to skip certain steps. See decode_bch() documentation
  * for details.
  *
  * Option CONFIG_BCH_CONST_PARAMS can be used to force fixed values of
@@ -71,7 +71,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/bitops.h>
-#include <linux/bitrev.h>
 #include <asm/byteorder.h>
 #include <linux/bch.h>
 
@@ -79,20 +78,14 @@
 #define GF_M(_p)               (CONFIG_BCH_CONST_M)
 #define GF_T(_p)               (CONFIG_BCH_CONST_T)
 #define GF_N(_p)               ((1 << (CONFIG_BCH_CONST_M))-1)
-#define BCH_MAX_M              (CONFIG_BCH_CONST_M)
-#define BCH_MAX_T	       (CONFIG_BCH_CONST_T)
 #else
 #define GF_M(_p)               ((_p)->m)
 #define GF_T(_p)               ((_p)->t)
 #define GF_N(_p)               ((_p)->n)
-#define BCH_MAX_M              15 /* 2KB */
-#define BCH_MAX_T              64 /* 64 bit correction */
 #endif
 
 #define BCH_ECC_WORDS(_p)      DIV_ROUND_UP(GF_M(_p)*GF_T(_p), 32)
 #define BCH_ECC_BYTES(_p)      DIV_ROUND_UP(GF_M(_p)*GF_T(_p), 8)
-
-#define BCH_ECC_MAX_WORDS      DIV_ROUND_UP(BCH_MAX_M * BCH_MAX_T, 32)
 
 #ifndef dbg
 #define dbg(_fmt, args...)     do {} while (0)
@@ -103,7 +96,7 @@
  */
 struct gf_poly {
 	unsigned int deg;    /* polynomial degree */
-	unsigned int c[];   /* polynomial terms */
+	unsigned int c[0];   /* polynomial terms */
 };
 
 /* given its degree, compute a polynomial size in bytes */
@@ -115,18 +108,10 @@ struct gf_poly_deg1 {
 	unsigned int   c[2];
 };
 
-static u8 swap_bits(struct bch_control *bch, u8 in)
-{
-	if (!bch->swap_bits)
-		return in;
-
-	return bitrev8(in);
-}
-
 /*
- * same as bch_encode(), but process input data one byte at a time
+ * same as encode_bch(), but process input data one byte at a time
  */
-static void bch_encode_unaligned(struct bch_control *bch,
+static void encode_bch_unaligned(struct bch_control *bch,
 				 const unsigned char *data, unsigned int len,
 				 uint32_t *ecc)
 {
@@ -135,9 +120,7 @@ static void bch_encode_unaligned(struct bch_control *bch,
 	const int l = BCH_ECC_WORDS(bch)-1;
 
 	while (len--) {
-		u8 tmp = swap_bits(bch, *data++);
-
-		p = bch->mod8_tab + (l+1)*(((ecc[0] >> 24)^(tmp)) & 0xff);
+		p = bch->mod8_tab + (l+1)*(((ecc[0] >> 24)^(*data++)) & 0xff);
 
 		for (i = 0; i < l; i++)
 			ecc[i] = ((ecc[i] << 8)|(ecc[i+1] >> 24))^(*p++);
@@ -156,16 +139,10 @@ static void load_ecc8(struct bch_control *bch, uint32_t *dst,
 	unsigned int i, nwords = BCH_ECC_WORDS(bch)-1;
 
 	for (i = 0; i < nwords; i++, src += 4)
-		dst[i] = ((u32)swap_bits(bch, src[0]) << 24) |
-			((u32)swap_bits(bch, src[1]) << 16) |
-			((u32)swap_bits(bch, src[2]) << 8) |
-			swap_bits(bch, src[3]);
+		dst[i] = (src[0] << 24)|(src[1] << 16)|(src[2] << 8)|src[3];
 
 	memcpy(pad, src, BCH_ECC_BYTES(bch)-4*nwords);
-	dst[nwords] = ((u32)swap_bits(bch, pad[0]) << 24) |
-		((u32)swap_bits(bch, pad[1]) << 16) |
-		((u32)swap_bits(bch, pad[2]) << 8) |
-		swap_bits(bch, pad[3]);
+	dst[nwords] = (pad[0] << 24)|(pad[1] << 16)|(pad[2] << 8)|pad[3];
 }
 
 /*
@@ -178,20 +155,20 @@ static void store_ecc8(struct bch_control *bch, uint8_t *dst,
 	unsigned int i, nwords = BCH_ECC_WORDS(bch)-1;
 
 	for (i = 0; i < nwords; i++) {
-		*dst++ = swap_bits(bch, src[i] >> 24);
-		*dst++ = swap_bits(bch, src[i] >> 16);
-		*dst++ = swap_bits(bch, src[i] >> 8);
-		*dst++ = swap_bits(bch, src[i]);
+		*dst++ = (src[i] >> 24);
+		*dst++ = (src[i] >> 16) & 0xff;
+		*dst++ = (src[i] >>  8) & 0xff;
+		*dst++ = (src[i] >>  0) & 0xff;
 	}
-	pad[0] = swap_bits(bch, src[nwords] >> 24);
-	pad[1] = swap_bits(bch, src[nwords] >> 16);
-	pad[2] = swap_bits(bch, src[nwords] >> 8);
-	pad[3] = swap_bits(bch, src[nwords]);
+	pad[0] = (src[nwords] >> 24);
+	pad[1] = (src[nwords] >> 16) & 0xff;
+	pad[2] = (src[nwords] >>  8) & 0xff;
+	pad[3] = (src[nwords] >>  0) & 0xff;
 	memcpy(dst, pad, BCH_ECC_BYTES(bch)-4*nwords);
 }
 
 /**
- * bch_encode - calculate BCH ecc parity of data
+ * encode_bch - calculate BCH ecc parity of data
  * @bch:   BCH control structure
  * @data:  data to encode
  * @len:   data length in bytes
@@ -204,35 +181,31 @@ static void store_ecc8(struct bch_control *bch, uint8_t *dst,
  * The exact number of computed ecc parity bits is given by member @ecc_bits of
  * @bch; it may be less than m*t for large values of t.
  */
-void bch_encode(struct bch_control *bch, const uint8_t *data,
+void encode_bch(struct bch_control *bch, const uint8_t *data,
 		unsigned int len, uint8_t *ecc)
 {
 	const unsigned int l = BCH_ECC_WORDS(bch)-1;
 	unsigned int i, mlen;
 	unsigned long m;
-	uint32_t w, r[BCH_ECC_MAX_WORDS];
-	const size_t r_bytes = BCH_ECC_WORDS(bch) * sizeof(*r);
+	uint32_t w, r[l+1];
 	const uint32_t * const tab0 = bch->mod8_tab;
 	const uint32_t * const tab1 = tab0 + 256*(l+1);
 	const uint32_t * const tab2 = tab1 + 256*(l+1);
 	const uint32_t * const tab3 = tab2 + 256*(l+1);
 	const uint32_t *pdata, *p0, *p1, *p2, *p3;
 
-	if (WARN_ON(r_bytes > sizeof(r)))
-		return;
-
 	if (ecc) {
 		/* load ecc parity bytes into internal 32-bit buffer */
 		load_ecc8(bch, bch->ecc_buf, ecc);
 	} else {
-		memset(bch->ecc_buf, 0, r_bytes);
+		memset(bch->ecc_buf, 0, sizeof(r));
 	}
 
 	/* process first unaligned data bytes */
 	m = ((unsigned long)data) & 3;
 	if (m) {
 		mlen = (len < (4-m)) ? len : 4-m;
-		bch_encode_unaligned(bch, data, mlen, bch->ecc_buf);
+		encode_bch_unaligned(bch, data, mlen, bch->ecc_buf);
 		data += mlen;
 		len  -= mlen;
 	}
@@ -242,7 +215,7 @@ void bch_encode(struct bch_control *bch, const uint8_t *data,
 	mlen  = len/4;
 	data += 4*mlen;
 	len  -= 4*mlen;
-	memcpy(r, bch->ecc_buf, r_bytes);
+	memcpy(r, bch->ecc_buf, sizeof(r));
 
 	/*
 	 * split each 32-bit word into 4 polynomials of weight 8 as follows:
@@ -257,13 +230,7 @@ void bch_encode(struct bch_control *bch, const uint8_t *data,
 	 */
 	while (mlen--) {
 		/* input data is read in big-endian format */
-		w = cpu_to_be32(*pdata++);
-		if (bch->swap_bits)
-			w = (u32)swap_bits(bch, w) |
-			    ((u32)swap_bits(bch, w >> 8) << 8) |
-			    ((u32)swap_bits(bch, w >> 16) << 16) |
-			    ((u32)swap_bits(bch, w >> 24) << 24);
-		w ^= r[0];
+		w = r[0]^cpu_to_be32(*pdata++);
 		p0 = tab0 + (l+1)*((w >>  0) & 0xff);
 		p1 = tab1 + (l+1)*((w >>  8) & 0xff);
 		p2 = tab2 + (l+1)*((w >> 16) & 0xff);
@@ -274,17 +241,17 @@ void bch_encode(struct bch_control *bch, const uint8_t *data,
 
 		r[l] = p0[l]^p1[l]^p2[l]^p3[l];
 	}
-	memcpy(bch->ecc_buf, r, r_bytes);
+	memcpy(bch->ecc_buf, r, sizeof(r));
 
 	/* process last unaligned bytes */
 	if (len)
-		bch_encode_unaligned(bch, data, len, bch->ecc_buf);
+		encode_bch_unaligned(bch, data, len, bch->ecc_buf);
 
 	/* store ecc parity bytes into original parity buffer */
 	if (ecc)
 		store_ecc8(bch, ecc, bch->ecc_buf);
 }
-EXPORT_SYMBOL_GPL(bch_encode);
+EXPORT_SYMBOL_GPL(encode_bch);
 
 static inline int modulo(struct bch_control *bch, unsigned int v)
 {
@@ -467,7 +434,7 @@ static int solve_linear_system(struct bch_control *bch, unsigned int *rows,
 {
 	const int m = GF_M(bch);
 	unsigned int tmp, mask;
-	int rem, c, r, p, k, param[BCH_MAX_M];
+	int rem, c, r, p, k, param[m];
 
 	k = 0;
 	mask = 1 << m;
@@ -550,7 +517,7 @@ static int find_affine4_roots(struct bch_control *bch, unsigned int a,
 	k = a_log(bch, a);
 	rows[0] = c;
 
-	/* build linear system to solve X^4+aX^2+bX+c = 0 */
+	/* buid linear system to solve X^4+aX^2+bX+c = 0 */
 	for (i = 0; i < m; i++) {
 		rows[i+1] = bch->a_pow_tab[4*i]^
 			(a ? bch->a_pow_tab[mod_s(bch, k)] : 0)^
@@ -975,7 +942,7 @@ static int chien_search(struct bch_control *bch, unsigned int len,
 #endif /* USE_CHIEN_SEARCH */
 
 /**
- * bch_decode - decode received codeword and find bit error locations
+ * decode_bch - decode received codeword and find bit error locations
  * @bch:      BCH control structure
  * @data:     received data, ignored if @calc_ecc is provided
  * @len:      data length in bytes, must always be provided
@@ -989,22 +956,22 @@ static int chien_search(struct bch_control *bch, unsigned int len,
  *  invalid parameters were provided
  *
  * Depending on the available hw BCH support and the need to compute @calc_ecc
- * separately (using bch_encode()), this function should be called with one of
+ * separately (using encode_bch()), this function should be called with one of
  * the following parameter configurations -
  *
  * by providing @data and @recv_ecc only:
- *   bch_decode(@bch, @data, @len, @recv_ecc, NULL, NULL, @errloc)
+ *   decode_bch(@bch, @data, @len, @recv_ecc, NULL, NULL, @errloc)
  *
  * by providing @recv_ecc and @calc_ecc:
- *   bch_decode(@bch, NULL, @len, @recv_ecc, @calc_ecc, NULL, @errloc)
+ *   decode_bch(@bch, NULL, @len, @recv_ecc, @calc_ecc, NULL, @errloc)
  *
  * by providing ecc = recv_ecc XOR calc_ecc:
- *   bch_decode(@bch, NULL, @len, NULL, ecc, NULL, @errloc)
+ *   decode_bch(@bch, NULL, @len, NULL, ecc, NULL, @errloc)
  *
  * by providing syndrome results @syn:
- *   bch_decode(@bch, NULL, @len, NULL, NULL, @syn, @errloc)
+ *   decode_bch(@bch, NULL, @len, NULL, NULL, @syn, @errloc)
  *
- * Once bch_decode() has successfully returned with a positive value, error
+ * Once decode_bch() has successfully returned with a positive value, error
  * locations returned in array @errloc should be interpreted as follows -
  *
  * if (errloc[n] >= 8*len), then n-th error is located in ecc (no need for
@@ -1016,7 +983,7 @@ static int chien_search(struct bch_control *bch, unsigned int len,
  * Note that this function does not perform any data correction by itself, it
  * merely indicates error locations.
  */
-int bch_decode(struct bch_control *bch, const uint8_t *data, unsigned int len,
+int decode_bch(struct bch_control *bch, const uint8_t *data, unsigned int len,
 	       const uint8_t *recv_ecc, const uint8_t *calc_ecc,
 	       const unsigned int *syn, unsigned int *errloc)
 {
@@ -1035,7 +1002,7 @@ int bch_decode(struct bch_control *bch, const uint8_t *data, unsigned int len,
 			/* compute received data ecc into an internal buffer */
 			if (!data || !recv_ecc)
 				return -EINVAL;
-			bch_encode(bch, data, len, NULL);
+			encode_bch(bch, data, len, NULL);
 		} else {
 			/* load provided calculated ecc */
 			load_ecc8(bch, bch->ecc_buf, calc_ecc);
@@ -1071,14 +1038,12 @@ int bch_decode(struct bch_control *bch, const uint8_t *data, unsigned int len,
 				break;
 			}
 			errloc[i] = nbits-1-errloc[i];
-			if (!bch->swap_bits)
-				errloc[i] = (errloc[i] & ~7) |
-					    (7-(errloc[i] & 7));
+			errloc[i] = (errloc[i] & ~7)|(7-(errloc[i] & 7));
 		}
 	}
 	return (err >= 0) ? err : -EBADMSG;
 }
-EXPORT_SYMBOL_GPL(bch_decode);
+EXPORT_SYMBOL_GPL(decode_bch);
 
 /*
  * generate Galois field lookup tables
@@ -1149,7 +1114,7 @@ static int build_deg2_base(struct bch_control *bch)
 {
 	const int m = GF_M(bch);
 	int i, j, r;
-	unsigned int sum, x, y, remaining, ak = 0, xi[BCH_MAX_M];
+	unsigned int sum, x, y, remaining, ak = 0, xi[m];
 
 	/* find k s.t. Tr(a^k) = 1 and 0 <= k < m */
 	for (i = 0; i < m; i++) {
@@ -1261,29 +1226,27 @@ finish:
 }
 
 /**
- * bch_init - initialize a BCH encoder/decoder
+ * init_bch - initialize a BCH encoder/decoder
  * @m:          Galois field order, should be in the range 5-15
  * @t:          maximum error correction capability, in bits
  * @prim_poly:  user-provided primitive polynomial (or 0 to use default)
- * @swap_bits:  swap bits within data and syndrome bytes
  *
  * Returns:
  *  a newly allocated BCH control structure if successful, NULL otherwise
  *
  * This initialization can take some time, as lookup tables are built for fast
  * encoding/decoding; make sure not to call this function from a time critical
- * path. Usually, bch_init() should be called on module/driver init and
- * bch_free() should be called to release memory on exit.
+ * path. Usually, init_bch() should be called on module/driver init and
+ * free_bch() should be called to release memory on exit.
  *
  * You may provide your own primitive polynomial of degree @m in argument
- * @prim_poly, or let bch_init() use its default polynomial.
+ * @prim_poly, or let init_bch() use its default polynomial.
  *
- * Once bch_init() has successfully returned a pointer to a newly allocated
+ * Once init_bch() has successfully returned a pointer to a newly allocated
  * BCH control structure, ecc length in bytes is given by member @ecc_bytes of
  * the structure.
  */
-struct bch_control *bch_init(int m, int t, unsigned int prim_poly,
-			     bool swap_bits)
+struct bch_control *init_bch(int m, int t, unsigned int prim_poly)
 {
 	int err = 0;
 	unsigned int i, words;
@@ -1291,6 +1254,7 @@ struct bch_control *bch_init(int m, int t, unsigned int prim_poly,
 	struct bch_control *bch = NULL;
 
 	const int min_m = 5;
+	const int max_m = 15;
 
 	/* default primitive polynomials */
 	static const unsigned int prim_poly_tab[] = {
@@ -1306,18 +1270,11 @@ struct bch_control *bch_init(int m, int t, unsigned int prim_poly,
 		goto fail;
 	}
 #endif
-	if ((m < min_m) || (m > BCH_MAX_M))
+	if ((m < min_m) || (m > max_m))
 		/*
 		 * values of m greater than 15 are not currently supported;
 		 * supporting m > 15 would require changing table base type
 		 * (uint16_t) and a small patch in matrix transposition
-		 */
-		goto fail;
-
-	if (t > BCH_MAX_T)
-		/*
-		 * we can support larger than 64 bits if necessary, at the
-		 * cost of higher stack usage.
 		 */
 		goto fail;
 
@@ -1348,7 +1305,6 @@ struct bch_control *bch_init(int m, int t, unsigned int prim_poly,
 	bch->syn       = bch_alloc(2*t*sizeof(*bch->syn), &err);
 	bch->cache     = bch_alloc(2*t*sizeof(*bch->cache), &err);
 	bch->elp       = bch_alloc((t+1)*sizeof(struct gf_poly_deg1), &err);
-	bch->swap_bits = swap_bits;
 
 	for (i = 0; i < ARRAY_SIZE(bch->poly_2t); i++)
 		bch->poly_2t[i] = bch_alloc(GF_POLY_SZ(2*t), &err);
@@ -1375,16 +1331,16 @@ struct bch_control *bch_init(int m, int t, unsigned int prim_poly,
 	return bch;
 
 fail:
-	bch_free(bch);
+	free_bch(bch);
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(bch_init);
+EXPORT_SYMBOL_GPL(init_bch);
 
 /**
- *  bch_free - free the BCH control structure
+ *  free_bch - free the BCH control structure
  *  @bch:    BCH control structure to release
  */
-void bch_free(struct bch_control *bch)
+void free_bch(struct bch_control *bch)
 {
 	unsigned int i;
 
@@ -1405,7 +1361,7 @@ void bch_free(struct bch_control *bch)
 		kfree(bch);
 	}
 }
-EXPORT_SYMBOL_GPL(bch_free);
+EXPORT_SYMBOL_GPL(free_bch);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ivan Djelic <ivan.djelic@parrot.com>");

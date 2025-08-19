@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * PAL Firmware support
  * IA-64 Processor Programmers Reference Vol 2
@@ -13,9 +12,9 @@
  * 05/24/2000 eranian Added support for physical mode static calls
  */
 
-#include <linux/export.h>
 #include <asm/asmmacro.h>
 #include <asm/processor.h>
+#include <asm/export.h>
 
 	.data
 pal_entry_point:
@@ -86,7 +85,7 @@ GLOBAL_ENTRY(ia64_pal_call_static)
 	mov ar.pfs = loc1
 	mov rp = loc0
 	;;
-	srlz.d				// serialize restoration of psr.l
+	srlz.d				// seralize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_static)
 EXPORT_SYMBOL(ia64_pal_call_static)
@@ -194,7 +193,7 @@ GLOBAL_ENTRY(ia64_pal_call_phys_static)
 	mov rp = loc0
 	;;
 	mov ar.rsc=loc4			// restore RSE configuration
-	srlz.d				// serialize restoration of psr.l
+	srlz.d				// seralize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_phys_static)
 EXPORT_SYMBOL(ia64_pal_call_phys_static)
@@ -252,7 +251,7 @@ GLOBAL_ENTRY(ia64_pal_call_phys_stacked)
 	mov rp = loc0
 	;;
 	mov ar.rsc=loc4			// restore RSE configuration
-	srlz.d				// serialize restoration of psr.l
+	srlz.d				// seralize restoration of psr.l
 	br.ret.sptk.many b0
 END(ia64_pal_call_phys_stacked)
 EXPORT_SYMBOL(ia64_pal_call_phys_stacked)

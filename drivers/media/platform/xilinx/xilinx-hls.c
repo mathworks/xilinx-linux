@@ -77,23 +77,16 @@ static int xhls_create_controls(struct xhls_device *xhls)
 {
 	struct v4l2_ctrl_config model = xhls_model_ctrl;
 	struct v4l2_ctrl *ctrl;
-	int ret;
 
 	model.max = strlen(xhls->compatible);
 	model.min = model.max;
 
-	ret = v4l2_ctrl_handler_init(&xhls->ctrl_handler, 1);
-	if (ret) {
-		dev_err(xhls->xvip.dev,
-			"failed to initializing controls (%d)\n", ret);
-		return ret;
-	}
+	v4l2_ctrl_handler_init(&xhls->ctrl_handler, 1);
 
 	ctrl = v4l2_ctrl_new_custom(&xhls->ctrl_handler, &model, NULL);
 
-	if (xhls->ctrl_handler.error || !ctrl) {
+	if (xhls->ctrl_handler.error) {
 		dev_err(xhls->xvip.dev, "failed to add controls\n");
-		v4l2_ctrl_handler_free(&xhls->ctrl_handler);
 		return xhls->ctrl_handler.error;
 	}
 
@@ -200,53 +193,38 @@ static int xhls_s_stream(struct v4l2_subdev *subdev, int enable)
 
 static struct v4l2_mbus_framefmt *
 __xhls_get_pad_format(struct xhls_device *xhls,
-		      struct v4l2_subdev_state *sd_state,
+		      struct v4l2_subdev_pad_config *cfg,
 		      unsigned int pad, u32 which)
 {
-	struct v4l2_mbus_framefmt *format;
-
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		format = v4l2_subdev_get_try_format(&xhls->xvip.subdev,
-						    sd_state, pad);
-		break;
+		return v4l2_subdev_get_try_format(&xhls->xvip.subdev, cfg, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		format = &xhls->formats[pad];
-		break;
+		return &xhls->formats[pad];
 	default:
-		format = NULL;
-		break;
+		return NULL;
 	}
-
-	return format;
 }
 
 static int xhls_get_format(struct v4l2_subdev *subdev,
-			   struct v4l2_subdev_state *sd_state,
+			   struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct xhls_device *xhls = to_hls(subdev);
-	struct v4l2_mbus_framefmt *format;
 
-	format = __xhls_get_pad_format(xhls, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
-
-	fmt->format = *format;
+	fmt->format = *__xhls_get_pad_format(xhls, cfg, fmt->pad, fmt->which);
 
 	return 0;
 }
 
 static int xhls_set_format(struct v4l2_subdev *subdev,
-			   struct v4l2_subdev_state *sd_state,
+			   struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct xhls_device *xhls = to_hls(subdev);
 	struct v4l2_mbus_framefmt *format;
 
-	format = __xhls_get_pad_format(xhls, sd_state, fmt->pad, fmt->which);
-	if (!format)
-		return -EINVAL;
+	format = __xhls_get_pad_format(xhls, cfg, fmt->pad, fmt->which);
 
 	if (fmt->pad == XVIP_PAD_SOURCE) {
 		fmt->format = *format;
@@ -258,10 +236,8 @@ static int xhls_set_format(struct v4l2_subdev *subdev,
 	fmt->format = *format;
 
 	/* Propagate the format to the source pad. */
-	format = __xhls_get_pad_format(xhls, sd_state, XVIP_PAD_SOURCE,
+	format = __xhls_get_pad_format(xhls, cfg, XVIP_PAD_SOURCE,
 					 fmt->which);
-	if (!format)
-		return -EINVAL;
 
 	xvip_set_format_size(format, fmt);
 
@@ -278,10 +254,10 @@ static int xhls_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 	struct v4l2_mbus_framefmt *format;
 
 	/* Initialize with default formats */
-	format = v4l2_subdev_get_try_format(subdev, fh->state, XVIP_PAD_SINK);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SINK);
 	*format = xhls->default_formats[XVIP_PAD_SINK];
 
-	format = v4l2_subdev_get_try_format(subdev, fh->state, XVIP_PAD_SOURCE);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SOURCE);
 	*format = xhls->default_formats[XVIP_PAD_SOURCE];
 
 	return 0;
@@ -502,4 +478,4 @@ module_platform_driver(xhls_driver);
 
 MODULE_AUTHOR("Laurent Pinchart <laurent.pinchart@ideasonboard.com>");
 MODULE_DESCRIPTION("Xilinx HLS Core Driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* leon_pmc.c: LEON Power-down cpu_idle() handler
  *
  * Copyright (C) 2011 Daniel Hellstrom (daniel@gaisler.com) Aeroflex Gaisler AB
@@ -50,15 +49,13 @@ static void pmc_leon_idle_fixup(void)
 	register unsigned int address = (unsigned int)leon3_irqctrl_regs;
 
 	/* Interrupts need to be enabled to not hang the CPU */
-	raw_local_irq_enable();
+	local_irq_enable();
 
 	__asm__ __volatile__ (
 		"wr	%%g0, %%asr19\n"
 		"lda	[%0] %1, %%g0\n"
 		:
 		: "r"(address), "i"(ASI_LEON_BYPASS));
-
-	raw_local_irq_disable();
 }
 
 /*
@@ -68,12 +65,10 @@ static void pmc_leon_idle_fixup(void)
 static void pmc_leon_idle(void)
 {
 	/* Interrupts need to be enabled to not hang the CPU */
-	raw_local_irq_enable();
+	local_irq_enable();
 
 	/* For systems without power-down, this will be no-op */
 	__asm__ __volatile__ ("wr	%g0, %asr19\n\t");
-
-	raw_local_irq_disable();
 }
 
 /* Install LEON Power Down function */

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 #ifndef _XILINX_PHY_H
 #define _XILINX_PHY_H
 

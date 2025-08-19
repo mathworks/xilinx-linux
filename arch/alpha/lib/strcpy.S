@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/strcpy.S
  * Contributed by Richard Henderson (rth@tamu.edu)
@@ -6,7 +5,7 @@
  * Copy a null-terminated string from SRC to DST.  Return a pointer
  * to the null-terminator in the source.
  */
-#include <linux/export.h>
+#include <asm/export.h>
 	.text
 
 	.align 3

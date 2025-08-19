@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * transport_class.c - implementation of generic transport classes
  *                     using attribute_containers
  *
  * Copyright (c) 2005 - James Bottomley <James.Bottomley@steeleye.com>
+ *
+ * This file is licensed under GPLv2
  *
  * The basic idea here is to allow any "device controller" (which
  * would most often be a Host Bus Adapter to use the services of one
@@ -29,10 +30,6 @@
 #include <linux/export.h>
 #include <linux/attribute_container.h>
 #include <linux/transport_class.h>
-
-static int transport_remove_classdev(struct attribute_container *cont,
-				     struct device *dev,
-				     struct device *classdev);
 
 /**
  * transport_class_register - register an initial transport class
@@ -155,27 +152,12 @@ static int transport_add_class_device(struct attribute_container *cont,
 				      struct device *dev,
 				      struct device *classdev)
 {
-	struct transport_class *tclass = class_to_transport_class(cont->class);
 	int error = attribute_container_add_class_device(classdev);
 	struct transport_container *tcont = 
 		attribute_container_to_transport_container(cont);
 
-	if (error)
-		goto err_remove;
-
-	if (tcont->statistics) {
+	if (!error && tcont->statistics)
 		error = sysfs_create_group(&classdev->kobj, tcont->statistics);
-		if (error)
-			goto err_del;
-	}
-
-	return 0;
-
-err_del:
-	attribute_container_class_device_del(classdev);
-err_remove:
-	if (tclass->remove)
-		tclass->remove(tcont, dev, classdev);
 
 	return error;
 }
@@ -191,11 +173,10 @@ err_remove:
  * routine is simply a trigger point used to add the device to the
  * system and register attributes for it.
  */
-int transport_add_device(struct device *dev)
+
+void transport_add_device(struct device *dev)
 {
-	return attribute_container_device_trigger_safe(dev,
-					transport_add_class_device,
-					transport_remove_classdev);
+	attribute_container_device_trigger(dev, transport_add_class_device);
 }
 EXPORT_SYMBOL_GPL(transport_add_device);
 

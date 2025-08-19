@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Analog Devices AD9517 and similar clock generators with integrated VCO
+ * AD9517 SPI Clock Generator with integrated VCO
  *
- * Copyright 2013-2020 Analog Devices Inc.
+ * Copyright 2013-2015 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2.
  */
 
 #include <linux/module.h>
@@ -25,47 +26,47 @@
 
 #define FIRMWARE	"ad9517.stp"
 
-#define AD9517_READ			(1 << 15)
-#define AD9517_WRITE			(0 << 15)
-#define AD9517_CNT(x)			(((x) - 1) << 13)
-#define AD9517_ADDR(x)			((x) & 0xFFF)
+#define AD_READ		(1 << 15)
+#define AD_WRITE		(0 << 15)
+#define AD_CNT(x)	(((x) - 1) << 13)
+#define AD_ADDR(x)	((x) & 0xFFF)
 
 /*
 * AD9517-X Registers
 */
-#define AD9517_SERCONF			0x00
-#define AD9517_PARTID			0x03
-#define AD9517_RB_CTL			0x04
-#define AD9517_PFD_CP			0x10
-#define AD9517_RCNT_L			0x11
-#define AD9517_RCNT_H			0x12
-#define AD9517_ACNT			0x13
-#define AD9517_BCNT_L			0x14
-#define AD9517_BCNT_H			0x15
-#define AD9517_PLL1			0x16
-#define AD9517_PLL2			0x17
-#define AD9517_PLL3			0x18
-#define AD9517_PLL4			0x19
-#define AD9517_PLL5			0x1A
-#define AD9517_PLL6			0x1B
-#define AD9517_PLL7			0x1C
-#define AD9517_PLL8			0x1D
-#define AD9517_PLL9			0x1E
-#define AD9517_PLL_RB			0x1F
+#define AD9517_SERCONF	0x00
+#define AD9517_PARTID	0x03
+#define AD9517_RB_CTL	0x04
+#define AD9517_PFD_CP	0x10
+#define AD9517_RCNT_L	0x11
+#define AD9517_RCNT_H	0x12
+#define AD9517_ACNT	0x13
+#define AD9517_BCNT_L	0x14
+#define AD9517_BCNT_H	0x15
+#define AD9517_PLL1	0x16
+#define AD9517_PLL2	0x17
+#define AD9517_PLL3	0x18
+#define AD9517_PLL4	0x19
+#define AD9517_PLL5	0x1A
+#define AD9517_PLL6	0x1B
+#define AD9517_PLL7	0x1C
+#define AD9517_PLL8	0x1D
+#define AD9517_PLL9	0x1E
+#define AD9517_PLL_RB	0x1F
 
 /* LVDS/CMOS delay registers */
-#define AD9517_OUT_DELAY_BP(x)		(0xA0 + (x) * 3)
-#define AD9517_OUT_DELAY_FS(x)		(0xA1 + (x) * 3)
-#define AD9517_OUT_DELAY_FR(x)		(0xA2 + (x) * 3)
+#define AD9517_OUT_DELAY_BP(x) (0xA0 + (x) * 3)
+#define AD9517_OUT_DELAY_FS(x) (0xA1 + (x) * 3)
+#define AD9517_OUT_DELAY_FR(x) (0xA2 + (x) * 3)
 
-#define AD9517_OUT_LVPECL(x)		(0xF0 + (x))
+#define AD9517_OUT_LVPECL(x) (0xF0 + (x))
 
-#define AD9517_OUT_CMOS(x)		(0x140 + (x))
+#define AD9517_OUT_CMOS(x) (0x140 + (x))
 
 /* LVPECL Channel Dividers */
-#define AD9517_PECLDIV_1(x)		(0x190 + (x) * 3)
-#define AD9517_PECLDIV_2(x)		(0x191 + (x) * 3)
-#define AD9517_PECLDIV_3(x)		(0x192 + (x) * 3)
+#define AD9517_PECLDIV_1(x) (0x190 + (x) * 3)
+#define AD9517_PECLDIV_2(x) (0x191 + (x) * 3)
+#define AD9517_PECLDIV_3(x) (0x192 + (x) * 3)
 
 /* LVDS/CMOS Channel Dividers */
 #define AD9517_CMOSDIV_1(x)		(0x199 + (x) * 5)
@@ -75,49 +76,46 @@
 #define AD9517_CMOSDIV_DCCOFF(x)	(0x19D + (x) * 5)
 
 /* VCO Divider and CLK Input */
-#define AD9517_VCO_DIVIDER		0x1E0
-#define AD9517_INPUT_CLKS		0x1E1
-#define AD9517_POWDOWN_SYNC		0x230
+#define AD9517_VCO_DIVIDER	0x1E0
+#define AD9517_INPUT_CLKS	0x1E1
+#define AD9517_POWDOWN_SYNC	0x230
 
 /* Update All Registers */
-#define AD9517_TRANSFER			0x232
+#define AD9517_TRANSFER		0x232
 
-#define AD9517_PLL3_VCO_CAL		BIT(0)
-#define AD9517_TRANSFER_NOW		BIT(0)
-#define AD9517_PLL1_BCNT_BP		BIT(3)
-#define AD9517_VCO_DIVIDER_BP		BIT(0)
-#define AD9517_VCO_DIVIDER_SEL		BIT(1)
-#define AD9517_PECLDIV_VCO_SEL		BIT(1)
-#define AD9517_PECLDIV_3_BP		BIT(7)
-#define AD9517_CMOSDIV_BYPASS_2		BIT(5)
-#define AD9517_CMOSDIV_BYPASS_1		BIT(4)
-#define AD9517_SOFT_RESET		0x24
-#define AD9517_SDO_ACTIVE		0x81
-#define AD9517_LONG_INSTR		0x18
+#define AD9517_PLL3_VCO_CAL	(1 << 0)
+#define AD9517_TRANSFER_NOW	(1 << 0)
+#define AD9517_PLL1_BCNT_BP	(1 << 3)
+#define AD9517_VCO_DIVIDER_BP	(1 << 0)
+#define AD9517_VCO_DIVIDER_SEL	(1 << 1)
+#define AD9517_PECLDIV_VCO_SEL	(1 << 1)
+#define AD9517_PECLDIV_3_BP	(1 << 7)
+#define AD9517_CMOSDIV_BYPASS_2 (1 << 5)
+#define AD9517_CMOSDIV_BYPASS_1 (1 << 4)
+#define AD9517_SOFT_RESET	(0x24)
+#define AD9517_SDO_ACTIVE	(0x81)
+#define AD9517_LONG_INSTR	(0x18)
 
-#define MAX_NUM_DIVIDERS		5
-#define MAX_NUM_OUTPUTS			10
+#define MAX_NUM_OUTPUTS 10
 
 /*
  * The address field of the channel is used to identify the output type
  * (LVDS/CMOS or LVPECL) and the offset in the register map. The offset is
  * storeed in the lowerd 8 bits and the type in bit 9.
  */
-#define AD9517_ADDRESS_CHAN_TYPE_LVPECL	0x100
+#define AD9517_ADDRESS_CHAN_TYPE_LVPECL 0x100
 
-#define AD9517_ADDRESS_LVPECL(x)	(AD9517_ADDRESS_CHAN_TYPE_LVPECL | (x))
-#define AD9517_ADDRESS_CMOS(x)		(x)
+#define AD9517_ADDRESS_LVPECL(x) (AD9517_ADDRESS_CHAN_TYPE_LVPECL | (x))
+#define AD9517_ADDRESS_CMOS(x) (x)
 
-#define AD9517_ADDRESS_INDEX(x)		((x) & 0xff)
+#define AD9517_ADDRESS_INDEX(x) ((x) & 0xff)
 
 /* Two channels share one divider */
-#define AD9517_ADDRESS_DIVIDER_INDEX(x)	(AD9517_ADDRESS_INDEX(x) / 2)
+#define AD9517_ADDRESS_DIVIDER_INDEX(x) (AD9517_ADDRESS_INDEX(x) / 2)
 
-struct ad9517_clk_div {
-	struct ad9517_state *st;
-	unsigned int address;
-
-	struct clk_hw hw;
+struct ad9517_platform_data {
+	unsigned long *regs;
+	unsigned num_regs;
 };
 
 struct ad9517_outputs {
@@ -130,8 +128,6 @@ struct ad9517_outputs {
 struct ad9517_state {
 	struct spi_device *spi;
 	unsigned char regs[AD9517_TRANSFER+1];
-
-	struct ad9517_clk_div clk_divs[MAX_NUM_DIVIDERS];
 
 	struct ad9517_outputs output[MAX_NUM_OUTPUTS];
 	struct clk *clks[MAX_NUM_OUTPUTS];
@@ -148,38 +144,7 @@ struct ad9517_state {
 	struct mutex lock;
 };
 
-/* Registers not listed are implicitly initialized to 0x00 */
-static const unsigned char ad9517_default_regs[AD9517_TRANSFER+1] = {
-	[AD9517_PFD_CP] = 0x7d,
-	[AD9517_RCNT_L] = 0x01,
-	[AD9517_BCNT_L] = 0x03,
-	[AD9517_PLL1] = 0x06,
-	[AD9517_PLL3] = 0x06,
-	[AD9517_OUT_DELAY_BP(0)] = 0x01,
-	[AD9517_OUT_DELAY_BP(1)] = 0x01,
-	[AD9517_OUT_DELAY_BP(2)] = 0x01,
-	[AD9517_OUT_DELAY_BP(3)] = 0x01,
-	[AD9517_OUT_LVPECL(0)] = 0x0a,
-	[AD9517_OUT_LVPECL(1)] = 0x0a,
-	[AD9517_OUT_LVPECL(2)] = 0x0a,
-	[AD9517_OUT_LVPECL(3)] = 0x0a,
-	[AD9517_OUT_LVPECL(4)] = 0x0a,
-	[AD9517_OUT_LVPECL(5)] = 0x0a,
-	[AD9517_OUT_CMOS(0)] = 0x43,
-	[AD9517_OUT_CMOS(1)] = 0x43,
-	[AD9517_OUT_CMOS(2)] = 0x43,
-	[AD9517_OUT_CMOS(3)] = 0x43,
-	[AD9517_PECLDIV_2(0)] = 0x80,
-	[AD9517_PECLDIV_2(1)] = 0x80,
-	[AD9517_PECLDIV_2(2)] = 0x80,
-	[AD9517_CMOSDIV_1(0)] = 0x22,
-	[AD9517_CMOSDIV_2(0)] = 0x11,
-	[AD9517_CMOSDIV_1(1)] = 0x22,
-	[AD9517_CMOSDIV_2(1)] = 0x11,
-	[AD9517_VCO_DIVIDER] = 0x02,
-};
-
-#define IS_FD				BIT(7)
+#define IS_FD				(1 << 7)
 #define AD9517_PLL1_PRESCALER_MASK	0x7
 static const unsigned char to_prescaler[] = {
 	1 | IS_FD,
@@ -194,20 +159,16 @@ static const unsigned char to_prescaler[] = {
 
 #define to_ad9517_clk_output(_hw) container_of(_hw, struct ad9517_outputs, hw)
 
-static inline struct ad9517_clk_div *clk_to_ad9517_clk_div(struct clk_hw *hw)
-{
-	return container_of(hw, struct ad9517_clk_div, hw);
-}
-
 static int ad9517_read(struct spi_device *spi, unsigned reg)
 {
 	unsigned char buf[3];
 	int ret;
 	u16 cmd;
 
-	cmd = AD9517_READ | AD9517_CNT(1) | AD9517_ADDR(reg);
+	cmd = AD_READ | AD_CNT(1) | AD_ADDR(reg);
 	buf[0] = cmd >> 8;
 	buf[1] = cmd & 0xFF;
+
 
 	ret = spi_write_then_read(spi, &buf[0], 2, &buf[2], 1);
 	if (ret < 0)
@@ -220,14 +181,19 @@ static int ad9517_write(struct spi_device *spi,
 			 unsigned reg, unsigned val)
 {
 	unsigned char buf[3];
+	int ret;
 	u16 cmd;
 
-	cmd = AD9517_WRITE | AD9517_CNT(1) | AD9517_ADDR(reg);
+	cmd = AD_WRITE | AD_CNT(1) | AD_ADDR(reg);
 	buf[0] = cmd >> 8;
 	buf[1] = cmd & 0xFF;
 	buf[2] = val;
 
-	return spi_write(spi, buf, ARRAY_SIZE(buf));
+	ret = spi_write(spi, buf, 3);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 static int ad9517_parse_firmware(struct ad9517_state *st,
@@ -260,6 +226,24 @@ static int ad9517_parse_firmware(struct ad9517_state *st,
 	return 0;
 }
 
+static int ad9517_parse_pdata(struct ad9517_state *st,
+				 struct ad9517_platform_data *pdata)
+{
+	int i;
+	unsigned addr;
+
+	if (!pdata->num_regs || (pdata->num_regs > AD9517_TRANSFER))
+		return -EINVAL;
+
+	for (i = 0; i < pdata->num_regs; i++) {
+		addr = pdata->regs[i] >> 16;
+		if (addr > AD9517_TRANSFER)
+			return -EINVAL;
+		st->regs[addr] = pdata->regs[i] & 0xFF;
+	}
+	return 0;
+}
+
 static int ad9517_calc_divider_hi_lo(unsigned ratio, unsigned *hi, unsigned *lo)
 {
 
@@ -272,11 +256,9 @@ static int ad9517_calc_divider_hi_lo(unsigned ratio, unsigned *hi, unsigned *lo)
 	return 0;
 }
 
-static void ad9517_calc_d12_dividers(unsigned int vco, unsigned int out,
-				     unsigned int *d1_val,
-				     unsigned int *d2_val)
+static int ad9517_calc_d12_dividers(unsigned vco, unsigned out,  unsigned *d1_val, unsigned *d2_val)
 {
-	unsigned d1, d2, _d2 = 0, _d1 = 0, ratio;
+	unsigned d1, d2, _d2, _d1, ratio;
 	unsigned err, min = UINT_MAX;
 
 	ratio = DIV_ROUND_CLOSEST(vco, out);
@@ -285,13 +267,13 @@ static void ad9517_calc_d12_dividers(unsigned int vco, unsigned int out,
 	if (ratio == 1) {
 		*d1_val = 1;
 		*d2_val = 1; /* Bypass */
-		return;
+		return 0;
 	}
 
 	if (ratio <= 32) {
 		*d1_val = ratio;
 		*d2_val = 1; /* Bypass */
-		return;
+		return 0;
 	}
 
 	for (d1 = 1; d1 <= 32; d1++) {
@@ -313,11 +295,12 @@ static void ad9517_calc_d12_dividers(unsigned int vco, unsigned int out,
 
 	*d2_val = min(_d2, _d1);
 	*d1_val = max(_d2, _d1);
+
+   return 0;
 }
 
 static int ad9517_lvdscmos_set_frequency(struct ad9517_state *st,
-					 unsigned int addr,
-					 unsigned int val)
+	unsigned int addr, unsigned int val)
 {
 	unsigned reg_bypass, reg_div1, reg_div2;
 	unsigned d1, d2, hi, lo;
@@ -366,8 +349,7 @@ static int ad9517_lvdscmos_set_frequency(struct ad9517_state *st,
 }
 
 static int ad9517_lvpecl_set_frequency(struct ad9517_state *st,
-				       unsigned int addr,
-				       unsigned int val)
+	unsigned int addr, unsigned int val)
 {
 	unsigned reg_bypass, reg_div1, reg_bypass2;
 	unsigned d1, hi, lo;
@@ -393,7 +375,7 @@ static int ad9517_lvpecl_set_frequency(struct ad9517_state *st,
 	d1 = DIV_ROUND_CLOSEST(st->div0123_freq, val);
 	d1 = clamp_t(unsigned, d1, 1, 32);
 
-	if (d1 == 1) {
+	if (d1 ==  1) {
 		st->regs[reg_bypass2] |= AD9517_PECLDIV_3_BP;
 	} else {
 		st->regs[reg_bypass2] &= ~AD9517_PECLDIV_3_BP;
@@ -415,7 +397,7 @@ static int ad9517_lvpecl_set_frequency(struct ad9517_state *st,
 }
 
 static int ad9517_set_frequency(struct ad9517_state *st, unsigned int address,
-				unsigned int rate)
+	unsigned int rate)
 {
 	int ret;
 
@@ -437,7 +419,7 @@ out_unlock:
 }
 
 static unsigned long ad9517_get_frequency(struct ad9517_state *st,
-					  unsigned int address)
+	unsigned int address)
 {
 	unsigned int reg_index;
 	unsigned long rate;
@@ -488,7 +470,7 @@ static unsigned long ad9517_get_frequency(struct ad9517_state *st,
 }
 
 static int ad9517_out_enable(struct ad9517_state *st, unsigned int address,
-			     unsigned int val)
+	unsigned int val)
 {
 	unsigned int mask, reg;
 	int ret;
@@ -668,6 +650,8 @@ static int ad9517_setup(struct ad9517_state *st, unsigned int num_outputs)
 
 	if (st->regs[AD9517_INPUT_CLKS] & AD9517_VCO_DIVIDER_BP)
 		uses_clkin = true;
+	else
+		uses_vco = true;
 
 	if (uses_vco) {
 		if (st->refin_freq == 0) {
@@ -694,7 +678,7 @@ static int ad9517_setup(struct ad9517_state *st, unsigned int num_outputs)
 	}
 
 	/* Internal clock distribution */
-	if (uses_vco) {
+	if (st->regs[AD9517_INPUT_CLKS] & AD9517_VCO_DIVIDER_SEL) {
 		vco_divin_freq = vco_freq;
 		vco_divin_parent_name = ad9517_get_parent_name(st, "refclk");
 	} else {
@@ -743,15 +727,21 @@ static int ad9517_setup(struct ad9517_state *st, unsigned int num_outputs)
 static unsigned long ad9517_recalc_rate(struct clk_hw *hw,
 		unsigned long parent_rate)
 {
-	return ad9517_get_frequency(clk_to_ad9517_clk_div(hw)->st,
-				    clk_to_ad9517_clk_div(hw)->address);
+	return ad9517_get_frequency(to_ad9517_clk_output(hw)->st,
+				    to_ad9517_clk_output(hw)->address);
+}
+
+static int ad9517_clk_is_enabled(struct clk_hw *hw)
+{
+	return ad9517_is_enabled(to_ad9517_clk_output(hw)->st,
+				 to_ad9517_clk_output(hw)->address);
 }
 
 static long ad9517_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				  unsigned long *prate)
 {
-	struct ad9517_state *st = clk_to_ad9517_clk_div(hw)->st;
-	unsigned int address = clk_to_ad9517_clk_div(hw)->address;
+	struct ad9517_state *st = to_ad9517_clk_output(hw)->st;
+	unsigned int address = to_ad9517_clk_output(hw)->address;
 	long rrate;
 	unsigned d1, d2;
 
@@ -774,16 +764,10 @@ static long ad9517_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 static int ad9517_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 			       unsigned long prate)
 {
-	struct ad9517_state *st = clk_to_ad9517_clk_div(hw)->st;
-	unsigned int address = clk_to_ad9517_clk_div(hw)->address;
+	struct ad9517_state *st = to_ad9517_clk_output(hw)->st;
+	unsigned int address = to_ad9517_clk_output(hw)->address;
 
 	return ad9517_set_frequency(st, address, rate);
-}
-
-static int ad9517_clk_is_enabled(struct clk_hw *hw)
-{
-	return ad9517_is_enabled(to_ad9517_clk_output(hw)->st,
-				 to_ad9517_clk_output(hw)->address);
 }
 
 static int ad9517_clk_prepare(struct clk_hw *hw)
@@ -800,14 +784,11 @@ static void ad9517_clk_unprepare(struct clk_hw *hw)
 	ad9517_out_enable(st, to_ad9517_clk_output(hw)->address, 0);
 }
 
-static const struct clk_ops ad9517_clk_div_ops = {
+static const struct clk_ops ad9517_clk_ops = {
 	.recalc_rate = ad9517_recalc_rate,
+	.is_enabled = ad9517_clk_is_enabled,
 	.set_rate = ad9517_clk_set_rate,
 	.round_rate = ad9517_clk_round_rate,
-};
-
-static const struct clk_ops ad9517_clk_ops = {
-	.is_enabled = ad9517_clk_is_enabled,
 	.prepare = ad9517_clk_prepare,
 	.unprepare = ad9517_clk_unprepare,
 };
@@ -815,43 +796,15 @@ static const struct clk_ops ad9517_clk_ops = {
 static struct clk *ad9517_clk_register(struct ad9517_state *st,
 	unsigned int num)
 {
-	struct ad9517_outputs *output = &st->output[num];
 	struct clk_init_data init;
-	unsigned int div_num;
-	char div_name[128];
-	const char *parent_name;
+	struct ad9517_outputs *output = &st->output[num];
 	struct clk *clk;
 	char name[8];
 	int ret;
 
-	div_num = num / 2;
-
-	snprintf(div_name, sizeof(div_name), "%s-div%d",
-		dev_name(&st->spi->dev), div_num);
-	parent_name = div_name;
-
-	/* Register a clock divider for every second clock */
-	if (num % 2 == 0) {
-		init.ops = &ad9517_clk_div_ops;
-		init.parent_names = &output->parent_name;
-		init.num_parents = 1;
-		init.name = div_name;
-		init.flags = 0;
-
-		st->clk_divs[div_num].st = st;
-		st->clk_divs[div_num].hw.init = &init;
-		st->clk_divs[div_num].address = output->address;
-
-		clk = devm_clk_register(&st->spi->dev,
-			&st->clk_divs[div_num].hw);
-		if (IS_ERR(clk))
-			return clk;
-	}
-
 	init.ops = &ad9517_clk_ops;
-	init.parent_names = &parent_name;
+	init.parent_names = &output->parent_name;
 	init.num_parents = 1;
-	init.flags = CLK_SET_RATE_PARENT;
 
 	ret = of_property_read_string_index(st->spi->dev.of_node,
 		"clock-output-names", num, &init.name);
@@ -938,6 +891,7 @@ static const struct iio_info ad9517_info = {
 	.read_raw = &ad9517_read_raw,
 	.write_raw = ad9517_write_raw,
 	.debugfs_reg_access = &ad9517_reg_access,
+	.driver_module = THIS_MODULE,
 };
 
 #define AD9517_CHAN(_chan, _addr)				\
@@ -1005,41 +959,42 @@ static const struct ad9517_device_info ad9517_device_info[] = {
 
 static int ad9517_probe(struct spi_device *spi)
 {
+	struct ad9517_platform_data *pdata = spi->dev.platform_data;
 	const struct spi_device_id *id;
-	const char *name;
 	struct iio_dev *indio_dev;
-	struct device *dev = &spi->dev;
 	int out, ret, conf;
 	const struct firmware *fw;
 	struct ad9517_state *st;
 	struct clk *clk, *ref_clk, *clkin;
+	bool spi3wire = of_property_read_bool(
+			spi->dev.of_node, "adi,spi-3wire-enable");
 	unsigned int device_type, part_id;
-	bool spi3wire;
 
 	id = spi_get_device_id(spi);
 	device_type = id->driver_data >> 8;
 	part_id = id->driver_data & 0xff;
 
-	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
+	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
 	mutex_init(&st->lock);
 
-	st->gpio_reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	st->gpio_reset = devm_gpiod_get_optional(&spi->dev, "reset",
+	    GPIOD_OUT_HIGH);
 	if (st->gpio_reset) {
 		udelay(10);
 		gpiod_set_value(st->gpio_reset, 0);
 	}
 
-	st->gpio_sync = devm_gpiod_get_optional(dev, "sync", GPIOD_OUT_HIGH);
+	st->gpio_sync = devm_gpiod_get_optional(&spi->dev, "sync",
+	    GPIOD_OUT_HIGH);
 
-	spi3wire = device_property_present(dev, "adi,spi-3wire-enable");
 	conf = AD9517_LONG_INSTR |
 		((spi->mode & SPI_3WIRE || spi3wire) ? 0 : AD9517_SDO_ACTIVE);
 
-	ret = ad9517_write(spi, AD9517_SERCONF, conf | AD9517_SOFT_RESET);
+	ret = ad9517_write(spi, AD9517_SERCONF,  conf | AD9517_SOFT_RESET);
 	if (ret < 0)
 		return ret;
 
@@ -1051,49 +1006,56 @@ static int ad9517_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 	if (ret != part_id) {
-		dev_err(dev, "Unrecognized CHIP_ID 0x%X\n", ret);
+		dev_err(&spi->dev, "Unrecognized CHIP_ID 0x%X\n", ret);
  		return -ENODEV;
 	}
 
-	if (dev->of_node) {
-		if (of_property_read_string(dev->of_node, "firmware", &name))
-			name = NULL;
-	} else {
-		name = FIRMWARE;
-	}
+	if (!pdata) {
+		const char *name;
+		if (spi->dev.of_node) {
+			if (of_property_read_string(spi->dev.of_node, "firmware", &name))
+				name = FIRMWARE;
+		} else {
+			name = FIRMWARE;
+		}
 
-	if (name) {
-		ret = request_firmware(&fw, name, dev);
+		ret = request_firmware(&fw, name, &spi->dev);
 		if (ret) {
-			dev_err(dev,
+			dev_err(&spi->dev,
 				"request_firmware() failed with %i\n", ret);
 			return ret;
 		}
 		ad9517_parse_firmware(st, fw->data, fw->size);
 		release_firmware(fw);
 	} else {
-		memcpy(st->regs, ad9517_default_regs, sizeof(st->regs));
+		ret = ad9517_parse_pdata(st, pdata);
+		if (ret < 0) {
+			dev_err(&spi->dev,
+				"parse pdata failed with %i\n", ret);
+			return ret;
+		}
 	}
 
 	st->spi = spi;
 
-	ref_clk = devm_clk_get(dev, "refclk");
+	ref_clk = devm_clk_get(&spi->dev, "refclk");
 	if (IS_ERR(ref_clk)) {
 		ret = PTR_ERR(ref_clk);
 		if (ret != -ENOENT) {
-			dev_err(dev, "Failed getting REFIN clock (%d)\n", ret);
+			dev_err(&spi->dev, "Failed getting REFIN clock (%d)\n", ret);
 			return ret;
 		}
 	} else {
 		st->refin_freq = clk_get_rate(ref_clk);
 		clk_prepare_enable(ref_clk);
+
 	}
 
-	clkin = devm_clk_get(dev, "clkin");
+	clkin = devm_clk_get(&spi->dev, "clkin");
 	if (IS_ERR(clkin)) {
 		ret = PTR_ERR(clkin);
 		if (ret != -ENOENT) {
-			dev_err(dev, "Failed getting CLK clock (%d)\n", ret);
+			dev_err(&spi->dev, "Failed getting CLK clock (%d)\n", ret);
 			return ret;
 		}
 	} else {
@@ -1101,7 +1063,7 @@ static int ad9517_probe(struct spi_device *spi)
 		clk_prepare_enable(clkin);
 	}
 
-	indio_dev->dev.parent = dev;
+	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad9517_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -1125,7 +1087,7 @@ static int ad9517_probe(struct spi_device *spi)
 			return PTR_ERR(clk);
 	}
 
-	of_clk_add_provider(dev->of_node,
+	of_clk_add_provider(st->spi->dev.of_node,
 			    of_clk_src_onecell_get, &st->clk_data);
 
 	ret = iio_device_register(indio_dev);
@@ -1134,21 +1096,23 @@ static int ad9517_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, indio_dev);
 
-	dev_info(dev, "AD9517 successfully initialized");
+	dev_info(&spi->dev, "AD9517 successfully initialized");
 
 	return 0;
 
 err_of_clk_del_provider:
-	of_clk_del_provider(dev->of_node);
+	of_clk_del_provider(spi->dev.of_node);
 	return ret;
 }
 
-static void ad9517_remove(struct spi_device *spi)
+static int ad9517_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 
 	iio_device_unregister(indio_dev);
 	of_clk_del_provider(spi->dev.of_node);
+
+	return 0;
 }
 
 static const struct spi_device_id ad9517_id[] = {

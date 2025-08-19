@@ -1,7 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, Sony Mobile Communications AB.
  * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -11,7 +19,7 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 
-#include <linux/rpmsg.h>
+#include <linux/soc/qcom/smd.h>
 #include <linux/soc/qcom/smd-rpm.h>
 
 #define RPM_REQUEST_TIMEOUT     (5 * HZ)
@@ -19,13 +27,12 @@
 /**
  * struct qcom_smd_rpm - state of the rpm device driver
  * @rpm_channel:	reference to the smd channel
- * @dev:		rpm device
  * @ack:		completion for acks
  * @lock:		mutual exclusion around the send/complete pair
  * @ack_status:		result of the rpm request
  */
 struct qcom_smd_rpm {
-	struct rpmsg_endpoint *rpm_channel;
+	struct qcom_smd_channel *rpm_channel;
 	struct device *dev;
 
 	struct completion ack;
@@ -73,7 +80,7 @@ struct qcom_rpm_message {
 	__le32 length;
 	union {
 		__le32 msg_id;
-		DECLARE_FLEX_ARRAY(u8, message);
+		u8 message[0];
 	};
 };
 
@@ -85,7 +92,6 @@ struct qcom_rpm_message {
 /**
  * qcom_rpm_smd_write - write @buf to @type:@id
  * @rpm:	rpm handle
- * @state:	active/sleep state flags
  * @type:	resource type
  * @id:		resource identifier
  * @buf:	the data to be written
@@ -111,7 +117,7 @@ int qcom_rpm_smd_write(struct qcom_smd_rpm *rpm,
 	if (WARN_ON(size >= 256))
 		return -EINVAL;
 
-	pkt = kmalloc(size, GFP_ATOMIC);
+	pkt = kmalloc(size, GFP_KERNEL);
 	if (!pkt)
 		return -ENOMEM;
 
@@ -127,7 +133,7 @@ int qcom_rpm_smd_write(struct qcom_smd_rpm *rpm,
 	pkt->req.data_len = cpu_to_le32(count);
 	memcpy(pkt->payload, buf, count);
 
-	ret = rpmsg_send(rpm->rpm_channel, pkt, size);
+	ret = qcom_smd_send(rpm->rpm_channel, pkt, size);
 	if (ret)
 		goto out;
 
@@ -144,16 +150,14 @@ out:
 }
 EXPORT_SYMBOL(qcom_rpm_smd_write);
 
-static int qcom_smd_rpm_callback(struct rpmsg_device *rpdev,
-				 void *data,
-				 int count,
-				 void *priv,
-				 u32 addr)
+static int qcom_smd_rpm_callback(struct qcom_smd_channel *channel,
+				 const void *data,
+				 size_t count)
 {
 	const struct qcom_rpm_header *hdr = data;
 	size_t hdr_length = le32_to_cpu(hdr->length);
 	const struct qcom_rpm_message *msg;
-	struct qcom_smd_rpm *rpm = dev_get_drvdata(&rpdev->dev);
+	struct qcom_smd_rpm *rpm = qcom_smd_get_drvdata(channel);
 	const u8 *buf = data + sizeof(struct qcom_rpm_header);
 	const u8 *end = buf + hdr_length;
 	char msgbuf[32];
@@ -192,55 +196,59 @@ static int qcom_smd_rpm_callback(struct rpmsg_device *rpdev,
 	return 0;
 }
 
-static int qcom_smd_rpm_probe(struct rpmsg_device *rpdev)
+static int qcom_smd_rpm_probe(struct qcom_smd_device *sdev)
 {
 	struct qcom_smd_rpm *rpm;
 
-	if (!rpdev->dev.of_node)
-		return -EINVAL;
-
-	rpm = devm_kzalloc(&rpdev->dev, sizeof(*rpm), GFP_KERNEL);
+	rpm = devm_kzalloc(&sdev->dev, sizeof(*rpm), GFP_KERNEL);
 	if (!rpm)
 		return -ENOMEM;
 
 	mutex_init(&rpm->lock);
 	init_completion(&rpm->ack);
 
-	rpm->dev = &rpdev->dev;
-	rpm->rpm_channel = rpdev->ept;
-	dev_set_drvdata(&rpdev->dev, rpm);
+	rpm->dev = &sdev->dev;
+	rpm->rpm_channel = sdev->channel;
+	qcom_smd_set_drvdata(sdev->channel, rpm);
 
-	return of_platform_populate(rpdev->dev.of_node, NULL, NULL, &rpdev->dev);
+	dev_set_drvdata(&sdev->dev, rpm);
+
+	return of_platform_populate(sdev->dev.of_node, NULL, NULL, &sdev->dev);
 }
 
-static void qcom_smd_rpm_remove(struct rpmsg_device *rpdev)
+static void qcom_smd_rpm_remove(struct qcom_smd_device *sdev)
 {
-	of_platform_depopulate(&rpdev->dev);
+	of_platform_depopulate(&sdev->dev);
 }
 
-static const struct rpmsg_device_id qcom_smd_rpm_id_table[] = {
-	{ .name = "rpm_requests", },
-	{ /* sentinel */ }
+static const struct of_device_id qcom_smd_rpm_of_match[] = {
+	{ .compatible = "qcom,rpm-apq8084" },
+	{ .compatible = "qcom,rpm-msm8916" },
+	{ .compatible = "qcom,rpm-msm8974" },
+	{}
 };
-MODULE_DEVICE_TABLE(rpmsg, qcom_smd_rpm_id_table);
+MODULE_DEVICE_TABLE(of, qcom_smd_rpm_of_match);
 
-static struct rpmsg_driver qcom_smd_rpm_driver = {
+static struct qcom_smd_driver qcom_smd_rpm_driver = {
 	.probe = qcom_smd_rpm_probe,
 	.remove = qcom_smd_rpm_remove,
 	.callback = qcom_smd_rpm_callback,
-	.id_table = qcom_smd_rpm_id_table,
-	.drv.name = "qcom_smd_rpm",
+	.driver  = {
+		.name  = "qcom_smd_rpm",
+		.owner = THIS_MODULE,
+		.of_match_table = qcom_smd_rpm_of_match,
+	},
 };
 
 static int __init qcom_smd_rpm_init(void)
 {
-	return register_rpmsg_driver(&qcom_smd_rpm_driver);
+	return qcom_smd_driver_register(&qcom_smd_rpm_driver);
 }
 arch_initcall(qcom_smd_rpm_init);
 
 static void __exit qcom_smd_rpm_exit(void)
 {
-	unregister_rpmsg_driver(&qcom_smd_rpm_driver);
+	qcom_smd_driver_unregister(&qcom_smd_rpm_driver);
 }
 module_exit(qcom_smd_rpm_exit);
 

@@ -126,7 +126,7 @@ static const struct i2c_algorithm octeon_i2c_algo = {
 	.functionality = octeon_i2c_functionality,
 };
 
-static const struct i2c_adapter octeon_i2c_ops = {
+static struct i2c_adapter octeon_i2c_ops = {
 	.owner = THIS_MODULE,
 	.name = "OCTEON adapter",
 	.algo = &octeon_i2c_algo,
@@ -136,6 +136,7 @@ static int octeon_i2c_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	int irq, result = 0, hlc_irq = 0;
+	struct resource *res_mem;
 	struct octeon_i2c *i2c;
 	bool cn78xx_style;
 
@@ -166,7 +167,8 @@ static int octeon_i2c_probe(struct platform_device *pdev)
 	i2c->roff.twsi_int = 0x10;
 	i2c->roff.sw_twsi_ext = 0x18;
 
-	i2c->twsi_base = devm_platform_ioremap_resource(pdev, 0);
+	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	i2c->twsi_base = devm_ioremap_resource(&pdev->dev, res_mem);
 	if (IS_ERR(i2c->twsi_base)) {
 		result = PTR_ERR(i2c->twsi_base);
 		goto out;
@@ -253,11 +255,12 @@ out:
 	return result;
 };
 
-static void octeon_i2c_remove(struct platform_device *pdev)
+static int octeon_i2c_remove(struct platform_device *pdev)
 {
 	struct octeon_i2c *i2c = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&i2c->adap);
+	return 0;
 };
 
 static const struct of_device_id octeon_i2c_match[] = {
@@ -269,7 +272,7 @@ MODULE_DEVICE_TABLE(of, octeon_i2c_match);
 
 static struct platform_driver octeon_i2c_driver = {
 	.probe		= octeon_i2c_probe,
-	.remove_new	= octeon_i2c_remove,
+	.remove		= octeon_i2c_remove,
 	.driver		= {
 		.name	= DRV_NAME,
 		.of_match_table = octeon_i2c_match,

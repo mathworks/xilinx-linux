@@ -47,40 +47,17 @@ nouveau_debugfs_vbios_image(struct seq_file *m, void *data)
 }
 
 static int
-nouveau_debugfs_strap_peek(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = m->private;
-	struct nouveau_drm *drm = nouveau_drm(node->minor->dev);
-	int ret;
-
-	ret = pm_runtime_get_sync(drm->dev->dev);
-	if (ret < 0 && ret != -EACCES) {
-		pm_runtime_put_autosuspend(drm->dev->dev);
-		return ret;
-	}
-
-	seq_printf(m, "0x%08x\n",
-		   nvif_rd32(&drm->client.device.object, 0x101000));
-
-	pm_runtime_mark_last_busy(drm->dev->dev);
-	pm_runtime_put_autosuspend(drm->dev->dev);
-
-	return 0;
-}
-
-static int
 nouveau_debugfs_pstate_get(struct seq_file *m, void *data)
 {
-	struct drm_device *drm = m->private;
-	struct nouveau_debugfs *debugfs = nouveau_debugfs(drm);
-	struct nvif_object *ctrl;
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct nouveau_debugfs *debugfs = nouveau_debugfs(node->minor->dev);
+	struct nvif_object *ctrl = &debugfs->ctrl;
 	struct nvif_control_pstate_info_v0 info = {};
 	int ret, i;
 
 	if (!debugfs)
 		return -ENODEV;
 
-	ctrl = &debugfs->ctrl;
 	ret = nvif_mthd(ctrl, NVIF_CONTROL_PSTATE_INFO, &info, sizeof(info));
 	if (ret)
 		return ret;
@@ -120,19 +97,19 @@ nouveau_debugfs_pstate_get(struct seq_file *m, void *data)
 
 		if (state >= 0) {
 			if (info.ustate_ac == state)
-				seq_puts(m, " AC");
+				seq_printf(m, " AC");
 			if (info.ustate_dc == state)
-				seq_puts(m, " DC");
+				seq_printf(m, " DC");
 			if (info.pstate == state)
-				seq_puts(m, " *");
+				seq_printf(m, " *");
 		} else {
 			if (info.ustate_ac < -1)
-				seq_puts(m, " AC");
+				seq_printf(m, " AC");
 			if (info.ustate_dc < -1)
-				seq_puts(m, " DC");
+				seq_printf(m, " DC");
 		}
 
-		seq_putc(m, '\n');
+		seq_printf(m, "\n");
 	}
 
 	return 0;
@@ -143,8 +120,9 @@ nouveau_debugfs_pstate_set(struct file *file, const char __user *ubuf,
 			   size_t len, loff_t *offp)
 {
 	struct seq_file *m = file->private_data;
-	struct drm_device *drm = m->private;
-	struct nouveau_debugfs *debugfs = nouveau_debugfs(drm);
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct nouveau_debugfs *debugfs = nouveau_debugfs(node->minor->dev);
+	struct nvif_object *ctrl = &debugfs->ctrl;
 	struct nvif_control_pstate_user_v0 args = { .pwrsrc = -EINVAL };
 	char buf[32] = {}, *tmp, *cur = buf;
 	long value, ret;
@@ -182,15 +160,7 @@ nouveau_debugfs_pstate_set(struct file *file, const char __user *ubuf,
 		args.ustate = value;
 	}
 
-	ret = pm_runtime_get_sync(drm->dev);
-	if (ret < 0 && ret != -EACCES) {
-		pm_runtime_put_autosuspend(drm->dev);
-		return ret;
-	}
-
-	ret = nvif_mthd(&debugfs->ctrl, NVIF_CONTROL_PSTATE_USER,
-			&args, sizeof(args));
-	pm_runtime_put_autosuspend(drm->dev);
+	ret = nvif_mthd(ctrl, NVIF_CONTROL_PSTATE_USER, &args, sizeof(args));
 	if (ret < 0)
 		return ret;
 
@@ -203,56 +173,15 @@ nouveau_debugfs_pstate_open(struct inode *inode, struct file *file)
 	return single_open(file, nouveau_debugfs_pstate_get, inode->i_private);
 }
 
-static void
-nouveau_debugfs_gpuva_regions(struct seq_file *m, struct nouveau_uvmm *uvmm)
-{
-	MA_STATE(mas, &uvmm->region_mt, 0, 0);
-	struct nouveau_uvma_region *reg;
-
-	seq_puts  (m, " VA regions  | start              | range              | end                \n");
-	seq_puts  (m, "----------------------------------------------------------------------------\n");
-	mas_for_each(&mas, reg, ULONG_MAX)
-		seq_printf(m, "             | 0x%016llx | 0x%016llx | 0x%016llx\n",
-			   reg->va.addr, reg->va.range, reg->va.addr + reg->va.range);
-}
-
-static int
-nouveau_debugfs_gpuva(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct nouveau_drm *drm = nouveau_drm(node->minor->dev);
-	struct nouveau_cli *cli;
-
-	mutex_lock(&drm->clients_lock);
-	list_for_each_entry(cli, &drm->clients, head) {
-		struct nouveau_uvmm *uvmm = nouveau_cli_uvmm(cli);
-
-		if (!uvmm)
-			continue;
-
-		nouveau_uvmm_lock(uvmm);
-		drm_debugfs_gpuva_info(m, &uvmm->umgr);
-		seq_puts(m, "\n");
-		nouveau_debugfs_gpuva_regions(m, uvmm);
-		nouveau_uvmm_unlock(uvmm);
-	}
-	mutex_unlock(&drm->clients_lock);
-
-	return 0;
-}
-
 static const struct file_operations nouveau_pstate_fops = {
 	.owner = THIS_MODULE,
 	.open = nouveau_debugfs_pstate_open,
 	.read = seq_read,
 	.write = nouveau_debugfs_pstate_set,
-	.release = single_release,
 };
 
 static struct drm_info_list nouveau_debugfs_list[] = {
-	{ "vbios.rom",  nouveau_debugfs_vbios_image, 0, NULL },
-	{ "strap_peek", nouveau_debugfs_strap_peek, 0, NULL },
-	DRM_DEBUGFS_GPUVA_INFO(nouveau_debugfs_gpuva, NULL),
+	{ "vbios.rom", nouveau_debugfs_vbios_image, 0, NULL },
 };
 #define NOUVEAU_DEBUGFS_ENTRIES ARRAY_SIZE(nouveau_debugfs_list)
 
@@ -263,52 +192,86 @@ static const struct nouveau_debugfs_files {
 	{"pstate", &nouveau_pstate_fops},
 };
 
-void
-nouveau_drm_debugfs_init(struct drm_minor *minor)
+static int
+nouveau_debugfs_create_file(struct drm_minor *minor,
+		const struct nouveau_debugfs_files *ndf)
 {
-	struct nouveau_drm *drm = nouveau_drm(minor->dev);
-	struct dentry *dentry;
-	int i;
+	struct drm_info_node *node;
 
-	for (i = 0; i < ARRAY_SIZE(nouveau_debugfs_files); i++) {
-		debugfs_create_file(nouveau_debugfs_files[i].name,
-				    S_IRUGO | S_IWUSR,
-				    minor->debugfs_root, minor->dev,
-				    nouveau_debugfs_files[i].fops);
+	node = kmalloc(sizeof(*node), GFP_KERNEL);
+	if (node == NULL)
+		return -ENOMEM;
+
+	node->minor = minor;
+	node->info_ent = (const void *)ndf->fops;
+	node->dent = debugfs_create_file(ndf->name, S_IRUGO | S_IWUSR,
+					 minor->debugfs_root, node, ndf->fops);
+	if (!node->dent) {
+		kfree(node);
+		return -ENOMEM;
 	}
 
-	drm_debugfs_create_files(nouveau_debugfs_list,
-				 NOUVEAU_DEBUGFS_ENTRIES,
-				 minor->debugfs_root, minor);
+	mutex_lock(&minor->debugfs_lock);
+	list_add(&node->list, &minor->debugfs_list);
+	mutex_unlock(&minor->debugfs_lock);
+	return 0;
+}
 
-	/* Set the size of the vbios since we know it, and it's confusing to
-	 * userspace if it wants to seek() but the file has a length of 0
-	 */
-	dentry = debugfs_lookup("vbios.rom", minor->debugfs_root);
-	if (!dentry)
-		return;
+int
+nouveau_drm_debugfs_init(struct drm_minor *minor)
+{
+	int i, ret;
 
-	d_inode(dentry)->i_size = drm->vbios.length;
-	dput(dentry);
+	for (i = 0; i < ARRAY_SIZE(nouveau_debugfs_files); i++) {
+		ret = nouveau_debugfs_create_file(minor,
+						  &nouveau_debugfs_files[i]);
+
+		if (ret)
+			return ret;
+	}
+
+	return drm_debugfs_create_files(nouveau_debugfs_list,
+					NOUVEAU_DEBUGFS_ENTRIES,
+					minor->debugfs_root, minor);
+}
+
+void
+nouveau_drm_debugfs_cleanup(struct drm_minor *minor)
+{
+	int i;
+
+	drm_debugfs_remove_files(nouveau_debugfs_list, NOUVEAU_DEBUGFS_ENTRIES,
+				 minor);
+
+	for (i = 0; i < ARRAY_SIZE(nouveau_debugfs_files); i++) {
+		drm_debugfs_remove_files((struct drm_info_list *)
+					 nouveau_debugfs_files[i].fops,
+					 1, minor);
+	}
 }
 
 int
 nouveau_debugfs_init(struct nouveau_drm *drm)
 {
+	int ret;
+
 	drm->debugfs = kzalloc(sizeof(*drm->debugfs), GFP_KERNEL);
 	if (!drm->debugfs)
 		return -ENOMEM;
 
-	return nvif_object_ctor(&drm->client.device.object, "debugfsCtrl", 0,
-				NVIF_CLASS_CONTROL, NULL, 0,
-				&drm->debugfs->ctrl);
+	ret = nvif_object_init(&drm->device.object, 0, NVIF_CLASS_CONTROL,
+			       NULL, 0, &drm->debugfs->ctrl);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 void
 nouveau_debugfs_fini(struct nouveau_drm *drm)
 {
 	if (drm->debugfs && drm->debugfs->ctrl.priv)
-		nvif_object_dtor(&drm->debugfs->ctrl);
+		nvif_object_fini(&drm->debugfs->ctrl);
 
 	kfree(drm->debugfs);
 	drm->debugfs = NULL;

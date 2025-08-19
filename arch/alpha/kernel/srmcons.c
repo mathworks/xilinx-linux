@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/srmcons.c
  *
@@ -19,7 +18,7 @@
 #include <linux/tty_flip.h>
 
 #include <asm/console.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 
 static DEFINE_SPINLOCK(srmcons_callback_lock);
@@ -59,15 +58,15 @@ srmcons_do_receive_chars(struct tty_port *port)
 	} while((result.bits.status & 1) && (++loops < 10));
 
 	if (count)
-		tty_flip_buffer_push(port);
+		tty_schedule_flip(port);
 
 	return count;
 }
 
 static void
-srmcons_receive_chars(struct timer_list *t)
+srmcons_receive_chars(unsigned long data)
 {
-	struct srmcons_private *srmconsp = from_timer(srmconsp, t, timer);
+	struct srmcons_private *srmconsp = (struct srmcons_private *)data;
 	struct tty_port *port = &srmconsp->port;
 	unsigned long flags;
 	int incr = 10;
@@ -129,8 +128,9 @@ srmcons_do_write(struct tty_port *port, const char *buf, int count)
 	return count;
 }
 
-static ssize_t
-srmcons_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int
+srmcons_write(struct tty_struct *tty,
+	      const unsigned char *buf, int count)
 {
 	unsigned long flags;
 
@@ -141,10 +141,16 @@ srmcons_write(struct tty_struct *tty, const u8 *buf, size_t count)
 	return count;
 }
 
-static unsigned int
+static int
 srmcons_write_room(struct tty_struct *tty)
 {
 	return 512;
+}
+
+static int
+srmcons_chars_in_buffer(struct tty_struct *tty)
+{
+	return 0;
 }
 
 static int
@@ -193,19 +199,21 @@ static const struct tty_operations srmcons_ops = {
 	.close		= srmcons_close,
 	.write		= srmcons_write,
 	.write_room	= srmcons_write_room,
+	.chars_in_buffer= srmcons_chars_in_buffer,
 };
 
 static int __init
 srmcons_init(void)
 {
-	timer_setup(&srmcons_singleton.timer, srmcons_receive_chars, 0);
+	setup_timer(&srmcons_singleton.timer, srmcons_receive_chars,
+			(unsigned long)&srmcons_singleton);
 	if (srm_is_registered_console) {
 		struct tty_driver *driver;
 		int err;
 
-		driver = tty_alloc_driver(MAX_SRM_CONSOLE_DEVICES, 0);
-		if (IS_ERR(driver))
-			return PTR_ERR(driver);
+		driver = alloc_tty_driver(MAX_SRM_CONSOLE_DEVICES);
+		if (!driver)
+			return -ENOMEM;
 
 		tty_port_init(&srmcons_singleton.port);
 
@@ -220,7 +228,7 @@ srmcons_init(void)
 		tty_port_link_device(&srmcons_singleton.port, driver, 0);
 		err = tty_register_driver(driver);
 		if (err) {
-			tty_driver_kref_put(driver);
+			put_tty_driver(driver);
 			tty_port_destroy(&srmcons_singleton.port);
 			return err;
 		}

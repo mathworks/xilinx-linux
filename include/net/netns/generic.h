@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * generic net pointers
  */
@@ -8,7 +7,6 @@
 
 #include <linux/bug.h>
 #include <linux/rcupdate.h>
-#include <net/net_namespace.h>
 
 /*
  * Generic net pointers are to be used by modules to put some private
@@ -27,24 +25,20 @@
  */
 
 struct net_generic {
-	union {
-		struct {
-			unsigned int len;
-			struct rcu_head rcu;
-		} s;
+	unsigned int len;
+	struct rcu_head rcu;
 
-		DECLARE_FLEX_ARRAY(void *, ptr);
-	};
+	void *ptr[0];
 };
 
-static inline void *net_generic(const struct net *net, unsigned int id)
+static inline void *net_generic(const struct net *net, int id)
 {
 	struct net_generic *ng;
 	void *ptr;
 
 	rcu_read_lock();
 	ng = rcu_dereference(net->gen);
-	ptr = ng->ptr[id];
+	ptr = ng->ptr[id - 1];
 	rcu_read_unlock();
 
 	return ptr;

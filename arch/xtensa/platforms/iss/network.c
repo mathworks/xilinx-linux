@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * arch/xtensa/platforms/iss/network.c
@@ -9,9 +8,13 @@
  * Based on work form the UML team.
  *
  * Copyright 2005 Tensilica Inc.
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  */
-
-#define pr_fmt(fmt) "%s: " fmt, __func__
 
 #include <linux/list.h>
 #include <linux/irq.h>
@@ -25,7 +28,7 @@
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
 #include <linux/ioctl.h>
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/ethtool.h>
 #include <linux/rtnetlink.h>
 #include <linux/platform_device.h>
@@ -36,6 +39,13 @@
 #define ETH_MAX_PACKET 1500
 #define ETH_HEADER_OTHER 14
 #define ISS_NET_TIMER_VALUE (HZ / 10)
+
+
+static DEFINE_SPINLOCK(opened_lock);
+static LIST_HEAD(opened);
+
+static DEFINE_SPINLOCK(devices_lock);
+static LIST_HEAD(devices);
 
 /* ------------------------------------------------------------------------- */
 
@@ -52,25 +62,17 @@ struct tuntap_info {
 /* ------------------------------------------------------------------------- */
 
 
-struct iss_net_private;
-
-struct iss_net_ops {
-	int (*open)(struct iss_net_private *lp);
-	void (*close)(struct iss_net_private *lp);
-	int (*read)(struct iss_net_private *lp, struct sk_buff **skb);
-	int (*write)(struct iss_net_private *lp, struct sk_buff **skb);
-	unsigned short (*protocol)(struct sk_buff *skb);
-	int (*poll)(struct iss_net_private *lp);
-};
-
 /* This structure contains out private information for the driver. */
 
 struct iss_net_private {
+	struct list_head device_list;
+	struct list_head opened_list;
+
 	spinlock_t lock;
 	struct net_device *dev;
 	struct platform_device pdev;
 	struct timer_list tl;
-	struct rtnl_link_stats64 stats;
+	struct net_device_stats stats;
 
 	struct timer_list timer;
 	unsigned int timer_val;
@@ -83,7 +85,12 @@ struct iss_net_private {
 			struct tuntap_info tuntap;
 		} info;
 
-		const struct iss_net_ops *net_ops;
+		int (*open)(struct iss_net_private *lp);
+		void (*close)(struct iss_net_private *lp);
+		int (*read)(struct iss_net_private *lp, struct sk_buff **skb);
+		int (*write)(struct iss_net_private *lp, struct sk_buff **skb);
+		unsigned short (*protocol)(struct sk_buff *skb);
+		int (*poll)(struct iss_net_private *lp);
 	} tp;
 
 };
@@ -120,7 +127,7 @@ static char *split_if_spec(char *str, ...)
 
 static void setup_etheraddr(struct net_device *dev, char *str)
 {
-	u8 addr[ETH_ALEN];
+	unsigned char *addr = dev->dev_addr;
 
 	if (str == NULL)
 		goto random;
@@ -143,7 +150,6 @@ static void setup_etheraddr(struct net_device *dev, char *str)
 	if (!is_local_ether_addr(addr))
 		pr_warn("%s: assigning a globally valid ethernet address\n",
 			dev->name);
-	eth_hw_addr_set(dev, addr);
 	return;
 
 random:
@@ -170,7 +176,7 @@ static int tuntap_open(struct iss_net_private *lp)
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-	strscpy(ifr.ifr_name, dev_name, sizeof(ifr.ifr_name));
+	strlcpy(ifr.ifr_name, dev_name, sizeof(ifr.ifr_name));
 
 	err = simc_ioctl(fd, TUNSETIFF, &ifr);
 	if (err < 0) {
@@ -201,7 +207,7 @@ static int tuntap_write(struct iss_net_private *lp, struct sk_buff **skb)
 	return simc_write(lp->tp.info.tuntap.fd, (*skb)->data, (*skb)->len);
 }
 
-static unsigned short tuntap_protocol(struct sk_buff *skb)
+unsigned short tuntap_protocol(struct sk_buff *skb)
 {
 	return eth_type_trans(skb, skb->dev);
 }
@@ -210,15 +216,6 @@ static int tuntap_poll(struct iss_net_private *lp)
 {
 	return simc_poll(lp->tp.info.tuntap.fd);
 }
-
-static const struct iss_net_ops tuntap_ops = {
-	.open		= tuntap_open,
-	.close		= tuntap_close,
-	.read		= tuntap_read,
-	.write		= tuntap_write,
-	.protocol	= tuntap_protocol,
-	.poll		= tuntap_poll,
-};
 
 /*
  * ethX=tuntap,[mac address],device name
@@ -237,7 +234,7 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 
 	init += sizeof(TRANSPORT_TUNTAP_NAME) - 1;
 	if (*init == ',') {
-		rem = split_if_spec(init + 1, &mac_str, &dev_name, NULL);
+		rem = split_if_spec(init + 1, &mac_str, &dev_name);
 		if (rem != NULL) {
 			pr_err("%s: extra garbage on specification : '%s'\n",
 			       dev->name, rem);
@@ -254,7 +251,7 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 		return 0;
 	}
 
-	strscpy(lp->tp.info.tuntap.dev_name, dev_name,
+	strlcpy(lp->tp.info.tuntap.dev_name, dev_name,
 		sizeof(lp->tp.info.tuntap.dev_name));
 
 	setup_etheraddr(dev, mac_str);
@@ -262,7 +259,13 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 	lp->mtu = TRANSPORT_TUNTAP_MTU;
 
 	lp->tp.info.tuntap.fd = -1;
-	lp->tp.net_ops = &tuntap_ops;
+
+	lp->tp.open = tuntap_open;
+	lp->tp.close = tuntap_close;
+	lp->tp.read = tuntap_read;
+	lp->tp.write = tuntap_write;
+	lp->tp.protocol = tuntap_protocol;
+	lp->tp.poll = tuntap_poll;
 
 	return 1;
 }
@@ -277,16 +280,14 @@ static int iss_net_rx(struct net_device *dev)
 
 	/* Check if there is any new data. */
 
-	if (lp->tp.net_ops->poll(lp) == 0)
+	if (lp->tp.poll(lp) == 0)
 		return 0;
 
 	/* Try to allocate memory, if it fails, try again next round. */
 
 	skb = dev_alloc_skb(dev->mtu + 2 + ETH_HEADER_OTHER);
 	if (skb == NULL) {
-		spin_lock_bh(&lp->lock);
 		lp->stats.rx_dropped++;
-		spin_unlock_bh(&lp->lock);
 		return 0;
 	}
 
@@ -296,52 +297,66 @@ static int iss_net_rx(struct net_device *dev)
 
 	skb->dev = dev;
 	skb_reset_mac_header(skb);
-	pkt_len = lp->tp.net_ops->read(lp, &skb);
+	pkt_len = lp->tp.read(lp, &skb);
 	skb_put(skb, pkt_len);
 
 	if (pkt_len > 0) {
 		skb_trim(skb, pkt_len);
-		skb->protocol = lp->tp.net_ops->protocol(skb);
+		skb->protocol = lp->tp.protocol(skb);
 
-		spin_lock_bh(&lp->lock);
 		lp->stats.rx_bytes += skb->len;
 		lp->stats.rx_packets++;
-		spin_unlock_bh(&lp->lock);
-		netif_rx(skb);
+		netif_rx_ni(skb);
 		return pkt_len;
 	}
 	kfree_skb(skb);
 	return pkt_len;
 }
 
-static int iss_net_poll(struct iss_net_private *lp)
+static int iss_net_poll(void)
 {
+	struct list_head *ele;
 	int err, ret = 0;
 
-	if (!netif_running(lp->dev))
-		return 0;
+	spin_lock(&opened_lock);
 
-	while ((err = iss_net_rx(lp->dev)) > 0)
-		ret++;
+	list_for_each(ele, &opened) {
+		struct iss_net_private *lp;
 
-	if (err < 0) {
-		pr_err("Device '%s' read returned %d, shutting it down\n",
-		       lp->dev->name, err);
-		dev_close(lp->dev);
-	} else {
-		/* FIXME reactivate_fd(lp->fd, ISS_ETH_IRQ); */
+		lp = list_entry(ele, struct iss_net_private, opened_list);
+
+		if (!netif_running(lp->dev))
+			break;
+
+		spin_lock(&lp->lock);
+
+		while ((err = iss_net_rx(lp->dev)) > 0)
+			ret++;
+
+		spin_unlock(&lp->lock);
+
+		if (err < 0) {
+			pr_err("Device '%s' read returned %d, shutting it down\n",
+			       lp->dev->name, err);
+			dev_close(lp->dev);
+		} else {
+			/* FIXME reactivate_fd(lp->fd, ISS_ETH_IRQ); */
+		}
 	}
 
+	spin_unlock(&opened_lock);
 	return ret;
 }
 
 
-static void iss_net_timer(struct timer_list *t)
+static void iss_net_timer(unsigned long priv)
 {
-	struct iss_net_private *lp = from_timer(lp, t, timer);
+	struct iss_net_private *lp = (struct iss_net_private *)priv;
 
-	iss_net_poll(lp);
+	iss_net_poll();
+	spin_lock(&lp->lock);
 	mod_timer(&lp->timer, jiffies + lp->timer_val);
+	spin_unlock(&lp->lock);
 }
 
 
@@ -350,9 +365,11 @@ static int iss_net_open(struct net_device *dev)
 	struct iss_net_private *lp = netdev_priv(dev);
 	int err;
 
-	err = lp->tp.net_ops->open(lp);
+	spin_lock_bh(&lp->lock);
+
+	err = lp->tp.open(lp);
 	if (err < 0)
-		return err;
+		goto out;
 
 	netif_start_queue(dev);
 
@@ -363,21 +380,38 @@ static int iss_net_open(struct net_device *dev)
 	while ((err = iss_net_rx(dev)) > 0)
 		;
 
-	timer_setup(&lp->timer, iss_net_timer, 0);
+	spin_unlock_bh(&lp->lock);
+	spin_lock_bh(&opened_lock);
+	list_add(&lp->opened_list, &opened);
+	spin_unlock_bh(&opened_lock);
+	spin_lock_bh(&lp->lock);
+
+	init_timer(&lp->timer);
 	lp->timer_val = ISS_NET_TIMER_VALUE;
+	lp->timer.data = (unsigned long) lp;
+	lp->timer.function = iss_net_timer;
 	mod_timer(&lp->timer, jiffies + lp->timer_val);
 
+out:
+	spin_unlock_bh(&lp->lock);
 	return err;
 }
 
 static int iss_net_close(struct net_device *dev)
 {
 	struct iss_net_private *lp = netdev_priv(dev);
-
 	netif_stop_queue(dev);
-	del_timer_sync(&lp->timer);
-	lp->tp.net_ops->close(lp);
+	spin_lock_bh(&lp->lock);
 
+	spin_lock(&opened_lock);
+	list_del(&opened);
+	spin_unlock(&opened_lock);
+
+	del_timer_sync(&lp->timer);
+
+	lp->tp.close(lp);
+
+	spin_unlock_bh(&lp->lock);
 	return 0;
 }
 
@@ -387,14 +421,13 @@ static int iss_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	int len;
 
 	netif_stop_queue(dev);
+	spin_lock_bh(&lp->lock);
 
-	len = lp->tp.net_ops->write(lp, &skb);
+	len = lp->tp.write(lp, &skb);
 
 	if (len == skb->len) {
-		spin_lock_bh(&lp->lock);
 		lp->stats.tx_packets++;
 		lp->stats.tx_bytes += skb->len;
-		spin_unlock_bh(&lp->lock);
 		netif_trans_update(dev);
 		netif_start_queue(dev);
 
@@ -403,37 +436,45 @@ static int iss_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	} else if (len == 0) {
 		netif_start_queue(dev);
-		spin_lock_bh(&lp->lock);
 		lp->stats.tx_dropped++;
-		spin_unlock_bh(&lp->lock);
 
 	} else {
 		netif_start_queue(dev);
 		pr_err("%s: %s failed(%d)\n", dev->name, __func__, len);
 	}
 
+	spin_unlock_bh(&lp->lock);
 
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
 
 
-static void iss_net_get_stats64(struct net_device *dev,
-				struct rtnl_link_stats64 *stats)
+static struct net_device_stats *iss_net_get_stats(struct net_device *dev)
 {
 	struct iss_net_private *lp = netdev_priv(dev);
-
-	spin_lock_bh(&lp->lock);
-	*stats = lp->stats;
-	spin_unlock_bh(&lp->lock);
+	return &lp->stats;
 }
 
 static void iss_net_set_multicast_list(struct net_device *dev)
 {
 }
 
-static void iss_net_tx_timeout(struct net_device *dev, unsigned int txqueue)
+static void iss_net_tx_timeout(struct net_device *dev)
 {
+}
+
+static int iss_net_set_mac(struct net_device *dev, void *addr)
+{
+	struct iss_net_private *lp = netdev_priv(dev);
+	struct sockaddr *hwaddr = addr;
+
+	if (!is_valid_ether_addr(hwaddr->sa_data))
+		return -EADDRNOTAVAIL;
+	spin_lock_bh(&lp->lock);
+	memcpy(dev->dev_addr, hwaddr->sa_data, ETH_ALEN);
+	spin_unlock_bh(&lp->lock);
+	return 0;
 }
 
 static int iss_net_change_mtu(struct net_device *dev, int new_mtu)
@@ -441,7 +482,7 @@ static int iss_net_change_mtu(struct net_device *dev, int new_mtu)
 	return -EINVAL;
 }
 
-static void iss_net_user_timer_expire(struct timer_list *unused)
+void iss_net_user_timer_expire(unsigned long _conn)
 {
 }
 
@@ -457,39 +498,33 @@ static int driver_registered;
 static const struct net_device_ops iss_netdev_ops = {
 	.ndo_open		= iss_net_open,
 	.ndo_stop		= iss_net_close,
-	.ndo_get_stats64	= iss_net_get_stats64,
+	.ndo_get_stats		= iss_net_get_stats,
 	.ndo_start_xmit		= iss_net_start_xmit,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_change_mtu		= iss_net_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
+	.ndo_set_mac_address	= iss_net_set_mac,
 	.ndo_tx_timeout		= iss_net_tx_timeout,
 	.ndo_set_rx_mode	= iss_net_set_multicast_list,
 };
 
-static void iss_net_pdev_release(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct iss_net_private *lp =
-		container_of(pdev, struct iss_net_private, pdev);
-
-	free_netdev(lp->dev);
-}
-
-static void iss_net_configure(int index, char *init)
+static int iss_net_configure(int index, char *init)
 {
 	struct net_device *dev;
 	struct iss_net_private *lp;
+	int err;
 
 	dev = alloc_etherdev(sizeof(*lp));
 	if (dev == NULL) {
 		pr_err("eth_configure: failed to allocate device\n");
-		return;
+		return 1;
 	}
 
 	/* Initialize private element. */
 
 	lp = netdev_priv(dev);
 	*lp = (struct iss_net_private) {
+		.device_list		= LIST_HEAD_INIT(lp->device_list),
+		.opened_list		= LIST_HEAD_INIT(lp->opened_list),
 		.dev			= dev,
 		.index			= index,
 	};
@@ -510,7 +545,7 @@ static void iss_net_configure(int index, char *init)
 	if (!tuntap_probe(lp, index, init)) {
 		pr_err("%s: invalid arguments. Skipping device!\n",
 		       dev->name);
-		goto err_free_netdev;
+		goto errout;
 	}
 
 	pr_info("Netdevice %d (%pM)\n", index, dev->dev_addr);
@@ -518,16 +553,17 @@ static void iss_net_configure(int index, char *init)
 	/* sysfs register */
 
 	if (!driver_registered) {
-		if (platform_driver_register(&iss_net_driver))
-			goto err_free_netdev;
+		platform_driver_register(&iss_net_driver);
 		driver_registered = 1;
 	}
 
+	spin_lock(&devices_lock);
+	list_add(&lp->device_list, &devices);
+	spin_unlock(&devices_lock);
+
 	lp->pdev.id = index;
 	lp->pdev.name = DRIVER_NAME;
-	lp->pdev.dev.release = iss_net_pdev_release;
-	if (platform_device_register(&lp->pdev))
-		goto err_free_netdev;
+	platform_device_register(&lp->pdev);
 	SET_NETDEV_DEV(dev, &lp->pdev.dev);
 
 	dev->netdev_ops = &iss_netdev_ops;
@@ -536,21 +572,24 @@ static void iss_net_configure(int index, char *init)
 	dev->irq = -1;
 
 	rtnl_lock();
-	if (register_netdevice(dev)) {
-		rtnl_unlock();
-		pr_err("%s: error registering net device!\n", dev->name);
-		platform_device_unregister(&lp->pdev);
-		/* dev is freed by the iss_net_pdev_release callback */
-		return;
-	}
+	err = register_netdevice(dev);
 	rtnl_unlock();
 
-	timer_setup(&lp->tl, iss_net_user_timer_expire, 0);
+	if (err) {
+		pr_err("%s: error registering net device!\n", dev->name);
+		/* XXX: should we call ->remove() here? */
+		free_netdev(dev);
+		return 1;
+	}
 
-	return;
+	init_timer(&lp->tl);
+	lp->tl.function = iss_net_user_timer_expire;
 
-err_free_netdev:
-	free_netdev(dev);
+	return 0;
+
+errout:
+	/* FIXME: unregister; free, etc.. */
+	return -EIO;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -570,9 +609,11 @@ struct iss_net_init {
  * those fields. They will be later initialized in iss_net_init.
  */
 
+#define ERR KERN_ERR "iss_net_setup: "
+
 static int __init iss_net_setup(char *str)
 {
-	struct iss_net_init *device = NULL;
+	struct iss_net_private *device = NULL;
 	struct iss_net_init *new;
 	struct list_head *ele;
 	char *end;
@@ -581,32 +622,36 @@ static int __init iss_net_setup(char *str)
 
 	end = strchr(str, '=');
 	if (!end) {
-		pr_err("Expected '=' after device number\n");
+		printk(ERR "Expected '=' after device number\n");
 		return 1;
 	}
 	*end = 0;
 	rc = kstrtouint(str, 0, &n);
 	*end = '=';
 	if (rc < 0) {
-		pr_err("Failed to parse '%s'\n", str);
+		printk(ERR "Failed to parse '%s'\n", str);
 		return 1;
 	}
 	str = end;
 
-	list_for_each(ele, &eth_cmd_line) {
-		device = list_entry(ele, struct iss_net_init, list);
+	spin_lock(&devices_lock);
+
+	list_for_each(ele, &devices) {
+		device = list_entry(ele, struct iss_net_private, device_list);
 		if (device->index == n)
 			break;
 	}
 
+	spin_unlock(&devices_lock);
+
 	if (device && device->index == n) {
-		pr_err("Device %u already configured\n", n);
+		printk(ERR "Device %u already configured\n", n);
 		return 1;
 	}
 
-	new = memblock_alloc(sizeof(*new), SMP_CACHE_BYTES);
+	new = alloc_bootmem(sizeof(*new));
 	if (new == NULL) {
-		pr_err("Alloc_bootmem failed\n");
+		printk(ERR "Alloc_bootmem failed\n");
 		return 1;
 	}
 
@@ -617,6 +662,8 @@ static int __init iss_net_setup(char *str)
 	list_add_tail(&new->list, &eth_cmd_line);
 	return 1;
 }
+
+#undef ERR
 
 __setup("eth", iss_net_setup);
 

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <asm-generic/vmlinux.lds.h>
 
   .fini      : { *(.fini)    } =0x9090
@@ -9,13 +8,14 @@
   _sdata = .;
   PROVIDE (sdata = .);
 
-  RO_DATA(4096)
+  RODATA
 
   .unprotected : { *(.unprotected) }
   . = ALIGN(4096);
   PROVIDE (_unprotected_end = .);
 
   . = ALIGN(4096);
+  .note : { *(.note.*) }
   EXCEPTION_TABLE(0)
 
   BUG_TABLE
@@ -52,6 +52,14 @@
 	CON_INITCALL
   }
 
+  .uml.initcall.init : {
+	__uml_initcall_start = .;
+	*(.uml.initcall.init)
+	__uml_initcall_end = .;
+  }
+
+  SECURITY_INIT
+
   .exitcall : {
 	__exitcall_begin = .;
 	*(.exitcall.exit)
@@ -83,8 +91,6 @@
   }
   .init_array : {
 	__init_array_start = .;
-	*(.kasan_init)
-	*(.init_array.*)
 	*(.init_array)
 	__init_array_end = .;
   }

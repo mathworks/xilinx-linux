@@ -1,5 +1,31 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright(c) 1999 - 2006 Intel Corporation. */
+/*******************************************************************************
+
+  Intel PRO/1000 Linux driver
+  Copyright(c) 1999 - 2006 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+  more details.
+
+  You should have received a copy of the GNU General Public License along with
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
+  Contact Information:
+  Linux NICS <linux.nics@intel.com>
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+
+*******************************************************************************/
+
 
 /* Linux PRO/1000 Ethernet Driver main header file */
 
@@ -45,6 +71,7 @@
 
 #define BAR_0		0
 #define BAR_1		1
+#define BAR_5		5
 
 #define INTEL_E1000_ETHERNET_DEVICE(device_id) {\
 	PCI_DEVICE(PCI_VENDOR_ID_INTEL, device_id)}
@@ -304,8 +331,7 @@ struct e1000_adapter {
 enum e1000_state_t {
 	__E1000_TESTING,
 	__E1000_RESETTING,
-	__E1000_DOWN,
-	__E1000_DISABLED
+	__E1000_DOWN
 };
 
 #undef pr_fmt
@@ -330,6 +356,7 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw);
 	dev_err(&adapter->pdev->dev, format, ## arg)
 
 extern char e1000_driver_name[];
+extern const char e1000_driver_version[];
 
 int e1000_open(struct net_device *netdev);
 int e1000_close(struct net_device *netdev);
@@ -347,5 +374,6 @@ bool e1000_has_link(struct e1000_adapter *adapter);
 void e1000_power_up_phy(struct e1000_adapter *);
 void e1000_set_ethtool_ops(struct net_device *netdev);
 void e1000_check_options(struct e1000_adapter *adapter);
+char *e1000_get_hw_dev_name(struct e1000_hw *hw);
 
 #endif /* _E1000_H_ */

@@ -1,8 +1,17 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * the_nilfs shared structure.
+ * the_nilfs.h - the_nilfs shared structure.
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Written by Ryusuke Konishi.
  *
@@ -18,7 +27,6 @@
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
 #include <linux/slab.h>
-#include <linux/refcount.h>
 
 struct nilfs_sc_info;
 struct nilfs_sysfs_dev_subgroups;
@@ -29,7 +37,6 @@ enum {
 	THE_NILFS_DISCONTINUED,	/* 'next' pointer chain has broken */
 	THE_NILFS_GC_RUNNING,	/* gc process is running */
 	THE_NILFS_SB_DIRTY,	/* super block is dirty */
-	THE_NILFS_PURGING,	/* disposing dirty files for cleanup */
 };
 
 /**
@@ -108,7 +115,7 @@ struct the_nilfs {
 	 */
 	struct buffer_head     *ns_sbh[2];
 	struct nilfs_super_block *ns_sbp[2];
-	time64_t		ns_sbwtime;
+	time_t			ns_sbwtime;
 	unsigned int		ns_sbwcount;
 	unsigned int		ns_sbsize;
 	unsigned int		ns_mount_state;
@@ -123,8 +130,8 @@ struct the_nilfs {
 	__u64			ns_nextnum;
 	unsigned long		ns_pseg_offset;
 	__u64			ns_cno;
-	time64_t		ns_ctime;
-	time64_t		ns_nongc_ctime;
+	time_t			ns_ctime;
+	time_t			ns_nongc_ctime;
 	atomic_t		ns_ndirtyblks;
 
 	/*
@@ -209,7 +216,6 @@ THE_NILFS_FNS(INIT, init)
 THE_NILFS_FNS(DISCONTINUED, discontinued)
 THE_NILFS_FNS(GC_RUNNING, gc_running)
 THE_NILFS_FNS(SB_DIRTY, sb_dirty)
-THE_NILFS_FNS(PURGING, purging)
 
 /*
  * Mount option operations
@@ -240,7 +246,7 @@ struct nilfs_root {
 	__u64 cno;
 	struct rb_node rb_node;
 
-	refcount_t count;
+	atomic_t count;
 	struct the_nilfs *nilfs;
 	struct inode *ifile;
 
@@ -260,7 +266,7 @@ struct nilfs_root {
 
 static inline int nilfs_sb_need_update(struct the_nilfs *nilfs)
 {
-	u64 t = ktime_get_real_seconds();
+	u64 t = get_seconds();
 
 	return t < nilfs->ns_sbwtime ||
 		t > nilfs->ns_sbwtime + nilfs->ns_sb_update_freq;
@@ -293,7 +299,7 @@ void nilfs_swap_super_block(struct the_nilfs *);
 
 static inline void nilfs_get_root(struct nilfs_root *root)
 {
-	refcount_inc(&root->count);
+	atomic_inc(&root->count);
 }
 
 static inline int nilfs_valid_fs(struct the_nilfs *nilfs)
@@ -377,7 +383,7 @@ static inline int nilfs_flush_device(struct the_nilfs *nilfs)
 	 */
 	smp_wmb();
 
-	err = blkdev_issue_flush(nilfs->ns_bdev);
+	err = blkdev_issue_flush(nilfs->ns_bdev, GFP_KERNEL, NULL);
 	if (err != -EIO)
 		err = 0;
 	return err;

@@ -1,7 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2010 Sascha Hauer <s.hauer@pengutronix.de>
  * Copyright (C) 2005-2009 Freescale Semiconductor, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * for more details.
  */
 #include <linux/export.h>
 #include <linux/kernel.h>
@@ -10,7 +19,6 @@
 #include <linux/io.h>
 #include <linux/err.h>
 
-#include <drm/drm_color_mgmt.h>
 #include <video/imx-ipu-v3.h>
 #include "ipu-prv.h"
 
@@ -104,7 +112,7 @@ int ipu_dp_set_global_alpha(struct ipu_dp *dp, bool enable,
 		writel(reg & ~DP_COM_CONF_GWAM, flow->base + DP_COM_CONF);
 	}
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -119,15 +127,13 @@ int ipu_dp_set_window_pos(struct ipu_dp *dp, u16 x_pos, u16 y_pos)
 
 	writel((x_pos << 16) | y_pos, flow->base + DP_FG_POS);
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ipu_dp_set_window_pos);
 
 static void ipu_dp_csc_init(struct ipu_flow *flow,
-		enum drm_color_encoding ycbcr_enc,
-		enum drm_color_range range,
 		enum ipu_color_space in,
 		enum ipu_color_space out,
 		u32 place)
@@ -151,18 +157,7 @@ static void ipu_dp_csc_init(struct ipu_flow *flow,
 				flow->base + DP_CSC_0);
 		writel(0x200 | (2 << 14) | (0x200 << 16) | (2 << 30),
 				flow->base + DP_CSC_1);
-	} else if (ycbcr_enc == DRM_COLOR_YCBCR_BT709) {
-		/* Rec.709 limited range */
-		writel(0x095 | (0x000 << 16), flow->base + DP_CSC_A_0);
-		writel(0x0e5 | (0x095 << 16), flow->base + DP_CSC_A_1);
-		writel(0x3e5 | (0x3bc << 16), flow->base + DP_CSC_A_2);
-		writel(0x095 | (0x10e << 16), flow->base + DP_CSC_A_3);
-		writel(0x000 | (0x3e10 << 16) | (1 << 30),
-				flow->base + DP_CSC_0);
-		writel(0x09a | (1 << 14) | (0x3dbe << 16) | (1 << 30),
-				flow->base + DP_CSC_1);
 	} else {
-		/* BT.601 limited range */
 		writel(0x095 | (0x000 << 16), flow->base + DP_CSC_A_0);
 		writel(0x0cc | (0x095 << 16), flow->base + DP_CSC_A_1);
 		writel(0x3ce | (0x398 << 16), flow->base + DP_CSC_A_2);
@@ -179,8 +174,6 @@ static void ipu_dp_csc_init(struct ipu_flow *flow,
 }
 
 int ipu_dp_setup_channel(struct ipu_dp *dp,
-		enum drm_color_encoding ycbcr_enc,
-		enum drm_color_range range,
 		enum ipu_color_space in,
 		enum ipu_color_space out)
 {
@@ -199,26 +192,22 @@ int ipu_dp_setup_channel(struct ipu_dp *dp,
 		 * foreground and background are of same colorspace, put
 		 * colorspace converter after combining unit.
 		 */
-		ipu_dp_csc_init(flow, ycbcr_enc, range,
-				flow->foreground.in_cs, flow->out_cs,
+		ipu_dp_csc_init(flow, flow->foreground.in_cs, flow->out_cs,
 				DP_COM_CONF_CSC_DEF_BOTH);
 	} else {
-		if (flow->foreground.in_cs == IPUV3_COLORSPACE_UNKNOWN ||
-		    flow->foreground.in_cs == flow->out_cs)
+		if (flow->foreground.in_cs == flow->out_cs)
 			/*
 			 * foreground identical to output, apply color
 			 * conversion on background
 			 */
-			ipu_dp_csc_init(flow, ycbcr_enc, range,
-					flow->background.in_cs,
+			ipu_dp_csc_init(flow, flow->background.in_cs,
 					flow->out_cs, DP_COM_CONF_CSC_DEF_BG);
 		else
-			ipu_dp_csc_init(flow, ycbcr_enc, range,
-					flow->foreground.in_cs,
+			ipu_dp_csc_init(flow, flow->foreground.in_cs,
 					flow->out_cs, DP_COM_CONF_CSC_DEF_FG);
 	}
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -258,7 +247,7 @@ int ipu_dp_enable_channel(struct ipu_dp *dp)
 	reg |= DP_COM_CONF_FG_EN;
 	writel(reg, flow->base + DP_COM_CONF);
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -266,13 +255,11 @@ int ipu_dp_enable_channel(struct ipu_dp *dp)
 }
 EXPORT_SYMBOL_GPL(ipu_dp_enable_channel);
 
-void ipu_dp_disable_channel(struct ipu_dp *dp, bool sync)
+void ipu_dp_disable_channel(struct ipu_dp *dp)
 {
 	struct ipu_flow *flow = to_flow(dp);
 	struct ipu_dp_priv *priv = flow->priv;
 	u32 reg, csc;
-
-	dp->in_cs = IPUV3_COLORSPACE_UNKNOWN;
 
 	if (!dp->foreground)
 		return;
@@ -281,15 +268,17 @@ void ipu_dp_disable_channel(struct ipu_dp *dp, bool sync)
 
 	reg = readl(flow->base + DP_COM_CONF);
 	csc = reg & DP_COM_CONF_CSC_DEF_MASK;
-	reg &= ~DP_COM_CONF_CSC_DEF_MASK;
-	if (csc == DP_COM_CONF_CSC_DEF_BOTH || csc == DP_COM_CONF_CSC_DEF_BG)
-		reg |= DP_COM_CONF_CSC_DEF_BG;
+	if (csc == DP_COM_CONF_CSC_DEF_FG)
+		reg &= ~DP_COM_CONF_CSC_DEF_MASK;
 
 	reg &= ~DP_COM_CONF_FG_EN;
 	writel(reg, flow->base + DP_COM_CONF);
 
 	writel(0, flow->base + DP_FG_POS);
-	ipu_srm_dp_update(priv->ipu, sync);
+	ipu_srm_dp_sync_update(priv->ipu);
+
+	if (ipu_idmac_channel_busy(priv->ipu, IPUV3_CHANNEL_MEM_BG_SYNC))
+		ipu_wait_interrupt(priv->ipu, IPU_IRQ_DP_SF_END, 50);
 
 	mutex_unlock(&priv->mutex);
 }
@@ -361,8 +350,6 @@ int ipu_dp_init(struct ipu_soc *ipu, struct device *dev, unsigned long base)
 	mutex_init(&priv->mutex);
 
 	for (i = 0; i < IPUV3_NUM_FLOWS; i++) {
-		priv->flow[i].background.in_cs = IPUV3_COLORSPACE_UNKNOWN;
-		priv->flow[i].foreground.in_cs = IPUV3_COLORSPACE_UNKNOWN;
 		priv->flow[i].foreground.foreground = true;
 		priv->flow[i].base = priv->base + ipu_dp_flow_base[i];
 		priv->flow[i].priv = priv;

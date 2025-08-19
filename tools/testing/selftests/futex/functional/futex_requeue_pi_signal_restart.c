@@ -1,7 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /******************************************************************************
  *
  *   Copyright © International Business Machines  Corp., 2006-2008
+ *
+ *   This program is free software;  you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or
+ *   (at your option) any later version.
  *
  * DESCRIPTION
  *      This test exercises the futex_wait_requeue_pi() signal handling both
@@ -28,7 +32,6 @@
 #include "futextest.h"
 #include "logging.h"
 
-#define TEST_NAME "futex-requeue-pi-signal-restart"
 #define DELAY_US 100
 
 futex_t f1 = FUTEX_INITIALIZER;
@@ -139,11 +142,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	ksft_print_header();
-	ksft_set_plan(1);
-	ksft_print_msg("%s: Test signal handling during requeue_pi\n",
+	printf("%s: Test signal handling during requeue_pi\n",
 	       basename(argv[0]));
-	ksft_print_msg("\tArguments: <none>\n");
+	printf("\tArguments: <none>\n");
 
 	sa.sa_handler = handle_signal;
 	sigemptyset(&sa.sa_mask);
@@ -184,7 +185,7 @@ int main(int argc, char *argv[])
 		/*
 		 * If res is non-zero, we either requeued the waiter or hit an
 		 * error, break out and handle it. If it is zero, then the
-		 * signal may have hit before the waiter was blocked on f1.
+		 * signal may have hit before the the waiter was blocked on f1.
 		 * Try again.
 		 */
 		if (res > 0) {
@@ -217,6 +218,6 @@ int main(int argc, char *argv[])
 	if (ret == RET_PASS && waiter_ret)
 		ret = waiter_ret;
 
-	print_result(TEST_NAME, ret);
+	print_result(ret);
 	return ret;
 }

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM nilfs2
 
@@ -192,7 +191,7 @@ TRACE_EVENT(nilfs2_mdt_submit_block,
 	    TP_PROTO(struct inode *inode,
 		     unsigned long ino,
 		     unsigned long blkoff,
-		     enum req_op mode),
+		     int mode),
 
 	    TP_ARGS(inode, ino, blkoff, mode),
 
@@ -200,7 +199,7 @@ TRACE_EVENT(nilfs2_mdt_submit_block,
 		    __field(struct inode *, inode)
 		    __field(unsigned long, ino)
 		    __field(unsigned long, blkoff)
-		    __field(enum req_op, mode)
+		    __field(int, mode)
 	    ),
 
 	    TP_fast_assign(

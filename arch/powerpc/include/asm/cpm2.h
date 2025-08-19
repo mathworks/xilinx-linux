@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Communication Processor Module v2.
  *
@@ -594,7 +593,7 @@ typedef struct fcc_enet {
 	uint	fen_p256c;	/* Total packets 256 < bytes <= 511 */
 	uint	fen_p512c;	/* Total packets 512 < bytes <= 1023 */
 	uint	fen_p1024c;	/* Total packets 1024 < bytes <= 1518 */
-	uint	fen_cambuf;	/* Internal CAM buffer pointer */
+	uint	fen_cambuf;	/* Internal CAM buffer poiner */
 	ushort	fen_rfthr;	/* Received frames threshold */
 	ushort	fen_rfcnt;	/* Received frames count */
 } fcc_enet_t;
@@ -1080,9 +1079,6 @@ typedef struct im_idma {
 #define FCC2_MEM_OFFSET FCC_MEM_OFFSET(1)
 #define FCC3_MEM_OFFSET FCC_MEM_OFFSET(2)
 
-/* Pipeline Maximum Depth */
-#define MPC82XX_BCR_PLDP 0x00800000
-
 /* Clocks and GRG's */
 
 enum cpm_clk_dir {
@@ -1136,8 +1132,8 @@ enum cpm_clk {
 	CPM_CLK_DUMMY
 };
 
-int __init cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode);
-int __init cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
+extern int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode);
+extern int cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
 
 #define CPM_PIN_INPUT     0
 #define CPM_PIN_OUTPUT    1
@@ -1146,7 +1142,7 @@ int __init cpm2_smc_clk_setup(enum cpm_clk_target target, int clock);
 #define CPM_PIN_GPIO      4
 #define CPM_PIN_OPENDRAIN 8
 
-void __init cpm2_set_pin(int port, int pin, int flags);
+void cpm2_set_pin(int port, int pin, int flags);
 
 #endif /* __CPM2__ */
 #endif /* __KERNEL__ */

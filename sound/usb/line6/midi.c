@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Line 6 Linux USB driver
  *
  * Copyright (C) 2004-2010 Markus Grabner (grabner@icg.tugraz.at)
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License as
+ *	published by the Free Software Foundation, version 2.
+ *
  */
 
 #include <linux/slab.h>
@@ -44,8 +48,7 @@ static void line6_midi_transmit(struct snd_rawmidi_substream *substream)
 	int req, done;
 
 	for (;;) {
-		req = min3(line6_midibuf_bytes_free(mb), line6->max_packet_size,
-			   LINE6_FALLBACK_MAXPACKETSIZE);
+		req = min(line6_midibuf_bytes_free(mb), line6->max_packet_size);
 		done = snd_rawmidi_transmit_peek(substream, chunk, req);
 
 		if (done == 0)
@@ -57,8 +60,7 @@ static void line6_midi_transmit(struct snd_rawmidi_substream *substream)
 
 	for (;;) {
 		done = line6_midibuf_read(mb, chunk,
-					  LINE6_FALLBACK_MAXPACKETSIZE,
-					  LINE6_MIDIBUF_READ_TX);
+					  LINE6_FALLBACK_MAXPACKETSIZE);
 
 		if (done == 0)
 			break;
@@ -123,26 +125,21 @@ static int send_midi_async(struct usb_line6 *line6, unsigned char *data,
 	}
 
 	usb_fill_int_urb(urb, line6->usbdev,
-			 usb_sndintpipe(line6->usbdev,
+			 usb_sndbulkpipe(line6->usbdev,
 					 line6->properties->ep_ctrl_w),
 			 transfer_buffer, length, midi_sent, line6,
 			 line6->interval);
 	urb->actual_length = 0;
-	retval = usb_urb_ep_type_check(urb);
-	if (retval < 0)
-		goto error;
-
 	retval = usb_submit_urb(urb, GFP_ATOMIC);
-	if (retval < 0)
-		goto error;
+
+	if (retval < 0) {
+		dev_err(line6->ifcdev, "usb_submit_urb failed\n");
+		usb_free_urb(urb);
+		return retval;
+	}
 
 	++line6->line6midi->num_active_send_urbs;
 	return 0;
-
- error:
-	dev_err(line6->ifcdev, "usb_submit_urb failed\n");
-	usb_free_urb(urb);
-	return retval;
 }
 
 static int line6_midi_output_open(struct snd_rawmidi_substream *substream)
@@ -203,14 +200,14 @@ static void line6_midi_input_trigger(struct snd_rawmidi_substream *substream,
 		line6->line6midi->substream_receive = NULL;
 }
 
-static const struct snd_rawmidi_ops line6_midi_output_ops = {
+static struct snd_rawmidi_ops line6_midi_output_ops = {
 	.open = line6_midi_output_open,
 	.close = line6_midi_output_close,
 	.trigger = line6_midi_output_trigger,
 	.drain = line6_midi_output_drain,
 };
 
-static const struct snd_rawmidi_ops line6_midi_input_ops = {
+static struct snd_rawmidi_ops line6_midi_input_ops = {
 	.open = line6_midi_input_open,
 	.close = line6_midi_input_close,
 	.trigger = line6_midi_input_trigger,

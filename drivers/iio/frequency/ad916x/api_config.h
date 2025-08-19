@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #ifndef __API_CONFIG_H
 #define __API_CONFIG_H
 

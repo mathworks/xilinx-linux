@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _UAPI_ASM_X86_SIGCONTEXT_H
 #define _UAPI_ASM_X86_SIGCONTEXT_H
 
@@ -139,7 +138,7 @@ struct _fpstate_32 {
  * The 64-bit FPU frame. (FXSAVE format and later)
  *
  * Note1: If sw_reserved.magic1 == FP_XSTATE_MAGIC1 then the structure is
- *        larger: 'struct _xstate'. Note that 'struct _xstate' embeds
+ *        larger: 'struct _xstate'. Note that 'struct _xstate' embedds
  *        'struct _fpstate' so that you can always assume the _fpstate portion
  *        exists so that you can check the magic value.
  *

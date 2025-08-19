@@ -1,8 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * definition for store system information stsi
  *
  * Copyright IBM Corp. 2001, 2008
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License (version 2 only)
+ * as published by the Free Software Foundation.
  *
  *    Author(s): Ulrich Weigand <weigand@de.ibm.com>
  *		 Christian Borntraeger <borntraeger@de.ibm.com>
@@ -21,8 +24,7 @@ struct sysinfo_1_1_1 {
 	unsigned char :8;
 	unsigned char ccr;
 	unsigned char cai;
-	char reserved_0[20];
-	unsigned long lic;
+	char reserved_0[28];
 	char manufacturer[16];
 	char type[4];
 	char reserved_1[12];
@@ -67,12 +69,12 @@ struct sysinfo_1_2_2 {
 	unsigned short cpus_configured;
 	unsigned short cpus_standby;
 	unsigned short cpus_reserved;
-	unsigned short adjustment[];
+	unsigned short adjustment[0];
 };
 
 struct sysinfo_1_2_2_extension {
 	unsigned int alt_capability;
-	unsigned short alt_adjustment[];
+	unsigned short alt_adjustment[0];
 };
 
 struct sysinfo_2_2_1 {
@@ -105,11 +107,6 @@ struct sysinfo_2_2_2 {
 	char reserved_3[5];
 	unsigned short cpus_dedicated;
 	unsigned short cpus_shared;
-	char reserved_4[3];
-	unsigned char vsne;
-	uuid_t uuid;
-	char reserved_5[160];
-	char ext_name[256];
 };
 
 #define LPAR_CHAR_DEDICATED	(1 << 7)
@@ -130,9 +127,9 @@ struct sysinfo_3_2_2 {
 		unsigned int caf;
 		char cpi[16];
 		char reserved_1[3];
-		unsigned char evmne;
+		char ext_name_encoding;
 		unsigned int reserved_2;
-		uuid_t uuid;
+		uuid_be uuid;
 	} vm[8];
 	char reserved_3[1504];
 	char ext_names[8][256];
@@ -140,26 +137,17 @@ struct sysinfo_3_2_2 {
 
 extern int topology_max_mnest;
 
-/*
- * Returns the maximum nesting level supported by the cpu topology code.
- * The current maximum level is 4 which is the drawer level.
- */
-static inline unsigned char topology_mnest_limit(void)
-{
-	return min(topology_max_mnest, 4);
-}
-
+#define TOPOLOGY_CORE_BITS	64
 #define TOPOLOGY_NR_MAG		6
 
 struct topology_core {
 	unsigned char nl;
 	unsigned char reserved0[3];
-	unsigned char :5;
-	unsigned char d:1;
+	unsigned char :6;
 	unsigned char pp:2;
 	unsigned char reserved1;
 	unsigned short origin;
-	unsigned long mask;
+	unsigned long mask[TOPOLOGY_CORE_BITS / BITS_PER_LONG];
 };
 
 struct topology_container {
@@ -181,7 +169,7 @@ struct sysinfo_15_1_x {
 	unsigned char reserved1;
 	unsigned char mnest;
 	unsigned char reserved2[4];
-	union topology_entry tle[];
+	union topology_entry tle[0];
 };
 
 int stsi(void *sysinfo, int fc, int sel1, int sel2);
@@ -197,5 +185,4 @@ struct service_level {
 int register_service_level(struct service_level *);
 int unregister_service_level(struct service_level *);
 
-int sthyi_fill(void *dst, u64 *rc);
 #endif /* __ASM_S390_SYSINFO_H */

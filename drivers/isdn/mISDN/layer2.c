@@ -1,9 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * Author	Karsten Keil <kkeil@novell.com>
  *
  * Copyright 2008  by Karsten Keil <kkeil@novell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <linux/mISDNif.h>
@@ -167,7 +176,7 @@ l2up_create(struct layer2 *l2, u_int prim, int len, void *arg)
 	hh->prim = prim;
 	hh->id = (l2->ch.nr << 16) | l2->ch.addr;
 	if (len)
-		skb_put_data(skb, arg, len);
+		memcpy(skb_put(skb, len), arg, len);
 	err = l2->up->send(l2->up, skb);
 	if (err) {
 		printk(KERN_WARNING "%s: dev %s err=%d\n", __func__,
@@ -226,7 +235,7 @@ l2down_create(struct layer2 *l2, u_int prim, u_int id, int len, void *arg)
 	hh->prim = prim;
 	hh->id = id;
 	if (len)
-		skb_put_data(skb, arg, len);
+		memcpy(skb_put(skb, len), arg, len);
 	err = l2down_raw(l2, skb);
 	if (err)
 		dev_kfree_skb(skb);
@@ -631,7 +640,7 @@ send_uframe(struct layer2 *l2, struct sk_buff *skb, u_char cmd, u_char cr)
 			return;
 		}
 	}
-	skb_put_data(skb, tmp, i);
+	memcpy(skb_put(skb, i), tmp, i);
 	enqueue_super(l2, skb);
 }
 
@@ -900,7 +909,8 @@ l2_disconnect(struct FsmInst *fi, int event, void *arg)
 	send_uframe(l2, NULL, DISC | 0x10, CMD);
 	mISDN_FsmDelTimer(&l2->t203, 1);
 	restart_t200(l2, 2);
-	dev_kfree_skb(skb);
+	if (skb)
+		dev_kfree_skb(skb);
 }
 
 static void
@@ -1115,7 +1125,7 @@ enquiry_cr(struct layer2 *l2, u_char typ, u_char cr, u_char pf)
 		       mISDNDevName4ch(&l2->ch), __func__);
 		return;
 	}
-	skb_put_data(skb, tmp, i);
+	memcpy(skb_put(skb, i), tmp, i);
 	enqueue_super(l2, skb);
 }
 
@@ -1721,7 +1731,8 @@ l2_set_own_busy(struct FsmInst *fi, int event, void *arg)
 		enquiry_cr(l2, RNR, RSP, 0);
 		test_and_clear_bit(FLG_ACK_PEND, &l2->flag);
 	}
-	dev_kfree_skb(skb);
+	if (skb)
+		dev_kfree_skb(skb);
 }
 
 static void
@@ -1734,7 +1745,8 @@ l2_clear_own_busy(struct FsmInst *fi, int event, void *arg)
 		enquiry_cr(l2, RR, RSP, 0);
 		test_and_clear_bit(FLG_ACK_PEND, &l2->flag);
 	}
-	dev_kfree_skb(skb);
+	if (skb)
+		dev_kfree_skb(skb);
 }
 
 static void
@@ -2235,26 +2247,15 @@ static struct Bprotocol X75SLP = {
 int
 Isdnl2_Init(u_int *deb)
 {
-	int res;
 	debug = deb;
 	mISDN_register_Bprotocol(&X75SLP);
 	l2fsm.state_count = L2_STATE_COUNT;
 	l2fsm.event_count = L2_EVENT_COUNT;
 	l2fsm.strEvent = strL2Event;
 	l2fsm.strState = strL2State;
-	res = mISDN_FsmNew(&l2fsm, L2FnList, ARRAY_SIZE(L2FnList));
-	if (res)
-		goto error;
-	res = TEIInit(deb);
-	if (res)
-		goto error_fsm;
+	mISDN_FsmNew(&l2fsm, L2FnList, ARRAY_SIZE(L2FnList));
+	TEIInit(deb);
 	return 0;
-
-error_fsm:
-	mISDN_FsmFree(&l2fsm);
-error:
-	mISDN_unregister_Bprotocol(&X75SLP);
-	return res;
 }
 
 void

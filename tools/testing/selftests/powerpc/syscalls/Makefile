@@ -1,9 +1,12 @@
-# SPDX-License-Identifier: GPL-2.0-only
-TEST_GEN_PROGS := ipc_unmuxed rtas_filter
+TEST_PROGS := ipc_unmuxed
 
-CFLAGS += $(KHDR_INCLUDES)
+CFLAGS += -I../../../../../usr/include
 
-top_srcdir = ../../../../..
+all: $(TEST_PROGS)
+
+$(TEST_PROGS): ../harness.c
+
 include ../../lib.mk
 
-$(TEST_GEN_PROGS): ../harness.c ../utils.c
+clean:
+	rm -f $(TEST_PROGS) *.o

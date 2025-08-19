@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * parport.h: platform-specific PC-style parport initialisation
  *
@@ -11,7 +10,7 @@
 #define _ASM_POWERPC_PARPORT_H
 #ifdef __KERNEL__
 
-#include <linux/of_irq.h>
+#include <asm/prom.h>
 
 static int parport_pc_find_nonpci_ports (int autoirq, int autodma)
 {

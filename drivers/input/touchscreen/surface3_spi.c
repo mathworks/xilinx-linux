@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Driver for Ntrig/Microsoft Touchscreens over SPI
  *
  *  Copyright (c) 2016 Red Hat Inc.
  */
 
+/*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; version 2 of the License.
+ */
 
 #include <linux/kernel.h>
 
@@ -94,7 +98,9 @@ static void surface3_spi_report_touch(struct surface3_ts_data *ts_data,
 
 static void surface3_spi_process_touch(struct surface3_ts_data *ts_data, u8 *data)
 {
+	u16 timestamp;
 	unsigned int i;
+	timestamp = get_unaligned_le16(&data[15]);
 
 	for (i = 0; i < 13; i++) {
 		struct surface3_ts_data_finger *finger;
@@ -167,7 +173,7 @@ static void surface3_spi_process_pen(struct surface3_ts_data *ts_data, u8 *data)
 
 static void surface3_spi_process(struct surface3_ts_data *ts_data)
 {
-	static const char header[] = {
+	const char header[] = {
 		0xff, 0xff, 0xff, 0xff, 0xa5, 0x5a, 0xe7, 0x7e, 0x01
 	};
 	u8 *data = ts_data->rd_buf;
@@ -217,10 +223,11 @@ static void surface3_spi_power(struct surface3_ts_data *data, bool on)
 /**
  * surface3_spi_get_gpio_config - Get GPIO config from ACPI/DT
  *
- * @data: surface3_spi_ts_data pointer
+ * @ts: surface3_spi_ts_data pointer
  */
 static int surface3_spi_get_gpio_config(struct surface3_ts_data *data)
 {
+	int error;
 	struct device *dev;
 	struct gpio_desc *gpiod;
 	int i;
@@ -230,9 +237,15 @@ static int surface3_spi_get_gpio_config(struct surface3_ts_data *data)
 	/* Get the reset lines GPIO pin number */
 	for (i = 0; i < 2; i++) {
 		gpiod = devm_gpiod_get_index(dev, NULL, i, GPIOD_OUT_LOW);
-		if (IS_ERR(gpiod))
-			return dev_err_probe(dev, PTR_ERR(gpiod),
-					     "Failed to get power GPIO %d\n", i);
+		if (IS_ERR(gpiod)) {
+			error = PTR_ERR(gpiod);
+			if (error != -EPROBE_DEFER)
+				dev_err(dev,
+					"Failed to get power GPIO %d: %d\n",
+					i,
+					error);
+			return error;
+		}
 
 		data->gpiod_rst[i] = gpiod;
 	}
@@ -362,7 +375,7 @@ static int surface3_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int surface3_spi_suspend(struct device *dev)
+static int __maybe_unused surface3_spi_suspend(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct surface3_ts_data *data = spi_get_drvdata(spi);
@@ -374,7 +387,7 @@ static int surface3_spi_suspend(struct device *dev)
 	return 0;
 }
 
-static int surface3_spi_resume(struct device *dev)
+static int __maybe_unused surface3_spi_resume(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct surface3_ts_data *data = spi_get_drvdata(spi);
@@ -386,9 +399,9 @@ static int surface3_spi_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(surface3_spi_pm_ops,
-				surface3_spi_suspend,
-				surface3_spi_resume);
+static SIMPLE_DEV_PM_OPS(surface3_spi_pm_ops,
+			 surface3_spi_suspend,
+			 surface3_spi_resume);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id surface3_spi_acpi_match[] = {
@@ -402,7 +415,7 @@ static struct spi_driver surface3_spi_driver = {
 	.driver = {
 		.name	= "Surface3-spi",
 		.acpi_match_table = ACPI_PTR(surface3_spi_acpi_match),
-		.pm = pm_sleep_ptr(&surface3_spi_pm_ops),
+		.pm = &surface3_spi_pm_ops,
 	},
 	.probe = surface3_spi_probe,
 };

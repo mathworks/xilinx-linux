@@ -1,17 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2014-2017 Linaro Ltd. <ard.biesheuvel@linaro.org>
+ * Copyright (C) 2014 Linaro Ltd. <ard.biesheuvel@linaro.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/elf.h>
-#include <linux/ftrace.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/sort.h>
-#include <linux/moduleloader.h>
 
 #include <asm/cache.h>
 #include <asm/opcodes.h>
+
+#define PLT_ENT_STRIDE		L1_CACHE_BYTES
+#define PLT_ENT_COUNT		(PLT_ENT_STRIDE / sizeof(u32))
+#define PLT_ENT_SIZE		(sizeof(struct plt_entries) / PLT_ENT_COUNT)
 
 #ifdef CONFIG_THUMB2_KERNEL
 #define PLT_ENT_LDR		__opcode_to_mem_thumb32(0xf8dff000 | \
@@ -21,55 +26,24 @@
 						    (PLT_ENT_STRIDE - 8))
 #endif
 
-static const u32 fixed_plts[] = {
-#ifdef CONFIG_DYNAMIC_FTRACE
-	FTRACE_ADDR,
-	MCOUNT_ADDR,
-#endif
+struct plt_entries {
+	u32	ldr[PLT_ENT_COUNT];
+	u32	lit[PLT_ENT_COUNT];
 };
-
-static void prealloc_fixed(struct mod_plt_sec *pltsec, struct plt_entries *plt)
-{
-	int i;
-
-	if (!ARRAY_SIZE(fixed_plts) || pltsec->plt_count)
-		return;
-	pltsec->plt_count = ARRAY_SIZE(fixed_plts);
-
-	for (i = 0; i < ARRAY_SIZE(plt->ldr); ++i)
-		plt->ldr[i] = PLT_ENT_LDR;
-
-	BUILD_BUG_ON(sizeof(fixed_plts) > sizeof(plt->lit));
-	memcpy(plt->lit, fixed_plts, sizeof(fixed_plts));
-}
 
 u32 get_module_plt(struct module *mod, unsigned long loc, Elf32_Addr val)
 {
-	struct mod_plt_sec *pltsec = !within_module_init(loc, mod) ?
-						&mod->arch.core : &mod->arch.init;
-	struct plt_entries *plt;
-	int idx;
+	struct plt_entries *plt = (struct plt_entries *)mod->arch.plt->sh_addr;
+	int idx = 0;
 
-	/* cache the address, ELF header is available only during module load */
-	if (!pltsec->plt_ent)
-		pltsec->plt_ent = (struct plt_entries *)pltsec->plt->sh_addr;
-	plt = pltsec->plt_ent;
-
-	prealloc_fixed(pltsec, plt);
-
-	for (idx = 0; idx < ARRAY_SIZE(fixed_plts); ++idx)
-		if (plt->lit[idx] == val)
-			return (u32)&plt->ldr[idx];
-
-	idx = 0;
 	/*
 	 * Look for an existing entry pointing to 'val'. Given that the
 	 * relocations are sorted, this will be the last entry we allocated.
 	 * (if one exists).
 	 */
-	if (pltsec->plt_count > 0) {
-		plt += (pltsec->plt_count - 1) / PLT_ENT_COUNT;
-		idx = (pltsec->plt_count - 1) % PLT_ENT_COUNT;
+	if (mod->arch.plt_count > 0) {
+		plt += (mod->arch.plt_count - 1) / PLT_ENT_COUNT;
+		idx = (mod->arch.plt_count - 1) % PLT_ENT_COUNT;
 
 		if (plt->lit[idx] == val)
 			return (u32)&plt->ldr[idx];
@@ -79,8 +53,8 @@ u32 get_module_plt(struct module *mod, unsigned long loc, Elf32_Addr val)
 			plt++;
 	}
 
-	pltsec->plt_count++;
-	BUG_ON(pltsec->plt_count * PLT_ENT_SIZE > pltsec->plt->sh_size);
+	mod->arch.plt_count++;
+	BUG_ON(mod->arch.plt_count * PLT_ENT_SIZE > mod->arch.plt->sh_size);
 
 	if (!idx)
 		/* Populate a new set of entries */
@@ -155,7 +129,7 @@ static bool duplicate_rel(Elf32_Addr base, const Elf32_Rel *rel, int num)
 
 /* Count how many PLT entries we may need */
 static unsigned int count_plts(const Elf32_Sym *syms, Elf32_Addr base,
-			       const Elf32_Rel *rel, int num, Elf32_Word dstidx)
+			       const Elf32_Rel *rel, int num)
 {
 	unsigned int ret = 0;
 	const Elf32_Sym *s;
@@ -170,17 +144,13 @@ static unsigned int count_plts(const Elf32_Sym *syms, Elf32_Addr base,
 		case R_ARM_THM_JUMP24:
 			/*
 			 * We only have to consider branch targets that resolve
-			 * to symbols that are defined in a different section.
-			 * This is not simply a heuristic, it is a fundamental
-			 * limitation, since there is no guaranteed way to emit
-			 * PLT entries sufficiently close to the branch if the
-			 * section size exceeds the range of a branch
-			 * instruction. So ignore relocations against defined
-			 * symbols if they live in the same section as the
-			 * relocation target.
+			 * to undefined symbols. This is not simply a heuristic,
+			 * it is a fundamental limitation, since the PLT itself
+			 * is part of the module, and needs to be within range
+			 * as well, so modules can never grow beyond that limit.
 			 */
 			s = syms + ELF32_R_SYM(rel[i].r_info);
-			if (s->st_shndx == dstidx)
+			if (s->st_shndx != SHN_UNDEF)
 				break;
 
 			/*
@@ -191,12 +161,7 @@ static unsigned int count_plts(const Elf32_Sym *syms, Elf32_Addr base,
 			 * So we need to support them, but there is no need to
 			 * take them into consideration when trying to optimize
 			 * this code. So let's only check for duplicates when
-			 * the addend is zero. (Note that calls into the core
-			 * module via init PLT entries could involve section
-			 * relative symbol references with non-zero addends, for
-			 * which we may end up emitting duplicates, but the init
-			 * PLT is released along with the rest of the .init
-			 * region as soon as module loading completes.)
+			 * the addend is zero.
 			 */
 			if (!is_zero_addend_relocation(base, rel + i) ||
 			    !duplicate_rel(base, rel, i))
@@ -209,8 +174,7 @@ static unsigned int count_plts(const Elf32_Sym *syms, Elf32_Addr base,
 int module_frob_arch_sections(Elf_Ehdr *ehdr, Elf_Shdr *sechdrs,
 			      char *secstrings, struct module *mod)
 {
-	unsigned long core_plts = ARRAY_SIZE(fixed_plts);
-	unsigned long init_plts = ARRAY_SIZE(fixed_plts);
+	unsigned long plts = 0;
 	Elf32_Shdr *s, *sechdrs_end = sechdrs + ehdr->e_shnum;
 	Elf32_Sym *syms = NULL;
 
@@ -220,15 +184,13 @@ int module_frob_arch_sections(Elf_Ehdr *ehdr, Elf_Shdr *sechdrs,
 	 */
 	for (s = sechdrs; s < sechdrs_end; ++s) {
 		if (strcmp(".plt", secstrings + s->sh_name) == 0)
-			mod->arch.core.plt = s;
-		else if (strcmp(".init.plt", secstrings + s->sh_name) == 0)
-			mod->arch.init.plt = s;
+			mod->arch.plt = s;
 		else if (s->sh_type == SHT_SYMTAB)
 			syms = (Elf32_Sym *)s->sh_addr;
 	}
 
-	if (!mod->arch.core.plt || !mod->arch.init.plt) {
-		pr_err("%s: module PLT section(s) missing\n", mod->name);
+	if (!mod->arch.plt) {
+		pr_err("%s: module PLT section missing\n", mod->name);
 		return -ENOEXEC;
 	}
 	if (!syms) {
@@ -251,45 +213,16 @@ int module_frob_arch_sections(Elf_Ehdr *ehdr, Elf_Shdr *sechdrs,
 		/* sort by type and symbol index */
 		sort(rels, numrels, sizeof(Elf32_Rel), cmp_rel, NULL);
 
-		if (!module_init_layout_section(secstrings + dstsec->sh_name))
-			core_plts += count_plts(syms, dstsec->sh_addr, rels,
-						numrels, s->sh_info);
-		else
-			init_plts += count_plts(syms, dstsec->sh_addr, rels,
-						numrels, s->sh_info);
+		plts += count_plts(syms, dstsec->sh_addr, rels, numrels);
 	}
 
-	mod->arch.core.plt->sh_type = SHT_NOBITS;
-	mod->arch.core.plt->sh_flags = SHF_EXECINSTR | SHF_ALLOC;
-	mod->arch.core.plt->sh_addralign = L1_CACHE_BYTES;
-	mod->arch.core.plt->sh_size = round_up(core_plts * PLT_ENT_SIZE,
-					       sizeof(struct plt_entries));
-	mod->arch.core.plt_count = 0;
-	mod->arch.core.plt_ent = NULL;
+	mod->arch.plt->sh_type = SHT_NOBITS;
+	mod->arch.plt->sh_flags = SHF_EXECINSTR | SHF_ALLOC;
+	mod->arch.plt->sh_addralign = L1_CACHE_BYTES;
+	mod->arch.plt->sh_size = round_up(plts * PLT_ENT_SIZE,
+					  sizeof(struct plt_entries));
+	mod->arch.plt_count = 0;
 
-	mod->arch.init.plt->sh_type = SHT_NOBITS;
-	mod->arch.init.plt->sh_flags = SHF_EXECINSTR | SHF_ALLOC;
-	mod->arch.init.plt->sh_addralign = L1_CACHE_BYTES;
-	mod->arch.init.plt->sh_size = round_up(init_plts * PLT_ENT_SIZE,
-					       sizeof(struct plt_entries));
-	mod->arch.init.plt_count = 0;
-	mod->arch.init.plt_ent = NULL;
-
-	pr_debug("%s: plt=%x, init.plt=%x\n", __func__,
-		 mod->arch.core.plt->sh_size, mod->arch.init.plt->sh_size);
+	pr_debug("%s: plt=%x\n", __func__, mod->arch.plt->sh_size);
 	return 0;
-}
-
-bool in_module_plt(unsigned long loc)
-{
-	struct module *mod;
-	bool ret;
-
-	preempt_disable();
-	mod = __module_text_address(loc);
-	ret = mod && (loc - (u32)mod->arch.core.plt_ent < mod->arch.core.plt_count * PLT_ENT_SIZE ||
-		      loc - (u32)mod->arch.init.plt_ent < mod->arch.init.plt_count * PLT_ENT_SIZE);
-	preempt_enable();
-
-	return ret;
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	Sound core.  This file is composed of two parts.  sound_class
  *	which is common to both OSS and ALSA and OSS sound core which
@@ -23,22 +22,19 @@ static inline int init_oss_soundcore(void)	{ return 0; }
 static inline void cleanup_oss_soundcore(void)	{ }
 #endif
 
+struct class *sound_class;
+EXPORT_SYMBOL(sound_class);
+
 MODULE_DESCRIPTION("Core sound module");
 MODULE_AUTHOR("Alan Cox");
 MODULE_LICENSE("GPL");
 
-static char *sound_devnode(const struct device *dev, umode_t *mode)
+static char *sound_devnode(struct device *dev, umode_t *mode)
 {
 	if (MAJOR(dev->devt) == SOUND_MAJOR)
 		return NULL;
 	return kasprintf(GFP_KERNEL, "snd/%s", dev_name(dev));
 }
-
-const struct class sound_class = {
-	.name = "sound",
-	.devnode = sound_devnode,
-};
-EXPORT_SYMBOL(sound_class);
 
 static int __init init_soundcore(void)
 {
@@ -48,11 +44,13 @@ static int __init init_soundcore(void)
 	if (rc)
 		return rc;
 
-	rc = class_register(&sound_class);
-	if (rc) {
+	sound_class = class_create(THIS_MODULE, "sound");
+	if (IS_ERR(sound_class)) {
 		cleanup_oss_soundcore();
-		return rc;
+		return PTR_ERR(sound_class);
 	}
+
+	sound_class->devnode = sound_devnode;
 
 	return 0;
 }
@@ -60,7 +58,7 @@ static int __init init_soundcore(void)
 static void __exit cleanup_soundcore(void)
 {
 	cleanup_oss_soundcore();
-	class_unregister(&sound_class);
+	class_destroy(sound_class);
 }
 
 subsys_initcall(init_soundcore);
@@ -74,6 +72,12 @@ module_exit(cleanup_soundcore);
  *	Author:		Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *	Fixes:
+ *
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
  *
  *                         --------------------
  * 
@@ -115,6 +119,13 @@ struct sound_unit
 	char name[32];
 };
 
+#ifdef CONFIG_SOUND_MSNDCLAS
+extern int msnd_classic_init(void);
+#endif
+#ifdef CONFIG_SOUND_MSNDPIN
+extern int msnd_pinnacle_init(void);
+#endif
+
 /*
  * By default, OSS sound_core claims full legacy minor range (0-255)
  * of SOUND_MAJOR to trap open attempts to any sound minor and
@@ -137,7 +148,11 @@ struct sound_unit
  * All these clutters are scheduled to be removed along with
  * sound-slot/service-* module aliases.
  */
-static int preclaim_oss = IS_ENABLED(CONFIG_SOUND_OSS_CORE_PRECLAIM);
+#ifdef CONFIG_SOUND_OSS_CORE_PRECLAIM
+static int preclaim_oss = 1;
+#else
+static int preclaim_oss = 0;
+#endif
 
 module_param(preclaim_oss, int, 0444);
 
@@ -272,12 +287,11 @@ retry:
 				goto retry;
 			}
 			spin_unlock(&sound_loader_lock);
-			r = -EBUSY;
-			goto fail;
+			return -EBUSY;
 		}
 	}
 
-	device_create(&sound_class, dev, MKDEV(SOUND_MAJOR, s->unit_minor),
+	device_create(sound_class, dev, MKDEV(SOUND_MAJOR, s->unit_minor),
 		      NULL, "%s", s->name+6);
 	return s->unit_minor;
 
@@ -303,7 +317,7 @@ static void sound_remove_unit(struct sound_unit **list, int unit)
 		if (!preclaim_oss)
 			__unregister_chrdev(SOUND_MAJOR, p->unit_minor, 1,
 					    p->name);
-		device_destroy(&sound_class, MKDEV(SOUND_MAJOR, p->unit_minor));
+		device_destroy(sound_class, MKDEV(SOUND_MAJOR, p->unit_minor));
 		kfree(p);
 	}
 }
@@ -406,7 +420,7 @@ int register_sound_special_device(const struct file_operations *fops, int unit,
 		break;
 	}
 	return sound_insert_unit(&chains[chain], fops, -1, unit, max_unit,
-				 name, 0600, dev);
+				 name, S_IRUSR | S_IWUSR, dev);
 }
  
 EXPORT_SYMBOL(register_sound_special_device);
@@ -433,10 +447,30 @@ EXPORT_SYMBOL(register_sound_special);
 int register_sound_mixer(const struct file_operations *fops, int dev)
 {
 	return sound_insert_unit(&chains[0], fops, dev, 0, 128,
-				 "mixer", 0600, NULL);
+				 "mixer", S_IRUSR | S_IWUSR, NULL);
 }
 
 EXPORT_SYMBOL(register_sound_mixer);
+
+/**
+ *	register_sound_midi - register a midi device
+ *	@fops: File operations for the driver
+ *	@dev: Unit number to allocate
+ *
+ *	Allocate a midi device. Unit is the number of the midi device requested.
+ *	Pass -1 to request the next free midi unit.
+ *
+ *	Return: On success, the allocated number is returned. On failure,
+ *	a negative error code is returned.
+ */
+
+int register_sound_midi(const struct file_operations *fops, int dev)
+{
+	return sound_insert_unit(&chains[2], fops, dev, 2, 130,
+				 "midi", S_IRUSR | S_IWUSR, NULL);
+}
+
+EXPORT_SYMBOL(register_sound_midi);
 
 /*
  *	DSP's are registered as a triple. Register only one and cheat
@@ -461,7 +495,7 @@ EXPORT_SYMBOL(register_sound_mixer);
 int register_sound_dsp(const struct file_operations *fops, int dev)
 {
 	return sound_insert_unit(&chains[3], fops, dev, 3, 131,
-				 "dsp", 0600, NULL);
+				 "dsp", S_IWUSR | S_IRUSR, NULL);
 }
 
 EXPORT_SYMBOL(register_sound_dsp);
@@ -497,6 +531,21 @@ void unregister_sound_mixer(int unit)
 }
 
 EXPORT_SYMBOL(unregister_sound_mixer);
+
+/**
+ *	unregister_sound_midi - unregister a midi device
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with register_sound_midi().
+ *	The unit passed is the return value from the register function.
+ */
+
+void unregister_sound_midi(int unit)
+{
+	sound_remove_unit(&chains[2], unit);
+}
+
+EXPORT_SYMBOL(unregister_sound_midi);
 
 /**
  *	unregister_sound_dsp - unregister a DSP device
@@ -578,20 +627,20 @@ static int soundcore_open(struct inode *inode, struct file *file)
 			new_fops = fops_get(s->unit_fops);
 	}
 	spin_unlock(&sound_loader_lock);
+	if (new_fops) {
+		/*
+		 * We rely upon the fact that we can't be unloaded while the
+		 * subdriver is there.
+		 */
+		int err = 0;
+		replace_fops(file, new_fops);
 
-	if (!new_fops)
-		return -ENODEV;
+		if (file->f_op->open)
+			err = file->f_op->open(inode,file);
 
-	/*
-	 * We rely upon the fact that we can't be unloaded while the
-	 * subdriver is there.
-	 */
-	replace_fops(file, new_fops);
-
-	if (!file->f_op->open)
-		return -ENODEV;
-
-	return file->f_op->open(inode, file);
+		return err;
+	}
+	return -ENODEV;
 }
 
 MODULE_ALIAS_CHARDEV_MAJOR(SOUND_MAJOR);

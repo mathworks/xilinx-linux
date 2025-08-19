@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  HW NMI watchdog support
  *
@@ -9,7 +8,6 @@
  *  Bits copied from original nmi.c file
  *
  */
-#include <linux/thread_info.h>
 #include <asm/apic.h>
 #include <asm/nmi.h>
 
@@ -21,9 +19,7 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 
-#include "local.h"
-
-#ifdef CONFIG_HARDLOCKUP_DETECTOR_PERF
+#ifdef CONFIG_HARDLOCKUP_DETECTOR
 u64 hw_nmi_get_sample_period(int watchdog_thresh)
 {
 	return (u64)(cpu_khz) * 1000 * watchdog_thresh;
@@ -33,12 +29,12 @@ u64 hw_nmi_get_sample_period(int watchdog_thresh)
 #ifdef arch_trigger_cpumask_backtrace
 static void nmi_raise_cpu_backtrace(cpumask_t *mask)
 {
-	__apic_send_IPI_mask(mask, NMI_VECTOR);
+	apic->send_IPI_mask(mask, NMI_VECTOR);
 }
 
-void arch_trigger_cpumask_backtrace(const cpumask_t *mask, int exclude_cpu)
+void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 {
-	nmi_trigger_cpumask_backtrace(mask, exclude_cpu,
+	nmi_trigger_cpumask_backtrace(mask, exclude_self,
 				      nmi_raise_cpu_backtrace);
 }
 

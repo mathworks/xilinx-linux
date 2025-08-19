@@ -1,7 +1,7 @@
 /dts-v1/;
 
-#include "zynq-zc706.dtsi"
-#include "zynq-zc706-adv7511.dtsi"
+/include/ "zynq-zc706.dtsi"
+/include/ "zynq-zc706-adv7511.dtsi"
 
 &i2c_mux {
 	fmc_i2c: i2c@6 {
@@ -16,20 +16,12 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c400000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 57 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <0 57 0>;
 		clocks = <&clkc 16>;
 
-		adi,channels {
-			#size-cells = <0>;
-			#address-cells = <1>;
-
-			dma-channel@0 {
-				reg = <0>;
-				adi,source-bus-width = <64>;
-				adi,source-bus-type = <2>;
-				adi,destination-bus-width = <64>;
-				adi,destination-bus-type = <0>;
-			};
+		dma-channel {
+			adi,buswidth = <64>;
+			adi,type = <0>;
 		};
 	};
 
@@ -37,20 +29,13 @@
 		compatible = "adi,axi-dmac-1.00.a";
 		reg = <0x7c420000 0x10000>;
 		#dma-cells = <1>;
-		interrupts = <0 56 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <0 56 0>;
 		clocks = <&clkc 16>;
 
-		adi,channels {
-			#size-cells = <0>;
-			#address-cells = <1>;
-
-			dma-channel@0 {
-				reg = <0>;
-				adi,source-bus-width = <64>;
-				adi,source-bus-type = <0>;
-				adi,destination-bus-width = <64>;
-				adi,destination-bus-type = <2>;
-			};
+		dma-channel {
+			adi,buswidth = <64>;
+			adi,type = <1>;
+			adi,cyclic;
 		};
 	};
 
@@ -73,4 +58,4 @@
 	};
 };
 
-#include "adi-fmcomms1.dtsi"
+/include/ "adi-fmcomms1.dtsi"

@@ -1,12 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2014 Intel Corporation; author Matt Fleming
  * Copyright (c) 2014 Red Hat, Inc., Mark Salter <msalter@redhat.com>
  */
 #include <linux/efi.h>
 #include <linux/reboot.h>
-
-static struct sys_off_handler *efi_sys_off_handler;
 
 int efi_reboot_quirk_mode = -1;
 
@@ -15,7 +12,7 @@ void efi_reboot(enum reboot_mode reboot_mode, const char *__unused)
 	const char *str[] = { "cold", "warm", "shutdown", "platform" };
 	int efi_mode, cap_reset_mode;
 
-	if (!efi_rt_services_supported(EFI_RT_SUPPORTED_RESET_SYSTEM))
+	if (!efi_enabled(EFI_RUNTIME_SERVICES))
 		return;
 
 	switch (reboot_mode) {
@@ -51,27 +48,18 @@ bool __weak efi_poweroff_required(void)
 	return false;
 }
 
-static int efi_power_off(struct sys_off_data *data)
+static void efi_power_off(void)
 {
 	efi.reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
-
-	return NOTIFY_DONE;
 }
 
 static int __init efi_shutdown_init(void)
 {
-	if (!efi_rt_services_supported(EFI_RT_SUPPORTED_RESET_SYSTEM))
+	if (!efi_enabled(EFI_RUNTIME_SERVICES))
 		return -ENODEV;
 
-	if (efi_poweroff_required()) {
-		/* SYS_OFF_PRIO_FIRMWARE + 1 so that it runs before acpi_power_off */
-		efi_sys_off_handler =
-			register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
-						 SYS_OFF_PRIO_FIRMWARE + 1,
-						 efi_power_off, NULL);
-		if (IS_ERR(efi_sys_off_handler))
-			return PTR_ERR(efi_sys_off_handler);
-	}
+	if (efi_poweroff_required())
+		pm_power_off = efi_power_off;
 
 	return 0;
 }

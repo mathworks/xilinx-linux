@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AD5024, AD5025, AD5044, AD5045, AD5064, AD5064-1, AD5065, AD5625, AD5625R,
  * AD5627, AD5627R, AD5628, AD5629R, AD5645R, AD5647R, AD5648, AD5665, AD5665R,
  * AD5666, AD5667, AD5667R, AD5668, AD5669R, LTC2606, LTC2607, LTC2609, LTC2616,
- * LTC2617, LTC2619, LTC2626, LTC2627, LTC2629, LTC2631, LTC2633, LTC2635
- * Digital to analog converters driver
+ * LTC2617, LTC2619, LTC2626, LTC2627, LTC2629 Digital to analog converters
+ * driver
  *
- * Copyright 2011 Analog Devices Inc.
+ * Copyright 2011, 2014 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2.
  */
 
 #include <linux/device.h>
@@ -22,6 +23,8 @@
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
+
+#include <linux/platform_data/ad5064.h>
 
 #define AD5064_MAX_DAC_CHANNELS			8
 #define AD5064_MAX_VREFS			4
@@ -68,8 +71,8 @@ enum ad5064_regmap_type {
  * struct ad5064_chip_info - chip specific information
  * @shared_vref:	whether the vref supply is shared between channels
  * @internal_vref:	internal reference voltage. 0 if the chip has no
- *			internal vref.
- * @channels:		channel specification
+			internal vref.
+ * @channel:		channel specification
  * @num_channels:	number of channels
  * @regmap_type:	register map layout variant
  */
@@ -98,7 +101,6 @@ typedef int (*ad5064_write_func)(struct ad5064_state *st, unsigned int cmd,
  * @use_internal_vref:	set to true if the internal reference voltage should be
  *			used.
  * @write:		register write callback
- * @lock:		maintain consistency between cached and dev state
  * @data:		i2c/spi transfer buffers
  */
 
@@ -112,16 +114,15 @@ struct ad5064_state {
 	bool				use_internal_vref;
 
 	ad5064_write_func		write;
-	struct mutex lock;
 
 	/*
-	 * DMA (thus cache coherency maintenance) may require the
+	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
 	 */
 	union {
 		u8 i2c[3];
 		__be32 spi;
-	} data __aligned(IIO_DMA_MINALIGN);
+	} data ____cacheline_aligned;
 };
 
 enum ad5064_type {
@@ -169,24 +170,6 @@ enum ad5064_type {
 	ID_LTC2626,
 	ID_LTC2627,
 	ID_LTC2629,
-	ID_LTC2631_L12,
-	ID_LTC2631_H12,
-	ID_LTC2631_L10,
-	ID_LTC2631_H10,
-	ID_LTC2631_L8,
-	ID_LTC2631_H8,
-	ID_LTC2633_L12,
-	ID_LTC2633_H12,
-	ID_LTC2633_L10,
-	ID_LTC2633_H10,
-	ID_LTC2633_L8,
-	ID_LTC2633_H8,
-	ID_LTC2635_L12,
-	ID_LTC2635_H12,
-	ID_LTC2635_L10,
-	ID_LTC2635_H10,
-	ID_LTC2635_L8,
-	ID_LTC2635_H8,
 };
 
 static int ad5064_write(struct ad5064_state *st, unsigned int cmd,
@@ -249,11 +232,11 @@ static int ad5064_set_powerdown_mode(struct iio_dev *indio_dev,
 	struct ad5064_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	st->pwr_down_mode[chan->channel] = mode + 1;
 
 	ret = ad5064_sync_powerdown_mode(st, chan);
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 }
@@ -277,7 +260,7 @@ static ssize_t ad5064_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5064_state *st = iio_priv(indio_dev);
 
-	return sysfs_emit(buf, "%d\n", st->pwr_down[chan->channel]);
+	return sprintf(buf, "%d\n", st->pwr_down[chan->channel]);
 }
 
 static ssize_t ad5064_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -288,15 +271,15 @@ static ssize_t ad5064_write_dac_powerdown(struct iio_dev *indio_dev,
 	bool pwr_down;
 	int ret;
 
-	ret = kstrtobool(buf, &pwr_down);
+	ret = strtobool(buf, &pwr_down);
 	if (ret)
 		return ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	st->pwr_down[chan->channel] = pwr_down;
 
 	ret = ad5064_sync_powerdown_mode(st, chan);
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 	return ret ? ret : len;
 }
 
@@ -350,12 +333,12 @@ static int ad5064_write_raw(struct iio_dev *indio_dev,
 		if (val >= (1 << chan->scan_type.realbits) || val < 0)
 			return -EINVAL;
 
-		mutex_lock(&st->lock);
+		mutex_lock(&indio_dev->mlock);
 		ret = ad5064_write(st, AD5064_CMD_WRITE_INPUT_N_UPDATE_N,
 				chan->address, val, chan->scan_type.shift);
 		if (ret == 0)
 			st->dac_cache[chan->channel] = val;
-		mutex_unlock(&st->lock);
+		mutex_unlock(&indio_dev->mlock);
 		break;
 	default:
 		ret = -EINVAL;
@@ -367,6 +350,7 @@ static int ad5064_write_raw(struct iio_dev *indio_dev,
 static const struct iio_info ad5064_info = {
 	.read_raw = ad5064_read_raw,
 	.write_raw = ad5064_write_raw,
+	.driver_module = THIS_MODULE,
 };
 
 static const struct iio_chan_spec_ext_info ad5064_ext_info[] = {
@@ -377,7 +361,7 @@ static const struct iio_chan_spec_ext_info ad5064_ext_info[] = {
 		.shared = IIO_SEPARATE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &ad5064_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5064_powerdown_mode_enum),
+	IIO_ENUM_AVAILABLE("powerdown_mode", &ad5064_powerdown_mode_enum),
 	{ },
 };
 
@@ -389,7 +373,7 @@ static const struct iio_chan_spec_ext_info ltc2617_ext_info[] = {
 		.shared = IIO_SEPARATE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &ltc2617_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ltc2617_powerdown_mode_enum),
+	IIO_ENUM_AVAILABLE("powerdown_mode", &ltc2617_powerdown_mode_enum),
 	{ },
 };
 
@@ -443,19 +427,6 @@ static DECLARE_AD5064_CHANNELS(ad5669_channels, 16, 0, ad5064_ext_info);
 static DECLARE_AD5064_CHANNELS(ltc2607_channels, 16, 0, ltc2617_ext_info);
 static DECLARE_AD5064_CHANNELS(ltc2617_channels, 14, 2, ltc2617_ext_info);
 static DECLARE_AD5064_CHANNELS(ltc2627_channels, 12, 4, ltc2617_ext_info);
-#define ltc2631_12_channels ltc2627_channels
-static DECLARE_AD5064_CHANNELS(ltc2631_10_channels, 10, 6, ltc2617_ext_info);
-static DECLARE_AD5064_CHANNELS(ltc2631_8_channels, 8, 8, ltc2617_ext_info);
-
-#define LTC2631_INFO(vref, pchannels, nchannels)	\
-	{						\
-		.shared_vref = true,			\
-		.internal_vref = vref,			\
-		.channels = pchannels,			\
-		.num_channels = nchannels,		\
-		.regmap_type = AD5064_REGMAP_LTC,	\
-	}
-
 
 static const struct ad5064_chip_info ad5064_chip_info_tbl[] = {
 	[ID_AD5024] = {
@@ -755,24 +726,6 @@ static const struct ad5064_chip_info ad5064_chip_info_tbl[] = {
 		.num_channels = 4,
 		.regmap_type = AD5064_REGMAP_LTC,
 	},
-	[ID_LTC2631_L12] = LTC2631_INFO(2500000, ltc2631_12_channels, 1),
-	[ID_LTC2631_H12] = LTC2631_INFO(4096000, ltc2631_12_channels, 1),
-	[ID_LTC2631_L10] = LTC2631_INFO(2500000, ltc2631_10_channels, 1),
-	[ID_LTC2631_H10] = LTC2631_INFO(4096000, ltc2631_10_channels, 1),
-	[ID_LTC2631_L8] = LTC2631_INFO(2500000, ltc2631_8_channels, 1),
-	[ID_LTC2631_H8] = LTC2631_INFO(4096000, ltc2631_8_channels, 1),
-	[ID_LTC2633_L12] = LTC2631_INFO(2500000, ltc2631_12_channels, 2),
-	[ID_LTC2633_H12] = LTC2631_INFO(4096000, ltc2631_12_channels, 2),
-	[ID_LTC2633_L10] = LTC2631_INFO(2500000, ltc2631_10_channels, 2),
-	[ID_LTC2633_H10] = LTC2631_INFO(4096000, ltc2631_10_channels, 2),
-	[ID_LTC2633_L8] = LTC2631_INFO(2500000, ltc2631_8_channels, 2),
-	[ID_LTC2633_H8] = LTC2631_INFO(4096000, ltc2631_8_channels, 2),
-	[ID_LTC2635_L12] = LTC2631_INFO(2500000, ltc2631_12_channels, 4),
-	[ID_LTC2635_H12] = LTC2631_INFO(4096000, ltc2631_12_channels, 4),
-	[ID_LTC2635_L10] = LTC2631_INFO(2500000, ltc2631_10_channels, 4),
-	[ID_LTC2635_H10] = LTC2631_INFO(4096000, ltc2631_10_channels, 4),
-	[ID_LTC2635_L8] = LTC2631_INFO(2500000, ltc2631_8_channels, 4),
-	[ID_LTC2635_H8] = LTC2631_INFO(4096000, ltc2631_8_channels, 4),
 };
 
 static inline unsigned int ad5064_num_vref(struct ad5064_state *st)
@@ -787,7 +740,7 @@ static const char * const ad5064_vref_names[] = {
 	"vrefD",
 };
 
-static const char *ad5064_vref_name(struct ad5064_state *st,
+static const char * const ad5064_vref_name(struct ad5064_state *st,
 	unsigned int vref)
 {
 	return st->chip_info->shared_vref ? "vref" : ad5064_vref_names[vref];
@@ -809,50 +762,10 @@ static int ad5064_set_config(struct ad5064_state *st, unsigned int val)
 	return ad5064_write(st, cmd, 0, val, 0);
 }
 
-static int ad5064_request_vref(struct ad5064_state *st, struct device *dev)
-{
-	unsigned int i;
-	int ret;
-
-	for (i = 0; i < ad5064_num_vref(st); ++i)
-		st->vref_reg[i].supply = ad5064_vref_name(st, i);
-
-	if (!st->chip_info->internal_vref)
-		return devm_regulator_bulk_get(dev, ad5064_num_vref(st),
-					       st->vref_reg);
-
-	/*
-	 * This assumes that when the regulator has an internal VREF
-	 * there is only one external VREF connection, which is
-	 * currently the case for all supported devices.
-	 */
-	st->vref_reg[0].consumer = devm_regulator_get_optional(dev, "vref");
-	if (!IS_ERR(st->vref_reg[0].consumer))
-		return 0;
-
-	ret = PTR_ERR(st->vref_reg[0].consumer);
-	if (ret != -ENODEV)
-		return ret;
-
-	/* If no external regulator was supplied use the internal VREF */
-	st->use_internal_vref = true;
-	ret = ad5064_set_config(st, AD5064_CONFIG_INT_VREF_ENABLE);
-	if (ret)
-		dev_err(dev, "Failed to enable internal vref: %d\n", ret);
-
-	return ret;
-}
-
-static void ad5064_bulk_reg_disable(void *data)
-{
-	struct ad5064_state *st = data;
-
-	regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
-}
-
 static int ad5064_probe(struct device *dev, enum ad5064_type type,
 			const char *name, ad5064_write_func write)
 {
+	struct ad5064_platform_data *pdata = dev->platform_data;
 	struct iio_dev *indio_dev;
 	struct ad5064_state *st;
 	unsigned int midscale;
@@ -864,26 +777,39 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 		return  -ENOMEM;
 
 	st = iio_priv(indio_dev);
-	mutex_init(&st->lock);
+	dev_set_drvdata(dev, indio_dev);
 
 	st->chip_info = &ad5064_chip_info_tbl[type];
 	st->dev = dev;
 	st->write = write;
 
-	ret = ad5064_request_vref(st, dev);
-	if (ret)
-		return ret;
+	for (i = 0; i < ad5064_num_vref(st); ++i)
+		st->vref_reg[i].supply = ad5064_vref_name(st, i);
 
-	if (!st->use_internal_vref) {
+	if (pdata && pdata->use_external_ref) {
+		ret = devm_regulator_bulk_get(dev, ad5064_num_vref(st),
+					st->vref_reg);
+		if (ret)
+			return ret;
 		ret = regulator_bulk_enable(ad5064_num_vref(st), st->vref_reg);
 		if (ret)
 			return ret;
+	} else {
+		if (!st->chip_info->internal_vref) {
+			dev_err(dev, "No vref available\n");
+			return -ENXIO;
+		}
 
-		ret = devm_add_action_or_reset(dev, ad5064_bulk_reg_disable, st);
-		if (ret)
+		st->use_internal_vref = true;
+		ret = ad5064_set_config(st, AD5064_CONFIG_INT_VREF_ENABLE);
+		if (ret) {
+			dev_err(dev, "Failed to enable internal vref: %d\n",
+				ret);
 			return ret;
+		}
 	}
 
+	indio_dev->dev.parent = dev;
 	indio_dev->name = name;
 	indio_dev->info = &ad5064_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -897,7 +823,30 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 		st->dac_cache[i] = midscale;
 	}
 
-	return devm_iio_device_register(dev, indio_dev);
+	ret = iio_device_register(indio_dev);
+	if (ret)
+		goto error_disable_reg;
+
+	return 0;
+
+error_disable_reg:
+	if (!st->use_internal_vref)
+		regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
+
+	return ret;
+}
+
+static int ad5064_remove(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct ad5064_state *st = iio_priv(indio_dev);
+
+	iio_device_unregister(indio_dev);
+
+	if (!st->use_internal_vref)
+		regulator_bulk_disable(ad5064_num_vref(st), st->vref_reg);
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_SPI_MASTER)
@@ -917,6 +866,11 @@ static int ad5064_spi_probe(struct spi_device *spi)
 
 	return ad5064_probe(&spi->dev, id->driver_data, id->name,
 				ad5064_spi_write);
+}
+
+static int ad5064_spi_remove(struct spi_device *spi)
+{
+	return ad5064_remove(&spi->dev);
 }
 
 static const struct spi_device_id ad5064_spi_ids[] = {
@@ -945,6 +899,7 @@ static struct spi_driver ad5064_spi_driver = {
 		   .name = "ad5064",
 	},
 	.probe = ad5064_spi_probe,
+	.remove = ad5064_spi_remove,
 	.id_table = ad5064_spi_ids,
 };
 
@@ -993,11 +948,16 @@ static int ad5064_i2c_write(struct ad5064_state *st, unsigned int cmd,
 	return 0;
 }
 
-static int ad5064_i2c_probe(struct i2c_client *i2c)
+static int ad5064_i2c_probe(struct i2c_client *i2c,
+	const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	return ad5064_probe(&i2c->dev, id->driver_data, id->name,
 						ad5064_i2c_write);
+}
+
+static int ad5064_i2c_remove(struct i2c_client *i2c)
+{
+	return ad5064_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5064_i2c_ids[] = {
@@ -1030,24 +990,6 @@ static const struct i2c_device_id ad5064_i2c_ids[] = {
 	{"ltc2626", ID_LTC2626},
 	{"ltc2627", ID_LTC2627},
 	{"ltc2629", ID_LTC2629},
-	{"ltc2631-l12", ID_LTC2631_L12},
-	{"ltc2631-h12", ID_LTC2631_H12},
-	{"ltc2631-l10", ID_LTC2631_L10},
-	{"ltc2631-h10", ID_LTC2631_H10},
-	{"ltc2631-l8", ID_LTC2631_L8},
-	{"ltc2631-h8", ID_LTC2631_H8},
-	{"ltc2633-l12", ID_LTC2633_L12},
-	{"ltc2633-h12", ID_LTC2633_H12},
-	{"ltc2633-l10", ID_LTC2633_L10},
-	{"ltc2633-h10", ID_LTC2633_H10},
-	{"ltc2633-l8", ID_LTC2633_L8},
-	{"ltc2633-h8", ID_LTC2633_H8},
-	{"ltc2635-l12", ID_LTC2635_L12},
-	{"ltc2635-h12", ID_LTC2635_H12},
-	{"ltc2635-l10", ID_LTC2635_L10},
-	{"ltc2635-h10", ID_LTC2635_H10},
-	{"ltc2635-l8", ID_LTC2635_L8},
-	{"ltc2635-h8", ID_LTC2635_H8},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ad5064_i2c_ids);
@@ -1057,6 +999,7 @@ static struct i2c_driver ad5064_i2c_driver = {
 		   .name = "ad5064",
 	},
 	.probe = ad5064_i2c_probe,
+	.remove = ad5064_i2c_remove,
 	.id_table = ad5064_i2c_ids,
 };
 

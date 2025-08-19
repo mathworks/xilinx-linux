@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Media device node
  *
@@ -6,6 +5,19 @@
  *
  * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *	     Sakari Ailus <sakari.ailus@iki.fi>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * --
  *
@@ -39,7 +51,7 @@ struct media_device;
  * @poll: pointer to the function that implements poll() syscall
  * @ioctl: pointer to the function that implements ioctl() syscall
  * @compat_ioctl: pointer to the function that will handle 32 bits userspace
- *	calls to the ioctl() syscall on a Kernel compiled with 64 bits.
+ *	calls to the the ioctl() syscall on a Kernel compiled with 64 bits.
  * @open: pointer to the function that implements open() syscall
  * @release: pointer to the function that will release the resources allocated
  *	by the @open function.
@@ -48,7 +60,7 @@ struct media_file_operations {
 	struct module *owner;
 	ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
 	ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
-	__poll_t (*poll) (struct file *, struct poll_table_struct *);
+	unsigned int (*poll) (struct file *, struct poll_table_struct *);
 	long (*ioctl) (struct file *, unsigned int, unsigned long);
 	long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
 	int (*open) (struct file *);

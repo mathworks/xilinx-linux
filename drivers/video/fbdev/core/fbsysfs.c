@@ -1,18 +1,91 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * fbsysfs.c - framebuffer device class and attributes
  *
  * Copyright (c) 2004 James Simmons <jsimmons@infradead.org>
+ * 
+ *	This program is free software you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
  */
 
-#include <linux/console.h>
-#include <linux/fb.h>
-#include <linux/fbcon.h>
-#include <linux/major.h>
+/*
+ * Note:  currently there's only stubs for framebuffer_alloc and
+ * framebuffer_release here.  The reson for that is that until all drivers
+ * are converted to use it a sysfsification will open OOPSable races.
+ */
 
-#include "fb_internal.h"
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/fb.h>
+#include <linux/console.h>
+#include <linux/module.h>
 
 #define FB_SYSFS_FLAG_ATTR 1
+
+/**
+ * framebuffer_alloc - creates a new frame buffer info structure
+ *
+ * @size: size of driver private data, can be zero
+ * @dev: pointer to the device for this fb, this can be NULL
+ *
+ * Creates a new frame buffer info structure. Also reserves @size bytes
+ * for driver private data (info->par). info->par (if any) will be
+ * aligned to sizeof(long).
+ *
+ * Returns the new structure, or NULL if an error occurred.
+ *
+ */
+struct fb_info *framebuffer_alloc(size_t size, struct device *dev)
+{
+#define BYTES_PER_LONG (BITS_PER_LONG/8)
+#define PADDING (BYTES_PER_LONG - (sizeof(struct fb_info) % BYTES_PER_LONG))
+	int fb_info_size = sizeof(struct fb_info);
+	struct fb_info *info;
+	char *p;
+
+	if (size)
+		fb_info_size += PADDING;
+
+	p = kzalloc(fb_info_size + size, GFP_KERNEL);
+
+	if (!p)
+		return NULL;
+
+	info = (struct fb_info *) p;
+
+	if (size)
+		info->par = p + fb_info_size;
+
+	info->device = dev;
+
+#ifdef CONFIG_FB_BACKLIGHT
+	mutex_init(&info->bl_curve_mutex);
+#endif
+
+	return info;
+#undef PADDING
+#undef BYTES_PER_LONG
+}
+EXPORT_SYMBOL(framebuffer_alloc);
+
+/**
+ * framebuffer_release - marks the structure available for freeing
+ *
+ * @info: frame buffer info structure
+ *
+ * Drop the reference count of the device embedded in the
+ * framebuffer info structure.
+ *
+ */
+void framebuffer_release(struct fb_info *info)
+{
+	if (!info)
+		return;
+	kfree(info->apertures);
+	kfree(info);
+}
+EXPORT_SYMBOL(framebuffer_release);
 
 static int activate(struct fb_info *fb_info, struct fb_var_screeninfo *var)
 {
@@ -20,11 +93,9 @@ static int activate(struct fb_info *fb_info, struct fb_var_screeninfo *var)
 
 	var->activate |= FB_ACTIVATE_FORCE;
 	console_lock();
-	lock_fb_info(fb_info);
+	fb_info->flags |= FBINFO_MISC_USEREVENT;
 	err = fb_set_var(fb_info, var);
-	if (!err)
-		fbcon_update_vcs(fb_info, var->activate & FB_ACTIVATE_ALL);
-	unlock_fb_info(fb_info);
+	fb_info->flags &= ~FBINFO_MISC_USEREVENT;
 	console_unlock();
 	if (err)
 		return err;
@@ -61,12 +132,14 @@ static ssize_t store_mode(struct device *device, struct device_attribute *attr,
 	struct fb_var_screeninfo var;
 	struct fb_modelist *modelist;
 	struct fb_videomode *mode;
+	struct list_head *pos;
 	size_t i;
 	int err;
 
 	memset(&var, 0, sizeof(var));
 
-	list_for_each_entry(modelist, &fb_info->modelist, list) {
+	list_for_each(pos, &fb_info->modelist) {
+		modelist = list_entry(pos, struct fb_modelist, list);
 		mode = &modelist->mode;
 		i = mode_string(mstr, 0, mode);
 		if (strncmp(mstr, buf, max(count, i)) == 0) {
@@ -105,7 +178,10 @@ static ssize_t store_modes(struct device *device,
 		return -EINVAL;
 
 	console_lock();
-	lock_fb_info(fb_info);
+	if (!lock_fb_info(fb_info)) {
+		console_unlock();
+		return -ENODEV;
+	}
 
 	list_splice(&fb_info->modelist, &old_list);
 	fb_videomode_to_modelist((const struct fb_videomode *)buf, i,
@@ -127,11 +203,13 @@ static ssize_t show_modes(struct device *device, struct device_attribute *attr,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 	unsigned int i;
+	struct list_head *pos;
 	struct fb_modelist *modelist;
 	const struct fb_videomode *mode;
 
 	i = 0;
-	list_for_each_entry(modelist, &fb_info->modelist, list) {
+	list_for_each(pos, &fb_info->modelist) {
+		modelist = list_entry(pos, struct fb_modelist, list);
 		mode = &modelist->mode;
 		i += mode_string(buf, i, mode);
 	}
@@ -157,7 +235,7 @@ static ssize_t show_bpp(struct device *device, struct device_attribute *attr,
 			char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return sysfs_emit(buf, "%d\n", fb_info->var.bits_per_pixel);
+	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->var.bits_per_pixel);
 }
 
 static ssize_t store_rotate(struct device *device,
@@ -184,7 +262,7 @@ static ssize_t show_rotate(struct device *device,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 
-	return sysfs_emit(buf, "%d\n", fb_info->var.rotate);
+	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->var.rotate);
 }
 
 static ssize_t store_virtual(struct device *device,
@@ -212,7 +290,7 @@ static ssize_t show_virtual(struct device *device,
 			    struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return sysfs_emit(buf, "%d,%d\n", fb_info->var.xres_virtual,
+	return snprintf(buf, PAGE_SIZE, "%d,%d\n", fb_info->var.xres_virtual,
 			fb_info->var.yres_virtual);
 }
 
@@ -220,7 +298,7 @@ static ssize_t show_stride(struct device *device,
 			   struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return sysfs_emit(buf, "%d\n", fb_info->fix.line_length);
+	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->fix.line_length);
 }
 
 static ssize_t store_blank(struct device *device,
@@ -229,13 +307,12 @@ static ssize_t store_blank(struct device *device,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 	char *last = NULL;
-	int err, arg;
+	int err;
 
-	arg = simple_strtoul(buf, &last, 0);
 	console_lock();
-	err = fb_blank(fb_info, arg);
-	/* might again call into fb_blank */
-	fbcon_fb_blanked(fb_info, arg);
+	fb_info->flags |= FBINFO_MISC_USEREVENT;
+	err = fb_blank(fb_info, simple_strtoul(buf, &last, 0));
+	fb_info->flags &= ~FBINFO_MISC_USEREVENT;
 	console_unlock();
 	if (err < 0)
 		return err;
@@ -308,7 +385,7 @@ static ssize_t show_pan(struct device *device,
 			struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return sysfs_emit(buf, "%d,%d\n", fb_info->var.xoffset,
+	return snprintf(buf, PAGE_SIZE, "%d,%d\n", fb_info->var.xoffset,
 			fb_info->var.yoffset);
 }
 
@@ -317,7 +394,7 @@ static ssize_t show_name(struct device *device,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 
-	return sysfs_emit(buf, "%s\n", fb_info->fix.id);
+	return snprintf(buf, PAGE_SIZE, "%s\n", fb_info->fix.id);
 }
 
 static ssize_t store_fbstate(struct device *device,
@@ -331,7 +408,10 @@ static ssize_t store_fbstate(struct device *device,
 	state = simple_strtoul(buf, &last, 0);
 
 	console_lock();
-	lock_fb_info(fb_info);
+	if (!lock_fb_info(fb_info)) {
+		console_unlock();
+		return -ENODEV;
+	}
 
 	fb_set_suspend(fb_info, (int)state);
 
@@ -345,10 +425,10 @@ static ssize_t show_fbstate(struct device *device,
 			    struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return sysfs_emit(buf, "%d\n", fb_info->state);
+	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->state);
 }
 
-#if IS_ENABLED(CONFIG_FB_BACKLIGHT)
+#ifdef CONFIG_FB_BACKLIGHT
 static ssize_t store_bl_curve(struct device *device,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
@@ -429,12 +509,12 @@ static struct device_attribute device_attrs[] = {
 	__ATTR(stride, S_IRUGO, show_stride, NULL),
 	__ATTR(rotate, S_IRUGO|S_IWUSR, show_rotate, store_rotate),
 	__ATTR(state, S_IRUGO|S_IWUSR, show_fbstate, store_fbstate),
-#if IS_ENABLED(CONFIG_FB_BACKLIGHT)
+#ifdef CONFIG_FB_BACKLIGHT
 	__ATTR(bl_curve, S_IRUGO|S_IWUSR, show_bl_curve, store_bl_curve),
 #endif
 };
 
-static int fb_init_device(struct fb_info *fb_info)
+int fb_init_device(struct fb_info *fb_info)
 {
 	int i, error = 0;
 
@@ -458,7 +538,7 @@ static int fb_init_device(struct fb_info *fb_info)
 	return 0;
 }
 
-static void fb_cleanup_device(struct fb_info *fb_info)
+void fb_cleanup_device(struct fb_info *fb_info)
 {
 	unsigned int i;
 
@@ -470,33 +550,29 @@ static void fb_cleanup_device(struct fb_info *fb_info)
 	}
 }
 
-int fb_device_create(struct fb_info *fb_info)
+#ifdef CONFIG_FB_BACKLIGHT
+/* This function generates a linear backlight curve
+ *
+ *     0: off
+ *   1-7: min
+ * 8-127: linear from min to max
+ */
+void fb_bl_default_curve(struct fb_info *fb_info, u8 off, u8 min, u8 max)
 {
-	int node = fb_info->node;
-	dev_t devt = MKDEV(FB_MAJOR, node);
-	int ret;
+	unsigned int i, flat, count, range = (max - min);
 
-	fb_info->dev = device_create(fb_class, fb_info->device, devt, NULL, "fb%d", node);
-	if (IS_ERR(fb_info->dev)) {
-		/* Not fatal */
-		ret = PTR_ERR(fb_info->dev);
-		pr_warn("Unable to create device for framebuffer %d; error %d\n", node, ret);
-		fb_info->dev = NULL;
-	} else {
-		fb_init_device(fb_info);
-	}
+	mutex_lock(&fb_info->bl_curve_mutex);
 
-	return 0;
+	fb_info->bl_curve[0] = off;
+
+	for (flat = 1; flat < (FB_BACKLIGHT_LEVELS / 16); ++flat)
+		fb_info->bl_curve[flat] = min;
+
+	count = FB_BACKLIGHT_LEVELS * 15 / 16;
+	for (i = 0; i < count; ++i)
+		fb_info->bl_curve[flat + i] = min + (range * (i + 1) / count);
+
+	mutex_unlock(&fb_info->bl_curve_mutex);
 }
-
-void fb_device_destroy(struct fb_info *fb_info)
-{
-	dev_t devt = MKDEV(FB_MAJOR, fb_info->node);
-
-	if (!fb_info->dev)
-		return;
-
-	fb_cleanup_device(fb_info);
-	device_destroy(fb_class, devt);
-	fb_info->dev = NULL;
-}
+EXPORT_SYMBOL_GPL(fb_bl_default_curve);
+#endif

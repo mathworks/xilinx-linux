@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef __LINUX_ROMFS_FS_H
 #define __LINUX_ROMFS_FS_H
 
@@ -27,7 +26,7 @@ struct romfs_super_block {
 	__be32 word1;
 	__be32 size;
 	__be32 checksum;
-	char name[];		/* volume name */
+	char name[0];		/* volume name */
 };
 
 /* On disk inode */
@@ -37,7 +36,7 @@ struct romfs_inode {
 	__be32 spec;
 	__be32 size;
 	__be32 checksum;
-	char name[];
+	char name[0];
 };
 
 #define ROMFH_TYPE 7

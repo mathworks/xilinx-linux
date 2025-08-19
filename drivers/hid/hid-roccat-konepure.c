@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Roccat KonePure driver for Linux
  *
@@ -6,6 +5,10 @@
  */
 
 /*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
  */
 
 /*
@@ -35,6 +38,8 @@ struct konepure_mouse_report_button {
 	uint8_t zero2;
 	uint8_t unknown[2];
 } __packed;
+
+static struct class *konepure_class;
 
 ROCCAT_COMMON2_BIN_ATTRIBUTE_W(control, 0x04, 0x03);
 ROCCAT_COMMON2_BIN_ATTRIBUTE_RW(actual_profile, 0x05, 0x03);
@@ -70,11 +75,6 @@ static const struct attribute_group *konepure_groups[] = {
 	NULL,
 };
 
-static const struct class konepure_class = {
-	.name = "konepure",
-	.dev_groups = konepure_groups,
-};
-
 static int konepure_init_specials(struct hid_device *hdev)
 {
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
@@ -101,8 +101,8 @@ static int konepure_init_specials(struct hid_device *hdev)
 		goto exit_free;
 	}
 
-	retval = roccat_connect(&konepure_class, hdev,
-				sizeof(struct konepure_mouse_report_button));
+	retval = roccat_connect(konepure_class, hdev,
+			sizeof(struct konepure_mouse_report_button));
 	if (retval < 0) {
 		hid_err(hdev, "couldn't init char dev\n");
 	} else {
@@ -135,9 +135,6 @@ static int konepure_probe(struct hid_device *hdev,
 		const struct hid_device_id *id)
 {
 	int retval;
-
-	if (!hid_is_usb(hdev))
-		return -EINVAL;
 
 	retval = hid_parse(hdev);
 	if (retval) {
@@ -210,20 +207,21 @@ static int __init konepure_init(void)
 {
 	int retval;
 
-	retval = class_register(&konepure_class);
-	if (retval)
-		return retval;
+	konepure_class = class_create(THIS_MODULE, "konepure");
+	if (IS_ERR(konepure_class))
+		return PTR_ERR(konepure_class);
+	konepure_class->dev_groups = konepure_groups;
 
 	retval = hid_register_driver(&konepure_driver);
 	if (retval)
-		class_unregister(&konepure_class);
+		class_destroy(konepure_class);
 	return retval;
 }
 
 static void __exit konepure_exit(void)
 {
 	hid_unregister_driver(&konepure_driver);
-	class_unregister(&konepure_class);
+	class_destroy(konepure_class);
 }
 
 module_init(konepure_init);

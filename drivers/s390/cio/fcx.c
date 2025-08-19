@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Functions for assembling fcx enabled I/O control blocks.
  *
@@ -9,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/string.h>
-#include <linux/io.h>
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/module.h>
@@ -25,7 +23,7 @@
  */
 struct tcw *tcw_get_intrg(struct tcw *tcw)
 {
-	return phys_to_virt(tcw->intrg);
+	return (struct tcw *) ((addr_t) tcw->intrg);
 }
 EXPORT_SYMBOL(tcw_get_intrg);
 
@@ -40,9 +38,9 @@ EXPORT_SYMBOL(tcw_get_intrg);
 void *tcw_get_data(struct tcw *tcw)
 {
 	if (tcw->r)
-		return phys_to_virt(tcw->input);
+		return (void *) ((addr_t) tcw->input);
 	if (tcw->w)
-		return phys_to_virt(tcw->output);
+		return (void *) ((addr_t) tcw->output);
 	return NULL;
 }
 EXPORT_SYMBOL(tcw_get_data);
@@ -55,7 +53,7 @@ EXPORT_SYMBOL(tcw_get_data);
  */
 struct tccb *tcw_get_tccb(struct tcw *tcw)
 {
-	return phys_to_virt(tcw->tccb);
+	return (struct tccb *) ((addr_t) tcw->tccb);
 }
 EXPORT_SYMBOL(tcw_get_tccb);
 
@@ -67,7 +65,7 @@ EXPORT_SYMBOL(tcw_get_tccb);
  */
 struct tsb *tcw_get_tsb(struct tcw *tcw)
 {
-	return phys_to_virt(tcw->tsb);
+	return (struct tsb *) ((addr_t) tcw->tsb);
 }
 EXPORT_SYMBOL(tcw_get_tsb);
 
@@ -190,7 +188,7 @@ EXPORT_SYMBOL(tcw_finalize);
  */
 void tcw_set_intrg(struct tcw *tcw, struct tcw *intrg_tcw)
 {
-	tcw->intrg = (u32)virt_to_phys(intrg_tcw);
+	tcw->intrg = (u32) ((addr_t) intrg_tcw);
 }
 EXPORT_SYMBOL(tcw_set_intrg);
 
@@ -208,11 +206,11 @@ EXPORT_SYMBOL(tcw_set_intrg);
 void tcw_set_data(struct tcw *tcw, void *data, int use_tidal)
 {
 	if (tcw->r) {
-		tcw->input = virt_to_phys(data);
+		tcw->input = (u64) ((addr_t) data);
 		if (use_tidal)
 			tcw->flags |= TCW_FLAGS_INPUT_TIDA;
 	} else if (tcw->w) {
-		tcw->output = virt_to_phys(data);
+		tcw->output = (u64) ((addr_t) data);
 		if (use_tidal)
 			tcw->flags |= TCW_FLAGS_OUTPUT_TIDA;
 	}
@@ -228,7 +226,7 @@ EXPORT_SYMBOL(tcw_set_data);
  */
 void tcw_set_tccb(struct tcw *tcw, struct tccb *tccb)
 {
-	tcw->tccb = virt_to_phys(tccb);
+	tcw->tccb = (u64) ((addr_t) tccb);
 }
 EXPORT_SYMBOL(tcw_set_tccb);
 
@@ -241,7 +239,7 @@ EXPORT_SYMBOL(tcw_set_tccb);
  */
 void tcw_set_tsb(struct tcw *tcw, struct tsb *tsb)
 {
-	tcw->tsb = virt_to_phys(tsb);
+	tcw->tsb = (u64) ((addr_t) tsb);
 }
 EXPORT_SYMBOL(tcw_set_tsb);
 
@@ -346,7 +344,7 @@ struct tidaw *tcw_add_tidaw(struct tcw *tcw, int num_tidaws, u8 flags,
 	memset(tidaw, 0, sizeof(struct tidaw));
 	tidaw->flags = flags;
 	tidaw->count = count;
-	tidaw->addr = virt_to_phys(addr);
+	tidaw->addr = (u64) ((addr_t) addr);
 	return tidaw;
 }
 EXPORT_SYMBOL(tcw_add_tidaw);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Generic gameport layer
  *
@@ -6,12 +5,16 @@
  * Copyright (c) 2005 Dmitry Torokhov
  */
 
+/*
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/stddef.h>
 #include <linux/module.h>
-#include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/gameport.h>
@@ -21,6 +24,8 @@
 #include <linux/sched.h>	/* HZ */
 #include <linux/mutex.h>
 #include <linux/timekeeping.h>
+
+/*#include <asm/io.h>*/
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("Generic gameport layer");
@@ -197,9 +202,9 @@ void gameport_stop_polling(struct gameport *gameport)
 }
 EXPORT_SYMBOL(gameport_stop_polling);
 
-static void gameport_run_poll_handler(struct timer_list *t)
+static void gameport_run_poll_handler(unsigned long d)
 {
-	struct gameport *gameport = from_timer(gameport, t, poll_timer);
+	struct gameport *gameport = (struct gameport *)d;
 
 	gameport->poll_handler(gameport);
 	if (gameport->poll_cnt)
@@ -380,8 +385,8 @@ static int gameport_queue_event(void *object, struct module *owner,
 	}
 
 	if (!try_module_get(owner)) {
-		pr_warn("Can't get module reference, dropping event %d\n",
-			event_type);
+		pr_warning("Can't get module reference, dropping event %d\n",
+			   event_type);
 		kfree(event);
 		retval = -EINVAL;
 		goto out;
@@ -517,36 +522,6 @@ void gameport_set_phys(struct gameport *gameport, const char *fmt, ...)
 }
 EXPORT_SYMBOL(gameport_set_phys);
 
-static void gameport_default_trigger(struct gameport *gameport)
-{
-#ifdef CONFIG_HAS_IOPORT
-	outb(0xff, gameport->io);
-#endif
-}
-
-static unsigned char gameport_default_read(struct gameport *gameport)
-{
-#ifdef CONFIG_HAS_IOPORT
-	return inb(gameport->io);
-#else
-	return 0xff;
-#endif
-}
-
-static void gameport_setup_default_handlers(struct gameport *gameport)
-{
-	if ((!gameport->trigger || !gameport->read) &&
-	    !IS_ENABLED(CONFIG_HAS_IOPORT))
-		dev_err(&gameport->dev,
-			"I/O port access is required for %s (%s) but is not available\n",
-			gameport->phys, gameport->name);
-
-	if (!gameport->trigger)
-		gameport->trigger = gameport_default_trigger;
-	if (!gameport->read)
-		gameport->read = gameport_default_read;
-}
-
 /*
  * Prepare gameport port for registration.
  */
@@ -565,10 +540,11 @@ static void gameport_init_port(struct gameport *gameport)
 	if (gameport->parent)
 		gameport->dev.parent = &gameport->parent->dev;
 
-	gameport_setup_default_handlers(gameport);
 	INIT_LIST_HEAD(&gameport->node);
 	spin_lock_init(&gameport->timer_lock);
-	timer_setup(&gameport->poll_timer, gameport_run_poll_handler, 0);
+	init_timer(&gameport->poll_timer);
+	gameport->poll_timer.function = gameport_run_poll_handler;
+	gameport->poll_timer.data = (unsigned long)gameport;
 }
 
 /*
@@ -727,12 +703,13 @@ static int gameport_driver_probe(struct device *dev)
 	return gameport->drv ? 0 : -ENODEV;
 }
 
-static void gameport_driver_remove(struct device *dev)
+static int gameport_driver_remove(struct device *dev)
 {
 	struct gameport *gameport = to_gameport_port(dev);
 	struct gameport_driver *drv = to_gameport_driver(dev->driver);
 
 	drv->disconnect(gameport);
+	return 0;
 }
 
 static void gameport_attach_driver(struct gameport_driver *drv)

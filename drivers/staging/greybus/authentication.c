@@ -1,12 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Greybus Component Authentication Protocol (CAP) Driver.
  *
  * Copyright 2016 Google Inc.
  * Copyright 2016 Linaro Ltd.
+ *
+ * Released under the GPLv2 only.
  */
 
-#include <linux/greybus.h>
+#include "greybus.h"
+
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <linux/ioctl.h>
@@ -14,6 +16,7 @@
 
 #include "greybus_authentication.h"
 #include "firmware.h"
+#include "greybus.h"
 
 #define CAP_TIMEOUT_MS		1000
 
@@ -201,7 +204,7 @@ static int cap_release(struct inode *inode, struct file *file)
 }
 
 static int cap_ioctl(struct gb_cap *cap, unsigned int cmd,
-		     void __user *buf)
+			 void __user *buf)
 {
 	struct cap_ioc_get_endpoint_uid endpoint_uid;
 	struct cap_ioc_get_ims_certificate *ims_cert;
@@ -402,7 +405,7 @@ int cap_init(void)
 {
 	int ret;
 
-	cap_class = class_create("gb_authenticate");
+	cap_class = class_create(THIS_MODULE, "gb_authenticate");
 	if (IS_ERR(cap_class))
 		return PTR_ERR(cap_class);
 

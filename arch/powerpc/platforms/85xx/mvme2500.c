@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Board setup routines for the Emerson/Artesyn MVME2500
  *
@@ -10,7 +9,13 @@
  *	Tom Armistead (tom.armistead@emerson.com)
  *	Copyright 2012 Emerson
  *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  * Author Alessio Igor Bogani <alessio.bogani@elettra.eu>
+ *
  */
 
 #include <linux/pci.h>
@@ -43,9 +48,17 @@ static void __init mvme2500_setup_arch(void)
 
 machine_arch_initcall(mvme2500, mpc85xx_common_publish_devices);
 
+/*
+ * Called very early, device-tree isn't unflattened
+ */
+static int __init mvme2500_probe(void)
+{
+	return of_machine_is_compatible("artesyn,MVME2500");
+}
+
 define_machine(mvme2500) {
 	.name			= "MVME2500",
-	.compatible		= "artesyn,MVME2500",
+	.probe			= mvme2500_probe,
 	.setup_arch		= mvme2500_setup_arch,
 	.init_IRQ		= mvme2500_pic_init,
 #ifdef CONFIG_PCI
@@ -53,5 +66,6 @@ define_machine(mvme2500) {
 	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= udbg_progress,
 };

@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Sally Floyd's High Speed TCP (RFC 3649) congestion control
  *
- * See https://www.icir.org/floyd/hstcp.html
+ * See http://www.icir.org/floyd/hstcp.html
  *
  * John Heffner <jheffner@psc.edu>
  */
@@ -127,22 +126,22 @@ static void hstcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		 *     snd_cwnd <=
 		 *     hstcp_aimd_vals[ca->ai].cwnd
 		 */
-		if (tcp_snd_cwnd(tp) > hstcp_aimd_vals[ca->ai].cwnd) {
-			while (tcp_snd_cwnd(tp) > hstcp_aimd_vals[ca->ai].cwnd &&
+		if (tp->snd_cwnd > hstcp_aimd_vals[ca->ai].cwnd) {
+			while (tp->snd_cwnd > hstcp_aimd_vals[ca->ai].cwnd &&
 			       ca->ai < HSTCP_AIMD_MAX - 1)
 				ca->ai++;
-		} else if (ca->ai && tcp_snd_cwnd(tp) <= hstcp_aimd_vals[ca->ai-1].cwnd) {
-			while (ca->ai && tcp_snd_cwnd(tp) <= hstcp_aimd_vals[ca->ai-1].cwnd)
+		} else if (ca->ai && tp->snd_cwnd <= hstcp_aimd_vals[ca->ai-1].cwnd) {
+			while (ca->ai && tp->snd_cwnd <= hstcp_aimd_vals[ca->ai-1].cwnd)
 				ca->ai--;
 		}
 
 		/* Do additive increase */
-		if (tcp_snd_cwnd(tp) < tp->snd_cwnd_clamp) {
+		if (tp->snd_cwnd < tp->snd_cwnd_clamp) {
 			/* cwnd = cwnd + a(w) / cwnd */
 			tp->snd_cwnd_cnt += ca->ai + 1;
-			if (tp->snd_cwnd_cnt >= tcp_snd_cwnd(tp)) {
-				tp->snd_cwnd_cnt -= tcp_snd_cwnd(tp);
-				tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) + 1);
+			if (tp->snd_cwnd_cnt >= tp->snd_cwnd) {
+				tp->snd_cwnd_cnt -= tp->snd_cwnd;
+				tp->snd_cwnd++;
 			}
 		}
 	}
@@ -151,16 +150,16 @@ static void hstcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static u32 hstcp_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	struct hstcp *ca = inet_csk_ca(sk);
+	const struct hstcp *ca = inet_csk_ca(sk);
 
 	/* Do multiplicative decrease */
-	return max(tcp_snd_cwnd(tp) - ((tcp_snd_cwnd(tp) * hstcp_aimd_vals[ca->ai].md) >> 8), 2U);
+	return max(tp->snd_cwnd - ((tp->snd_cwnd * hstcp_aimd_vals[ca->ai].md) >> 8), 2U);
 }
+
 
 static struct tcp_congestion_ops tcp_highspeed __read_mostly = {
 	.init		= hstcp_init,
 	.ssthresh	= hstcp_ssthresh,
-	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= hstcp_cong_avoid,
 
 	.owner		= THIS_MODULE,

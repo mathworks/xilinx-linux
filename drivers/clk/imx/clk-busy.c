@@ -1,10 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2012 Freescale Semiconductor, Inc.
  * Copyright 2012 Linaro Ltd.
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
  */
 
-#include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/io.h>
@@ -67,20 +72,19 @@ static int clk_busy_divider_set_rate(struct clk_hw *hw, unsigned long rate,
 	return ret;
 }
 
-static const struct clk_ops clk_busy_divider_ops = {
+static struct clk_ops clk_busy_divider_ops = {
 	.recalc_rate = clk_busy_divider_recalc_rate,
 	.round_rate = clk_busy_divider_round_rate,
 	.set_rate = clk_busy_divider_set_rate,
 };
 
-struct clk_hw *imx_clk_hw_busy_divider(const char *name, const char *parent_name,
+struct clk *imx_clk_busy_divider(const char *name, const char *parent_name,
 				 void __iomem *reg, u8 shift, u8 width,
 				 void __iomem *busy_reg, u8 busy_shift)
 {
 	struct clk_busy_divider *busy;
-	struct clk_hw *hw;
+	struct clk *clk;
 	struct clk_init_data init;
-	int ret;
 
 	busy = kzalloc(sizeof(*busy), GFP_KERNEL);
 	if (!busy)
@@ -97,21 +101,17 @@ struct clk_hw *imx_clk_hw_busy_divider(const char *name, const char *parent_name
 
 	init.name = name;
 	init.ops = &clk_busy_divider_ops;
-	init.flags = CLK_SET_RATE_PARENT | CLK_IS_CRITICAL;
+	init.flags = CLK_SET_RATE_PARENT;
 	init.parent_names = &parent_name;
 	init.num_parents = 1;
 
 	busy->div.hw.init = &init;
 
-	hw = &busy->div.hw;
-
-	ret = clk_hw_register(NULL, hw);
-	if (ret) {
+	clk = clk_register(NULL, &busy->div.hw);
+	if (IS_ERR(clk))
 		kfree(busy);
-		return ERR_PTR(ret);
-	}
 
-	return hw;
+	return clk;
 }
 
 struct clk_busy_mux {
@@ -147,20 +147,18 @@ static int clk_busy_mux_set_parent(struct clk_hw *hw, u8 index)
 	return ret;
 }
 
-static const struct clk_ops clk_busy_mux_ops = {
-	.determine_rate = clk_hw_determine_rate_no_reparent,
+static struct clk_ops clk_busy_mux_ops = {
 	.get_parent = clk_busy_mux_get_parent,
 	.set_parent = clk_busy_mux_set_parent,
 };
 
-struct clk_hw *imx_clk_hw_busy_mux(const char *name, void __iomem *reg, u8 shift,
+struct clk *imx_clk_busy_mux(const char *name, void __iomem *reg, u8 shift,
 			     u8 width, void __iomem *busy_reg, u8 busy_shift,
-			     const char * const *parent_names, int num_parents)
+			     const char **parent_names, int num_parents)
 {
 	struct clk_busy_mux *busy;
-	struct clk_hw *hw;
+	struct clk *clk;
 	struct clk_init_data init;
-	int ret;
 
 	busy = kzalloc(sizeof(*busy), GFP_KERNEL);
 	if (!busy)
@@ -177,19 +175,15 @@ struct clk_hw *imx_clk_hw_busy_mux(const char *name, void __iomem *reg, u8 shift
 
 	init.name = name;
 	init.ops = &clk_busy_mux_ops;
-	init.flags = CLK_IS_CRITICAL;
+	init.flags = 0;
 	init.parent_names = parent_names;
 	init.num_parents = num_parents;
 
 	busy->mux.hw.init = &init;
 
-	hw = &busy->mux.hw;
-
-	ret = clk_hw_register(NULL, hw);
-	if (ret) {
+	clk = clk_register(NULL, &busy->mux.hw);
+	if (IS_ERR(clk))
 		kfree(busy);
-		return ERR_PTR(ret);
-	}
 
-	return hw;
+	return clk;
 }

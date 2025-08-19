@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * M66592 UDC (USB gadget)
  *
  * Copyright (C) 2006-2007 Renesas Solutions Corp.
  *
  * Author : Yoshihiro Shimoda <yoshihiro.shimoda.uh@renesas.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/module.h>
@@ -634,7 +637,7 @@ static void init_controller(struct m66592 *m66592)
 			clock = M66592_XTAL48;
 			break;
 		default:
-			pr_warn("m66592-udc: xtal configuration error\n");
+			pr_warning("m66592-udc: xtal configuration error\n");
 			clock = 0;
 		}
 
@@ -646,7 +649,7 @@ static void init_controller(struct m66592 *m66592)
 			irq_sense = 0;
 			break;
 		default:
-			pr_warn("m66592-udc: irq trigger config error\n");
+			pr_warning("m66592-udc: irq trigger config error\n");
 			irq_sense = 0;
 		}
 
@@ -1259,9 +1262,9 @@ static irqreturn_t m66592_irq(int irq, void *_m66592)
 	return IRQ_HANDLED;
 }
 
-static void m66592_timer(struct timer_list *t)
+static void m66592_timer(unsigned long _m66592)
 {
-	struct m66592 *m66592 = from_timer(m66592, t, timer);
+	struct m66592 *m66592 = (struct m66592 *)_m66592;
 	unsigned long flags;
 	u16 tmp;
 
@@ -1433,7 +1436,7 @@ static void m66592_fifo_flush(struct usb_ep *_ep)
 	spin_unlock_irqrestore(&ep->m66592->lock, flags);
 }
 
-static const struct usb_ep_ops m66592_ep_ops = {
+static struct usb_ep_ops m66592_ep_ops = {
 	.enable		= m66592_enable,
 	.disable	= m66592_disable,
 
@@ -1454,6 +1457,7 @@ static int m66592_udc_start(struct usb_gadget *g,
 	struct m66592 *m66592 = to_m66592(g);
 
 	/* hook up the driver */
+	driver->driver.bus = NULL;
 	m66592->driver = driver;
 
 	m66592_bset(m66592, M66592_VBSE | M66592_URST, M66592_INTENB0);
@@ -1512,13 +1516,13 @@ static const struct usb_gadget_ops m66592_gadget_ops = {
 	.pullup			= m66592_pullup,
 };
 
-static void m66592_remove(struct platform_device *pdev)
+static int m66592_remove(struct platform_device *pdev)
 {
 	struct m66592		*m66592 = platform_get_drvdata(pdev);
 
 	usb_del_gadget_udc(&m66592->gadget);
 
-	timer_shutdown_sync(&m66592->timer);
+	del_timer_sync(&m66592->timer);
 	iounmap(m66592->reg);
 	free_irq(platform_get_irq(pdev, 0), m66592);
 	m66592_free_request(&m66592->ep[0].ep, m66592->ep0_req);
@@ -1527,6 +1531,7 @@ static void m66592_remove(struct platform_device *pdev)
 		clk_put(m66592->clk);
 	}
 	kfree(m66592);
+	return 0;
 }
 
 static void nop_completion(struct usb_ep *ep, struct usb_request *r)
@@ -1587,7 +1592,9 @@ static int m66592_probe(struct platform_device *pdev)
 	m66592->gadget.max_speed = USB_SPEED_HIGH;
 	m66592->gadget.name = udc_name;
 
-	timer_setup(&m66592->timer, m66592_timer, 0);
+	init_timer(&m66592->timer);
+	m66592->timer.function = m66592_timer;
+	m66592->timer.data = (unsigned long)m66592;
 	m66592->reg = reg;
 
 	ret = request_irq(ires->start, m66592_irq, IRQF_SHARED,
@@ -1665,7 +1672,7 @@ static int m66592_probe(struct platform_device *pdev)
 
 err_add_udc:
 	m66592_free_request(&m66592->ep[0].ep, m66592->ep0_req);
-	m66592->ep0_req = NULL;
+
 clean_up3:
 	if (m66592->pdata->on_chip) {
 		clk_disable(m66592->clk);
@@ -1687,9 +1694,9 @@ clean_up:
 
 /*-------------------------------------------------------------------------*/
 static struct platform_driver m66592_driver = {
-	.remove_new =	m66592_remove,
+	.remove =	m66592_remove,
 	.driver		= {
-		.name =	udc_name,
+		.name =	(char *) udc_name,
 	},
 };
 

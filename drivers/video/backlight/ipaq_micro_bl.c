@@ -1,5 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * iPAQ microcontroller backlight support
  * Author : Linus Walleij <linus.walleij@linaro.org>
@@ -16,11 +18,16 @@
 static int micro_bl_update_status(struct backlight_device *bd)
 {
 	struct ipaq_micro *micro = dev_get_drvdata(&bd->dev);
-	int intensity = backlight_get_brightness(bd);
+	int intensity = bd->props.brightness;
 	struct ipaq_micro_msg msg = {
 		.id = MSG_BACKLIGHT,
 		.tx_len = 3,
 	};
+
+	if (bd->props.power != FB_BLANK_UNBLANK)
+		intensity = 0;
+	if (bd->props.state & (BL_CORE_FBBLANK | BL_CORE_SUSPENDED))
+		intensity = 0;
 
 	/*
 	 * Message format:
@@ -39,7 +46,7 @@ static const struct backlight_ops micro_bl_ops = {
 	.update_status  = micro_bl_update_status,
 };
 
-static const struct backlight_properties micro_bl_props = {
+static struct backlight_properties micro_bl_props = {
 	.type = BACKLIGHT_RAW,
 	.max_brightness = 255,
 	.power = FB_BLANK_UNBLANK,

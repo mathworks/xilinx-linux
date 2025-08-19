@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
+/**
  * imr.c -- Intel Isolated Memory Region driver
  *
  * Copyright(c) 2013 Intel Corporation.
@@ -29,14 +28,13 @@
 #include <asm/cpu_device_id.h>
 #include <asm/imr.h>
 #include <asm/iosf_mbi.h>
-#include <asm/io.h>
-
 #include <linux/debugfs.h>
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/types.h>
 
 struct imr_device {
+	struct dentry	*file;
 	bool		init;
 	struct mutex	lock;
 	int		max_imr;
@@ -226,17 +224,37 @@ static int imr_dbgfs_state_show(struct seq_file *s, void *unused)
 	mutex_unlock(&idev->lock);
 	return ret;
 }
-DEFINE_SHOW_ATTRIBUTE(imr_dbgfs_state);
+
+/**
+ * imr_state_open - debugfs open callback.
+ *
+ * @inode:	pointer to struct inode.
+ * @file:	pointer to struct file.
+ * @return:	result of single open.
+ */
+static int imr_state_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, imr_dbgfs_state_show, inode->i_private);
+}
+
+static const struct file_operations imr_state_ops = {
+	.open		= imr_state_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /**
  * imr_debugfs_register - register debugfs hooks.
  *
  * @idev:	pointer to imr_device structure.
+ * @return:	0 on success - errno on failure.
  */
-static void imr_debugfs_register(struct imr_device *idev)
+static int imr_debugfs_register(struct imr_device *idev)
 {
-	debugfs_create_file("imr_state", 0444, NULL, idev,
-			    &imr_dbgfs_state_fops);
+	idev->file = debugfs_create_file("imr_state", S_IFREG | S_IRUGO, NULL,
+					 idev, &imr_state_ops);
+	return PTR_ERR_OR_ZERO(idev->file);
 }
 
 /**
@@ -551,7 +569,7 @@ static void __init imr_fixup_memmap(struct imr_device *idev)
 
 	/*
 	 * Setup an unlocked IMR around the physical extent of the kernel
-	 * from the beginning of the .text section to the end of the
+	 * from the beginning of the .text secton to the end of the
 	 * .rodata section as one physically contiguous block.
 	 *
 	 * We don't round up @size since it is already PAGE_SIZE aligned.
@@ -569,7 +587,7 @@ static void __init imr_fixup_memmap(struct imr_device *idev)
 }
 
 static const struct x86_cpu_id imr_ids[] __initconst = {
-	X86_MATCH_VENDOR_FAM_MODEL(INTEL, 5, INTEL_FAM5_QUARK_X1000, NULL),
+	{ X86_VENDOR_INTEL, 5, 9 },	/* Intel Quark SoC X1000. */
 	{}
 };
 
@@ -581,6 +599,7 @@ static const struct x86_cpu_id imr_ids[] __initconst = {
 static int __init imr_init(void)
 {
 	struct imr_device *idev = &imr_dev;
+	int ret;
 
 	if (!x86_match_cpu(imr_ids) || !iosf_mbi_available())
 		return -ENODEV;
@@ -590,7 +609,9 @@ static int __init imr_init(void)
 	idev->init = true;
 
 	mutex_init(&idev->lock);
-	imr_debugfs_register(idev);
+	ret = imr_debugfs_register(idev);
+	if (ret != 0)
+		pr_warn("debugfs register failed!\n");
 	imr_fixup_memmap(idev);
 	return 0;
 }

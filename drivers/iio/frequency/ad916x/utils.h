@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #ifndef __AD_UTILS_H__
 #define __AD_UTILS_H__
 
@@ -10,7 +9,7 @@
 
 #define U64MSB 0x8000000000000000ull
 
-int64_t adi_api_utils_gcd(int64_t u, int64_t v);
+int adi_api_utils_gcd(int u, int v);
 void adi_api_utils_mult_64(uint32_t a, uint32_t b, uint32_t *hi, uint32_t *lo);
 void adi_api_utils_lshift_128(uint64_t *hi, uint64_t *lo);
 void adi_api_utils_rshift_128(uint64_t *hi, uint64_t *lo);

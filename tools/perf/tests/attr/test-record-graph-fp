@@ -1,9 +1,6 @@
 [config]
 command = record
-args    = --no-bpf-event --call-graph fp kill >/dev/null 2>&1
-ret     = 1
-# arm64 enables registers in fp mode
-arch    = !aarch64
+args    = --call-graph fp kill >/dev/null 2>&1
 
 [event:base-record]
 sample_type=295

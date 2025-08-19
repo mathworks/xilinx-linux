@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PowerPC64 LPAR Configuration Information Driver
  *
@@ -10,6 +9,11 @@
  * Nathan Lynch nathanl@austin.ibm.com
  *    Added lparcfg_write, Copyright (C) 2004 Nathan Lynch IBM Corporation.
  *
+ *      This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
+ *
  * This driver creates a proc file at /proc/ppc64/lparcfg which contains
  * keyword - value pairs that specify the configuration of the partition.
  */
@@ -19,24 +23,20 @@
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
 #include <linux/init.h>
-#include <asm/papr-sysparm.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
-#include <linux/hugetlb.h>
+#include <asm/uaccess.h>
 #include <asm/lppaca.h>
 #include <asm/hvcall.h>
 #include <asm/firmware.h>
 #include <asm/rtas.h>
 #include <asm/time.h>
+#include <asm/prom.h>
 #include <asm/vdso_datapage.h>
 #include <asm/vio.h>
 #include <asm/mmu.h>
 #include <asm/machdep.h>
-#include <asm/drmem.h>
 
-#include "pseries.h"
-#include "vas.h"	/* pseries_vas_dlpar_cpu() */
 
 /*
  * This isn't a module but we expose that to userspace
@@ -51,20 +51,18 @@
  * Track sum of all purrs across all processors. This is used to further
  * calculate usage values by different applications
  */
-static void cpu_get_purr(void *arg)
-{
-	atomic64_t *sum = arg;
-
-	atomic64_add(mfspr(SPRN_PURR), sum);
-}
-
 static unsigned long get_purr(void)
 {
-	atomic64_t purr = ATOMIC64_INIT(0);
+	unsigned long sum_purr = 0;
+	int cpu;
 
-	on_each_cpu(cpu_get_purr, &purr, 1);
+	for_each_possible_cpu(cpu) {
+		struct cpu_usage *cu;
 
-	return atomic64_read(&purr);
+		cu = &per_cpu(cpu_usage_array, cpu);
+		sum_purr += cu->current_tb;
+	}
+	return sum_purr;
 }
 
 /*
@@ -137,39 +135,6 @@ static unsigned int h_get_ppp(struct hvcall_ppp_data *ppp_data)
 	return rc;
 }
 
-static void show_gpci_data(struct seq_file *m)
-{
-	struct hv_gpci_request_buffer *buf;
-	unsigned int affinity_score;
-	long ret;
-
-	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
-	if (buf == NULL)
-		return;
-
-	/*
-	 * Show the local LPAR's affinity score.
-	 *
-	 * 0xB1 selects the Affinity_Domain_Info_By_Partition subcall.
-	 * The score is at byte 0xB in the output buffer.
-	 */
-	memset(&buf->params, 0, sizeof(buf->params));
-	buf->params.counter_request = cpu_to_be32(0xB1);
-	buf->params.starting_index = cpu_to_be32(-1);	/* local LPAR */
-	buf->params.counter_info_version_in = 0x5;	/* v5+ for score */
-	ret = plpar_hcall_norets(H_GET_PERF_COUNTER_INFO, virt_to_phys(buf),
-				 sizeof(*buf));
-	if (ret != H_SUCCESS) {
-		pr_debug("hcall failed: H_GET_PERF_COUNTER_INFO: %ld, %x\n",
-			 ret, be32_to_cpu(buf->params.detail_rc));
-		goto out;
-	}
-	affinity_score = buf->bytes[0xB];
-	seq_printf(m, "partition_affinity_score=%u\n", affinity_score);
-out:
-	kfree(buf);
-}
-
 static unsigned h_pic(unsigned long *pool_idle_time,
 		      unsigned long *num_procs)
 {
@@ -206,7 +171,7 @@ static void parse_ppp_data(struct seq_file *m)
 	           ppp_data.active_system_procs);
 
 	/* pool related entries are appropriate for shared configs */
-	if (lppaca_shared_proc()) {
+	if (lppaca_shared_proc(get_lppaca())) {
 		unsigned long pool_idle_time, pool_procs;
 
 		seq_printf(m, "pool=%d\n", ppp_data.pool_num);
@@ -312,55 +277,7 @@ static void parse_mpp_x_data(struct seq_file *m)
 		seq_printf(m, "coalesce_pool_spurr=%ld\n", mpp_x_data.pool_spurr_cycles);
 }
 
-/*
- * Read the lpar name using the RTAS ibm,get-system-parameter call.
- *
- * The name read through this call is updated if changes are made by the end
- * user on the hypervisor side.
- *
- * Some hypervisor (like Qemu) may not provide this value. In that case, a non
- * null value is returned.
- */
-static int read_rtas_lpar_name(struct seq_file *m)
-{
-	struct papr_sysparm_buf *buf;
-	int err;
-
-	buf = papr_sysparm_buf_alloc();
-	if (!buf)
-		return -ENOMEM;
-
-	err = papr_sysparm_get(PAPR_SYSPARM_LPAR_NAME, buf);
-	if (!err)
-		seq_printf(m, "partition_name=%s\n", buf->val);
-
-	papr_sysparm_buf_free(buf);
-	return err;
-}
-
-/*
- * Read the LPAR name from the Device Tree.
- *
- * The value read in the DT is not updated if the end-user is touching the LPAR
- * name on the hypervisor side.
- */
-static int read_dt_lpar_name(struct seq_file *m)
-{
-	const char *name;
-
-	if (of_property_read_string(of_root, "ibm,partition-name", &name))
-		return -ENOENT;
-
-	seq_printf(m, "partition_name=%s\n", name);
-	return 0;
-}
-
-static void read_lpar_name(struct seq_file *m)
-{
-	if (read_rtas_lpar_name(m) && read_dt_lpar_name(m))
-		pr_err_once("Error can't get the LPAR name");
-}
-
+#define SPLPAR_CHARACTERISTICS_TOKEN 20
 #define SPLPAR_MAXLENGTH 1026*(sizeof(char))
 
 /*
@@ -371,25 +288,45 @@ static void read_lpar_name(struct seq_file *m)
  */
 static void parse_system_parameter_string(struct seq_file *m)
 {
-	struct papr_sysparm_buf *buf;
+	int call_status;
 
-	buf = papr_sysparm_buf_alloc();
-	if (!buf)
+	unsigned char *local_buffer = kmalloc(SPLPAR_MAXLENGTH, GFP_KERNEL);
+	if (!local_buffer) {
+		printk(KERN_ERR "%s %s kmalloc failure at line %d\n",
+		       __FILE__, __func__, __LINE__);
 		return;
+	}
 
-	if (papr_sysparm_get(PAPR_SYSPARM_SHARED_PROC_LPAR_ATTRS, buf)) {
-		goto out_free;
+	spin_lock(&rtas_data_buf_lock);
+	memset(rtas_data_buf, 0, SPLPAR_MAXLENGTH);
+	call_status = rtas_call(rtas_token("ibm,get-system-parameter"), 3, 1,
+				NULL,
+				SPLPAR_CHARACTERISTICS_TOKEN,
+				__pa(rtas_data_buf),
+				RTAS_DATA_BUF_SIZE);
+	memcpy(local_buffer, rtas_data_buf, SPLPAR_MAXLENGTH);
+	local_buffer[SPLPAR_MAXLENGTH - 1] = '\0';
+	spin_unlock(&rtas_data_buf_lock);
+
+	if (call_status != 0) {
+		printk(KERN_INFO
+		       "%s %s Error calling get-system-parameter (0x%x)\n",
+		       __FILE__, __func__, call_status);
 	} else {
-		const char *local_buffer;
 		int splpar_strlen;
 		int idx, w_idx;
 		char *workbuffer = kzalloc(SPLPAR_MAXLENGTH, GFP_KERNEL);
-
-		if (!workbuffer)
-			goto out_free;
-
-		splpar_strlen = be16_to_cpu(buf->len);
-		local_buffer = buf->val;
+		if (!workbuffer) {
+			printk(KERN_ERR "%s %s kmalloc failure at line %d\n",
+			       __FILE__, __func__, __LINE__);
+			kfree(local_buffer);
+			return;
+		}
+#ifdef LPARCFG_DEBUG
+		printk(KERN_INFO "success calling get-system-parameter\n");
+#endif
+		splpar_strlen = local_buffer[0] * 256 + local_buffer[1];
+		local_buffer += 2;	/* step over strlen value */
 
 		w_idx = 0;
 		idx = 0;
@@ -423,8 +360,7 @@ static void parse_system_parameter_string(struct seq_file *m)
 		kfree(workbuffer);
 		local_buffer -= 2;	/* back up over strlen value */
 	}
-out_free:
-	papr_sysparm_buf_free(buf);
+	kfree(local_buffer);
 }
 
 /* Return the number of processors in the system.
@@ -433,10 +369,10 @@ out_free:
  */
 static int lparcfg_count_active_processors(void)
 {
-	struct device_node *cpus_dn;
+	struct device_node *cpus_dn = NULL;
 	int count = 0;
 
-	for_each_node_by_type(cpus_dn, "cpu") {
+	while ((cpus_dn = of_find_node_by_type(cpus_dn, "cpu"))) {
 #ifdef LPARCFG_DEBUG
 		printk(KERN_ERR "cpus_dn %p\n", cpus_dn);
 #endif
@@ -494,16 +430,6 @@ static void parse_em_data(struct seq_file *m)
 		seq_printf(m, "power_mode_data=%016lx\n", retbuf[0]);
 }
 
-static void maxmem_data(struct seq_file *m)
-{
-	unsigned long maxmem = 0;
-
-	maxmem += (unsigned long)drmem_info->n_lmbs * drmem_info->lmb_size;
-	maxmem += hugetlb_total_pages() * PAGE_SIZE;
-
-	seq_printf(m, "MaxMem=%lu\n", maxmem);
-}
-
 static int pseries_lparcfg_data(struct seq_file *m, void *v)
 {
 	int partition_potential_processors;
@@ -526,7 +452,6 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 
 	if (firmware_has_feature(FW_FEATURE_SPLPAR)) {
 		/* this call handles the ibm,get-system-parameter contents */
-		read_lpar_name(m);
 		parse_system_parameter_string(m);
 		parse_ppp_data(m);
 		parse_mpp_data(m);
@@ -535,7 +460,6 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		splpar_dispatch_data(m);
 
 		seq_printf(m, "purr=%ld\n", get_purr());
-		seq_printf(m, "tbr=%ld\n", mftb());
 	} else {		/* non SPLPAR case */
 
 		seq_printf(m, "system_active_processors=%d\n",
@@ -551,8 +475,6 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 			   partition_active_processors * 100);
 	}
 
-	show_gpci_data(m);
-
 	seq_printf(m, "partition_active_processors=%d\n",
 		   partition_active_processors);
 
@@ -560,16 +482,12 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		   partition_potential_processors);
 
 	seq_printf(m, "shared_processor_mode=%d\n",
-		   lppaca_shared_proc());
+		   lppaca_shared_proc(get_lppaca()));
 
-#ifdef CONFIG_PPC_64S_HASH_MMU
-	if (!radix_enabled())
-		seq_printf(m, "slb_size=%d\n", mmu_slb_size);
+#ifdef CONFIG_PPC_STD_MMU_64
+	seq_printf(m, "slb_size=%d\n", mmu_slb_size);
 #endif
 	parse_em_data(m);
-	maxmem_data(m);
-
-	seq_printf(m, "security_flavor=%u\n", pseries_security_flavor);
 
 	return 0;
 }
@@ -664,7 +582,8 @@ static ssize_t update_mpp(u64 *entitlement, u8 *weight)
 static ssize_t lparcfg_write(struct file *file, const char __user * buf,
 			     size_t count, loff_t * off)
 {
-	char kbuf[64];
+	int kbuf_sz = 64;
+	char kbuf[kbuf_sz];
 	char *tmp;
 	u64 new_entitled, *new_entitled_ptr = &new_entitled;
 	u8 new_weight, *new_weight_ptr = &new_weight;
@@ -673,7 +592,7 @@ static ssize_t lparcfg_write(struct file *file, const char __user * buf,
 	if (!firmware_has_feature(FW_FEATURE_SPLPAR))
 		return -EINVAL;
 
-	if (count > sizeof(kbuf))
+	if (count > kbuf_sz)
 		return -EINVAL;
 
 	if (copy_from_user(kbuf, buf, count))
@@ -693,16 +612,6 @@ static ssize_t lparcfg_write(struct file *file, const char __user * buf,
 			return -EINVAL;
 
 		retval = update_ppp(new_entitled_ptr, NULL);
-
-		if (retval == H_SUCCESS || retval == H_CONSTRAINED) {
-			/*
-			 * The hypervisor assigns VAS resources based
-			 * on entitled capacity for shared mode.
-			 * Reconfig VAS windows based on DLPAR CPU events.
-			 */
-			if (pseries_vas_dlpar_cpu() != 0)
-				retval = H_HARDWARE;
-		}
 	} else if (!strcmp(kbuf, "capacity_weight")) {
 		char *endp;
 		*new_weight_ptr = (u8) simple_strtoul(tmp, &endp, 10);
@@ -777,23 +686,23 @@ static int lparcfg_open(struct inode *inode, struct file *file)
 	return single_open(file, lparcfg_data, NULL);
 }
 
-static const struct proc_ops lparcfg_proc_ops = {
-	.proc_read	= seq_read,
-	.proc_write	= lparcfg_write,
-	.proc_open	= lparcfg_open,
-	.proc_release	= single_release,
-	.proc_lseek	= seq_lseek,
+static const struct file_operations lparcfg_fops = {
+	.read		= seq_read,
+	.write		= lparcfg_write,
+	.open		= lparcfg_open,
+	.release	= single_release,
+	.llseek		= seq_lseek,
 };
 
 static int __init lparcfg_init(void)
 {
-	umode_t mode = 0444;
+	umode_t mode = S_IRUSR | S_IRGRP | S_IROTH;
 
 	/* Allow writing if we have FW_FEATURE_SPLPAR */
 	if (firmware_has_feature(FW_FEATURE_SPLPAR))
-		mode |= 0200;
+		mode |= S_IWUSR;
 
-	if (!proc_create("powerpc/lparcfg", mode, NULL, &lparcfg_proc_ops)) {
+	if (!proc_create("powerpc/lparcfg", mode, NULL, &lparcfg_fops)) {
 		printk(KERN_ERR "Failed to create powerpc/lparcfg\n");
 		return -EIO;
 	}

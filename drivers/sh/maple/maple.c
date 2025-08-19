@@ -30,6 +30,7 @@
 MODULE_AUTHOR("Adrian McMenamin <adrian@mcmen.demon.co.uk>");
 MODULE_DESCRIPTION("Maple bus driver for Dreamcast");
 MODULE_LICENSE("GPL v2");
+MODULE_SUPPORTED_DEVICE("{{SEGA, Dreamcast/Maple}}");
 
 static void maple_dma_handler(struct work_struct *work);
 static void maple_vblank_handler(struct work_struct *work);
@@ -160,7 +161,7 @@ int maple_add_packet(struct maple_device *mdev, u32 function, u32 command,
 	void *sendbuf = NULL;
 
 	if (length) {
-		sendbuf = kcalloc(length, 4, GFP_KERNEL);
+		sendbuf = kzalloc(length * 4, GFP_KERNEL);
 		if (!sendbuf) {
 			ret = -ENOMEM;
 			goto out;
@@ -299,8 +300,8 @@ static void maple_send(void)
 	mutex_unlock(&maple_wlist_lock);
 	if (maple_packets > 0) {
 		for (i = 0; i < (1 << MAPLE_DMA_PAGES); i++)
-			__flush_purge_region(maple_sendbuf + i * PAGE_SIZE,
-					PAGE_SIZE);
+			dma_cache_sync(0, maple_sendbuf + i * PAGE_SIZE,
+				       PAGE_SIZE, DMA_BIDIRECTIONAL);
 	}
 
 finish:
@@ -641,8 +642,8 @@ static void maple_dma_handler(struct work_struct *work)
 		list_for_each_entry_safe(mq, nmq, &maple_sentq, list) {
 			mdev = mq->dev;
 			recvbuf = mq->recvbuf->buf;
-			__flush_invalidate_region(sh_cacheop_vaddr(recvbuf),
-					0x400);
+			dma_cache_sync(&mdev->dev, recvbuf, 0x400,
+				DMA_FROM_DEVICE);
 			code = recvbuf[0];
 			kfree(mq->sendbuf);
 			list_del_init(&mq->list);
@@ -760,6 +761,12 @@ static int maple_match_bus_driver(struct device *devptr,
 	return 0;
 }
 
+static int maple_bus_uevent(struct device *dev,
+			    struct kobj_uevent_env *env)
+{
+	return 0;
+}
+
 static void maple_bus_release(struct device *dev)
 {
 }
@@ -776,6 +783,7 @@ static struct maple_driver maple_unsupported_device = {
 struct bus_type maple_bus_type = {
 	.name = "maple",
 	.match = maple_match_bus_driver,
+	.uevent = maple_bus_uevent,
 };
 EXPORT_SYMBOL_GPL(maple_bus_type);
 
@@ -827,10 +835,8 @@ static int __init maple_bus_init(void)
 
 	maple_queue_cache = KMEM_CACHE(maple_buffer, SLAB_HWCACHE_ALIGN);
 
-	if (!maple_queue_cache) {
-		retval = -ENOMEM;
+	if (!maple_queue_cache)
 		goto cleanup_bothirqs;
-	}
 
 	INIT_LIST_HEAD(&maple_waitq);
 	INIT_LIST_HEAD(&maple_sentq);
@@ -843,7 +849,6 @@ static int __init maple_bus_init(void)
 		if (!mdev[i]) {
 			while (i-- > 0)
 				maple_free_dev(mdev[i]);
-			retval = -ENOMEM;
 			goto cleanup_cache;
 		}
 		baseunits[i] = mdev[i];

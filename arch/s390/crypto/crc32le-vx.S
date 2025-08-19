@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Hardware-accelerated CRC-32 variants for Linux on z Systems
  *
@@ -14,7 +13,6 @@
  */
 
 #include <linux/linkage.h>
-#include <asm/nospec-insn.h>
 #include <asm/vx-insn.h>
 
 /* Vector register range containing CRC-32 constants */
@@ -25,8 +23,8 @@
 #define CONST_RU_POLY		%v13
 #define CONST_CRC_POLY		%v14
 
-	.data
-	.balign	8
+.data
+.align 8
 
 /*
  * The CRC-32 constant block contains reduction constants to fold and
@@ -59,29 +57,26 @@
  *	P'(x) = 0x82F63B78
  */
 
-SYM_DATA_START_LOCAL(constants_CRC_32_LE)
+.Lconstants_CRC_32_LE:
 	.octa		0x0F0E0D0C0B0A09080706050403020100	# BE->LE mask
 	.quad		0x1c6e41596, 0x154442bd4		# R2, R1
 	.quad		0x0ccaa009e, 0x1751997d0		# R4, R3
 	.octa		0x163cd6124				# R5
 	.octa		0x1F7011641				# u'
 	.octa		0x1DB710641				# P'(x) << 1
-SYM_DATA_END(constants_CRC_32_LE)
 
-SYM_DATA_START_LOCAL(constants_CRC_32C_LE)
+.Lconstants_CRC_32C_LE:
 	.octa		0x0F0E0D0C0B0A09080706050403020100	# BE->LE mask
 	.quad		0x09e4addf8, 0x740eef02			# R2, R1
 	.quad		0x14cd00bd6, 0xf20c0dfe			# R4, R3
 	.octa		0x0dd45aab8				# R5
 	.octa		0x0dea713f1				# u'
 	.octa		0x105ec76f0				# P'(x) << 1
-SYM_DATA_END(constants_CRC_32C_LE)
 
-	.previous
+.previous
 
-	GEN_BR_THUNK %r14
 
-	.text
+.text
 
 /*
  * The CRC-32 functions use these calling conventions:
@@ -104,17 +99,16 @@ SYM_DATA_END(constants_CRC_32C_LE)
  *	V10..V14: CRC-32 constants.
  */
 
-SYM_FUNC_START(crc32_le_vgfm_16)
-	larl	%r5,constants_CRC_32_LE
+ENTRY(crc32_le_vgfm_16)
+	larl	%r5,.Lconstants_CRC_32_LE
 	j	crc32_le_vgfm_generic
-SYM_FUNC_END(crc32_le_vgfm_16)
 
-SYM_FUNC_START(crc32c_le_vgfm_16)
-	larl	%r5,constants_CRC_32C_LE
+ENTRY(crc32c_le_vgfm_16)
+	larl	%r5,.Lconstants_CRC_32C_LE
 	j	crc32_le_vgfm_generic
-SYM_FUNC_END(crc32c_le_vgfm_16)
 
-SYM_FUNC_START(crc32_le_vgfm_generic)
+
+crc32_le_vgfm_generic:
 	/* Load CRC-32 constants */
 	VLM	CONST_PERM_LE2BE,CONST_CRC_POLY,0,%r5
 
@@ -269,7 +263,6 @@ SYM_FUNC_START(crc32_le_vgfm_generic)
 
 .Ldone:
 	VLGVF	%r2,%v2,2
-	BR_EX	%r14
-SYM_FUNC_END(crc32_le_vgfm_generic)
+	br	%r14
 
 .previous

@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/font.h>
 
 #define FONTDATAMAX 11264
 
-static const struct font_data fontdata_sun12x22 = {
-	{ 0, 0, FONTDATAMAX, 0 }, {
+static const unsigned char fontdata_sun12x22[FONTDATAMAX] = {
+
 	/* 0 0x00 '^@' */
 	0x00, 0x00, /* 000000000000 */
 	0x00, 0x00, /* 000000000000 */
@@ -6148,7 +6147,8 @@ static const struct font_data fontdata_sun12x22 = {
 	0x00, 0x00, /* 000000000000 */
 	0x00, 0x00, /* 000000000000 */
 	0x00, 0x00, /* 000000000000 */
-} };
+
+};
 
 
 const struct font_desc font_sun_12x22 = {
@@ -6156,8 +6156,7 @@ const struct font_desc font_sun_12x22 = {
 	.name	= "SUN12x22",
 	.width	= 12,
 	.height	= 22,
-	.charcount = 256,
-	.data	= fontdata_sun12x22.data,
+	.data	= fontdata_sun12x22,
 #ifdef __sparc__
 	.pref	= 5,
 #else

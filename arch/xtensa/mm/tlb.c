@@ -17,7 +17,6 @@
 #include <linux/mm.h>
 #include <asm/processor.h>
 #include <asm/mmu_context.h>
-#include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
 
@@ -96,8 +95,10 @@ void local_flush_tlb_range(struct vm_area_struct *vma,
 	if (mm->context.asid[cpu] == NO_CONTEXT)
 		return;
 
-	pr_debug("[tlbrange<%02lx,%08lx,%08lx>]\n",
-		 (unsigned long)mm->context.asid[cpu], start, end);
+#if 0
+	printk("[tlbrange<%02lx,%08lx,%08lx>]\n",
+			(unsigned long)mm->context.asid[cpu], start, end);
+#endif
 	local_irq_save(flags);
 
 	if (end-start + (PAGE_SIZE-1) <= _TLB_ENTRIES << PAGE_SHIFT) {
@@ -163,12 +164,6 @@ void local_flush_tlb_kernel_range(unsigned long start, unsigned long end)
 	}
 }
 
-void update_mmu_tlb(struct vm_area_struct *vma,
-		    unsigned long address, pte_t *ptep)
-{
-	local_flush_tlb_page(vma, address);
-}
-
 #ifdef CONFIG_DEBUG_TLB_SANITY
 
 static unsigned get_pte_for_vaddr(unsigned vaddr)
@@ -176,32 +171,21 @@ static unsigned get_pte_for_vaddr(unsigned vaddr)
 	struct task_struct *task = get_current();
 	struct mm_struct *mm = task->mm;
 	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
-	unsigned int pteval;
 
 	if (!mm)
 		mm = task->active_mm;
 	pgd = pgd_offset(mm, vaddr);
 	if (pgd_none_or_clear_bad(pgd))
 		return 0;
-	p4d = p4d_offset(pgd, vaddr);
-	if (p4d_none_or_clear_bad(p4d))
-		return 0;
-	pud = pud_offset(p4d, vaddr);
-	if (pud_none_or_clear_bad(pud))
-		return 0;
-	pmd = pmd_offset(pud, vaddr);
+	pmd = pmd_offset(pgd, vaddr);
 	if (pmd_none_or_clear_bad(pmd))
 		return 0;
 	pte = pte_offset_map(pmd, vaddr);
 	if (!pte)
 		return 0;
-	pteval = pte_val(*pte);
-	pte_unmap(pte);
-	return pteval;
+	return pte_val(*pte);
 }
 
 enum {
@@ -234,8 +218,6 @@ static int check_tlb_entry(unsigned w, unsigned e, bool dtlb)
 	unsigned tlbidx = w | (e << PAGE_SHIFT);
 	unsigned r0 = dtlb ?
 		read_dtlb_virtual(tlbidx) : read_itlb_virtual(tlbidx);
-	unsigned r1 = dtlb ?
-		read_dtlb_translation(tlbidx) : read_itlb_translation(tlbidx);
 	unsigned vpn = (r0 & PAGE_MASK) | (e << PAGE_SHIFT);
 	unsigned pte = get_pte_for_vaddr(vpn);
 	unsigned mm_asid = (get_rasid_register() >> 8) & ASID_MASK;
@@ -251,6 +233,8 @@ static int check_tlb_entry(unsigned w, unsigned e, bool dtlb)
 	}
 
 	if (tlb_asid == mm_asid) {
+		unsigned r1 = dtlb ? read_dtlb_translation(tlbidx) :
+			read_itlb_translation(tlbidx);
 		if ((pte ^ r1) & PAGE_MASK) {
 			pr_err("%cTLB: way: %u, entry: %u, mapping: %08x->%08x, PTE: %08x\n",
 					dtlb ? 'D' : 'I', w, e, r0, r1, pte);

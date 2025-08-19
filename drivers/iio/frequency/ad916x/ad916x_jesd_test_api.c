@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include "api_config.h"
 #include "AD916x.h"
 #include "ad916x_reg.h"

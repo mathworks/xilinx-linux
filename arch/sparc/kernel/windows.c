@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* windows.c: Routines to deal with register window management
  *            at the C-code level.
  *
@@ -12,7 +11,7 @@
 #include <linux/smp.h>
 
 #include <asm/cacheflush.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #include "kernel.h"
 
@@ -121,10 +120,8 @@ void try_to_clear_window_buffer(struct pt_regs *regs, int who)
 
 		if ((sp & 7) ||
 		    copy_to_user((char __user *) sp, &tp->reg_window[window],
-				 sizeof(struct reg_window32))) {
-			force_exit_sig(SIGILL);
-			return;
-		}
+				 sizeof(struct reg_window32)))
+			do_exit(SIGILL);
 	}
 	tp->w_saved = 0;
 }

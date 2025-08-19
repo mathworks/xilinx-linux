@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* NXP PCF50633 RTC Driver
  *
  * (C) 2006-2008 by Openmoko, Inc.
@@ -7,6 +6,12 @@
  *
  * Broken down from monstrous PCF50633 driver mainly by
  * Harald Welte, Andy Green and Werner Almesberger
+ *
+ *  This program is free software; you can redistribute  it and/or modify it
+ *  under  the terms of  the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the  License, or (at your
+ *  option) any later version.
+ *
  */
 
 #include <linux/kernel.h>
@@ -126,9 +131,11 @@ static int pcf50633_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	pcf2rtc_time(tm, &pcf_tm);
 
-	dev_dbg(dev, "RTC_TIME: %ptRr\n", tm);
+	dev_dbg(dev, "RTC_TIME: %u.%u.%u %u:%u:%u\n",
+		tm->tm_mday, tm->tm_mon, tm->tm_year,
+		tm->tm_hour, tm->tm_min, tm->tm_sec);
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int pcf50633_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -139,7 +146,9 @@ static int pcf50633_rtc_set_time(struct device *dev, struct rtc_time *tm)
 
 	rtc = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "RTC_TIME: %ptRr\n", tm);
+	dev_dbg(dev, "RTC_TIME: %u.%u.%u %u:%u:%u\n",
+		tm->tm_mday, tm->tm_mon, tm->tm_year,
+		tm->tm_hour, tm->tm_min, tm->tm_sec);
 
 	rtc2pcf_time(&pcf_tm, tm);
 
@@ -260,12 +269,14 @@ static int pcf50633_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void pcf50633_rtc_remove(struct platform_device *pdev)
+static int pcf50633_rtc_remove(struct platform_device *pdev)
 {
 	struct pcf50633_rtc *rtc;
 
 	rtc = platform_get_drvdata(pdev);
 	pcf50633_free_irq(rtc->pcf, PCF50633_IRQ_ALARM);
+
+	return 0;
 }
 
 static struct platform_driver pcf50633_rtc_driver = {
@@ -273,7 +284,7 @@ static struct platform_driver pcf50633_rtc_driver = {
 		.name = "pcf50633-rtc",
 	},
 	.probe = pcf50633_rtc_probe,
-	.remove_new = pcf50633_rtc_remove,
+	.remove = pcf50633_rtc_remove,
 };
 
 module_platform_driver(pcf50633_rtc_driver);

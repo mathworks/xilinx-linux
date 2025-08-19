@@ -18,16 +18,16 @@ int spi_engine_offload_load_msg(struct spi_device *spi,
 
 #else
 
-static inline bool spi_engine_offload_supported(struct spi_device *spi)
+bool spi_engine_offload_supported(struct spi_device *spi)
 {
 	return false;
 }
 
-static inline void spi_engine_offload_enable(struct spi_device *spi, bool enable)
+void spi_engine_offload_enable(struct spi_device *spi, bool enable)
 {
 }
 
-static inline int spi_engine_offload_load_msg(struct spi_device *spi,
+int spi_engine_offload_load_msg(struct spi_device *spi,
 	struct spi_message *msg)
 {
 	return -ENODEV;

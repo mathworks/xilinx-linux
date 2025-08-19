@@ -1,18 +1,24 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * Author	Karsten Keil <kkeil@novell.com>
  *
  * Copyright 2008  by Karsten Keil <kkeil@novell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <linux/slab.h>
 #include <linux/mISDNif.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
-#include <linux/sched/cputime.h>
-#include <linux/signal.h>
-
 #include "core.h"
 
 static u_int	*debug;
@@ -66,7 +72,7 @@ send_socklist(struct mISDN_sock_list *sl, struct sk_buff *skb)
 		if (sk->sk_state != MISDN_BOUND)
 			continue;
 		if (!cskb)
-			cskb = skb_copy(skb, GFP_ATOMIC);
+			cskb = skb_copy(skb, GFP_KERNEL);
 		if (!cskb) {
 			printk(KERN_WARNING "%s no skb\n", __func__);
 			break;
@@ -75,7 +81,8 @@ send_socklist(struct mISDN_sock_list *sl, struct sk_buff *skb)
 			cskb = NULL;
 	}
 	read_unlock(&sl->lock);
-	dev_kfree_skb(cskb);
+	if (cskb)
+		dev_kfree_skb(cskb);
 }
 
 static void
@@ -133,7 +140,8 @@ send_layer2(struct mISDNstack *st, struct sk_buff *skb)
 	}
 out:
 	mutex_unlock(&st->lmutex);
-	dev_kfree_skb(skb);
+	if (skb)
+		dev_kfree_skb(skb);
 }
 
 static inline int
@@ -195,7 +203,7 @@ mISDNStackd(void *data)
 {
 	struct mISDNstack *st = data;
 #ifdef MISDN_MSG_STATS
-	u64 utime, stime;
+	cputime_t utime, stime;
 #endif
 	int err = 0;
 
@@ -300,7 +308,7 @@ mISDNStackd(void *data)
 	       st->stopped_cnt);
 	task_cputime(st->thread, &utime, &stime);
 	printk(KERN_DEBUG
-	       "mISDNStackd daemon for %s utime(%llu) stime(%llu)\n",
+	       "mISDNStackd daemon for %s utime(%ld) stime(%ld)\n",
 	       dev_name(&st->dev->dev), utime, stime);
 	printk(KERN_DEBUG
 	       "mISDNStackd daemon for %s nvcsw(%ld) nivcsw(%ld)\n",
@@ -528,7 +536,6 @@ create_l2entity(struct mISDNdevice *dev, struct mISDNchannel *ch,
 		rq.protocol = ISDN_P_NT_S0;
 		if (dev->Dprotocols & (1 << ISDN_P_NT_E1))
 			rq.protocol = ISDN_P_NT_E1;
-		fallthrough;
 	case ISDN_P_LAPD_TE:
 		ch->recv = mISDN_queue_message;
 		ch->peer = &dev->D.st->own;

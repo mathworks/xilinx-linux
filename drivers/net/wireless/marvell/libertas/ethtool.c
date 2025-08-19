@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/hardirq.h>
 #include <linux/netdevice.h>
 #include <linux/ethtool.h>
@@ -20,8 +19,8 @@ static void lbs_ethtool_get_drvinfo(struct net_device *dev,
 		priv->fwrelease >> 16 & 0xff,
 		priv->fwrelease >>  8 & 0xff,
 		priv->fwrelease       & 0xff);
-	strscpy(info->driver, "libertas", sizeof(info->driver));
-	strscpy(info->version, lbs_driver_version, sizeof(info->version));
+	strlcpy(info->driver, "libertas", sizeof(info->driver));
+	strlcpy(info->version, lbs_driver_version, sizeof(info->version));
 }
 
 /*
@@ -42,9 +41,13 @@ static int lbs_ethtool_get_eeprom(struct net_device *dev,
 	struct cmd_ds_802_11_eeprom_access cmd;
 	int ret;
 
+	lbs_deb_enter(LBS_DEB_ETHTOOL);
+
 	if (eeprom->offset + eeprom->len > LBS_EEPROM_LEN ||
-	    eeprom->len > LBS_EEPROM_READ_LEN)
-		return -EINVAL;
+	    eeprom->len > LBS_EEPROM_READ_LEN) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	cmd.hdr.size = cpu_to_le16(sizeof(struct cmd_ds_802_11_eeprom_access) -
 		LBS_EEPROM_READ_LEN + eeprom->len);
@@ -55,7 +58,9 @@ static int lbs_ethtool_get_eeprom(struct net_device *dev,
 	if (!ret)
 		memcpy(bytes, cmd.value, eeprom->len);
 
-	return ret;
+out:
+	lbs_deb_leave_args(LBS_DEB_ETHTOOL, "ret %d", ret);
+        return ret;
 }
 
 static void lbs_ethtool_get_wol(struct net_device *dev,

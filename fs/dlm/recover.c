@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  1997-2003  All rights reserved.
 **  Copyright (C) 2004-2005 Red Hat, Inc.  All rights reserved.
 **
+**  This copyrighted material is made available to anyone wishing to use,
+**  modify, copy, or redistribute it subject to the terms and conditions
+**  of the GNU General Public License v.2.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -50,10 +52,6 @@ int dlm_wait_function(struct dlm_ls *ls, int (*testfn) (struct dlm_ls *ls))
 					dlm_config.ci_recover_timer * HZ);
 		if (rv)
 			break;
-		if (test_bit(LSFL_RCOM_WAIT, &ls->ls_flags)) {
-			log_debug(ls, "dlm_wait_function timed out");
-			return -ETIMEDOUT;
-		}
 	}
 
 	if (dlm_recovery_stopped(ls)) {
@@ -93,7 +91,7 @@ void dlm_set_recover_status(struct dlm_ls *ls, uint32_t status)
 }
 
 static int wait_status_all(struct dlm_ls *ls, uint32_t wait_status,
-			   int save_slots, uint64_t seq)
+			   int save_slots)
 {
 	struct dlm_rcom *rc = ls->ls_recover_buf;
 	struct dlm_member *memb;
@@ -107,14 +105,14 @@ static int wait_status_all(struct dlm_ls *ls, uint32_t wait_status,
 				goto out;
 			}
 
-			error = dlm_rcom_status(ls, memb->nodeid, 0, seq);
+			error = dlm_rcom_status(ls, memb->nodeid, 0);
 			if (error)
 				goto out;
 
 			if (save_slots)
 				dlm_slot_save(ls, rc, memb);
 
-			if (le32_to_cpu(rc->rc_result) & wait_status)
+			if (rc->rc_result & wait_status)
 				break;
 			if (delay < 1000)
 				delay += 20;
@@ -126,7 +124,7 @@ static int wait_status_all(struct dlm_ls *ls, uint32_t wait_status,
 }
 
 static int wait_status_low(struct dlm_ls *ls, uint32_t wait_status,
-			   uint32_t status_flags, uint64_t seq)
+			   uint32_t status_flags)
 {
 	struct dlm_rcom *rc = ls->ls_recover_buf;
 	int error = 0, delay = 0, nodeid = ls->ls_low_nodeid;
@@ -137,11 +135,11 @@ static int wait_status_low(struct dlm_ls *ls, uint32_t wait_status,
 			goto out;
 		}
 
-		error = dlm_rcom_status(ls, nodeid, status_flags, seq);
+		error = dlm_rcom_status(ls, nodeid, status_flags);
 		if (error)
 			break;
 
-		if (le32_to_cpu(rc->rc_result) & wait_status)
+		if (rc->rc_result & wait_status)
 			break;
 		if (delay < 1000)
 			delay += 20;
@@ -151,22 +149,22 @@ static int wait_status_low(struct dlm_ls *ls, uint32_t wait_status,
 	return error;
 }
 
-static int wait_status(struct dlm_ls *ls, uint32_t status, uint64_t seq)
+static int wait_status(struct dlm_ls *ls, uint32_t status)
 {
 	uint32_t status_all = status << 1;
 	int error;
 
 	if (ls->ls_low_nodeid == dlm_our_nodeid()) {
-		error = wait_status_all(ls, status, 0, seq);
+		error = wait_status_all(ls, status, 0);
 		if (!error)
 			dlm_set_recover_status(ls, status_all);
 	} else
-		error = wait_status_low(ls, status_all, 0, seq);
+		error = wait_status_low(ls, status_all, 0);
 
 	return error;
 }
 
-int dlm_recover_members_wait(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_members_wait(struct dlm_ls *ls)
 {
 	struct dlm_member *memb;
 	struct dlm_slot *slots;
@@ -180,7 +178,7 @@ int dlm_recover_members_wait(struct dlm_ls *ls, uint64_t seq)
 	}
 
 	if (ls->ls_low_nodeid == dlm_our_nodeid()) {
-		error = wait_status_all(ls, DLM_RS_NODES, 1, seq);
+		error = wait_status_all(ls, DLM_RS_NODES, 1);
 		if (error)
 			goto out;
 
@@ -199,8 +197,7 @@ int dlm_recover_members_wait(struct dlm_ls *ls, uint64_t seq)
 			dlm_set_recover_status(ls, DLM_RS_NODES_ALL);
 		}
 	} else {
-		error = wait_status_low(ls, DLM_RS_NODES_ALL,
-					DLM_RSF_NEED_SLOTS, seq);
+		error = wait_status_low(ls, DLM_RS_NODES_ALL, DLM_RSF_NEED_SLOTS);
 		if (error)
 			goto out;
 
@@ -210,19 +207,19 @@ int dlm_recover_members_wait(struct dlm_ls *ls, uint64_t seq)
 	return error;
 }
 
-int dlm_recover_directory_wait(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_directory_wait(struct dlm_ls *ls)
 {
-	return wait_status(ls, DLM_RS_DIR, seq);
+	return wait_status(ls, DLM_RS_DIR);
 }
 
-int dlm_recover_locks_wait(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_locks_wait(struct dlm_ls *ls)
 {
-	return wait_status(ls, DLM_RS_LOCKS, seq);
+	return wait_status(ls, DLM_RS_LOCKS);
 }
 
-int dlm_recover_done_wait(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_done_wait(struct dlm_ls *ls)
 {
-	return wait_status(ls, DLM_RS_DONE, seq);
+	return wait_status(ls, DLM_RS_DONE);
 }
 
 /*
@@ -404,7 +401,7 @@ static void set_lock_master(struct list_head *queue, int nodeid)
 	struct dlm_lkb *lkb;
 
 	list_for_each_entry(lkb, queue, lkb_statequeue) {
-		if (!test_bit(DLM_IFL_MSTCPY_BIT, &lkb->lkb_iflags)) {
+		if (!(lkb->lkb_flags & DLM_IFL_MSTCPY)) {
 			lkb->lkb_nodeid = nodeid;
 			lkb->lkb_remid = 0;
 		}
@@ -442,7 +439,7 @@ static void set_new_master(struct dlm_rsb *r)
  * equals our_nodeid below).
  */
 
-static int recover_master(struct dlm_rsb *r, unsigned int *count, uint64_t seq)
+static int recover_master(struct dlm_rsb *r, unsigned int *count)
 {
 	struct dlm_ls *ls = r->res_ls;
 	int our_nodeid, dir_nodeid;
@@ -473,7 +470,7 @@ static int recover_master(struct dlm_rsb *r, unsigned int *count, uint64_t seq)
 		error = 0;
 	} else {
 		recover_idr_add(r);
-		error = dlm_send_rcom_lookup(r, dir_nodeid, seq);
+		error = dlm_send_rcom_lookup(r, dir_nodeid);
 	}
 
 	(*count)++;
@@ -521,7 +518,7 @@ static int recover_master_static(struct dlm_rsb *r, unsigned int *count)
  * the correct dir node.
  */
 
-int dlm_recover_masters(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_masters(struct dlm_ls *ls)
 {
 	struct dlm_rsb *r;
 	unsigned int total = 0;
@@ -543,7 +540,7 @@ int dlm_recover_masters(struct dlm_ls *ls, uint64_t seq)
 		if (nodir)
 			error = recover_master_static(r, &count);
 		else
-			error = recover_master(r, &count, seq);
+			error = recover_master(r, &count);
 		unlock_rsb(r);
 		cond_resched();
 		total++;
@@ -564,19 +561,19 @@ int dlm_recover_masters(struct dlm_ls *ls, uint64_t seq)
 	return error;
 }
 
-int dlm_recover_master_reply(struct dlm_ls *ls, const struct dlm_rcom *rc)
+int dlm_recover_master_reply(struct dlm_ls *ls, struct dlm_rcom *rc)
 {
 	struct dlm_rsb *r;
 	int ret_nodeid, new_master;
 
-	r = recover_idr_find(ls, le64_to_cpu(rc->rc_id));
+	r = recover_idr_find(ls, rc->rc_id);
 	if (!r) {
 		log_error(ls, "dlm_recover_master_reply no id %llx",
-			  (unsigned long long)le64_to_cpu(rc->rc_id));
+			  (unsigned long long)rc->rc_id);
 		goto out;
 	}
 
-	ret_nodeid = le32_to_cpu(rc->rc_result);
+	ret_nodeid = rc->rc_result;
 
 	if (ret_nodeid == dlm_our_nodeid())
 		new_master = 0;
@@ -615,14 +612,13 @@ int dlm_recover_master_reply(struct dlm_ls *ls, const struct dlm_rcom *rc)
  * an equal number of replies then recovery for the rsb is done
  */
 
-static int recover_locks_queue(struct dlm_rsb *r, struct list_head *head,
-			       uint64_t seq)
+static int recover_locks_queue(struct dlm_rsb *r, struct list_head *head)
 {
 	struct dlm_lkb *lkb;
 	int error = 0;
 
 	list_for_each_entry(lkb, head, lkb_statequeue) {
-		error = dlm_send_rcom_lock(r, lkb, seq);
+	   	error = dlm_send_rcom_lock(r, lkb);
 		if (error)
 			break;
 		r->res_recover_locks_count++;
@@ -631,7 +627,7 @@ static int recover_locks_queue(struct dlm_rsb *r, struct list_head *head,
 	return error;
 }
 
-static int recover_locks(struct dlm_rsb *r, uint64_t seq)
+static int recover_locks(struct dlm_rsb *r)
 {
 	int error = 0;
 
@@ -639,13 +635,13 @@ static int recover_locks(struct dlm_rsb *r, uint64_t seq)
 
 	DLM_ASSERT(!r->res_recover_locks_count, dlm_dump_rsb(r););
 
-	error = recover_locks_queue(r, &r->res_grantqueue, seq);
+	error = recover_locks_queue(r, &r->res_grantqueue);
 	if (error)
 		goto out;
-	error = recover_locks_queue(r, &r->res_convertqueue, seq);
+	error = recover_locks_queue(r, &r->res_convertqueue);
 	if (error)
 		goto out;
-	error = recover_locks_queue(r, &r->res_waitqueue, seq);
+	error = recover_locks_queue(r, &r->res_waitqueue);
 	if (error)
 		goto out;
 
@@ -658,7 +654,7 @@ static int recover_locks(struct dlm_rsb *r, uint64_t seq)
 	return error;
 }
 
-int dlm_recover_locks(struct dlm_ls *ls, uint64_t seq)
+int dlm_recover_locks(struct dlm_ls *ls)
 {
 	struct dlm_rsb *r;
 	int error, count = 0;
@@ -679,7 +675,7 @@ int dlm_recover_locks(struct dlm_ls *ls, uint64_t seq)
 			goto out;
 		}
 
-		error = recover_locks(r, seq);
+		error = recover_locks(r);
 		if (error) {
 			up_read(&ls->ls_root_sem);
 			goto out;
@@ -734,9 +730,10 @@ void dlm_recovered_lock(struct dlm_rsb *r)
 
 static void recover_lvb(struct dlm_rsb *r)
 {
-	struct dlm_lkb *big_lkb = NULL, *iter, *high_lkb = NULL;
+	struct dlm_lkb *lkb, *high_lkb = NULL;
 	uint32_t high_seq = 0;
 	int lock_lvb_exists = 0;
+	int big_lock_exists = 0;
 	int lvblen = r->res_ls->ls_lvblen;
 
 	if (!rsb_flag(r, RSB_NEW_MASTER2) &&
@@ -752,37 +749,37 @@ static void recover_lvb(struct dlm_rsb *r)
 	/* we are the new master, so figure out if VALNOTVALID should
 	   be set, and set the rsb lvb from the best lkb available. */
 
-	list_for_each_entry(iter, &r->res_grantqueue, lkb_statequeue) {
-		if (!(iter->lkb_exflags & DLM_LKF_VALBLK))
+	list_for_each_entry(lkb, &r->res_grantqueue, lkb_statequeue) {
+		if (!(lkb->lkb_exflags & DLM_LKF_VALBLK))
 			continue;
 
 		lock_lvb_exists = 1;
 
-		if (iter->lkb_grmode > DLM_LOCK_CR) {
-			big_lkb = iter;
+		if (lkb->lkb_grmode > DLM_LOCK_CR) {
+			big_lock_exists = 1;
 			goto setflag;
 		}
 
-		if (((int)iter->lkb_lvbseq - (int)high_seq) >= 0) {
-			high_lkb = iter;
-			high_seq = iter->lkb_lvbseq;
+		if (((int)lkb->lkb_lvbseq - (int)high_seq) >= 0) {
+			high_lkb = lkb;
+			high_seq = lkb->lkb_lvbseq;
 		}
 	}
 
-	list_for_each_entry(iter, &r->res_convertqueue, lkb_statequeue) {
-		if (!(iter->lkb_exflags & DLM_LKF_VALBLK))
+	list_for_each_entry(lkb, &r->res_convertqueue, lkb_statequeue) {
+		if (!(lkb->lkb_exflags & DLM_LKF_VALBLK))
 			continue;
 
 		lock_lvb_exists = 1;
 
-		if (iter->lkb_grmode > DLM_LOCK_CR) {
-			big_lkb = iter;
+		if (lkb->lkb_grmode > DLM_LOCK_CR) {
+			big_lock_exists = 1;
 			goto setflag;
 		}
 
-		if (((int)iter->lkb_lvbseq - (int)high_seq) >= 0) {
-			high_lkb = iter;
-			high_seq = iter->lkb_lvbseq;
+		if (((int)lkb->lkb_lvbseq - (int)high_seq) >= 0) {
+			high_lkb = lkb;
+			high_seq = lkb->lkb_lvbseq;
 		}
 	}
 
@@ -791,7 +788,7 @@ static void recover_lvb(struct dlm_rsb *r)
 		goto out;
 
 	/* lvb is invalidated if only NL/CR locks remain */
-	if (!big_lkb)
+	if (!big_lock_exists)
 		rsb_set_flag(r, RSB_VALNOTVALID);
 
 	if (!r->res_lvbptr) {
@@ -800,9 +797,9 @@ static void recover_lvb(struct dlm_rsb *r)
 			goto out;
 	}
 
-	if (big_lkb) {
-		r->res_lvbseq = big_lkb->lkb_lvbseq;
-		memcpy(r->res_lvbptr, big_lkb->lkb_lvbptr, lvblen);
+	if (big_lock_exists) {
+		r->res_lvbseq = lkb->lkb_lvbseq;
+		memcpy(r->res_lvbptr, lkb->lkb_lvbptr, lvblen);
 	} else if (high_lkb) {
 		r->res_lvbseq = high_lkb->lkb_lvbseq;
 		memcpy(r->res_lvbptr, high_lkb->lkb_lvbptr, lvblen);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Clock driver for Palmas device.
  *
@@ -7,6 +6,15 @@
  *
  * Author:	Laxman Dewangan <ldewangan@nvidia.com>
  *		Peter Ujfalusi <peter.ujfalusi@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any kind,
+ * whether express or implied; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
  */
 
 #include <linux/clk.h>
@@ -14,6 +22,7 @@
 #include <linux/mfd/palmas.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -106,7 +115,7 @@ static int palmas_clks_is_prepared(struct clk_hw *hw)
 	return !!(val & cinfo->clk_desc->enable_mask);
 }
 
-static const struct clk_ops palmas_clks_ops = {
+static struct clk_ops palmas_clks_ops = {
 	.prepare	= palmas_clks_prepare,
 	.unprepare	= palmas_clks_unprepare,
 	.is_prepared	= palmas_clks_is_prepared,
@@ -186,8 +195,8 @@ static void palmas_clks_get_clk_data(struct platform_device *pdev,
 		prop = PALMAS_EXT_CONTROL_NSLEEP;
 		break;
 	default:
-		dev_warn(&pdev->dev, "%pOFn: Invalid ext control option: %u\n",
-			 node, prop);
+		dev_warn(&pdev->dev, "%s: Invalid ext control option: %u\n",
+			 node->name, prop);
 		prop = 0;
 		break;
 	}
@@ -220,7 +229,6 @@ static int palmas_clks_init_configure(struct palmas_clock_info *cinfo)
 		if (ret < 0) {
 			dev_err(cinfo->dev, "Ext config for %s failed, %d\n",
 				cinfo->clk_desc->clk_name, ret);
-			clk_unprepare(cinfo->hw.clk);
 			return ret;
 		}
 	}
@@ -270,9 +278,10 @@ static int palmas_clks_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void palmas_clks_remove(struct platform_device *pdev)
+static int palmas_clks_remove(struct platform_device *pdev)
 {
 	of_clk_del_provider(pdev->dev.of_node);
+	return 0;
 }
 
 static struct platform_driver palmas_clks_driver = {
@@ -281,7 +290,7 @@ static struct platform_driver palmas_clks_driver = {
 		.of_match_table = palmas_clks_of_match,
 	},
 	.probe = palmas_clks_probe,
-	.remove_new = palmas_clks_remove,
+	.remove = palmas_clks_remove,
 };
 
 module_platform_driver(palmas_clks_driver);

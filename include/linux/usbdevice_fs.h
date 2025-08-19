@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*****************************************************************************/
 
 /*
@@ -69,7 +68,7 @@ struct usbdevfs_urb32 {
 	compat_int_t error_count;
 	compat_uint_t signr;
 	compat_caddr_t usercontext; /* unused */
-	struct usbdevfs_iso_packet_desc iso_frame_desc[];
+	struct usbdevfs_iso_packet_desc iso_frame_desc[0];
 };
 
 struct usbdevfs_ioctl32 {

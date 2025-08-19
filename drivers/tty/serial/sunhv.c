@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* sunhv.c: Serial driver for SUN4V hypervisor console.
  *
  * Copyright (C) 2006, 2007 David S. Miller (davem@davemloft.net)
@@ -17,13 +16,17 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/init.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <asm/hypervisor.h>
 #include <asm/spitfire.h>
+#include <asm/prom.h>
 #include <asm/irq.h>
 #include <asm/setup.h>
+
+#if defined(CONFIG_MAGIC_SYSRQ)
+#define SUPPORT_SYSRQ
+#endif
 
 #include <linux/serial_core.h>
 #include <linux/sunserialcore.h>
@@ -47,7 +50,8 @@ static void transmit_chars_putchar(struct uart_port *port, struct circ_buf *xmit
 		if (status != HV_EOK)
 			break;
 
-		uart_xmit_advance(port, 1);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		port->icount.tx++;
 	}
 }
 
@@ -62,7 +66,8 @@ static void transmit_chars_write(struct uart_port *port, struct circ_buf *xmit)
 		status = sun4v_con_write(ra, len, &sent);
 		if (status != HV_EOK)
 			break;
-		uart_xmit_advance(port, sent);
+		xmit->tail = (xmit->tail + sent) & (UART_XMIT_SIZE - 1);
+		port->icount.tx += sent;
 	}
 }
 
@@ -87,10 +92,10 @@ static int receive_chars_getchar(struct uart_port *port)
 
 		if (c == CON_HUP) {
 			hung_up = 1;
-			uart_handle_dcd_change(port, false);
+			uart_handle_dcd_change(port, 0);
 		} else if (hung_up) {
 			hung_up = 0;
-			uart_handle_dcd_change(port, true);
+			uart_handle_dcd_change(port, 1);
 		}
 
 		if (port->state == NULL) {
@@ -111,7 +116,7 @@ static int receive_chars_getchar(struct uart_port *port)
 
 static int receive_chars_read(struct uart_port *port)
 {
-	static int saw_console_brk;
+	int saw_console_brk = 0;
 	int limit = 10000;
 
 	while (limit-- > 0) {
@@ -123,9 +128,6 @@ static int receive_chars_read(struct uart_port *port)
 			bytes_read = 0;
 
 			if (stat == CON_BREAK) {
-				if (saw_console_brk)
-					sun_do_break();
-
 				if (uart_handle_break(port))
 					continue;
 				saw_console_brk = 1;
@@ -133,7 +135,7 @@ static int receive_chars_read(struct uart_port *port)
 				bytes_read = 1;
 			} else if (stat == CON_HUP) {
 				hung_up = 1;
-				uart_handle_dcd_change(port, false);
+				uart_handle_dcd_change(port, 0);
 				continue;
 			} else {
 				/* HV_EWOULDBLOCK, etc.  */
@@ -143,13 +145,12 @@ static int receive_chars_read(struct uart_port *port)
 
 		if (hung_up) {
 			hung_up = 0;
-			uart_handle_dcd_change(port, true);
+			uart_handle_dcd_change(port, 1);
 		}
 
 		if (port->sysrq != 0 &&  *con_read_page) {
 			for (i = 0; i < bytes_read; i++)
 				uart_handle_sysrq_char(port, con_read_page[i]);
-			saw_console_brk = 0;
 		}
 
 		if (port->state == NULL)
@@ -321,7 +322,7 @@ static void sunhv_shutdown(struct uart_port *port)
 
 /* port->lock is not held.  */
 static void sunhv_set_termios(struct uart_port *port, struct ktermios *termios,
-			      const struct ktermios *old)
+			      struct ktermios *old)
 {
 	unsigned int baud = uart_get_baud_rate(port, termios, old, 0, 4000000);
 	unsigned int quot = uart_get_divisor(port, baud);
@@ -369,7 +370,7 @@ static int sunhv_verify_port(struct uart_port *port, struct serial_struct *ser)
 	return -EINVAL;
 }
 
-static const struct uart_ops sunhv_pops = {
+static struct uart_ops sunhv_pops = {
 	.tx_empty	= sunhv_tx_empty,
 	.set_mctrl	= sunhv_set_mctrl,
 	.get_mctrl	= sunhv_get_mctrl,
@@ -391,17 +392,11 @@ static const struct uart_ops sunhv_pops = {
 static struct uart_driver sunhv_reg = {
 	.owner			= THIS_MODULE,
 	.driver_name		= "sunhv",
-	.dev_name		= "ttyHV",
+	.dev_name		= "ttyS",
 	.major			= TTY_MAJOR,
 };
 
 static struct uart_port *sunhv_port;
-
-void sunhv_migrate_hvcons_irq(int cpu)
-{
-	/* Migrate hvcons irq to param cpu */
-	irq_force_affinity(sunhv_port->irq, cpumask_of(cpu));
-}
 
 /* Copy 's' into the con_write_page, decoding "\n" into
  * "\r\n" along the way.  We have to return two lengths
@@ -546,7 +541,6 @@ static int hv_probe(struct platform_device *op)
 
 	sunhv_port = port;
 
-	port->has_sysrq = 1;
 	port->line = 0;
 	port->ops = &sunhv_pops;
 	port->type = PORT_SUNHV;
@@ -604,8 +598,7 @@ static int hv_remove(struct platform_device *dev)
 	uart_remove_one_port(&sunhv_reg, port);
 
 	sunserial_unregister_minors(&sunhv_reg, 1);
-	kfree(con_read_page);
-	kfree(con_write_page);
+
 	kfree(port);
 	sunhv_port = NULL;
 

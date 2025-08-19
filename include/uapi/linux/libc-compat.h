@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Compatibility interface for userspace libc header coordination:
  *
@@ -49,13 +48,13 @@
 #ifndef _UAPI_LIBC_COMPAT_H
 #define _UAPI_LIBC_COMPAT_H
 
-/* We have included glibc headers... */
-#if defined(__GLIBC__)
+/* We have included libc headers... */
+#if !defined(__KERNEL__)
 
-/* Coordinate with glibc net/if.h header. */
-#if defined(_NET_IF_H) && defined(__USE_MISC)
+/* Coordinate with libc net/if.h header. */
+#if defined(_NET_IF_H) && (!defined(__GLIBC__) || defined(__USE_MISC))
 
-/* GLIBC headers included first so don't define anything
+/* LIBC headers included first so don't define anything
  * that would already be defined. */
 
 #define __UAPI_DEF_IF_IFCONF 0
@@ -66,7 +65,11 @@
 #define __UAPI_DEF_IF_NET_DEVICE_FLAGS 0
 /* For the future if glibc adds IFF_LOWER_UP, IFF_DORMANT and IFF_ECHO */
 #ifndef __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO
+#ifdef __GLIBC__
 #define __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO 1
+#else
+#define __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO 0
+#endif
 #endif /* __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO */
 
 #else /* _NET_IF_H */
@@ -86,10 +89,18 @@
 
 #endif /* _NET_IF_H */
 
-/* Coordinate with glibc netinet/in.h header. */
+/* musl defines the ethhdr struct itself in its netinet/if_ether.h.
+ * Glibc just includes the kernel header and uses a different guard. */
+#if defined(_NETINET_IF_ETHER_H)
+#define __UAPI_DEF_ETHHDR		0
+#else
+#define __UAPI_DEF_ETHHDR		1
+#endif
+
+/* Coordinate with libc netinet/in.h header. */
 #if defined(_NETINET_IN_H)
 
-/* GLIBC headers included first so don't define anything
+/* LIBC headers included first so don't define anything
  * that would already be defined. */
 #define __UAPI_DEF_IN_ADDR		0
 #define __UAPI_DEF_IN_IPPROTO		0
@@ -103,7 +114,7 @@
  * if the glibc code didn't define them. This guard matches
  * the guard in glibc/inet/netinet/in.h which defines the
  * additional in6_addr macros e.g. s6_addr16, and s6_addr32. */
-#if defined(__USE_MISC) || defined (__USE_GNU)
+#if !defined(__GLIBC__) || defined(__USE_MISC) || defined (__USE_GNU)
 #define __UAPI_DEF_IN6_ADDR_ALT		0
 #else
 #define __UAPI_DEF_IN6_ADDR_ALT		1
@@ -118,7 +129,7 @@
 #else
 
 /* Linux headers included first, and we must define everything
- * we need. The expectation is that glibc will check the
+ * we need. The expectation is that the libc will check the
  * __UAPI_DEF_* defines and adjust appropriately. */
 #define __UAPI_DEF_IN_ADDR		1
 #define __UAPI_DEF_IN_IPPROTO		1
@@ -128,7 +139,7 @@
 #define __UAPI_DEF_IN_CLASS		1
 
 #define __UAPI_DEF_IN6_ADDR		1
-/* We unconditionally define the in6_addr macros and glibc must
+/* We unconditionally define the in6_addr macros and the libc must
  * coordinate. */
 #define __UAPI_DEF_IN6_ADDR_ALT		1
 #define __UAPI_DEF_SOCKADDR_IN6		1
@@ -168,100 +179,50 @@
 
 /* If we did not see any headers from any supported C libraries,
  * or we are being included in the kernel, then define everything
- * that we need. Check for previous __UAPI_* definitions to give
- * unsupported C libraries a way to opt out of any kernel definition. */
-#else /* !defined(__GLIBC__) */
+ * that we need. */
+#else /* defined(__KERNEL__) */
 
 /* Definitions for if.h */
-#ifndef __UAPI_DEF_IF_IFCONF
 #define __UAPI_DEF_IF_IFCONF 1
-#endif
-#ifndef __UAPI_DEF_IF_IFMAP
 #define __UAPI_DEF_IF_IFMAP 1
-#endif
-#ifndef __UAPI_DEF_IF_IFNAMSIZ
 #define __UAPI_DEF_IF_IFNAMSIZ 1
-#endif
-#ifndef __UAPI_DEF_IF_IFREQ
 #define __UAPI_DEF_IF_IFREQ 1
-#endif
 /* Everything up to IFF_DYNAMIC, matches net/if.h until glibc 2.23 */
-#ifndef __UAPI_DEF_IF_NET_DEVICE_FLAGS
 #define __UAPI_DEF_IF_NET_DEVICE_FLAGS 1
-#endif
 /* For the future if glibc adds IFF_LOWER_UP, IFF_DORMANT and IFF_ECHO */
-#ifndef __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO
 #define __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO 1
-#endif
+
+/* Definitions for if_ether.h */
+#define __UAPI_DEF_ETHHDR 		1
 
 /* Definitions for in.h */
-#ifndef __UAPI_DEF_IN_ADDR
 #define __UAPI_DEF_IN_ADDR		1
-#endif
-#ifndef __UAPI_DEF_IN_IPPROTO
 #define __UAPI_DEF_IN_IPPROTO		1
-#endif
-#ifndef __UAPI_DEF_IN_PKTINFO
 #define __UAPI_DEF_IN_PKTINFO		1
-#endif
-#ifndef __UAPI_DEF_IP_MREQ
 #define __UAPI_DEF_IP_MREQ		1
-#endif
-#ifndef __UAPI_DEF_SOCKADDR_IN
 #define __UAPI_DEF_SOCKADDR_IN		1
-#endif
-#ifndef __UAPI_DEF_IN_CLASS
 #define __UAPI_DEF_IN_CLASS		1
-#endif
 
 /* Definitions for in6.h */
-#ifndef __UAPI_DEF_IN6_ADDR
 #define __UAPI_DEF_IN6_ADDR		1
-#endif
-#ifndef __UAPI_DEF_IN6_ADDR_ALT
 #define __UAPI_DEF_IN6_ADDR_ALT		1
-#endif
-#ifndef __UAPI_DEF_SOCKADDR_IN6
 #define __UAPI_DEF_SOCKADDR_IN6		1
-#endif
-#ifndef __UAPI_DEF_IPV6_MREQ
 #define __UAPI_DEF_IPV6_MREQ		1
-#endif
-#ifndef __UAPI_DEF_IPPROTO_V6
 #define __UAPI_DEF_IPPROTO_V6		1
-#endif
-#ifndef __UAPI_DEF_IPV6_OPTIONS
 #define __UAPI_DEF_IPV6_OPTIONS		1
-#endif
-#ifndef __UAPI_DEF_IN6_PKTINFO
 #define __UAPI_DEF_IN6_PKTINFO		1
-#endif
-#ifndef __UAPI_DEF_IP6_MTUINFO
 #define __UAPI_DEF_IP6_MTUINFO		1
-#endif
 
 /* Definitions for ipx.h */
-#ifndef __UAPI_DEF_SOCKADDR_IPX
 #define __UAPI_DEF_SOCKADDR_IPX			1
-#endif
-#ifndef __UAPI_DEF_IPX_ROUTE_DEFINITION
 #define __UAPI_DEF_IPX_ROUTE_DEFINITION		1
-#endif
-#ifndef __UAPI_DEF_IPX_INTERFACE_DEFINITION
 #define __UAPI_DEF_IPX_INTERFACE_DEFINITION	1
-#endif
-#ifndef __UAPI_DEF_IPX_CONFIG_DATA
 #define __UAPI_DEF_IPX_CONFIG_DATA		1
-#endif
-#ifndef __UAPI_DEF_IPX_ROUTE_DEF
 #define __UAPI_DEF_IPX_ROUTE_DEF		1
-#endif
 
 /* Definitions for xattr.h */
-#ifndef __UAPI_DEF_XATTR
 #define __UAPI_DEF_XATTR		1
-#endif
 
-#endif /* __GLIBC__ */
+#endif /* __KERNEL__ */
 
 #endif /* _UAPI_LIBC_COMPAT_H */

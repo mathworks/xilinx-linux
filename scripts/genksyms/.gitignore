@@ -1,2 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-only
-/genksyms
+*.hash.c
+*.lex.c
+*.tab.c
+*.tab.h
+genksyms

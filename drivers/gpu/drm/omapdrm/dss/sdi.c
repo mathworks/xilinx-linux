@@ -1,45 +1,53 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
+ * linux/drivers/video/omap2/dss/sdi.c
+ *
  * Copyright (C) 2009 Nokia Corporation
- * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
+ * Author: Tomi Valkeinen <tomi.valkeinen@nokia.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #define DSS_SUBSYS_NAME "SDI"
 
+#include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/export.h>
-#include <linux/kernel.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/export.h>
+#include <linux/platform_device.h>
 #include <linux/string.h>
+#include <linux/of.h>
+#include <linux/component.h>
 
-#include <drm/drm_bridge.h>
-
-#include "dss.h"
 #include "omapdss.h"
+#include "dss.h"
 
-struct sdi_device {
+static struct {
 	struct platform_device *pdev;
-	struct dss_device *dss;
 
 	bool update_enabled;
 	struct regulator *vdds_sdi_reg;
 
 	struct dss_lcd_mgr_config mgr_config;
-	unsigned long pixelclock;
+	struct omap_video_timings timings;
 	int datapairs;
 
 	struct omap_dss_device output;
-	struct drm_bridge bridge;
-};
 
-#define drm_bridge_to_sdi(bridge) \
-	container_of(bridge, struct sdi_device, bridge)
+	bool port_initialized;
+} sdi;
 
 struct sdi_clk_calc_ctx {
-	struct sdi_device *sdi;
 	unsigned long pck_min, pck_max;
 
 	unsigned long fck;
@@ -65,14 +73,13 @@ static bool dpi_calc_dss_cb(unsigned long fck, void *data)
 
 	ctx->fck = fck;
 
-	return dispc_div_calc(ctx->sdi->dss->dispc, fck,
-			      ctx->pck_min, ctx->pck_max,
-			      dpi_calc_dispc_cb, ctx);
+	return dispc_div_calc(fck, ctx->pck_min, ctx->pck_max,
+			dpi_calc_dispc_cb, ctx);
 }
 
-static int sdi_calc_clock_div(struct sdi_device *sdi, unsigned long pclk,
-			      unsigned long *fck,
-			      struct dispc_clock_info *dispc_cinfo)
+static int sdi_calc_clock_div(unsigned long pclk,
+		unsigned long *fck,
+		struct dispc_clock_info *dispc_cinfo)
 {
 	int i;
 	struct sdi_clk_calc_ctx ctx;
@@ -88,17 +95,13 @@ static int sdi_calc_clock_div(struct sdi_device *sdi, unsigned long pclk,
 		bool ok;
 
 		memset(&ctx, 0, sizeof(ctx));
-
-		ctx.sdi = sdi;
-
 		if (pclk > 1000 * i * i * i)
 			ctx.pck_min = max(pclk - 1000 * i * i * i, 0lu);
 		else
 			ctx.pck_min = 0;
 		ctx.pck_max = pclk + 1000 * i * i * i;
 
-		ok = dss_div_calc(sdi->dss, pclk, ctx.pck_min,
-				  dpi_calc_dss_cb, &ctx);
+		ok = dss_div_calc(pclk, ctx.pck_min, dpi_calc_dss_cb, &ctx);
 		if (ok) {
 			*fck = ctx.fck;
 			*dispc_cinfo = ctx.dispc_cinfo;
@@ -109,118 +112,71 @@ static int sdi_calc_clock_div(struct sdi_device *sdi, unsigned long pclk,
 	return -EINVAL;
 }
 
-static void sdi_config_lcd_manager(struct sdi_device *sdi)
+static void sdi_config_lcd_manager(struct omap_dss_device *dssdev)
 {
-	sdi->mgr_config.io_pad_mode = DSS_IO_PAD_MODE_BYPASS;
+	enum omap_channel channel = dssdev->dispc_channel;
 
-	sdi->mgr_config.stallmode = false;
-	sdi->mgr_config.fifohandcheck = false;
+	sdi.mgr_config.io_pad_mode = DSS_IO_PAD_MODE_BYPASS;
 
-	sdi->mgr_config.video_port_width = 24;
-	sdi->mgr_config.lcden_sig_polarity = 1;
+	sdi.mgr_config.stallmode = false;
+	sdi.mgr_config.fifohandcheck = false;
 
-	dss_mgr_set_lcd_config(&sdi->output, &sdi->mgr_config);
+	sdi.mgr_config.video_port_width = 24;
+	sdi.mgr_config.lcden_sig_polarity = 1;
+
+	dss_mgr_set_lcd_config(channel, &sdi.mgr_config);
 }
 
-/* -----------------------------------------------------------------------------
- * DRM Bridge Operations
- */
-
-static int sdi_bridge_attach(struct drm_bridge *bridge,
-			     enum drm_bridge_attach_flags flags)
+static int sdi_display_enable(struct omap_dss_device *dssdev)
 {
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
-
-	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR))
-		return -EINVAL;
-
-	return drm_bridge_attach(bridge->encoder, sdi->output.next_bridge,
-				 bridge, flags);
-}
-
-static enum drm_mode_status
-sdi_bridge_mode_valid(struct drm_bridge *bridge,
-		      const struct drm_display_info *info,
-		      const struct drm_display_mode *mode)
-{
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
-	unsigned long pixelclock = mode->clock * 1000;
-	struct dispc_clock_info dispc_cinfo;
+	struct omap_dss_device *out = &sdi.output;
+	enum omap_channel channel = dssdev->dispc_channel;
+	struct omap_video_timings *t = &sdi.timings;
 	unsigned long fck;
-	int ret;
-
-	if (pixelclock == 0)
-		return MODE_NOCLOCK;
-
-	ret = sdi_calc_clock_div(sdi, pixelclock, &fck, &dispc_cinfo);
-	if (ret < 0)
-		return MODE_CLOCK_RANGE;
-
-	return MODE_OK;
-}
-
-static bool sdi_bridge_mode_fixup(struct drm_bridge *bridge,
-				  const struct drm_display_mode *mode,
-				  struct drm_display_mode *adjusted_mode)
-{
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
-	unsigned long pixelclock = mode->clock * 1000;
 	struct dispc_clock_info dispc_cinfo;
-	unsigned long fck;
 	unsigned long pck;
-	int ret;
-
-	ret = sdi_calc_clock_div(sdi, pixelclock, &fck, &dispc_cinfo);
-	if (ret < 0)
-		return false;
-
-	pck = fck / dispc_cinfo.lck_div / dispc_cinfo.pck_div;
-
-	if (pck != pixelclock)
-		dev_dbg(&sdi->pdev->dev,
-			"pixel clock adjusted from %lu Hz to %lu Hz\n",
-			pixelclock, pck);
-
-	adjusted_mode->clock = pck / 1000;
-
-	return true;
-}
-
-static void sdi_bridge_mode_set(struct drm_bridge *bridge,
-				const struct drm_display_mode *mode,
-				const struct drm_display_mode *adjusted_mode)
-{
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
-
-	sdi->pixelclock = adjusted_mode->clock * 1000;
-}
-
-static void sdi_bridge_enable(struct drm_bridge *bridge)
-{
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
-	struct dispc_clock_info dispc_cinfo;
-	unsigned long fck;
 	int r;
 
-	r = regulator_enable(sdi->vdds_sdi_reg);
-	if (r)
-		return;
+	if (!out->dispc_channel_connected) {
+		DSSERR("failed to enable display: no output/manager\n");
+		return -ENODEV;
+	}
 
-	r = dispc_runtime_get(sdi->dss->dispc);
+	r = regulator_enable(sdi.vdds_sdi_reg);
+	if (r)
+		goto err_reg_enable;
+
+	r = dispc_runtime_get();
 	if (r)
 		goto err_get_dispc;
 
-	r = sdi_calc_clock_div(sdi, sdi->pixelclock, &fck, &dispc_cinfo);
+	/* 15.5.9.1.2 */
+	t->data_pclk_edge = OMAPDSS_DRIVE_SIG_RISING_EDGE;
+	t->sync_pclk_edge = OMAPDSS_DRIVE_SIG_RISING_EDGE;
+
+	r = sdi_calc_clock_div(t->pixelclock, &fck, &dispc_cinfo);
 	if (r)
 		goto err_calc_clock_div;
 
-	sdi->mgr_config.clock_info = dispc_cinfo;
+	sdi.mgr_config.clock_info = dispc_cinfo;
 
-	r = dss_set_fck_rate(sdi->dss, fck);
+	pck = fck / dispc_cinfo.lck_div / dispc_cinfo.pck_div;
+
+	if (pck != t->pixelclock) {
+		DSSWARN("Could not find exact pixel clock. Requested %d Hz, got %lu Hz\n",
+			t->pixelclock, pck);
+
+		t->pixelclock = pck;
+	}
+
+
+	dss_mgr_set_timings(channel, t);
+
+	r = dss_set_fck_rate(fck);
 	if (r)
 		goto err_set_dss_clock_div;
 
-	sdi_config_lcd_manager(sdi);
+	sdi_config_lcd_manager(dssdev);
 
 	/*
 	 * LCLK and PCLK divisors are located in shadow registers, and we
@@ -233,165 +189,264 @@ static void sdi_bridge_enable(struct drm_bridge *bridge)
 	 * need to care about the shadow register mechanism for pck-free. The
 	 * exact reason for this is unknown.
 	 */
-	dispc_mgr_set_clock_div(sdi->dss->dispc, sdi->output.dispc_channel,
-				&sdi->mgr_config.clock_info);
+	dispc_mgr_set_clock_div(channel, &sdi.mgr_config.clock_info);
 
-	dss_sdi_init(sdi->dss, sdi->datapairs);
-	r = dss_sdi_enable(sdi->dss);
+	dss_sdi_init(sdi.datapairs);
+	r = dss_sdi_enable();
 	if (r)
 		goto err_sdi_enable;
 	mdelay(2);
 
-	r = dss_mgr_enable(&sdi->output);
+	r = dss_mgr_enable(channel);
 	if (r)
 		goto err_mgr_enable;
 
-	return;
+	return 0;
 
 err_mgr_enable:
-	dss_sdi_disable(sdi->dss);
+	dss_sdi_disable();
 err_sdi_enable:
 err_set_dss_clock_div:
 err_calc_clock_div:
-	dispc_runtime_put(sdi->dss->dispc);
+	dispc_runtime_put();
 err_get_dispc:
-	regulator_disable(sdi->vdds_sdi_reg);
+	regulator_disable(sdi.vdds_sdi_reg);
+err_reg_enable:
+	return r;
 }
 
-static void sdi_bridge_disable(struct drm_bridge *bridge)
+static void sdi_display_disable(struct omap_dss_device *dssdev)
 {
-	struct sdi_device *sdi = drm_bridge_to_sdi(bridge);
+	enum omap_channel channel = dssdev->dispc_channel;
 
-	dss_mgr_disable(&sdi->output);
+	dss_mgr_disable(channel);
 
-	dss_sdi_disable(sdi->dss);
+	dss_sdi_disable();
 
-	dispc_runtime_put(sdi->dss->dispc);
+	dispc_runtime_put();
 
-	regulator_disable(sdi->vdds_sdi_reg);
+	regulator_disable(sdi.vdds_sdi_reg);
 }
 
-static const struct drm_bridge_funcs sdi_bridge_funcs = {
-	.attach = sdi_bridge_attach,
-	.mode_valid = sdi_bridge_mode_valid,
-	.mode_fixup = sdi_bridge_mode_fixup,
-	.mode_set = sdi_bridge_mode_set,
-	.enable = sdi_bridge_enable,
-	.disable = sdi_bridge_disable,
-};
-
-static void sdi_bridge_init(struct sdi_device *sdi)
+static void sdi_set_timings(struct omap_dss_device *dssdev,
+		struct omap_video_timings *timings)
 {
-	sdi->bridge.funcs = &sdi_bridge_funcs;
-	sdi->bridge.of_node = sdi->pdev->dev.of_node;
-	sdi->bridge.type = DRM_MODE_CONNECTOR_LVDS;
-
-	drm_bridge_add(&sdi->bridge);
+	sdi.timings = *timings;
 }
 
-static void sdi_bridge_cleanup(struct sdi_device *sdi)
+static void sdi_get_timings(struct omap_dss_device *dssdev,
+		struct omap_video_timings *timings)
 {
-	drm_bridge_remove(&sdi->bridge);
+	*timings = sdi.timings;
 }
 
-/* -----------------------------------------------------------------------------
- * Initialisation and Cleanup
- */
-
-static int sdi_init_output(struct sdi_device *sdi)
+static int sdi_check_timings(struct omap_dss_device *dssdev,
+			struct omap_video_timings *timings)
 {
-	struct omap_dss_device *out = &sdi->output;
-	int r;
+	enum omap_channel channel = dssdev->dispc_channel;
 
-	sdi_bridge_init(sdi);
+	if (!dispc_mgr_timings_ok(channel, timings))
+		return -EINVAL;
 
-	out->dev = &sdi->pdev->dev;
-	out->id = OMAP_DSS_OUTPUT_SDI;
-	out->type = OMAP_DISPLAY_TYPE_SDI;
-	out->name = "sdi.0";
-	out->dispc_channel = OMAP_DSS_CHANNEL_LCD;
-	/* We have SDI only on OMAP3, where it's on port 1 */
-	out->of_port = 1;
-	out->bus_flags = DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE	/* 15.5.9.1.2 */
-		       | DRM_BUS_FLAG_SYNC_DRIVE_POSEDGE;
-
-	r = omapdss_device_init_output(out, &sdi->bridge);
-	if (r < 0) {
-		sdi_bridge_cleanup(sdi);
-		return r;
-	}
-
-	omapdss_device_register(out);
+	if (timings->pixelclock == 0)
+		return -EINVAL;
 
 	return 0;
 }
 
-static void sdi_uninit_output(struct sdi_device *sdi)
+static void sdi_set_datapairs(struct omap_dss_device *dssdev, int datapairs)
 {
-	omapdss_device_unregister(&sdi->output);
-	omapdss_device_cleanup_output(&sdi->output);
-
-	sdi_bridge_cleanup(sdi);
+	sdi.datapairs = datapairs;
 }
 
-int sdi_init_port(struct dss_device *dss, struct platform_device *pdev,
-		  struct device_node *port)
+static int sdi_init_regulator(void)
 {
-	struct sdi_device *sdi;
+	struct regulator *vdds_sdi;
+
+	if (sdi.vdds_sdi_reg)
+		return 0;
+
+	vdds_sdi = devm_regulator_get(&sdi.pdev->dev, "vdds_sdi");
+	if (IS_ERR(vdds_sdi)) {
+		if (PTR_ERR(vdds_sdi) != -EPROBE_DEFER)
+			DSSERR("can't get VDDS_SDI regulator\n");
+		return PTR_ERR(vdds_sdi);
+	}
+
+	sdi.vdds_sdi_reg = vdds_sdi;
+
+	return 0;
+}
+
+static int sdi_connect(struct omap_dss_device *dssdev,
+		struct omap_dss_device *dst)
+{
+	enum omap_channel channel = dssdev->dispc_channel;
+	int r;
+
+	r = sdi_init_regulator();
+	if (r)
+		return r;
+
+	r = dss_mgr_connect(channel, dssdev);
+	if (r)
+		return r;
+
+	r = omapdss_output_set_device(dssdev, dst);
+	if (r) {
+		DSSERR("failed to connect output to new device: %s\n",
+				dst->name);
+		dss_mgr_disconnect(channel, dssdev);
+		return r;
+	}
+
+	return 0;
+}
+
+static void sdi_disconnect(struct omap_dss_device *dssdev,
+		struct omap_dss_device *dst)
+{
+	enum omap_channel channel = dssdev->dispc_channel;
+
+	WARN_ON(dst != dssdev->dst);
+
+	if (dst != dssdev->dst)
+		return;
+
+	omapdss_output_unset_device(dssdev);
+
+	dss_mgr_disconnect(channel, dssdev);
+}
+
+static const struct omapdss_sdi_ops sdi_ops = {
+	.connect = sdi_connect,
+	.disconnect = sdi_disconnect,
+
+	.enable = sdi_display_enable,
+	.disable = sdi_display_disable,
+
+	.check_timings = sdi_check_timings,
+	.set_timings = sdi_set_timings,
+	.get_timings = sdi_get_timings,
+
+	.set_datapairs = sdi_set_datapairs,
+};
+
+static void sdi_init_output(struct platform_device *pdev)
+{
+	struct omap_dss_device *out = &sdi.output;
+
+	out->dev = &pdev->dev;
+	out->id = OMAP_DSS_OUTPUT_SDI;
+	out->output_type = OMAP_DISPLAY_TYPE_SDI;
+	out->name = "sdi.0";
+	out->dispc_channel = OMAP_DSS_CHANNEL_LCD;
+	/* We have SDI only on OMAP3, where it's on port 1 */
+	out->port_num = 1;
+	out->ops.sdi = &sdi_ops;
+	out->owner = THIS_MODULE;
+
+	omapdss_register_output(out);
+}
+
+static void sdi_uninit_output(struct platform_device *pdev)
+{
+	struct omap_dss_device *out = &sdi.output;
+
+	omapdss_unregister_output(out);
+}
+
+static int sdi_bind(struct device *dev, struct device *master, void *data)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+
+	sdi.pdev = pdev;
+
+	sdi_init_output(pdev);
+
+	return 0;
+}
+
+static void sdi_unbind(struct device *dev, struct device *master, void *data)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+
+	sdi_uninit_output(pdev);
+}
+
+static const struct component_ops sdi_component_ops = {
+	.bind	= sdi_bind,
+	.unbind	= sdi_unbind,
+};
+
+static int sdi_probe(struct platform_device *pdev)
+{
+	return component_add(&pdev->dev, &sdi_component_ops);
+}
+
+static int sdi_remove(struct platform_device *pdev)
+{
+	component_del(&pdev->dev, &sdi_component_ops);
+	return 0;
+}
+
+static struct platform_driver omap_sdi_driver = {
+	.probe		= sdi_probe,
+	.remove         = sdi_remove,
+	.driver         = {
+		.name   = "omapdss_sdi",
+		.suppress_bind_attrs = true,
+	},
+};
+
+int __init sdi_init_platform_driver(void)
+{
+	return platform_driver_register(&omap_sdi_driver);
+}
+
+void sdi_uninit_platform_driver(void)
+{
+	platform_driver_unregister(&omap_sdi_driver);
+}
+
+int sdi_init_port(struct platform_device *pdev, struct device_node *port)
+{
 	struct device_node *ep;
 	u32 datapairs;
 	int r;
 
-	sdi = kzalloc(sizeof(*sdi), GFP_KERNEL);
-	if (!sdi)
-		return -ENOMEM;
-
-	ep = of_get_next_child(port, NULL);
-	if (!ep) {
-		r = 0;
-		goto err_free;
-	}
+	ep = omapdss_of_get_next_endpoint(port, NULL);
+	if (!ep)
+		return 0;
 
 	r = of_property_read_u32(ep, "datapairs", &datapairs);
-	of_node_put(ep);
 	if (r) {
 		DSSERR("failed to parse datapairs\n");
-		goto err_free;
+		goto err_datapairs;
 	}
 
-	sdi->datapairs = datapairs;
-	sdi->dss = dss;
+	sdi.datapairs = datapairs;
 
-	sdi->pdev = pdev;
-	port->data = sdi;
+	of_node_put(ep);
 
-	sdi->vdds_sdi_reg = devm_regulator_get(&pdev->dev, "vdds_sdi");
-	if (IS_ERR(sdi->vdds_sdi_reg)) {
-		r = PTR_ERR(sdi->vdds_sdi_reg);
-		if (r != -EPROBE_DEFER)
-			DSSERR("can't get VDDS_SDI regulator\n");
-		goto err_free;
-	}
+	sdi.pdev = pdev;
 
-	r = sdi_init_output(sdi);
-	if (r)
-		goto err_free;
+	sdi_init_output(pdev);
+
+	sdi.port_initialized = true;
 
 	return 0;
 
-err_free:
-	kfree(sdi);
+err_datapairs:
+	of_node_put(ep);
 
 	return r;
 }
 
 void sdi_uninit_port(struct device_node *port)
 {
-	struct sdi_device *sdi = port->data;
-
-	if (!sdi)
+	if (!sdi.port_initialized)
 		return;
 
-	sdi_uninit_output(sdi);
-	kfree(sdi);
+	sdi_uninit_output(sdi.pdev);
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * EHCI HCD (Host Controller Driver) for USB.
  *
@@ -9,6 +8,21 @@
  * Based on "ehci-ppc-of.c" by Valentine Barshak <vbarshak@ru.mvista.com>
  * and "ehci-ppc-soc.c" by Stefan Roese <sr@denx.de>
  * and "ohci-ppc-of.c" by Sylvain Munaut <tnt@246tNt.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
  */
 
 #include <linux/err.h>
@@ -48,9 +62,9 @@ static int ehci_xilinx_port_handed_over(struct usb_hcd *hcd, int portnum)
 		dev_warn(hcd->self.controller,
 			"Maybe your device is not a high speed device?\n");
 		dev_warn(hcd->self.controller,
-			"The USB host controller does not support full speed nor low speed devices\n");
+			"USB host controller doesn't support FS/LS devices\n");
 		dev_warn(hcd->self.controller,
-			"You can reconfigure the host controller to have full speed support\n");
+			"You can reconfigure host controller to support FS\n");
 	}
 
 	return 0;
@@ -66,7 +80,7 @@ static const struct hc_driver ehci_xilinx_of_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq			= ehci_irq,
-	.flags			= HCD_MEMORY | HCD_DMA | HCD_USB2 | HCD_BH,
+	.flags			= HCD_MEMORY | HCD_USB2 | HCD_BH,
 
 	/*
 	 * basic lifecycle operations
@@ -113,7 +127,7 @@ static const struct hc_driver ehci_xilinx_of_hc_driver = {
  * as HS only or HS/FS only, it checks the configuration in the device tree
  * entry, and sets an appropriate value for hcd->has_tt.
  *
- * Return: zero on success, negative error code otherwise
+ * Return: zero on success, 'rv' value on failure
  */
 static int ehci_hcd_xilinx_of_probe(struct platform_device *op)
 {
@@ -201,7 +215,7 @@ err_irq:
  *
  * Return: Always return 0
  */
-static void ehci_hcd_xilinx_of_remove(struct platform_device *op)
+static int ehci_hcd_xilinx_of_remove(struct platform_device *op)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(op);
 
@@ -210,6 +224,8 @@ static void ehci_hcd_xilinx_of_remove(struct platform_device *op)
 	usb_remove_hcd(hcd);
 
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 static const struct of_device_id ehci_hcd_xilinx_of_match[] = {
@@ -220,7 +236,7 @@ MODULE_DEVICE_TABLE(of, ehci_hcd_xilinx_of_match);
 
 static struct platform_driver ehci_hcd_xilinx_of_driver = {
 	.probe		= ehci_hcd_xilinx_of_probe,
-	.remove_new	= ehci_hcd_xilinx_of_remove,
+	.remove		= ehci_hcd_xilinx_of_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver = {
 		.name = "xilinx-of-ehci",

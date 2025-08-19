@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * bootstr.c:  Boot string/argument acquisition from the PROM.
  *
@@ -52,7 +51,7 @@ prom_getbootargs(void)
 		 * V3 PROM cannot supply as with more than 128 bytes
 		 * of an argument. But a smart bootstrap loader can.
 		 */
-		strscpy(barg_buf, *romvec->pv_v2bootargs.bootargs, sizeof(barg_buf));
+		strlcpy(barg_buf, *romvec->pv_v2bootargs.bootargs, sizeof(barg_buf));
 		break;
 	default:
 		break;

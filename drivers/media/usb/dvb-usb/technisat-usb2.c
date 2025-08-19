@@ -14,6 +14,10 @@
  * License, or (at your option) any later version.
  *
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
  * THIS PROGRAM IS PROVIDED "AS IS" AND BOTH THE COPYRIGHT HOLDER AND
  * TECHNISAT DIGITAL UK LTD DISCLAIM ALL WARRANTIES WITH REGARD TO
  * THIS PROGRAM INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY OR
@@ -46,7 +50,8 @@ MODULE_PARM_DESC(debug,
 static int disable_led_control;
 module_param(disable_led_control, int, 0444);
 MODULE_PARM_DESC(disable_led_control,
-		"disable LED control of the device (default: 0 - LED control is active).");
+		"disable LED control of the device "
+		"(default: 0 - LED control is active).");
 
 /* device private data */
 struct technisat_usb2_state {
@@ -330,8 +335,8 @@ schedule:
 
 /* method to find out whether the firmware has to be downloaded or not */
 static int technisat_usb2_identify_state(struct usb_device *udev,
-		const struct dvb_usb_device_properties *props,
-		const struct dvb_usb_device_description **desc, int *cold)
+		struct dvb_usb_device_properties *props,
+		struct dvb_usb_device_description **desc, int *cold)
 {
 	int ret;
 	u8 *version;
@@ -566,9 +571,8 @@ static int technisat_usb2_frontend_attach(struct dvb_usb_adapter *a)
 			a->fe_adap[0].fe->ops.set_voltage = technisat_usb2_set_voltage;
 
 			/* if everything was successful assign a nice name to the frontend */
-			strscpy(a->fe_adap[0].fe->ops.info.name,
-				a->dev->desc->name,
-				sizeof(a->fe_adap[0].fe->ops.info.name));
+			strlcpy(a->fe_adap[0].fe->ops.info.name, a->dev->desc->name,
+					sizeof(a->fe_adap[0].fe->ops.info.name));
 		} else {
 			dvb_frontend_detach(a->fe_adap[0].fe);
 			a->fe_adap[0].fe = NULL;
@@ -608,9 +612,10 @@ static int technisat_usb2_frontend_attach(struct dvb_usb_adapter *a)
 static int technisat_usb2_get_ir(struct dvb_usb_device *d)
 {
 	struct technisat_usb2_state *state = d->priv;
-	struct ir_raw_event ev;
 	u8 *buf = state->buf;
-	int i, ret;
+	u8 *b;
+	int ret;
+	struct ir_raw_event ev;
 
 	buf[0] = GET_IR_DATA_VENDOR_REQUEST;
 	buf[1] = 0x08;
@@ -646,25 +651,26 @@ unlock:
 		return 0; /* no key pressed */
 
 	/* decoding */
+	b = buf+1;
 
 #if 0
 	deb_rc("RC: %d ", ret);
-	debug_dump(buf + 1, ret, deb_rc);
+	debug_dump(b, ret, deb_rc);
 #endif
 
 	ev.pulse = 0;
-	for (i = 1; i < ARRAY_SIZE(state->buf); i++) {
-		if (buf[i] == 0xff) {
+	while (1) {
+		ev.pulse = !ev.pulse;
+		ev.duration = (*b * FIRMWARE_CLOCK_DIVISOR * FIRMWARE_CLOCK_TICK) / 1000;
+		ir_raw_event_store(d->rc_dev, &ev);
+
+		b++;
+		if (*b == 0xff) {
 			ev.pulse = 0;
-			ev.duration = 889 * 2;
+			ev.duration = 888888*2;
 			ir_raw_event_store(d->rc_dev, &ev);
 			break;
 		}
-
-		ev.pulse = !ev.pulse;
-		ev.duration = (buf[i] * FIRMWARE_CLOCK_DIVISOR *
-			       FIRMWARE_CLOCK_TICK) / (1000 * 1000);
-		ir_raw_event_store(d->rc_dev, &ev);
 	}
 
 	ir_raw_event_handle(d->rc_dev);
@@ -689,15 +695,10 @@ static int technisat_usb2_rc_query(struct dvb_usb_device *d)
 }
 
 /* DVB-USB and USB stuff follows */
-enum {
-	TECHNISAT_USB2_DVB_S2,
-};
-
 static struct usb_device_id technisat_usb2_id_table[] = {
-	DVB_USB_DEV(TECHNISAT, TECHNISAT_USB2_DVB_S2),
-	{ }
+	{ USB_DEVICE(USB_VID_TECHNISAT, USB_PID_TECHNISAT_USB2_DVB_S2) },
+	{ 0 }		/* Terminating entry */
 };
-
 MODULE_DEVICE_TABLE(usb, technisat_usb2_id_table);
 
 /* device description */
@@ -743,7 +744,7 @@ static struct dvb_usb_device_properties technisat_usb2_devices = {
 	.num_device_descs = 1,
 	.devices = {
 		{   "Technisat SkyStar USB HD (DVB-S/S2)",
-			{ &technisat_usb2_id_table[TECHNISAT_USB2_DVB_S2], NULL },
+			{ &technisat_usb2_id_table[0], NULL },
 			{ NULL },
 		},
 	},
@@ -753,7 +754,7 @@ static struct dvb_usb_device_properties technisat_usb2_devices = {
 		.rc_codes    = RC_MAP_TECHNISAT_USB2,
 		.module_name = "technisat-usb2",
 		.rc_query    = technisat_usb2_rc_query,
-		.allowed_protos = RC_PROTO_BIT_ALL_IR_DECODER,
+		.allowed_protos = RC_BIT_ALL,
 		.driver_type    = RC_DRIVER_IR_RAW,
 	}
 };
@@ -786,7 +787,7 @@ static void technisat_usb2_disconnect(struct usb_interface *intf)
 {
 	struct dvb_usb_device *dev = usb_get_intfdata(intf);
 
-	/* work and stuff was only created when the device is hot-state */
+	/* work and stuff was only created when the device is is hot-state */
 	if (dev != NULL) {
 		struct technisat_usb2_state *state = dev->priv;
 		if (state != NULL)

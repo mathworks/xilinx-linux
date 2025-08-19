@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Core driver for TI TPS6586x PMIC family
  *
@@ -10,6 +9,10 @@
  * Mike Rapoport <mike@compulab.co.il>
  * Copyright (C) 2006-2008 Marvell International Ltd.
  * Eric Miao <eric.miao@marvell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/interrupt.h>
@@ -92,7 +95,7 @@ static const struct tps6586x_irq_data tps6586x_irqs[] = {
 	[TPS6586X_INT_RTC_ALM2] = TPS6586X_IRQ(TPS6586X_INT_MASK4, 1 << 1),
 };
 
-static const struct resource tps6586x_rtc_resources[] = {
+static struct resource tps6586x_rtc_resources[] = {
 	{
 		.start  = TPS6586X_INT_RTC_ALM1,
 		.end	= TPS6586X_INT_RTC_ALM1,
@@ -269,11 +272,15 @@ static void tps6586x_irq_sync_unlock(struct irq_data *data)
 	mutex_unlock(&tps6586x->irq_lock);
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int tps6586x_irq_set_wake(struct irq_data *irq_data, unsigned int on)
 {
 	struct tps6586x *tps6586x = irq_data_get_irq_chip_data(irq_data);
 	return irq_set_irq_wake(tps6586x->irq, on);
 }
+#else
+#define tps6586x_irq_set_wake NULL
+#endif
 
 static struct irq_chip tps6586x_irq_chip = {
 	.name = "tps6586x",
@@ -281,7 +288,7 @@ static struct irq_chip tps6586x_irq_chip = {
 	.irq_bus_sync_unlock = tps6586x_irq_sync_unlock,
 	.irq_disable = tps6586x_irq_disable,
 	.irq_enable = tps6586x_irq_enable,
-	.irq_set_wake = pm_sleep_ptr(tps6586x_irq_set_wake),
+	.irq_set_wake = tps6586x_irq_set_wake,
 };
 
 static int tps6586x_irq_map(struct irq_domain *h, unsigned int virq,
@@ -305,19 +312,18 @@ static const struct irq_domain_ops tps6586x_domain_ops = {
 static irqreturn_t tps6586x_irq(int irq, void *data)
 {
 	struct tps6586x *tps6586x = data;
-	uint32_t acks;
-	__le32 val;
+	u32 acks;
 	int ret = 0;
 
 	ret = tps6586x_reads(tps6586x->dev, TPS6586X_INT_ACK1,
-			     sizeof(acks), (uint8_t *)&val);
+			     sizeof(acks), (uint8_t *)&acks);
 
 	if (ret < 0) {
 		dev_err(tps6586x->dev, "failed to read interrupt status\n");
 		return IRQ_NONE;
 	}
 
-	acks = le32_to_cpu(val);
+	acks = le32_to_cpu(acks);
 
 	while (acks) {
 		int i = __ffs(acks);
@@ -417,8 +423,10 @@ static struct tps6586x_platform_data *tps6586x_parse_dt(struct i2c_client *clien
 	struct tps6586x_platform_data *pdata;
 
 	pdata = devm_kzalloc(&client->dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata)
+	if (!pdata) {
+		dev_err(&client->dev, "Memory allocation failed\n");
 		return NULL;
+	}
 
 	pdata->num_subdevs = 0;
 	pdata->subdevs = NULL;
@@ -495,7 +503,8 @@ static void tps6586x_print_version(struct i2c_client *client, int version)
 	dev_info(&client->dev, "Found %s, VERSIONCRC is %02x\n", name, version);
 }
 
-static int tps6586x_i2c_probe(struct i2c_client *client)
+static int tps6586x_i2c_probe(struct i2c_client *client,
+					const struct i2c_device_id *id)
 {
 	struct tps6586x_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct tps6586x *tps6586x;
@@ -574,7 +583,7 @@ err_mfd_add:
 	return ret;
 }
 
-static void tps6586x_i2c_remove(struct i2c_client *client)
+static int tps6586x_i2c_remove(struct i2c_client *client)
 {
 	struct tps6586x *tps6586x = i2c_get_clientdata(client);
 
@@ -582,30 +591,8 @@ static void tps6586x_i2c_remove(struct i2c_client *client)
 	mfd_remove_devices(tps6586x->dev);
 	if (client->irq)
 		free_irq(client->irq, tps6586x);
-}
-
-static int __maybe_unused tps6586x_i2c_suspend(struct device *dev)
-{
-	struct tps6586x *tps6586x = dev_get_drvdata(dev);
-
-	if (tps6586x->client->irq)
-		disable_irq(tps6586x->client->irq);
-
 	return 0;
 }
-
-static int __maybe_unused tps6586x_i2c_resume(struct device *dev)
-{
-	struct tps6586x *tps6586x = dev_get_drvdata(dev);
-
-	if (tps6586x->client->irq)
-		enable_irq(tps6586x->client->irq);
-
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(tps6586x_pm_ops, tps6586x_i2c_suspend,
-			 tps6586x_i2c_resume);
 
 static const struct i2c_device_id tps6586x_id_table[] = {
 	{ "tps6586x", 0 },
@@ -617,7 +604,6 @@ static struct i2c_driver tps6586x_driver = {
 	.driver	= {
 		.name	= "tps6586x",
 		.of_match_table = of_match_ptr(tps6586x_of_match),
-		.pm	= &tps6586x_pm_ops,
 	},
 	.probe		= tps6586x_i2c_probe,
 	.remove		= tps6586x_i2c_remove,
@@ -638,3 +624,4 @@ module_exit(tps6586x_exit);
 
 MODULE_DESCRIPTION("TPS6586X core driver");
 MODULE_AUTHOR("Mike Rapoport <mike@compulab.co.il>");
+MODULE_LICENSE("GPL");

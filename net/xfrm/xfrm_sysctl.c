@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/sysctl.h>
 #include <linux/slab.h>
 #include <net/net_namespace.h>
@@ -44,7 +43,6 @@ static struct ctl_table xfrm_table[] = {
 int __net_init xfrm_sysctl_init(struct net *net)
 {
 	struct ctl_table *table;
-	size_t table_size = ARRAY_SIZE(xfrm_table);
 
 	__xfrm_sysctl_init(net);
 
@@ -57,13 +55,10 @@ int __net_init xfrm_sysctl_init(struct net *net)
 	table[3].data = &net->xfrm.sysctl_acq_expires;
 
 	/* Don't export sysctls to unprivileged users */
-	if (net->user_ns != &init_user_ns) {
+	if (net->user_ns != &init_user_ns)
 		table[0].procname = NULL;
-		table_size = 0;
-	}
 
-	net->xfrm.sysctl_hdr = register_net_sysctl_sz(net, "net/core", table,
-						      table_size);
+	net->xfrm.sysctl_hdr = register_net_sysctl(net, "net/core", table);
 	if (!net->xfrm.sysctl_hdr)
 		goto out_register;
 	return 0;

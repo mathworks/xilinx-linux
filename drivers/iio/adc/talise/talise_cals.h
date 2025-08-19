@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file talise_cals.h
  * \brief Contains Talise calibration related function prototypes for
  *        talise_cals.c
  *
- * Talise API version: 3.6.2.1
+ * Talise API version: 3.4.0.0
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -756,97 +755,6 @@ uint32_t TALISE_setDigDcOffsetMShift(taliseDevice_t *device, taliseDcOffsetChann
   */
 uint32_t TALISE_getDigDcOffsetMShift(taliseDevice_t *device, taliseDcOffsetChannels_t channel, uint8_t *mShift);
 
-/**
- * \brief Enable/ Disable Digital DC Offset channels using the channel mask.
- *  The mask can be a combination of the following channel values ( ::taliseRxDcOffsettEn_t ).
- *
- *     Channel              |  Value  |  Channel description
- * -------------------------|---------|--------------------------
- *  TAL_DC_OFFSET_ALL_OFF   |   0x00  | Disable all the channels
- *  TAL_DC_OFFSET_RX1       |   0x01  | Enables Rx1
- *  TAL_DC_OFFSET_RX2       |   0x02  | Enables Rx1
- *  TAL_DC_OFFSET_ORX1      |   0x04  | Enables ORx1
- *  TAL_DC_OFFSET_ORX2      |   0x08  | Enables ORx2
- *  TAL_DC_OFFSET_ALL_ON    |   0x0F  | Enables all the channels
- *
- * <B>Dependencies</B>
- * - device->spiSettings->chipSelectIndex
- *
- * \param device Pointer to the Talise device data structure containing settings
- * \param enableMask with bits of channels to be enabled.
- *
- * \retval TALISE_ERR_DIG_DC_OFFSET_INV_ENABLE_MASK enable mask passed to the function is invalid, refer taliseRxDcOffsettEn_t enum.
- * \retval TALISE_ERR_OK Function completed successfully
- */
-uint32_t TALISE_setDigDcOffsetEn(taliseDevice_t *device, uint8_t enableMask);
-
-/**
- * \brief Reads back Enable/ Disable channels Digital DC Offset and returns a mask of it.
- * The mask returned will be a combination of the following channel values ( ::taliseRxDcOffsettEn_t ).
- * By default RX BBDC tracking is ON and ORX BBDC tracking is OFF.This API function can be used to change default behavior.
- *
- *    Channel               |  Value  |  Channel description
- * -------------------------|---------|--------------------------
- *  TAL_DC_OFFSET_ALL_OFF   |   0x00  | All channels are disabled
- *  TAL_DC_OFFSET_RX1       |   0x01  | Rx1 is enabled
- *  TAL_DC_OFFSET_RX2       |   0x02  | Rx2 is enabled
- *  TAL_DC_OFFSET_ORX1      |   0x04  | ORx1 is enabled
- *  TAL_DC_OFFSET_ORX2      |   0x08  | ORx2 is enabled
- *  TAL_DC_OFFSET_ALL_ON    |   0x0F  | All channels are enabled
- *
- * <B>Dependencies</B>
- * - device->spiSettings->chipSelectIndex
- *
- * \param device Pointer to the Talise device data structure containing settings
- * \param enableMask pointer to the variable to store Enable mask of channels
- *
- * \retval TALISE_ERR_DIG_DC_OFFSET_NULL_ENABLE_MASK enableMask is NULL
- * \retval TALISE_ERR_OK Function completed successfully
- */
-uint32_t TALISE_getDigDcOffsetEn(taliseDevice_t *device, uint8_t *enableMask);
-
-    /**
-      * \brief Allows reading Talise tracking calibration batch size configuration option
-      * from Talise ARM memory
-      *
-      * Config value is read from the Talise ARM memory and returned at the address of
-      * the batchsize_us enum function parameter.
-      *
-      * \pre This function can only be called when the Talise ARM is in the RadioOff/IDLE state or ready state.
-      *
-      * \dep_begin
-      * \dep{device->devHalInfo}
-      * \dep_end
-      *
-      * \param device Pointer to the Talise device data structure containing settings
-      * \param batchsize_us Pointer to Tracking calibration batch size enum to return read settings
-      *
-      * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
-      * \retval TALACT_ERR_RESET_ARM Recovery action if ARM is detected to be in wrong state
-      * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
-      * \retval TALACT_NO_ACTION Function completed successfully, no action required
-      */
-uint32_t TALISE_getTrackingCalsBatchSize(taliseDevice_t *device, taliseTrackingCalBatchSize_t* batchsize_us);
-
-/**
-  * \brief Modifies the tracking calibrations batch capture size from 500us to 200us and vice versa.
-  * Defualt value for batch size(Minimum internal Calibration, Rx Caibration, Tx Calibration and
-  * Orx Calibration period) is 500us.
-  *
-  * \pre This function can only be called when the Talise ARM is in the RadioOff/IDLE state or ready state.
-  *
-  * <B>Dependencies</B>
-  * - device->spiSettings->chipSelectIndex
-  *
-  * \param device Pointer to the Talise device data structure containing settings
-  * \param batchsize_us variable to store Tracking Cal batch size.
-  *
-  * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
-  * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
-  * \retval TALACT_ERR_RESET_ARM Recovery action for user ARM reset required
-  * \retval TALACT_NO_ACTION Function completed successfully, no action required
-  */
-uint32_t TALISE_setTrackingCalsBatchSize(taliseDevice_t *device, taliseTrackingCalBatchSize_t batchsize_us);
 /****************************************************************************
  * Debug functions
  ****************************************************************************

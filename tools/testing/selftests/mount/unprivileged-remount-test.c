@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
 #include <sched.h>
 #include <stdio.h>
@@ -204,7 +203,7 @@ bool test_unpriv_remount(const char *fstype, const char *mount_options,
 		if (!WIFEXITED(status)) {
 			die("child did not terminate cleanly\n");
 		}
-		return WEXITSTATUS(status) == EXIT_SUCCESS;
+		return WEXITSTATUS(status) == EXIT_SUCCESS ? true : false;
 	}
 
 	create_and_enter_userns();
@@ -282,7 +281,7 @@ static bool test_priv_mount_unpriv_remount(void)
 		if (!WIFEXITED(status)) {
 			die("child did not terminate cleanly\n");
 		}
-		return WEXITSTATUS(status) == EXIT_SUCCESS;
+		return WEXITSTATUS(status) == EXIT_SUCCESS ? true : false;
 	}
 
 	orig_mnt_flags = read_mnt_flags(orig_path);

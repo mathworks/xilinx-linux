@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 
 /*
  *   pata-isapnp.c - ISA PnP PATA controller driver.
@@ -20,7 +19,7 @@
 #define DRV_NAME "pata_isapnp"
 #define DRV_VERSION "0.2.5"
 
-static const struct scsi_host_template isapnp_sht = {
+static struct scsi_host_template isapnp_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 

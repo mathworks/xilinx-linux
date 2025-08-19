@@ -186,12 +186,15 @@ static int spear_kbd_probe(struct platform_device *pdev)
 	const struct matrix_keymap_data *keymap = pdata ? pdata->keymap : NULL;
 	struct spear_kbd *kbd;
 	struct input_dev *input_dev;
+	struct resource *res;
 	int irq;
 	int error;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
+	if (irq < 0) {
+		dev_err(&pdev->dev, "not able to get irq for the device\n");
 		return irq;
+	}
 
 	kbd = devm_kzalloc(&pdev->dev, sizeof(*kbd), GFP_KERNEL);
 	if (!kbd) {
@@ -218,7 +221,8 @@ static int spear_kbd_probe(struct platform_device *pdev)
 		kbd->suspended_rate = pdata->suspended_rate;
 	}
 
-	kbd->io_base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	kbd->io_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(kbd->io_base))
 		return PTR_ERR(kbd->io_base);
 
@@ -279,10 +283,12 @@ static int spear_kbd_remove(struct platform_device *pdev)
 	input_unregister_device(kbd->input);
 	clk_unprepare(kbd->clk);
 
+	device_init_wakeup(&pdev->dev, 0);
+
 	return 0;
 }
 
-static int spear_kbd_suspend(struct device *dev)
+static int __maybe_unused spear_kbd_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct spear_kbd *kbd = platform_get_drvdata(pdev);
@@ -316,7 +322,7 @@ static int spear_kbd_suspend(struct device *dev)
 		writel_relaxed(val, kbd->io_base + MODE_CTL_REG);
 
 	} else {
-		if (input_device_enabled(input_dev)) {
+		if (input_dev->users) {
 			writel_relaxed(mode_ctl_reg & ~MODE_CTL_START_SCAN,
 					kbd->io_base + MODE_CTL_REG);
 			clk_disable(kbd->clk);
@@ -324,7 +330,7 @@ static int spear_kbd_suspend(struct device *dev)
 	}
 
 	/* store current configuration */
-	if (input_device_enabled(input_dev))
+	if (input_dev->users)
 		kbd->mode_ctl_reg = mode_ctl_reg;
 
 	/* restore previous clk state */
@@ -335,7 +341,7 @@ static int spear_kbd_suspend(struct device *dev)
 	return 0;
 }
 
-static int spear_kbd_resume(struct device *dev)
+static int __maybe_unused spear_kbd_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct spear_kbd *kbd = platform_get_drvdata(pdev);
@@ -349,12 +355,12 @@ static int spear_kbd_resume(struct device *dev)
 			disable_irq_wake(kbd->irq);
 		}
 	} else {
-		if (input_device_enabled(input_dev))
+		if (input_dev->users)
 			clk_enable(kbd->clk);
 	}
 
 	/* restore current configuration */
-	if (input_device_enabled(input_dev))
+	if (input_dev->users)
 		writel_relaxed(kbd->mode_ctl_reg, kbd->io_base + MODE_CTL_REG);
 
 	mutex_unlock(&input_dev->mutex);
@@ -362,8 +368,7 @@ static int spear_kbd_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(spear_kbd_pm_ops,
-				spear_kbd_suspend, spear_kbd_resume);
+static SIMPLE_DEV_PM_OPS(spear_kbd_pm_ops, spear_kbd_suspend, spear_kbd_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id spear_kbd_id_table[] = {
@@ -378,7 +383,7 @@ static struct platform_driver spear_kbd_driver = {
 	.remove		= spear_kbd_remove,
 	.driver		= {
 		.name	= "keyboard",
-		.pm	= pm_sleep_ptr(&spear_kbd_pm_ops),
+		.pm	= &spear_kbd_pm_ops,
 		.of_match_table = of_match_ptr(spear_kbd_id_table),
 	},
 };

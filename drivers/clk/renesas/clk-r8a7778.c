@@ -1,15 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * r8a7778 Core CPG Clocks
  *
  * Copyright (C) 2014  Ulrich Hecht
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/clk-provider.h>
 #include <linux/clk/renesas.h>
 #include <linux/of_address.h>
 #include <linux/slab.h>
-#include <linux/soc/renesas/rcar-rst.h>
+
+struct r8a7778_cpg {
+	struct clk_onecell_data data;
+	spinlock_t lock;
+	void __iomem *reg;
+};
 
 /* PLL multipliers per bits 11, 12, and 18 of MODEMR */
 static const struct {
@@ -41,7 +49,8 @@ static u32 cpg_mode_rates __initdata;
 static u32 cpg_mode_divs __initdata;
 
 static struct clk * __init
-r8a7778_cpg_register_clock(struct device_node *np, const char *name)
+r8a7778_cpg_register_clock(struct device_node *np, struct r8a7778_cpg *cpg,
+			     const char *name)
 {
 	if (!strcmp(name, "plla")) {
 		return clk_register_fixed_factor(NULL, "plla",
@@ -70,22 +79,10 @@ r8a7778_cpg_register_clock(struct device_node *np, const char *name)
 
 static void __init r8a7778_cpg_clocks_init(struct device_node *np)
 {
-	struct clk_onecell_data *data;
+	struct r8a7778_cpg *cpg;
 	struct clk **clks;
 	unsigned int i;
 	int num_clks;
-	u32 mode;
-
-	if (rcar_rst_read_mode_pins(&mode))
-		return;
-
-	BUG_ON(!(mode & BIT(19)));
-
-	cpg_mode_rates = (!!(mode & BIT(18)) << 2) |
-			 (!!(mode & BIT(12)) << 1) |
-			 (!!(mode & BIT(11)));
-	cpg_mode_divs = (!!(mode & BIT(2)) << 1) |
-			(!!(mode & BIT(1)));
 
 	num_clks = of_property_count_strings(np, "clock-output-names");
 	if (num_clks < 0) {
@@ -93,17 +90,23 @@ static void __init r8a7778_cpg_clocks_init(struct device_node *np)
 		return;
 	}
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	cpg = kzalloc(sizeof(*cpg), GFP_KERNEL);
 	clks = kcalloc(num_clks, sizeof(*clks), GFP_KERNEL);
-	if (data == NULL || clks == NULL) {
+	if (cpg == NULL || clks == NULL) {
 		/* We're leaking memory on purpose, there's no point in cleaning
 		 * up as the system won't boot anyway.
 		 */
 		return;
 	}
 
-	data->clks = clks;
-	data->clk_num = num_clks;
+	spin_lock_init(&cpg->lock);
+
+	cpg->data.clks = clks;
+	cpg->data.clk_num = num_clks;
+
+	cpg->reg = of_iomap(np, 0);
+	if (WARN_ON(cpg->reg == NULL))
+		return;
 
 	for (i = 0; i < num_clks; ++i) {
 		const char *name;
@@ -112,18 +115,31 @@ static void __init r8a7778_cpg_clocks_init(struct device_node *np)
 		of_property_read_string_index(np, "clock-output-names", i,
 					      &name);
 
-		clk = r8a7778_cpg_register_clock(np, name);
+		clk = r8a7778_cpg_register_clock(np, cpg, name);
 		if (IS_ERR(clk))
-			pr_err("%s: failed to register %pOFn %s clock (%ld)\n",
-			       __func__, np, name, PTR_ERR(clk));
+			pr_err("%s: failed to register %s %s clock (%ld)\n",
+			       __func__, np->name, name, PTR_ERR(clk));
 		else
-			data->clks[i] = clk;
+			cpg->data.clks[i] = clk;
 	}
 
-	of_clk_add_provider(np, of_clk_src_onecell_get, data);
+	of_clk_add_provider(np, of_clk_src_onecell_get, &cpg->data);
 
 	cpg_mstp_add_clk_domain(np);
 }
 
 CLK_OF_DECLARE(r8a7778_cpg_clks, "renesas,r8a7778-cpg-clocks",
 	       r8a7778_cpg_clocks_init);
+
+void __init r8a7778_clocks_init(u32 mode)
+{
+	BUG_ON(!(mode & BIT(19)));
+
+	cpg_mode_rates = (!!(mode & BIT(18)) << 2) |
+			 (!!(mode & BIT(12)) << 1) |
+			 (!!(mode & BIT(11)));
+	cpg_mode_divs = (!!(mode & BIT(2)) << 1) |
+			(!!(mode & BIT(1)));
+
+	of_clk_init(NULL);
+}

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *  S390 version
  *
@@ -12,18 +11,15 @@
 
 #ifndef __ASSEMBLY__
 
-typedef unsigned long addr_t;
+/* A address type so that arithmetic can be done on it & it can be upgraded to
+   64 bit when necessary 
+*/
+typedef unsigned long addr_t; 
 typedef __signed__ long saddr_t;
 
 typedef struct {
-	union {
-		struct {
-			__u64 high;
-			__u64 low;
-		};
-		__u32 u[4];
-	};
-} __attribute__((packed, aligned(4))) __vector128;
+	__u32 u[4];
+} __vector128;
 
 #endif /* __ASSEMBLY__ */
 

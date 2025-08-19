@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Libata based driver for Apple "macio" family of PATA controllers
  *
@@ -21,7 +20,6 @@
 #include <linux/adb.h>
 #include <linux/pmu.h>
 #include <linux/scatterlist.h>
-#include <linux/irqdomain.h>
 #include <linux/of.h>
 #include <linux/gfp.h>
 #include <linux/pci.h>
@@ -485,8 +483,6 @@ static int pata_macio_cable_detect(struct ata_port *ap)
 		struct device_node *root = of_find_node_by_path("/");
 		const char *model = of_get_property(root, "model", NULL);
 
-		of_node_put(root);
-
 		if (cable && !strncmp(cable, "80-", 3)) {
 			/* Some drives fail to detect 80c cable in PowerBook
 			 * These machine use proprietary short IDE cable
@@ -511,7 +507,7 @@ static int pata_macio_cable_detect(struct ata_port *ap)
 	return ATA_CBL_PATA40;
 }
 
-static enum ata_completion_errors pata_macio_qc_prep(struct ata_queued_cmd *qc)
+static void pata_macio_qc_prep(struct ata_queued_cmd *qc)
 {
 	unsigned int write = (qc->tf.flags & ATA_TFLAG_WRITE);
 	struct ata_port *ap = qc->ap;
@@ -524,7 +520,7 @@ static enum ata_completion_errors pata_macio_qc_prep(struct ata_queued_cmd *qc)
 		   __func__, qc, qc->flags, write, qc->dev->devno);
 
 	if (!(qc->flags & ATA_QCFLAG_DMAMAP))
-		return AC_ERR_OK;
+		return;
 
 	table = (struct dbdma_cmd *) priv->dma_table_cpu;
 
@@ -569,8 +565,6 @@ static enum ata_completion_errors pata_macio_qc_prep(struct ata_queued_cmd *qc)
 	table->command = cpu_to_le16(DBDMA_STOP);
 
 	dev_dbgdma(priv->dev, "%s: %d DMA list entries\n", __func__, pi);
-
-	return AC_ERR_OK;
 }
 
 
@@ -667,7 +661,8 @@ static u8 pata_macio_bmdma_status(struct ata_port *ap)
 	 * a multi-block transfer.
 	 *
 	 * - The dbdma fifo hasn't yet finished flushing to
-	 * system memory when the disk interrupt occurs.
+	 * to system memory when the disk interrupt occurs.
+	 *
 	 */
 
 	/* First check for errors */
@@ -853,8 +848,12 @@ static int pata_macio_slave_config(struct scsi_device *sdev)
 #ifdef CONFIG_PM_SLEEP
 static int pata_macio_do_suspend(struct pata_macio_priv *priv, pm_message_t mesg)
 {
+	int rc;
+
 	/* First, core libata suspend to do most of the work */
-	ata_host_suspend(priv->host, mesg);
+	rc = ata_host_suspend(priv->host, mesg);
+	if (rc)
+		return rc;
 
 	/* Restore to default timings */
 	pata_macio_default_timings(priv);
@@ -909,19 +908,12 @@ static int pata_macio_do_resume(struct pata_macio_priv *priv)
 }
 #endif /* CONFIG_PM_SLEEP */
 
-static const struct scsi_host_template pata_macio_sht = {
-	__ATA_BASE_SHT(DRV_NAME),
+static struct scsi_host_template pata_macio_sht = {
+	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= MAX_DCMDS,
 	/* We may not need that strict one */
 	.dma_boundary		= ATA_DMA_BOUNDARY,
-	/* Not sure what the real max is but we know it's less than 64K, let's
-	 * use 64K minus 256
-	 */
-	.max_segment_size	= MAX_DBDMA_SEG,
 	.slave_configure	= pata_macio_slave_config,
-	.sdev_groups		= ata_common_sdev_groups,
-	.can_queue		= ATA_DEF_QUEUE,
-	.tag_alloc_policy	= BLK_TAG_ALLOC_RR,
 };
 
 static struct ata_port_operations pata_macio_ops = {
@@ -956,7 +948,7 @@ static void pata_macio_invariants(struct pata_macio_priv *priv)
 		priv->kind = controller_k2_ata6;
 	        priv->timings = pata_macio_kauai_timings;
 	} else if (of_device_is_compatible(priv->node, "keylargo-ata")) {
-		if (of_node_name_eq(priv->node, "ata-4")) {
+		if (strcmp(priv->node->name, "ata-4") == 0) {
 			priv->kind = controller_kl_ata4;
 			priv->timings = pata_macio_kl66_timings;
 		} else {
@@ -978,7 +970,7 @@ static void pata_macio_invariants(struct pata_macio_priv *priv)
 	priv->aapl_bus_id =  bidp ? *bidp : 0;
 
 	/* Fixup missing Apple bus ID in case of media-bay */
-	if (priv->mediabay && !bidp)
+	if (priv->mediabay && bidp == 0)
 		priv->aapl_bus_id = 1;
 }
 
@@ -1028,7 +1020,7 @@ static void pmac_macio_calc_timing_masks(struct pata_macio_priv *priv,
 		}
 		i++;
 	}
-	dev_dbg(priv->dev, "Supported masks: PIO=%x, MWDMA=%x, UDMA=%x\n",
+	dev_dbg(priv->dev, "Supported masks: PIO=%lx, MWDMA=%lx, UDMA=%lx\n",
 		pinfo->pio_mask, pinfo->mwdma_mask, pinfo->udma_mask);
 }
 
@@ -1049,6 +1041,11 @@ static int pata_macio_common_init(struct pata_macio_priv *priv,
 
 	/* Make sure we have sane initial timings in the cache */
 	pata_macio_default_timings(priv);
+
+	/* Not sure what the real max is but we know it's less than 64K, let's
+	 * use 64K minus 256
+	 */
+	dma_set_max_seg_size(priv->dev, MAX_DBDMA_SEG);
 
 	/* Allocate libata host for 1 port */
 	memset(&pinfo, 0, sizeof(struct ata_port_info));
@@ -1134,9 +1131,11 @@ static int pata_macio_attach(struct macio_dev *mdev,
 	/* Allocate and init private data structure */
 	priv = devm_kzalloc(&mdev->ofdev.dev,
 			    sizeof(struct pata_macio_priv), GFP_KERNEL);
-	if (!priv)
+	if (priv == NULL) {
+		dev_err(&mdev->ofdev.dev,
+			"Failed to allocate private memory\n");
 		return -ENOMEM;
-
+	}
 	priv->node = of_node_get(mdev->ofdev.dev.of_node);
 	priv->mdev = mdev;
 	priv->dev = &mdev->ofdev.dev;
@@ -1278,9 +1277,11 @@ static int pata_macio_pci_attach(struct pci_dev *pdev,
 	/* Allocate and init private data structure */
 	priv = devm_kzalloc(&pdev->dev,
 			    sizeof(struct pata_macio_priv), GFP_KERNEL);
-	if (!priv)
+	if (priv == NULL) {
+		dev_err(&pdev->dev,
+			"Failed to allocate private memory\n");
 		return -ENOMEM;
-
+	}
 	priv->node = of_node_get(np);
 	priv->pdev = pdev;
 	priv->dev = &pdev->dev;
@@ -1327,13 +1328,21 @@ static int pata_macio_pci_resume(struct pci_dev *pdev)
 }
 #endif /* CONFIG_PM_SLEEP */
 
-static const struct of_device_id pata_macio_match[] =
+static struct of_device_id pata_macio_match[] =
 {
-	{ .name = "IDE", },
-	{ .name = "ATA", },
-	{ .type = "ide", },
-	{ .type = "ata", },
-	{ /* sentinel */ }
+	{
+	.name 		= "IDE",
+	},
+	{
+	.name 		= "ATA",
+	},
+	{
+	.type		= "ide",
+	},
+	{
+	.type		= "ata",
+	},
+	{},
 };
 MODULE_DEVICE_TABLE(of, pata_macio_match);
 

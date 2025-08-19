@@ -1,15 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Marvell Armada 37xx SoC Time Base Generator clocks
  *
  * Copyright (C) 2016 Marvell
  *
  * Gregory CLEMENT <gregory.clement@free-electrons.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2 or later. This program is licensed "as is"
+ * without any warranty of any kind, whether express or implied.
  */
 
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
-#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
@@ -84,27 +86,28 @@ static int armada_3700_tbg_clock_probe(struct platform_device *pdev)
 	struct clk_hw_onecell_data *hw_tbg_data;
 	struct device *dev = &pdev->dev;
 	const char *parent_name;
+	struct resource *res;
 	struct clk *parent;
 	void __iomem *reg;
-	int i;
+	int i, ret;
 
-	hw_tbg_data = devm_kzalloc(&pdev->dev,
-				   struct_size(hw_tbg_data, hws, NUM_TBG),
+	hw_tbg_data = devm_kzalloc(&pdev->dev, sizeof(*hw_tbg_data)
+				   + sizeof(*hw_tbg_data->hws) * NUM_TBG,
 				   GFP_KERNEL);
 	if (!hw_tbg_data)
 		return -ENOMEM;
 	hw_tbg_data->num = NUM_TBG;
 	platform_set_drvdata(pdev, hw_tbg_data);
 
-	parent = clk_get(dev, NULL);
+	parent = devm_clk_get(dev, NULL);
 	if (IS_ERR(parent)) {
 		dev_err(dev, "Could get the clock parent\n");
 		return -EINVAL;
 	}
 	parent_name = __clk_get_name(parent);
-	clk_put(parent);
 
-	reg = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	reg = devm_ioremap_resource(dev, res);
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
 
@@ -121,10 +124,12 @@ static int armada_3700_tbg_clock_probe(struct platform_device *pdev)
 			dev_err(dev, "Can't register TBG clock %s\n", name);
 	}
 
-	return of_clk_add_hw_provider(np, of_clk_hw_onecell_get, hw_tbg_data);
+	ret = of_clk_add_hw_provider(np, of_clk_hw_onecell_get, hw_tbg_data);
+
+	return ret;
 }
 
-static void armada_3700_tbg_clock_remove(struct platform_device *pdev)
+static int armada_3700_tbg_clock_remove(struct platform_device *pdev)
 {
 	int i;
 	struct clk_hw_onecell_data *hw_tbg_data = platform_get_drvdata(pdev);
@@ -132,6 +137,8 @@ static void armada_3700_tbg_clock_remove(struct platform_device *pdev)
 	of_clk_del_provider(pdev->dev.of_node);
 	for (i = 0; i < hw_tbg_data->num; i++)
 		clk_hw_unregister_fixed_factor(hw_tbg_data->hws[i]);
+
+	return 0;
 }
 
 static const struct of_device_id armada_3700_tbg_clock_of_match[] = {
@@ -141,7 +148,7 @@ static const struct of_device_id armada_3700_tbg_clock_of_match[] = {
 
 static struct platform_driver armada_3700_tbg_clock_driver = {
 	.probe = armada_3700_tbg_clock_probe,
-	.remove_new = armada_3700_tbg_clock_remove,
+	.remove = armada_3700_tbg_clock_remove,
 	.driver		= {
 		.name	= "marvell-armada-3700-tbg-clock",
 		.of_match_table = armada_3700_tbg_clock_of_match,

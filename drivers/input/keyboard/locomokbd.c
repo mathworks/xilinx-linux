@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * LoCoMo keyboard driver for Linux-based ARM PDAs:
  * 	- SHARP Zaurus Collie (SL-5500)
@@ -6,6 +5,22 @@
  *
  * Copyright (c) 2005 John Lenz
  * Based on from xtkbd.c
+ *
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
  */
 
 #include <linux/slab.h>
@@ -195,9 +210,9 @@ static irqreturn_t locomokbd_interrupt(int irq, void *dev_id)
 /*
  * LoCoMo timer checking for released keys
  */
-static void locomokbd_timer_callback(struct timer_list *t)
+static void locomokbd_timer_callback(unsigned long data)
 {
-	struct locomokbd *locomokbd = from_timer(locomokbd, t, timer);
+	struct locomokbd *locomokbd = (struct locomokbd *) data;
 
 	locomokbd_scankeyboard(locomokbd);
 }
@@ -249,7 +264,9 @@ static int locomokbd_probe(struct locomo_dev *dev)
 
 	spin_lock_init(&locomokbd->lock);
 
-	timer_setup(&locomokbd->timer, locomokbd_timer_callback, 0);
+	init_timer(&locomokbd->timer);
+	locomokbd->timer.function = locomokbd_timer_callback;
+	locomokbd->timer.data = (unsigned long) locomokbd;
 
 	locomokbd->suspend_jiffies = jiffies;
 
@@ -304,13 +321,13 @@ static int locomokbd_probe(struct locomo_dev *dev)
 	return err;
 }
 
-static void locomokbd_remove(struct locomo_dev *dev)
+static int locomokbd_remove(struct locomo_dev *dev)
 {
 	struct locomokbd *locomokbd = locomo_get_drvdata(dev);
 
 	free_irq(dev->irq[0], locomokbd);
 
-	timer_shutdown_sync(&locomokbd->timer);
+	del_timer_sync(&locomokbd->timer);
 
 	input_unregister_device(locomokbd->input);
 	locomo_set_drvdata(dev, NULL);
@@ -318,6 +335,8 @@ static void locomokbd_remove(struct locomo_dev *dev)
 	release_mem_region((unsigned long) dev->mapbase, dev->length);
 
 	kfree(locomokbd);
+
+	return 0;
 }
 
 static struct locomo_driver keyboard_driver = {

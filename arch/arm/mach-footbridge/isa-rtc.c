@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  arch/arm/mach-footbridge/isa-rtc.c
  *
@@ -20,6 +19,7 @@
 
 #include <linux/init.h>
 #include <linux/mc146818rtc.h>
+#include <linux/bcd.h>
 #include <linux/io.h>
 
 #include "common.h"

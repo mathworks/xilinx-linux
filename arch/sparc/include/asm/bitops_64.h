@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * bitops.h: Bit string operations on the V9.
  *
@@ -23,11 +22,10 @@ void set_bit(unsigned long nr, volatile unsigned long *addr);
 void clear_bit(unsigned long nr, volatile unsigned long *addr);
 void change_bit(unsigned long nr, volatile unsigned long *addr);
 
-int fls(unsigned int word);
-int __fls(unsigned long word);
-
 #include <asm-generic/bitops/non-atomic.h>
 
+#include <asm-generic/bitops/fls.h>
+#include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/fls64.h>
 
 #ifdef __KERNEL__
@@ -51,6 +49,8 @@ unsigned int __arch_hweight8(unsigned int w);
 #include <asm-generic/bitops/const_hweight.h>
 #include <asm-generic/bitops/lock.h>
 #endif /* __KERNEL__ */
+
+#include <asm-generic/bitops/find.h>
 
 #ifdef __KERNEL__
 

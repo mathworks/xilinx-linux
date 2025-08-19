@@ -22,7 +22,6 @@
 #define AD9963_REG_SERIAL_PORT_CFG	0x00
 #define AD9963_REG_ADC_ADDRESS		0x05
 #define AD9963_REG_RXCML		0x0f
-#define AD9963_REG_DIGITAL_FILTERS	0x30
 #define AD9963_REG_TX_DATA_INF		0x31
 #define AD9963_REG_RX_DATA_INF0		0x32
 #define AD9963_REG_RX_DATA_INF1		0x3f
@@ -30,9 +29,6 @@
 #define AD9963_REG_DAC12_MSB(x)		(0x41 + (x) * 2)
 #define AD9963_REG_DAC12_LSB(x)		(0x42 + (x) * 2)
 #define AD9963_REG_POWER_DOWN0		0x60
-#define AD9963_REG_DLL_CTRL0		0x71
-#define AD9963_REG_DLL_CTRL1		0x72
-#define AD9963_REG_DLL_CTRL2		0x75
 #define AD9963_REG_AUX_ADC_CFG		0x77
 #define AD9963_REG_AUX_ADC_MSB		0x78
 #define AD9963_REG_AUX_ADC_LSB		0x79
@@ -82,7 +78,7 @@ static int ad9963_aux_adc_read(struct iio_dev *indio_dev,
 	if (ret)
 		return ret;
 	do {
-		usleep_range(10000, 12000);
+		msleep(10);
 		ret = regmap_read(ad9963->regmap, AD9963_REG_AUX_ADC_LSB,
 			&reg_val);
 		if (ret)
@@ -118,17 +114,17 @@ static int ad9963_read_raw(struct iio_dev *indio_dev,
 			*val = 1000;
 			*val2 = 5;
 			return IIO_VAL_FRACTIONAL;
+		} else {
+			*val = 3200;
+			*val2 = 12;
+			return IIO_VAL_FRACTIONAL_LOG2;
 		}
-
-		*val = 3200;
-		*val2 = 12;
-		return IIO_VAL_FRACTIONAL_LOG2;
 	case IIO_CHAN_INFO_OFFSET:
-		if (chan->type == IIO_TEMP)
+		if (chan->type == IIO_TEMP) {
 			*val = -1366; /* 0 = 0K => 273200 / (1000 / 5) = 0 C */
-		else
+		} else {
 			return -EINVAL;
-
+		}
 		return IIO_VAL_INT;
 	default:
 		return -EINVAL;
@@ -181,6 +177,7 @@ static int ad9963_debugfs_reg_access(struct iio_dev *indio_dev,
 static const struct iio_info ad9963_info = {
 	.read_raw = &ad9963_read_raw,
 	.write_raw = &ad9963_write_raw,
+	.driver_module = THIS_MODULE,
 	.debugfs_reg_access = ad9963_debugfs_reg_access,
 };
 
@@ -189,7 +186,7 @@ static const struct iio_info ad9963_info = {
 	.indexed = 1, \
 	.channel = (x), \
 	.address = (_addr), \
-	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) | \
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW), \
 			BIT(IIO_CHAN_INFO_SCALE), \
 	.scan_index = -1, \
 }
@@ -234,11 +231,10 @@ static int ad9963_m2k_setup(struct ad9963 *ad9963)
 	regmap_write(ad9963->regmap, AD9963_REG_SERIAL_PORT_CFG, 0xa5);
 	regmap_write(ad9963->regmap, AD9963_REG_SERIAL_PORT_CFG, 0x00);
 
-	regmap_write(ad9963->regmap, AD9963_REG_DIGITAL_FILTERS, 0x37);
-	regmap_write(ad9963->regmap, AD9963_REG_TX_DATA_INF, 0xa1);
-	regmap_write(ad9963->regmap, AD9963_REG_RX_DATA_INF0, 0x23);
+	regmap_write(ad9963->regmap, AD9963_REG_TX_DATA_INF, 0x01); /* REVIST : Disable */
+	regmap_write(ad9963->regmap, AD9963_REG_RX_DATA_INF0, 0x21);
 	regmap_write(ad9963->regmap, AD9963_REG_RX_DATA_INF1, 0x01);
-	regmap_write(ad9963->regmap, AD9963_REG_DAC12_CONFIG, 0x32);
+	regmap_write(ad9963->regmap, AD9963_REG_DAC12_CONFIG, 0xf2);
 
 	regmap_write(ad9963->regmap, AD9963_REG_AUX_ADC_CTRL0, 0x80);
 	regmap_write(ad9963->regmap, 0x66, 0x00);
@@ -246,18 +242,7 @@ static int ad9963_m2k_setup(struct ad9963 *ad9963)
 
 	regmap_write(ad9963->regmap, AD9963_REG_ADC_ADDRESS, 0x03);
 	regmap_write(ad9963->regmap, AD9963_REG_RXCML, 0x02);
-	/* PD Internal Reference, enable DLL */
-	regmap_write(ad9963->regmap, AD9963_REG_POWER_DOWN0, 0x80);
-
-	/* Configure DLL, DAC source = DLL, DLL rate = 3/2 * 100 = 150 */
-	regmap_write(ad9963->regmap, AD9963_REG_DLL_CTRL0, 0x52);
-	regmap_write(ad9963->regmap, AD9963_REG_DLL_CTRL1, 0x02);
-
-	/* Reset DLL */
-	regmap_write(ad9963->regmap, AD9963_REG_DLL_CTRL2, 0x00);
-	regmap_write(ad9963->regmap, AD9963_REG_DLL_CTRL2, 0x08);
-	regmap_write(ad9963->regmap, AD9963_REG_DLL_CTRL2, 0x00);
-
+	regmap_write(ad9963->regmap, AD9963_REG_POWER_DOWN0, 0x40); /* PD Internal Reference */
 	regmap_write(ad9963->regmap, AD9963_REG_SYNC_REGS, 0x01);
 	regmap_write(ad9963->regmap, AD9963_REG_SYNC_REGS, 0x00);
 
@@ -268,6 +253,7 @@ static const struct regmap_config ad9963_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
 	.max_register = 0xff,
+	//.cache_type = REGCACHE_RBTREE,
 };
 
 static int ad9963_probe(struct spi_device *spi)
@@ -292,13 +278,15 @@ static int ad9963_probe(struct spi_device *spi)
 		return PTR_ERR(ad9963->reset_gpio);
 
 	if (ad9963->reset_gpio) {
-		usleep_range(10000, 12000);
+		msleep(10);
 		gpiod_set_value(ad9963->reset_gpio, 0);
 	}
 
 	ad9963->regmap = devm_regmap_init_spi(spi, &ad9963_regmap_config);
 	if (IS_ERR(ad9963->regmap))
-		return PTR_ERR(ad9963->regmap);
+	    return PTR_ERR(ad9963->regmap);
+
+//	regcache_cache_only(ad9963->regmap, true); /* For testing */
 
 	ret = clk_prepare_enable(ad9963->clk);
 	if (ret)
@@ -327,12 +315,14 @@ err_clk_disable:
 	return ret;
 }
 
-static void ad9963_remove(struct spi_device *spi)
+static int ad9963_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad9963 *ad9963 = iio_priv(indio_dev);
 
 	clk_disable_unprepare(ad9963->clk);
+
+	return 0;
 }
 
 static const struct spi_device_id ad9963_id[] = {

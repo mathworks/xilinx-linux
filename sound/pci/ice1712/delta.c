@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   ALSA driver for ICEnsemble ICE1712 (Envy24)
  *
@@ -6,6 +5,21 @@
  *			    Audiophile, Digigram VX442
  *
  *	Copyright (c) 2000 Jaroslav Kysela <perex@perex.cz>
+ *
+ *   This program is free software; you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program; if not, write to the Free Software
+ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *
  */      
 
 #include <linux/delay.h>
@@ -418,7 +432,7 @@ static int snd_ice1712_delta1010lt_wordclock_status_get(struct snd_kcontrol *kco
 	return 0;
 }
 
-static const struct snd_kcontrol_new snd_ice1712_delta1010lt_wordclock_status =
+static struct snd_kcontrol_new snd_ice1712_delta1010lt_wordclock_status =
 {
 	.access =	(SNDRV_CTL_ELEM_ACCESS_READ),
 	.iface =	SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -431,7 +445,7 @@ static const struct snd_kcontrol_new snd_ice1712_delta1010lt_wordclock_status =
  * initialize the chips on M-Audio cards
  */
 
-static const struct snd_akm4xxx akm_audiophile = {
+static struct snd_akm4xxx akm_audiophile = {
 	.type = SND_AK4528,
 	.num_adcs = 2,
 	.num_dacs = 2,
@@ -440,7 +454,7 @@ static const struct snd_akm4xxx akm_audiophile = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_audiophile_priv = {
+static struct snd_ak4xxx_private akm_audiophile_priv = {
 	.caddr = 2,
 	.cif = 0,
 	.data_mask = ICE1712_DELTA_AP_DOUT,
@@ -452,7 +466,7 @@ static const struct snd_ak4xxx_private akm_audiophile_priv = {
 	.mask_flags = 0,
 };
 
-static const struct snd_akm4xxx akm_delta410 = {
+static struct snd_akm4xxx akm_delta410 = {
 	.type = SND_AK4529,
 	.num_adcs = 2,
 	.num_dacs = 8,
@@ -461,7 +475,7 @@ static const struct snd_akm4xxx akm_delta410 = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_delta410_priv = {
+static struct snd_ak4xxx_private akm_delta410_priv = {
 	.caddr = 0,
 	.cif = 0,
 	.data_mask = ICE1712_DELTA_AP_DOUT,
@@ -473,7 +487,7 @@ static const struct snd_ak4xxx_private akm_delta410_priv = {
 	.mask_flags = 0,
 };
 
-static const struct snd_akm4xxx akm_delta1010lt = {
+static struct snd_akm4xxx akm_delta1010lt = {
 	.type = SND_AK4524,
 	.num_adcs = 8,
 	.num_dacs = 8,
@@ -483,7 +497,7 @@ static const struct snd_akm4xxx akm_delta1010lt = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_delta1010lt_priv = {
+static struct snd_ak4xxx_private akm_delta1010lt_priv = {
 	.caddr = 2,
 	.cif = 0, /* the default level of the CIF pin from AK4524 */
 	.data_mask = ICE1712_DELTA_1010LT_DOUT,
@@ -495,7 +509,7 @@ static const struct snd_ak4xxx_private akm_delta1010lt_priv = {
 	.mask_flags = 0,
 };
 
-static const struct snd_akm4xxx akm_delta66e = {
+static struct snd_akm4xxx akm_delta66e = {
 	.type = SND_AK4524,
 	.num_adcs = 4,
 	.num_dacs = 4,
@@ -505,7 +519,7 @@ static const struct snd_akm4xxx akm_delta66e = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_delta66e_priv = {
+static struct snd_ak4xxx_private akm_delta66e_priv = {
 	.caddr = 2,
 	.cif = 0, /* the default level of the CIF pin from AK4524 */
 	.data_mask = ICE1712_DELTA_66E_DOUT,
@@ -518,7 +532,7 @@ static const struct snd_ak4xxx_private akm_delta66e_priv = {
 };
 
 
-static const struct snd_akm4xxx akm_delta44 = {
+static struct snd_akm4xxx akm_delta44 = {
 	.type = SND_AK4524,
 	.num_adcs = 4,
 	.num_dacs = 4,
@@ -528,7 +542,7 @@ static const struct snd_akm4xxx akm_delta44 = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_delta44_priv = {
+static struct snd_ak4xxx_private akm_delta44_priv = {
 	.caddr = 2,
 	.cif = 0, /* the default level of the CIF pin from AK4524 */
 	.data_mask = ICE1712_DELTA_CODEC_SERIAL_DATA,
@@ -540,7 +554,7 @@ static const struct snd_ak4xxx_private akm_delta44_priv = {
 	.mask_flags = 0,
 };
 
-static const struct snd_akm4xxx akm_vx442 = {
+static struct snd_akm4xxx akm_vx442 = {
 	.type = SND_AK4524,
 	.num_adcs = 4,
 	.num_dacs = 4,
@@ -550,7 +564,7 @@ static const struct snd_akm4xxx akm_vx442 = {
 	}
 };
 
-static const struct snd_ak4xxx_private akm_vx442_priv = {
+static struct snd_ak4xxx_private akm_vx442_priv = {
 	.caddr = 2,
 	.cif = 0,
 	.data_mask = ICE1712_VX442_DOUT,
@@ -676,15 +690,13 @@ static int snd_ice1712_delta_init(struct snd_ice1712 *ice)
 	case ICE1712_SUBDEVICE_DELTA1010LT:
 	case ICE1712_SUBDEVICE_VX442:
 	case ICE1712_SUBDEVICE_DELTA66E:
-		err = snd_i2c_bus_create(ice->card, "ICE1712 GPIO 1", NULL, &ice->i2c);
-		if (err < 0) {
+		if ((err = snd_i2c_bus_create(ice->card, "ICE1712 GPIO 1", NULL, &ice->i2c)) < 0) {
 			dev_err(ice->card->dev, "unable to create I2C bus\n");
 			return err;
 		}
 		ice->i2c->private_data = ice;
 		ice->i2c->ops = &ap_cs8427_i2c_ops;
-		err = snd_ice1712_init_cs8427(ice, CS8427_BASE_ADDR);
-		if (err < 0)
+		if ((err = snd_ice1712_init_cs8427(ice, CS8427_BASE_ADDR)) < 0)
 			return err;
 		break;
 	case ICE1712_SUBDEVICE_DELTA1010:
@@ -693,7 +705,7 @@ static int snd_ice1712_delta_init(struct snd_ice1712 *ice)
 		break;
 	case ICE1712_SUBDEVICE_DELTADIO2496:
 		ice->gpio.set_pro_rate = delta_1010_set_rate_val;
-		fallthrough;
+		/* fall thru */
 	case ICE1712_SUBDEVICE_DELTA66:
 		ice->spdif.ops.open = delta_open_spdif;
 		ice->spdif.ops.setup_rate = delta_setup_spdif;
@@ -755,15 +767,15 @@ static int snd_ice1712_delta_init(struct snd_ice1712 *ice)
  * additional controls for M-Audio cards
  */
 
-static const struct snd_kcontrol_new snd_ice1712_delta1010_wordclock_select =
+static struct snd_kcontrol_new snd_ice1712_delta1010_wordclock_select =
 ICE1712_GPIO(SNDRV_CTL_ELEM_IFACE_MIXER, "Word Clock Sync", 0, ICE1712_DELTA_WORD_CLOCK_SELECT, 1, 0);
-static const struct snd_kcontrol_new snd_ice1712_delta1010lt_wordclock_select =
+static struct snd_kcontrol_new snd_ice1712_delta1010lt_wordclock_select =
 ICE1712_GPIO(SNDRV_CTL_ELEM_IFACE_MIXER, "Word Clock Sync", 0, ICE1712_DELTA_1010LT_WORDCLOCK, 0, 0);
-static const struct snd_kcontrol_new snd_ice1712_delta1010_wordclock_status =
+static struct snd_kcontrol_new snd_ice1712_delta1010_wordclock_status =
 ICE1712_GPIO(SNDRV_CTL_ELEM_IFACE_MIXER, "Word Clock Status", 0, ICE1712_DELTA_WORD_CLOCK_STATUS, 1, SNDRV_CTL_ELEM_ACCESS_READ | SNDRV_CTL_ELEM_ACCESS_VOLATILE);
-static const struct snd_kcontrol_new snd_ice1712_deltadio2496_spdif_in_select =
+static struct snd_kcontrol_new snd_ice1712_deltadio2496_spdif_in_select =
 ICE1712_GPIO(SNDRV_CTL_ELEM_IFACE_MIXER, "IEC958 Input Optical", 0, ICE1712_DELTA_SPDIF_INPUT_SELECT, 0, 0);
-static const struct snd_kcontrol_new snd_ice1712_delta_spdif_in_status =
+static struct snd_kcontrol_new snd_ice1712_delta_spdif_in_status =
 ICE1712_GPIO(SNDRV_CTL_ELEM_IFACE_MIXER, "Delta IEC958 Input Status", 0, ICE1712_DELTA_SPDIF_IN_STAT, 1, SNDRV_CTL_ELEM_ACCESS_READ | SNDRV_CTL_ELEM_ACCESS_VOLATILE);
 
 

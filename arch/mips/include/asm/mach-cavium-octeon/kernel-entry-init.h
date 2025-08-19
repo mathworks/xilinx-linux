@@ -99,20 +99,9 @@
 	# to begin
 	#
 
-octeon_spin_wait_boot:
-#ifdef CONFIG_RELOCATABLE
-	PTR_LA	t0, octeon_processor_relocated_kernel_entry
-	LONG_L	t0, (t0)
-	beq	zero, t0, 1f
-	nop
-
-	jr	t0
-	nop
-1:
-#endif /* CONFIG_RELOCATABLE */
-
-	# This is the variable where the next core to boot is stored
+	# This is the variable where the next core to boot os stored
 	PTR_LA	t0, octeon_processor_boot
+octeon_spin_wait_boot:
 	# Get the core id of the next to be booted
 	LONG_L	t1, (t0)
 	# Keep looping if it isn't me
@@ -155,14 +144,6 @@ octeon_main_processor:
  * Do SMP slave processor setup necessary before we can safely execute C code.
  */
 	.macro	smp_slave_setup
-	.endm
-
-#define USE_KEXEC_SMP_WAIT_FINAL
-	.macro  kexec_smp_wait_final
-	.set push
-	.set noreorder
-	synci		0($0)
-	.set pop
 	.endm
 
 #endif /* __ASM_MACH_CAVIUM_OCTEON_KERNEL_ENTRY_H */

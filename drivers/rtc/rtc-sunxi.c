@@ -1,8 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * An RTC driver for Allwinner A10/A20
  *
  * Copyright (c) 2013, Carlo Caione <carlo.caione@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #include <linux/delay.h>
@@ -14,6 +27,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/types.h>
@@ -246,7 +261,7 @@ static int sunxi_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
 	 */
 	rtc_tm->tm_year += SUNXI_YEAR_OFF(chip->data_year);
 
-	return 0;
+	return rtc_valid_tm(rtc_tm);
 }
 
 static int sunxi_rtc_setalarm(struct device *dev, struct rtc_wkalrm *wkalrm)
@@ -420,6 +435,7 @@ MODULE_DEVICE_TABLE(of, sunxi_rtc_dt_ids);
 static int sunxi_rtc_probe(struct platform_device *pdev)
 {
 	struct sunxi_rtc_dev *chip;
+	struct resource *res;
 	int ret;
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
@@ -429,17 +445,16 @@ static int sunxi_rtc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chip);
 	chip->dev = &pdev->dev;
 
-	chip->rtc = devm_rtc_allocate_device(&pdev->dev);
-	if (IS_ERR(chip->rtc))
-		return PTR_ERR(chip->rtc);
-
-	chip->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	chip->base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(chip->base))
 		return PTR_ERR(chip->base);
 
 	chip->irq = platform_get_irq(pdev, 0);
-	if (chip->irq < 0)
+	if (chip->irq < 0) {
+		dev_err(&pdev->dev, "No IRQ resource\n");
 		return chip->irq;
+	}
 	ret = devm_request_irq(&pdev->dev, chip->irq, sunxi_rtc_alarmirq,
 			0, dev_name(&pdev->dev), chip);
 	if (ret) {
@@ -466,13 +481,30 @@ static int sunxi_rtc_probe(struct platform_device *pdev)
 	writel(SUNXI_ALRM_IRQ_STA_CNT_IRQ_PEND, chip->base +
 			SUNXI_ALRM_IRQ_STA);
 
-	chip->rtc->ops = &sunxi_rtc_ops;
+	chip->rtc = rtc_device_register("rtc-sunxi", &pdev->dev,
+			&sunxi_rtc_ops, THIS_MODULE);
+	if (IS_ERR(chip->rtc)) {
+		dev_err(&pdev->dev, "unable to register device\n");
+		return PTR_ERR(chip->rtc);
+	}
 
-	return devm_rtc_register_device(chip->rtc);
+	dev_info(&pdev->dev, "RTC enabled\n");
+
+	return 0;
+}
+
+static int sunxi_rtc_remove(struct platform_device *pdev)
+{
+	struct sunxi_rtc_dev *chip = platform_get_drvdata(pdev);
+
+	rtc_device_unregister(chip->rtc);
+
+	return 0;
 }
 
 static struct platform_driver sunxi_rtc_driver = {
 	.probe		= sunxi_rtc_probe,
+	.remove		= sunxi_rtc_remove,
 	.driver		= {
 		.name		= "sunxi-rtc",
 		.of_match_table = sunxi_rtc_dt_ids,

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Frame buffer device for IBM GXT4500P/6500P and GXT4000P/6000P
  * display adaptors
@@ -6,7 +5,6 @@
  * Copyright (C) 2006 Paul Mackerras, IBM Corp. <paulus@samba.org>
  */
 
-#include <linux/aperture.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fb.h>
@@ -535,7 +533,7 @@ static int gxt4500_setcolreg(unsigned int reg, unsigned int red,
 			break;
 		case DFA_PIX_32BIT:
 			val |= (reg << 24);
-			fallthrough;
+			/* fall through */
 		case DFA_PIX_24BIT:
 			val |= (reg << 16) | (reg << 8);
 			break;
@@ -600,14 +598,16 @@ static const struct fb_fix_screeninfo gxt4500_fix = {
 	.mmio_len = 0x20000,
 };
 
-static const struct fb_ops gxt4500_ops = {
+static struct fb_ops gxt4500_ops = {
 	.owner = THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var = gxt4500_check_var,
 	.fb_set_par = gxt4500_set_par,
 	.fb_setcolreg = gxt4500_setcolreg,
 	.fb_pan_display = gxt4500_pan_display,
 	.fb_blank = gxt4500_blank,
+	.fb_fillrect = cfb_fillrect,
+	.fb_copyarea = cfb_copyarea,
+	.fb_imageblit = cfb_imageblit,
 };
 
 /* PCI functions */
@@ -619,10 +619,6 @@ static int gxt4500_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct fb_info *info;
 	struct fb_var_screeninfo var;
 	enum gxt_cards cardtype;
-
-	err = aperture_remove_conflicting_pci_devices(pdev, "gxt4500fb");
-	if (err)
-		return err;
 
 	err = pci_enable_device(pdev);
 	if (err) {
@@ -646,14 +642,15 @@ static int gxt4500_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	info = framebuffer_alloc(sizeof(struct gxt4500_par), &pdev->dev);
-	if (!info)
+	if (!info) {
+		dev_err(&pdev->dev, "gxt4500: cannot alloc FB info record\n");
 		goto err_free_fb;
-
+	}
 	par = info->par;
 	cardtype = ent->driver_data;
 	par->refclk_ps = cardinfo[cardtype].refclk_ps;
 	info->fix = gxt4500_fix;
-	strscpy(info->fix.id, cardinfo[cardtype].cardname,
+	strlcpy(info->fix.id, cardinfo[cardtype].cardname,
 		sizeof(info->fix.id));
 	info->pseudo_palette = par->pseudo_palette;
 
@@ -688,7 +685,8 @@ static int gxt4500_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 #endif
 
 	info->fbops = &gxt4500_ops;
-	info->flags = FBINFO_HWACCEL_XPAN | FBINFO_HWACCEL_YPAN;
+	info->flags = FBINFO_FLAG_DEFAULT | FBINFO_HWACCEL_XPAN |
+					    FBINFO_HWACCEL_YPAN;
 
 	err = fb_alloc_cmap(&info->cmap, 256, 0);
 	if (err) {
@@ -776,9 +774,6 @@ static struct pci_driver gxt4500_driver = {
 
 static int gxt4500_init(void)
 {
-	if (fb_modesetting_disabled("gxt4500"))
-		return -ENODEV;
-
 #ifndef MODULE
 	if (fb_get_options("gxt4500", &mode_option))
 		return -ENODEV;

@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: utdebug - Debug print/trace routines
  *
- * Copyright (C) 2000 - 2023, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2016, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #define EXPORT_ACPI_INTERFACES
 
@@ -37,12 +71,7 @@ void acpi_ut_init_stack_ptr_trace(void)
 {
 	acpi_size current_sp;
 
-#pragma GCC diagnostic push
-#if defined(__GNUC__) && __GNUC__ >= 12
-#pragma GCC diagnostic ignored "-Wdangling-pointer="
-#endif
 	acpi_gbl_entry_stack_pointer = &current_sp;
-#pragma GCC diagnostic pop
 }
 
 /*******************************************************************************
@@ -134,9 +163,6 @@ acpi_debug_print(u32 requested_debug_level,
 {
 	acpi_thread_id thread_id;
 	va_list args;
-#ifdef ACPI_APPLICATION
-	int fill_count;
-#endif
 
 	/* Check if debug output enabled */
 
@@ -163,7 +189,7 @@ acpi_debug_print(u32 requested_debug_level,
 	 * Display the module name, current line number, thread ID (if requested),
 	 * current procedure nesting level, and the current procedure name
 	 */
-	acpi_os_printf("%9s-%04d ", module_name, line_number);
+	acpi_os_printf("%9s-%04ld ", module_name, line_number);
 
 #ifdef ACPI_APPLICATION
 	/*
@@ -176,21 +202,10 @@ acpi_debug_print(u32 requested_debug_level,
 		acpi_os_printf("[%u] ", (u32)thread_id);
 	}
 
-	fill_count = 48 - acpi_gbl_nesting_level -
-	    strlen(acpi_ut_trim_function_name(function_name));
-	if (fill_count < 0) {
-		fill_count = 0;
-	}
-
-	acpi_os_printf("[%02d] %*s",
-		       acpi_gbl_nesting_level, acpi_gbl_nesting_level + 1, " ");
-	acpi_os_printf("%s%*s: ",
-		       acpi_ut_trim_function_name(function_name), fill_count,
-		       " ");
-
-#else
-	acpi_os_printf("%-22.22s: ", acpi_ut_trim_function_name(function_name));
+	acpi_os_printf("[%02ld] ", acpi_gbl_nesting_level);
 #endif
+
+	acpi_os_printf("%-22.22s: ", acpi_ut_trim_function_name(function_name));
 
 	va_start(args, format);
 	acpi_os_vprintf(format, args);
@@ -612,5 +627,4 @@ acpi_trace_point(acpi_trace_event_type type, u8 begin, u8 *aml, char *pathname)
 }
 
 ACPI_EXPORT_SYMBOL(acpi_trace_point)
-
 #endif

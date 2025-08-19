@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ARM_IRQ_H
 #define __ASM_ARM_IRQ_H
 
@@ -25,14 +24,20 @@
 #ifndef __ASSEMBLY__
 struct irqaction;
 struct pt_regs;
+extern void migrate_irqs(void);
 
+extern void asm_do_IRQ(unsigned int, struct pt_regs *);
 void handle_IRQ(unsigned int, struct pt_regs *);
+void init_IRQ(void);
+
+#ifdef CONFIG_MULTI_IRQ_HANDLER
+extern void (*handle_arch_irq)(struct pt_regs *);
+extern void set_handle_irq(void (*handle_irq)(struct pt_regs *));
+#endif
 
 #ifdef CONFIG_SMP
-#include <linux/cpumask.h>
-
 extern void arch_trigger_cpumask_backtrace(const cpumask_t *mask,
-					   int exclude_cpu);
+					   bool exclude_self);
 #define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
 #endif
 

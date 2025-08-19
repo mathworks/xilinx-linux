@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * Filename:  target_core_rd.c
  *
@@ -9,13 +8,25 @@
  *
  * Nicholas A. Bellinger <nab@kernel.org>
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *
  ******************************************************************************/
 
 #include <linux/string.h>
 #include <linux/parser.h>
-#include <linux/highmem.h>
 #include <linux/timer.h>
-#include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <scsi/scsi_proto.h>
@@ -34,9 +45,11 @@ static int rd_attach_hba(struct se_hba *hba, u32 host_id)
 {
 	struct rd_host *rd_host;
 
-	rd_host = kzalloc(sizeof(*rd_host), GFP_KERNEL);
-	if (!rd_host)
+	rd_host = kzalloc(sizeof(struct rd_host), GFP_KERNEL);
+	if (!rd_host) {
+		pr_err("Unable to allocate memory for struct rd_host\n");
 		return -ENOMEM;
+	}
 
 	rd_host->rd_host_id = host_id;
 
@@ -131,10 +144,13 @@ static int rd_allocate_sgl_table(struct rd_dev *rd_dev, struct rd_dev_sg_table *
 		if (sg_per_table < total_sg_needed)
 			chain_entry = 1;
 
-		sg = kmalloc_array(sg_per_table + chain_entry, sizeof(*sg),
+		sg = kcalloc(sg_per_table + chain_entry, sizeof(*sg),
 				GFP_KERNEL);
-		if (!sg)
+		if (!sg) {
+			pr_err("Unable to allocate scatterlist array"
+				" for struct rd_dev\n");
 			return -ENOMEM;
+		}
 
 		sg_init_table(sg, sg_per_table + chain_entry);
 
@@ -192,9 +208,13 @@ static int rd_build_device_space(struct rd_dev *rd_dev)
 	total_sg_needed = rd_dev->rd_page_count;
 
 	sg_tables = (total_sg_needed / max_sg_per_table) + 1;
-	sg_table = kcalloc(sg_tables, sizeof(*sg_table), GFP_KERNEL);
-	if (!sg_table)
+
+	sg_table = kzalloc(sg_tables * sizeof(struct rd_dev_sg_table), GFP_KERNEL);
+	if (!sg_table) {
+		pr_err("Unable to allocate memory for Ramdisk"
+		       " scatterlist tables\n");
 		return -ENOMEM;
+	}
 
 	rd_dev->sg_table_array = sg_table;
 	rd_dev->sg_table_count = sg_tables;
@@ -249,9 +269,13 @@ static int rd_build_prot_space(struct rd_dev *rd_dev, int prot_length, int block
 	total_sg_needed = (rd_dev->rd_page_count * prot_length / block_size) + 1;
 
 	sg_tables = (total_sg_needed / max_sg_per_table) + 1;
-	sg_table = kcalloc(sg_tables, sizeof(*sg_table), GFP_KERNEL);
-	if (!sg_table)
+
+	sg_table = kzalloc(sg_tables * sizeof(struct rd_dev_sg_table), GFP_KERNEL);
+	if (!sg_table) {
+		pr_err("Unable to allocate memory for Ramdisk protection"
+		       " scatterlist tables\n");
 		return -ENOMEM;
+	}
 
 	rd_dev->sg_prot_array = sg_table;
 	rd_dev->sg_prot_count = sg_tables;
@@ -272,9 +296,11 @@ static struct se_device *rd_alloc_device(struct se_hba *hba, const char *name)
 	struct rd_dev *rd_dev;
 	struct rd_host *rd_host = hba->hba_ptr;
 
-	rd_dev = kzalloc(sizeof(*rd_dev), GFP_KERNEL);
-	if (!rd_dev)
+	rd_dev = kzalloc(sizeof(struct rd_dev), GFP_KERNEL);
+	if (!rd_dev) {
+		pr_err("Unable to allocate memory for struct rd_dev\n");
 		return NULL;
+	}
 
 	rd_dev->rd_host = rd_host;
 
@@ -326,14 +352,10 @@ static void rd_dev_call_rcu(struct rcu_head *p)
 
 static void rd_free_device(struct se_device *dev)
 {
-	call_rcu(&dev->rcu_head, rd_dev_call_rcu);
-}
-
-static void rd_destroy_device(struct se_device *dev)
-{
 	struct rd_dev *rd_dev = RD_DEV(dev);
 
 	rd_release_device_space(rd_dev);
+	call_rcu(&dev->rcu_head, rd_dev_call_rcu);
 }
 
 static struct rd_dev_sg_table *rd_get_sg_table(struct rd_dev *rd_dev, u32 page)
@@ -386,7 +408,7 @@ static sense_reason_t rd_do_prot_rw(struct se_cmd *cmd, bool is_read)
 	u32 prot_offset, prot_page;
 	u32 prot_npages __maybe_unused;
 	u64 tmp;
-	sense_reason_t rc = 0;
+	sense_reason_t rc = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 
 	tmp = cmd->t_task_lba * se_dev->prot_length;
 	prot_offset = do_div(tmp, PAGE_SIZE);
@@ -399,14 +421,13 @@ static sense_reason_t rd_do_prot_rw(struct se_cmd *cmd, bool is_read)
 	prot_sg = &prot_table->sg_table[prot_page -
 					prot_table->page_start_offset];
 
-	if (se_dev->dev_attrib.pi_prot_verify) {
-		if (is_read)
-			rc = sbc_dif_verify(cmd, cmd->t_task_lba, sectors, 0,
-					    prot_sg, prot_offset);
-		else
-			rc = sbc_dif_verify(cmd, cmd->t_task_lba, sectors, 0,
-					    cmd->t_prot_sg, 0);
-	}
+	if (is_read)
+		rc = sbc_dif_verify(cmd, cmd->t_task_lba, sectors, 0,
+				    prot_sg, prot_offset);
+	else
+		rc = sbc_dif_verify(cmd, cmd->t_task_lba, sectors, 0,
+				    cmd->t_prot_sg, 0);
+
 	if (!rc)
 		sbc_dif_copy_prot(cmd, sectors, is_read, prot_sg, prot_offset);
 
@@ -530,13 +551,12 @@ rd_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 }
 
 enum {
-	Opt_rd_pages, Opt_rd_nullio, Opt_rd_dummy, Opt_err
+	Opt_rd_pages, Opt_rd_nullio, Opt_err
 };
 
 static match_table_t tokens = {
 	{Opt_rd_pages, "rd_pages=%d"},
 	{Opt_rd_nullio, "rd_nullio=%d"},
-	{Opt_rd_dummy, "rd_dummy=%d"},
 	{Opt_err, NULL}
 };
 
@@ -546,7 +566,7 @@ static ssize_t rd_set_configfs_dev_params(struct se_device *dev,
 	struct rd_dev *rd_dev = RD_DEV(dev);
 	char *orig, *ptr, *opts;
 	substring_t args[MAX_OPT_ARGS];
-	int arg, token;
+	int ret = 0, arg, token;
 
 	opts = kstrdup(page, GFP_KERNEL);
 	if (!opts)
@@ -575,21 +595,13 @@ static ssize_t rd_set_configfs_dev_params(struct se_device *dev,
 			pr_debug("RAMDISK: Setting NULLIO flag: %d\n", arg);
 			rd_dev->rd_flags |= RDF_NULLIO;
 			break;
-		case Opt_rd_dummy:
-			match_int(args, &arg);
-			if (arg != 1)
-				break;
-
-			pr_debug("RAMDISK: Setting DUMMY flag: %d\n", arg);
-			rd_dev->rd_flags |= RDF_DUMMY;
-			break;
 		default:
 			break;
 		}
 	}
 
 	kfree(orig);
-	return count;
+	return (!ret) ? count : ret;
 }
 
 static ssize_t rd_show_configfs_dev_params(struct se_device *dev, char *b)
@@ -599,20 +611,10 @@ static ssize_t rd_show_configfs_dev_params(struct se_device *dev, char *b)
 	ssize_t bl = sprintf(b, "TCM RamDisk ID: %u  RamDisk Makeup: rd_mcp\n",
 			rd_dev->rd_dev_id);
 	bl += sprintf(b + bl, "        PAGES/PAGE_SIZE: %u*%lu"
-			"  SG_table_count: %u  nullio: %d dummy: %d\n",
-			rd_dev->rd_page_count,
+			"  SG_table_count: %u  nullio: %d\n", rd_dev->rd_page_count,
 			PAGE_SIZE, rd_dev->sg_table_count,
-			!!(rd_dev->rd_flags & RDF_NULLIO),
-			!!(rd_dev->rd_flags & RDF_DUMMY));
+			!!(rd_dev->rd_flags & RDF_NULLIO));
 	return bl;
-}
-
-static u32 rd_get_device_type(struct se_device *dev)
-{
-	if (RD_DEV(dev)->rd_flags & RDF_DUMMY)
-		return 0x3f; /* Unknown device type, not connected */
-	else
-		return sbc_get_device_type(dev);
 }
 
 static sector_t rd_get_blocks(struct se_device *dev)
@@ -643,14 +645,14 @@ static void rd_free_prot(struct se_device *dev)
 	rd_release_prot_space(rd_dev);
 }
 
-static struct exec_cmd_ops rd_exec_cmd_ops = {
+static struct sbc_ops rd_sbc_ops = {
 	.execute_rw		= rd_execute_rw,
 };
 
 static sense_reason_t
 rd_parse_cdb(struct se_cmd *cmd)
 {
-	return sbc_parse_cdb(cmd, &rd_exec_cmd_ops);
+	return sbc_parse_cdb(cmd, &rd_sbc_ops);
 }
 
 static const struct target_backend_ops rd_mcp_ops = {
@@ -661,12 +663,11 @@ static const struct target_backend_ops rd_mcp_ops = {
 	.detach_hba		= rd_detach_hba,
 	.alloc_device		= rd_alloc_device,
 	.configure_device	= rd_configure_device,
-	.destroy_device		= rd_destroy_device,
 	.free_device		= rd_free_device,
 	.parse_cdb		= rd_parse_cdb,
 	.set_configfs_dev_params = rd_set_configfs_dev_params,
 	.show_configfs_dev_params = rd_show_configfs_dev_params,
-	.get_device_type	= rd_get_device_type,
+	.get_device_type	= sbc_get_device_type,
 	.get_blocks		= rd_get_blocks,
 	.init_prot		= rd_init_prot,
 	.free_prot		= rd_free_prot,

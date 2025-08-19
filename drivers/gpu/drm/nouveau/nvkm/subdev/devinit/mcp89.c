@@ -26,26 +26,29 @@
 #include <subdev/bios.h>
 #include <subdev/bios/init.h>
 
-static void
+static u64
 mcp89_devinit_disable(struct nvkm_devinit *init)
 {
 	struct nvkm_device *device = init->subdev.device;
 	u32 r001540 = nvkm_rd32(device, 0x001540);
 	u32 r00154c = nvkm_rd32(device, 0x00154c);
+	u64 disable = 0;
 
 	if (!(r001540 & 0x40000000)) {
-		nvkm_subdev_disable(device, NVKM_ENGINE_MSPDEC, 0);
-		nvkm_subdev_disable(device, NVKM_ENGINE_MSPPP, 0);
+		disable |= (1ULL << NVKM_ENGINE_MSPDEC);
+		disable |= (1ULL << NVKM_ENGINE_MSPPP);
 	}
 
 	if (!(r00154c & 0x00000004))
-		nvkm_subdev_disable(device, NVKM_ENGINE_DISP, 0);
+		disable |= (1ULL << NVKM_ENGINE_DISP);
 	if (!(r00154c & 0x00000020))
-		nvkm_subdev_disable(device, NVKM_ENGINE_MSVLD, 0);
+		disable |= (1ULL << NVKM_ENGINE_MSVLD);
 	if (!(r00154c & 0x00000040))
-		nvkm_subdev_disable(device, NVKM_ENGINE_VIC, 0);
+		disable |= (1ULL << NVKM_ENGINE_VIC);
 	if (!(r00154c & 0x00000200))
-		nvkm_subdev_disable(device, NVKM_ENGINE_CE, 0);
+		disable |= (1ULL << NVKM_ENGINE_CE0);
+
+	return disable;
 }
 
 static const struct nvkm_devinit_func
@@ -58,8 +61,8 @@ mcp89_devinit = {
 };
 
 int
-mcp89_devinit_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-		  struct nvkm_devinit **pinit)
+mcp89_devinit_new(struct nvkm_device *device, int index,
+		struct nvkm_devinit **pinit)
 {
-	return nv50_devinit_new_(&mcp89_devinit, device, type, inst, pinit);
+	return nv50_devinit_new_(&mcp89_devinit, device, index, pinit);
 }

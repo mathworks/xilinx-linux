@@ -1,8 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1251
  *
  * Copyright (C) 2008-2009 Nokia Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA
+ *
  */
 
 #include <linux/module.h>
@@ -108,15 +122,14 @@ static int wl1251_fetch_nvs(struct wl1251 *wl)
 		goto out;
 	}
 
-	wl->nvs = kmemdup(fw->data, fw->size, GFP_KERNEL);
+	wl->nvs_len = fw->size;
+	wl->nvs = kmemdup(fw->data, wl->nvs_len, GFP_KERNEL);
 
 	if (!wl->nvs) {
 		wl1251_error("could not allocate memory for the nvs file");
 		ret = -ENOMEM;
 		goto out;
 	}
-
-	wl->nvs_len = fw->size;
 
 	ret = 0;
 
@@ -185,6 +198,13 @@ static int wl1251_chip_wakeup(struct wl1251 *wl)
 
 	if (wl->fw == NULL) {
 		ret = wl1251_fetch_firmware(wl);
+		if (ret < 0)
+			goto out;
+	}
+
+	if (wl->nvs == NULL && !wl->use_eeprom) {
+		/* No NVS from netlink, try to get it from the filesystem */
+		ret = wl1251_fetch_nvs(wl);
 		if (ret < 0)
 			goto out;
 	}
@@ -546,7 +566,7 @@ static int wl1251_build_null_data(struct wl1251 *wl)
 		size = sizeof(struct wl12xx_null_data_template);
 		ptr = NULL;
 	} else {
-		skb = ieee80211_nullfunc_get(wl->hw, wl->vif, -1, false);
+		skb = ieee80211_nullfunc_get(wl->hw, wl->vif);
 		if (!skb)
 			goto out;
 		size = skb->len;
@@ -558,7 +578,7 @@ static int wl1251_build_null_data(struct wl1251 *wl)
 out:
 	dev_kfree_skb(skb);
 	if (ret)
-		wl1251_warning("cmd build null data failed: %d", ret);
+		wl1251_warning("cmd buld null data failed: %d", ret);
 
 	return ret;
 }
@@ -1016,7 +1036,7 @@ static int wl1251_op_hw_scan(struct ieee80211_hw *hw,
 		goto out_idle;
 	}
 	if (req->ie_len)
-		skb_put_data(skb, req->ie, req->ie_len);
+		memcpy(skb_put(skb, req->ie_len), req->ie, req->ie_len);
 
 	ret = wl1251_cmd_template_set(wl, CMD_PROBE_REQ, skb->data,
 				      skb->len);
@@ -1077,7 +1097,7 @@ out:
 static void wl1251_op_bss_info_changed(struct ieee80211_hw *hw,
 				       struct ieee80211_vif *vif,
 				       struct ieee80211_bss_conf *bss_conf,
-				       u64 changed)
+				       u32 changed)
 {
 	struct wl1251 *wl = hw->priv;
 	struct sk_buff *beacon, *skb;
@@ -1123,7 +1143,7 @@ static void wl1251_op_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
-		if (vif->cfg.assoc) {
+		if (bss_conf->assoc) {
 			wl->beacon_int = bss_conf->beacon_int;
 
 			skb = ieee80211_pspoll_get(wl->hw, wl->vif);
@@ -1137,7 +1157,7 @@ static void wl1251_op_bss_info_changed(struct ieee80211_hw *hw,
 			if (ret < 0)
 				goto out_sleep;
 
-			ret = wl1251_acx_aid(wl, vif->cfg.aid);
+			ret = wl1251_acx_aid(wl, bss_conf->aid);
 			if (ret < 0)
 				goto out_sleep;
 		} else {
@@ -1176,17 +1196,18 @@ static void wl1251_op_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ARP_FILTER) {
-		__be32 addr = vif->cfg.arp_addr_list[0];
+		__be32 addr = bss_conf->arp_addr_list[0];
 		WARN_ON(wl->bss_type != BSS_TYPE_STA_BSS);
 
-		enable = vif->cfg.arp_addr_cnt == 1 && vif->cfg.assoc;
-		ret = wl1251_acx_arp_ip_filter(wl, enable, addr);
+		enable = bss_conf->arp_addr_cnt == 1 && bss_conf->assoc;
+		wl1251_acx_arp_ip_filter(wl, enable, addr);
+
 		if (ret < 0)
 			goto out_sleep;
 	}
 
 	if (changed & BSS_CHANGED_BEACON) {
-		beacon = ieee80211_beacon_get(hw, vif, 0);
+		beacon = ieee80211_beacon_get(hw, vif);
 		if (!beacon)
 			goto out_sleep;
 
@@ -1282,8 +1303,7 @@ static struct ieee80211_channel wl1251_channels[] = {
 };
 
 static int wl1251_op_conf_tx(struct ieee80211_hw *hw,
-			     struct ieee80211_vif *vif,
-			     unsigned int link_id, u16 queue,
+			     struct ieee80211_vif *vif, u16 queue,
 			     const struct ieee80211_tx_queue_params *params)
 {
 	enum wl1251_acx_ps_scheme ps_scheme;
@@ -1359,7 +1379,6 @@ static const struct ieee80211_ops wl1251_ops = {
 	.prepare_multicast = wl1251_op_prepare_multicast,
 	.configure_filter = wl1251_op_configure_filter,
 	.tx = wl1251_op_tx,
-	.wake_tx_queue = ieee80211_handle_wake_tx_queue,
 	.set_key = wl1251_op_set_key,
 	.hw_scan = wl1251_op_hw_scan,
 	.bss_info_changed = wl1251_op_bss_info_changed,
@@ -1428,61 +1447,6 @@ static int wl1251_read_eeprom_mac(struct wl1251 *wl)
 	return 0;
 }
 
-#define NVS_OFF_MAC_LEN 0x19
-#define NVS_OFF_MAC_ADDR_LO 0x1a
-#define NVS_OFF_MAC_ADDR_HI 0x1b
-#define NVS_OFF_MAC_DATA 0x1c
-
-static int wl1251_check_nvs_mac(struct wl1251 *wl)
-{
-	if (wl->nvs_len < 0x24)
-		return -ENODATA;
-
-	/* length is 2 and data address is 0x546c (ANDed with 0xfffe) */
-	if (wl->nvs[NVS_OFF_MAC_LEN] != 2 ||
-	    wl->nvs[NVS_OFF_MAC_ADDR_LO] != 0x6d ||
-	    wl->nvs[NVS_OFF_MAC_ADDR_HI] != 0x54)
-		return -EINVAL;
-
-	return 0;
-}
-
-static int wl1251_read_nvs_mac(struct wl1251 *wl)
-{
-	u8 mac[ETH_ALEN];
-	int i, ret;
-
-	ret = wl1251_check_nvs_mac(wl);
-	if (ret)
-		return ret;
-
-	/* MAC is stored in reverse order */
-	for (i = 0; i < ETH_ALEN; i++)
-		mac[i] = wl->nvs[NVS_OFF_MAC_DATA + ETH_ALEN - i - 1];
-
-	/* 00:00:20:07:03:09 is in example file wl1251-nvs.bin, so invalid */
-	if (ether_addr_equal_unaligned(mac, "\x00\x00\x20\x07\x03\x09"))
-		return -EINVAL;
-
-	memcpy(wl->mac_addr, mac, ETH_ALEN);
-	return 0;
-}
-
-static int wl1251_write_nvs_mac(struct wl1251 *wl)
-{
-	int i, ret;
-
-	ret = wl1251_check_nvs_mac(wl);
-	if (ret)
-		return ret;
-
-	/* MAC is stored in reverse order */
-	for (i = 0; i < ETH_ALEN; i++)
-		wl->nvs[NVS_OFF_MAC_DATA + i] = wl->mac_addr[ETH_ALEN - i - 1];
-
-	return 0;
-}
-
 static int wl1251_register_hw(struct wl1251 *wl)
 {
 	int ret;
@@ -1522,43 +1486,12 @@ int wl1251_init_ieee80211(struct wl1251 *wl)
 	wl->hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
 					 BIT(NL80211_IFTYPE_ADHOC);
 	wl->hw->wiphy->max_scan_ssids = 1;
-
-	/* We set max_scan_ie_len to a random value to make wpa_supplicant scans not
-	 * fail, as the driver will the ignore the extra passed IEs anyway
-	 */
-	wl->hw->wiphy->max_scan_ie_len = 512;
-
 	wl->hw->wiphy->bands[NL80211_BAND_2GHZ] = &wl1251_band_2ghz;
 
 	wl->hw->queues = 4;
 
-	if (wl->nvs == NULL && !wl->use_eeprom) {
-		ret = wl1251_fetch_nvs(wl);
-		if (ret < 0)
-			goto out;
-	}
-
 	if (wl->use_eeprom)
-		ret = wl1251_read_eeprom_mac(wl);
-	else
-		ret = wl1251_read_nvs_mac(wl);
-
-	if (ret == 0 && !is_valid_ether_addr(wl->mac_addr))
-		ret = -EINVAL;
-
-	if (ret < 0) {
-		/*
-		 * In case our MAC address is not correctly set,
-		 * we use a random but Nokia MAC.
-		 */
-		static const u8 nokia_oui[3] = {0x00, 0x1f, 0xdf};
-		memcpy(wl->mac_addr, nokia_oui, 3);
-		get_random_bytes(wl->mac_addr + 3, 3);
-		if (!wl->use_eeprom)
-			wl1251_write_nvs_mac(wl);
-		wl1251_warning("MAC address in eeprom or nvs data is not valid");
-		wl1251_warning("Setting random MAC address: %pM", wl->mac_addr);
-	}
+		wl1251_read_eeprom_mac(wl);
 
 	ret = wl1251_register_hw(wl);
 	if (ret)
@@ -1579,6 +1512,7 @@ struct ieee80211_hw *wl1251_alloc_hw(void)
 	struct ieee80211_hw *hw;
 	struct wl1251 *wl;
 	int i;
+	static const u8 nokia_oui[3] = {0x00, 0x1f, 0xdf};
 
 	hw = ieee80211_alloc_hw(sizeof(*wl), &wl1251_ops);
 	if (!hw) {
@@ -1628,9 +1562,15 @@ struct ieee80211_hw *wl1251_alloc_hw(void)
 	INIT_WORK(&wl->irq_work, wl1251_irq_work);
 	INIT_WORK(&wl->tx_work, wl1251_tx_work);
 
+	/*
+	 * In case our MAC address is not correctly set,
+	 * we use a random but Nokia MAC.
+	 */
+	memcpy(wl->mac_addr, nokia_oui, 3);
+	get_random_bytes(wl->mac_addr + 3, 3);
+
 	wl->state = WL1251_STATE_OFF;
 	mutex_init(&wl->mutex);
-	spin_lock_init(&wl->wl_lock);
 
 	wl->tx_mgmt_frm_rate = DEFAULT_HW_GEN_TX_RATE;
 	wl->tx_mgmt_frm_mod = DEFAULT_HW_GEN_MODULATION_TYPE;

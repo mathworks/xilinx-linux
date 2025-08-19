@@ -1,14 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * AD8366 and similar Gain Amplifiers
- * This driver supports the following gain amplifiers:
- *   AD8366 Dual-Digital Variable Gain Amplifier (VGA)
- *   ADA4961 BiCMOS RF Digital Gain Amplifier (DGA)
- *   ADL5240 Digitally controlled variable gain amplifier (VGA)
- *   HMC792A 0.25 dB LSB GaAs MMIC 6-Bit Digital Attenuator
- *   HMC1119 0.25 dB LSB, 7-Bit, Silicon Digital Attenuator
+ * AD8366 SPI Dual-Digital Variable Gain Amplifier (VGA)
  *
- * Copyright 2012-2019 Analog Devices Inc.
+ * Copyright 2012 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2.
  */
 
 #include <linux/device.h>
@@ -29,51 +24,22 @@ enum ad8366_type {
 	ID_AD8366,
 	ID_ADA4961,
 	ID_ADL5240,
-	ID_HMC792,
+	ID_HMC271,
 	ID_HMC1119,
-};
-
-struct ad8366_info {
-	int gain_min;
-	int gain_max;
 };
 
 struct ad8366_state {
 	struct spi_device	*spi;
-	struct regulator	*reg;
-	struct mutex            lock; /* protect sensor state */
-	struct gpio_desc	*reset_gpio;
+	struct regulator		*reg;
+	struct gpio_desc		*reset_gpio;
 	unsigned char		ch[2];
 	enum ad8366_type	type;
-	struct ad8366_info	*info;
+
 	/*
-	 * DMA (thus cache coherency maintenance) may require the
+	 * DMA (thus cache coherency maintenance) requires the
 	 * transfer buffers to live in their own cache lines.
 	 */
-	unsigned char		data[2] __aligned(IIO_DMA_MINALIGN);
-};
-
-static struct ad8366_info ad8366_infos[] = {
-	[ID_AD8366] = {
-		.gain_min = 4500,
-		.gain_max = 20500,
-	},
-	[ID_ADA4961] = {
-		.gain_min = -6000,
-		.gain_max = 15000,
-	},
-	[ID_ADL5240] = {
-		.gain_min = -11500,
-		.gain_max = 20000,
-	},
-	[ID_HMC792] = {
-		.gain_min = -15750,
-		.gain_max = 0,
-	},
-	[ID_HMC1119] = {
-		.gain_min = -31750,
-		.gain_max = 0,
-	},
+	unsigned char		data[2] ____cacheline_aligned;
 };
 
 static int ad8366_write(struct iio_dev *indio_dev,
@@ -96,7 +62,9 @@ static int ad8366_write(struct iio_dev *indio_dev,
 	case ID_ADL5240:
 		st->data[0] = (ch_a & 0x3F);
 		break;
-	case ID_HMC792:
+	case ID_HMC271:
+		st->data[0] = bitrev8(ch_a & 0x1F) >> 3;
+		break;
 	case ID_HMC1119:
 		st->data[0] = ch_a;
 		break;
@@ -117,41 +85,42 @@ static int ad8366_read_raw(struct iio_dev *indio_dev,
 {
 	struct ad8366_state *st = iio_priv(indio_dev);
 	int ret;
-	int code, gain = 0;
+	int code;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	switch (m) {
 	case IIO_CHAN_INFO_HARDWAREGAIN:
 		code = st->ch[chan->channel];
 
 		switch (st->type) {
 		case ID_AD8366:
-			gain = code * 253 + 4500;
+			code = code * 253 + 4500;
 			break;
 		case ID_ADA4961:
-			gain = 15000 - code * 1000;
+			code = 15000 - code * 1000;
 			break;
 		case ID_ADL5240:
-			gain = 20000 - 31500 + code * 500;
+			code = 20000 - 31500 + code * 500;
 			break;
-		case ID_HMC792:
-			gain = -1 * code * 500;
+		case ID_HMC271:
+			code = -31000 + code * 1000;
 			break;
 		case ID_HMC1119:
-			gain = -1 * code * 250;
+			code = -1 * code * 250;
 			break;
+
 		}
 
 		/* Values in dB */
-		*val = gain / 1000;
-		*val2 = (gain % 1000) * 1000;
+		*val = code / 1000;
+		*val2 = (code % 1000) * 1000;
 
 		ret = IIO_VAL_INT_PLUS_MICRO_DB;
 		break;
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 };
@@ -163,38 +132,43 @@ static int ad8366_write_raw(struct iio_dev *indio_dev,
 			    long mask)
 {
 	struct ad8366_state *st = iio_priv(indio_dev);
-	struct ad8366_info *inf = st->info;
-	int code = 0, gain;
+	int code;
 	int ret;
-
 	/* Values in dB */
 	if (val < 0)
-		gain = (val * 1000) - (val2 / 1000);
+		code = (((s8)val * 1000) - ((s32)val2 / 1000));
 	else
-		gain = (val * 1000) + (val2 / 1000);
-
-	if (gain > inf->gain_max || gain < inf->gain_min)
-		return -EINVAL;
+		code = (((s8)val * 1000) + ((s32)val2 / 1000));
 
 	switch (st->type) {
 	case ID_AD8366:
-		code = (gain - 4500) / 253;
+		if (code > 20500 || code < 4500)
+			return -EINVAL;
+		code = (code - 4500) / 253;
 		break;
 	case ID_ADA4961:
-		code = (15000 - gain) / 1000;
+		if (code > 15000 || code < -6000)
+			return -EINVAL;
+		code = (15000 - code) / 1000;
 		break;
 	case ID_ADL5240:
-		code = ((gain - 500 - 20000) / 500) & 0x3F;
+		if (code < -11500 || code > 20000)
+			return -EINVAL;
+		code = ((code - 500 - 20000) / 500) & 0x3F;
 		break;
-	case ID_HMC792:
-		code = (abs(gain) / 500) & 0x3F;
+	case ID_HMC271:
+		if (code < -31000 || code > 0)
+			return -EINVAL;
+		code = ((code - 1000) / 1000) & 0x1F;
 		break;
 	case ID_HMC1119:
-		code = (abs(gain) / 250) & 0x7F;
+		if (code < -31750 || code > 0)
+			return -EINVAL;
+		code = (abs(code) / 250) & 0x7F;
 		break;
 	}
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	switch (mask) {
 	case IIO_CHAN_INFO_HARDWAREGAIN:
 		st->ch[chan->channel] = code;
@@ -203,27 +177,15 @@ static int ad8366_write_raw(struct iio_dev *indio_dev,
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
-}
-
-static int ad8366_write_raw_get_fmt(struct iio_dev *indio_dev,
-				    struct iio_chan_spec const *chan,
-				    long mask)
-{
-	switch (mask) {
-	case IIO_CHAN_INFO_HARDWAREGAIN:
-		return IIO_VAL_INT_PLUS_MICRO_DB;
-	default:
-		return -EINVAL;
-	}
 }
 
 static const struct iio_info ad8366_info = {
 	.read_raw = &ad8366_read_raw,
 	.write_raw = &ad8366_write_raw,
-	.write_raw_get_fmt = &ad8366_write_raw_get_fmt,
+	.driver_module = THIS_MODULE,
 };
 
 #define AD8366_CHAN(_channel) {				\
@@ -263,10 +225,19 @@ static int ad8366_probe(struct spi_device *spi)
 	}
 
 	spi_set_drvdata(spi, indio_dev);
-	mutex_init(&st->lock);
 	st->spi = spi;
-	st->type = spi_get_device_id(spi)->driver_data;
 
+	indio_dev->dev.parent = &spi->dev;
+
+	/* try to get a unique name */
+	if (spi->dev.platform_data)
+		indio_dev->name = spi->dev.platform_data;
+	else if (spi->dev.of_node)
+		indio_dev->name = spi->dev.of_node->name;
+	else
+		indio_dev->name = spi_get_device_id(spi)->name;
+
+	st->type = spi_get_device_id(spi)->driver_data;
 	switch (st->type) {
 	case ID_AD8366:
 		indio_dev->channels = ad8366_channels;
@@ -274,28 +245,24 @@ static int ad8366_probe(struct spi_device *spi)
 		break;
 	case ID_ADA4961:
 	case ID_ADL5240:
-	case ID_HMC792:
+	case ID_HMC271:
 	case ID_HMC1119:
-		st->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_HIGH);
-		if (IS_ERR(st->reset_gpio)) {
-			ret = PTR_ERR(st->reset_gpio);
-			goto error_disable_reg;
-		}
+
+		st->reset_gpio = devm_gpiod_get(&spi->dev, "reset",
+			GPIOD_OUT_HIGH);
+
 		indio_dev->channels = ada4961_channels;
 		indio_dev->num_channels = ARRAY_SIZE(ada4961_channels);
 		break;
 	default:
 		dev_err(&spi->dev, "Invalid device ID\n");
-		ret = -EINVAL;
-		goto error_disable_reg;
+		return -EINVAL;
 	}
 
-	st->info = &ad8366_infos[st->type];
-	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad8366_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	ret = ad8366_write(indio_dev, 0, 0);
+	ret = ad8366_write(indio_dev, 0 , 0);
 	if (ret < 0)
 		goto error_disable_reg;
 
@@ -312,7 +279,7 @@ error_disable_reg:
 	return ret;
 }
 
-static void ad8366_remove(struct spi_device *spi)
+static int ad8366_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad8366_state *st = iio_priv(indio_dev);
@@ -322,13 +289,15 @@ static void ad8366_remove(struct spi_device *spi)
 
 	if (!IS_ERR(reg))
 		regulator_disable(reg);
+
+	return 0;
 }
 
 static const struct spi_device_id ad8366_id[] = {
-	{"ad8366",  ID_AD8366},
+	{"ad8366", ID_AD8366},
 	{"ada4961", ID_ADA4961},
 	{"adl5240", ID_ADL5240},
-	{"hmc792a", ID_HMC792},
+	{"hmc271", ID_HMC271},
 	{"hmc1119", ID_HMC1119},
 	{}
 };
@@ -346,5 +315,5 @@ static struct spi_driver ad8366_driver = {
 module_spi_driver(ad8366_driver);
 
 MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
-MODULE_DESCRIPTION("Analog Devices AD8366 and similar Gain Amplifiers");
+MODULE_DESCRIPTION("Analog Devices AD8366 VGA");
 MODULE_LICENSE("GPL v2");

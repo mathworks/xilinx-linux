@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * tdfxfb.c
@@ -64,7 +63,6 @@
  *
  */
 
-#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -122,7 +120,7 @@ static const struct fb_var_screeninfo tdfx_var = {
 static int tdfxfb_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 static void tdfxfb_remove(struct pci_dev *pdev);
 
-static const struct pci_device_id tdfxfb_id_table[] = {
+static struct pci_device_id tdfxfb_id_table[] = {
 	{ PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_BANSHEE,
 	  PCI_ANY_ID, PCI_ANY_ID, PCI_BASE_CLASS_DISPLAY << 16,
 	  0xff0000, 0 },
@@ -207,7 +205,9 @@ static inline u8 crt_inb(struct tdfx_par *par, u32 idx)
 
 static inline void att_outb(struct tdfx_par *par, u32 idx, u8 val)
 {
-	vga_inb(par, IS1_R);
+	unsigned char tmp;
+
+	tmp = vga_inb(par, IS1_R);
 	vga_outb(par, ATT_IW, idx);
 	vga_outb(par, ATT_IW, val);
 }
@@ -522,7 +522,6 @@ static int tdfxfb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 	case 32:
 		var->transp.offset = 24;
 		var->transp.length = 8;
-		fallthrough;
 	case 24:
 		var->red.offset = 16;
 		var->green.offset = 8;
@@ -1116,7 +1115,7 @@ static int tdfxfb_cursor(struct fb_info *info, struct fb_cursor *cursor)
 		u8 *mask = (u8 *)cursor->mask;
 		int i;
 
-		fb_memset_io(cursorbase, 0, 1024);
+		fb_memset(cursorbase, 0, 1024);
 
 		for (i = 0; i < cursor->image.height; i++) {
 			int h = 0;
@@ -1140,7 +1139,7 @@ static int tdfxfb_cursor(struct fb_info *info, struct fb_cursor *cursor)
 	return 0;
 }
 
-static const struct fb_ops tdfxfb_ops = {
+static struct fb_ops tdfxfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= tdfxfb_check_var,
 	.fb_set_par	= tdfxfb_set_par,
@@ -1265,7 +1264,7 @@ static int tdfxfb_setup_ddc_bus(struct tdfxfb_i2c_chan *chan, const char *name,
 {
 	int rc;
 
-	strscpy(chan->adapter.name, name, sizeof(chan->adapter.name));
+	strlcpy(chan->adapter.name, name, sizeof(chan->adapter.name));
 	chan->adapter.owner		= THIS_MODULE;
 	chan->adapter.class		= I2C_CLASS_DDC;
 	chan->adapter.algo_data		= &chan->algo;
@@ -1294,7 +1293,7 @@ static int tdfxfb_setup_i2c_bus(struct tdfxfb_i2c_chan *chan, const char *name,
 {
 	int rc;
 
-	strscpy(chan->adapter.name, name, sizeof(chan->adapter.name));
+	strlcpy(chan->adapter.name, name, sizeof(chan->adapter.name));
 	chan->adapter.owner		= THIS_MODULE;
 	chan->adapter.algo_data		= &chan->algo;
 	chan->adapter.dev.parent	= dev;
@@ -1327,8 +1326,8 @@ static void tdfxfb_create_i2c_busses(struct fb_info *info)
 	par->chan[0].par = par;
 	par->chan[1].par = par;
 
-	tdfxfb_setup_ddc_bus(&par->chan[0], "Voodoo3-DDC", info->device);
-	tdfxfb_setup_i2c_bus(&par->chan[1], "Voodoo3-I2C", info->device);
+	tdfxfb_setup_ddc_bus(&par->chan[0], "Voodoo3-DDC", info->dev);
+	tdfxfb_setup_i2c_bus(&par->chan[1], "Voodoo3-I2C", info->dev);
 }
 
 static void tdfxfb_delete_i2c_busses(struct tdfx_par *par)
@@ -1377,10 +1376,6 @@ static int tdfxfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct fb_monspecs *specs;
 	bool found;
 
-	err = aperture_remove_conflicting_pci_devices(pdev, "tdfxfb");
-	if (err)
-		return err;
-
 	err = pci_enable_device(pdev);
 	if (err) {
 		printk(KERN_ERR "tdfxfb: Can't enable pdev: %d\n", err);
@@ -1420,7 +1415,7 @@ static int tdfxfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	default_par->regbase_virt =
-		ioremap(info->fix.mmio_start, info->fix.mmio_len);
+		ioremap_nocache(info->fix.mmio_start, info->fix.mmio_len);
 	if (!default_par->regbase_virt) {
 		printk(KERN_ERR "fb: Can't remap %s register area.\n",
 				info->fix.id);
@@ -1468,7 +1463,7 @@ static int tdfxfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	info->fbops		= &tdfxfb_ops;
 	info->pseudo_palette	= default_par->palette;
-	info->flags		= FBINFO_HWACCEL_YPAN;
+	info->flags		= FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
 #ifdef CONFIG_FB_3DFX_ACCEL
 	info->flags		|= FBINFO_HWACCEL_FILLRECT |
 				   FBINFO_HWACCEL_COPYAREA |
@@ -1632,12 +1627,7 @@ static int __init tdfxfb_init(void)
 {
 #ifndef MODULE
 	char *option = NULL;
-#endif
 
-	if (fb_modesetting_disabled("tdfxfb"))
-		return -ENODEV;
-
-#ifndef MODULE
 	if (fb_get_options("tdfxfb", &option))
 		return -ENODEV;
 

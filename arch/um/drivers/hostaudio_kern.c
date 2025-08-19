@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2002 Steve Schmidtke
+ * Licensed under the GPL
  */
 
 #include <linux/fs.h>
@@ -9,7 +9,7 @@
 #include <linux/sound.h>
 #include <linux/soundcard.h>
 #include <linux/mutex.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <init.h>
 #include <os.h>
 
@@ -119,14 +119,16 @@ static ssize_t hostaudio_write(struct file *file, const char __user *buffer,
 	return err;
 }
 
-static __poll_t hostaudio_poll(struct file *file,
-				struct poll_table_struct *wait)
+static unsigned int hostaudio_poll(struct file *file,
+				   struct poll_table_struct *wait)
 {
+	unsigned int mask = 0;
+
 #ifdef DEBUG
 	printk(KERN_DEBUG "hostaudio: poll called (unimplemented)\n");
 #endif
 
-	return 0;
+	return mask;
 }
 
 static long hostaudio_ioctl(struct file *file,
@@ -296,7 +298,6 @@ static const struct file_operations hostaudio_fops = {
 	.write          = hostaudio_write,
 	.poll           = hostaudio_poll,
 	.unlocked_ioctl	= hostaudio_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
 	.mmap           = NULL,
 	.open           = hostaudio_open,
 	.release        = hostaudio_release,
@@ -310,7 +311,7 @@ static const struct file_operations hostmixer_fops = {
 	.release        = hostmixer_release,
 };
 
-static struct {
+struct {
 	int dev_audio;
 	int dev_mixer;
 } module_data;

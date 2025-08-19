@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * string.h: External definitions for optimized assembly string
  *           routines for the Linux Kernel.
@@ -11,5 +10,9 @@
 #define __SPARC64_STRING_H__
 
 #include <asm/asi.h>
+
+/* Now the str*() stuff... */
+#define __HAVE_ARCH_STRLEN
+__kernel_size_t strlen(const char *);
 
 #endif /* !(__SPARC64_STRING_H__) */

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/alpha/lib/csum_ipv6_magic.S
  * Contributed by Richard Henderson <rth@tamu.edu>
@@ -13,7 +12,7 @@
  * added by Ivan Kokshaysky <ink@jurassic.park.msu.ru>
  */
 
-#include <linux/export.h>
+#include <asm/export.h>
 	.globl csum_ipv6_magic
 	.align 4
 	.ent csum_ipv6_magic

@@ -9,7 +9,7 @@
 			compatible = "xlnx,axi-iic-1.01.b", "xlnx,xps-iic-2.00.a";
 			reg = <0x41600000 0x10000>;
 			interrupt-parent = <&intc>;
-			interrupts = <0 58 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <0 58 0x4>;
 			clocks = <&clkc 15>;
 			clock-names = "pclk";
 
@@ -28,7 +28,7 @@
 				adi,input-justification = "right";
 				adi,clock-delay = <0>;
 
-				#sound-dai-cells = <1>;
+				#sound-dai-cells = <0>;
 
 				ports {
 					#address-cells = <1>;
@@ -58,42 +58,20 @@
 			};
 		};
 
-		i2c@41620000 {
-			compatible = "xlnx,axi-iic-1.01.b", "xlnx,xps-iic-2.00.a";
-			reg = <0x41620000 0x10000>;
-			interrupt-parent = <&intc>;
-			interrupts = <0 55 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&clkc 15>;
-			clock-names = "pclk";
-
-			#size-cells = <0>;
+		axi_vdma_0: axivdma@43000000 {
+			compatible = "xlnx,axi-vdma-1.00.a";
 			#address-cells = <1>;
-
-			eeprom1: eeprom@50 {
-				compatible = "at24,24c02";
-				reg = <0x50>;
-			};
-
-		};
-
-		hdmi_dma: dma@43000000 {
-			compatible = "adi,axi-dmac-1.00.a";
-			reg = <0x43000000 0x10000>;
+			#size-cells = <1>;
 			#dma-cells = <1>;
-			interrupts = <0 59 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&clkc 16>;
-
-			adi,channels {
-				#size-cells = <0>;
-				#address-cells = <1>;
-
-				dma-channel@0 {
-					reg = <0>;
-					adi,source-bus-width = <64>;
-					adi,source-bus-type = <0>;
-					adi,destination-bus-width = <64>;
-					adi,destination-bus-type = <1>;
-				};
+			#dma-channels = <1>;
+			reg = <0x43000000 0x1000>;
+			xlnx,num-fstores = <0x3>;
+			dma-channel@43000000 {
+				compatible = "xlnx,axi-vdma-mm2s-channel";
+				interrupts = <0 59 0x4>;
+				xlnx,datawidth = <0x40>;
+				xlnx,genlock-mode = <0x0>;
+				xlnx,include-dre = <0x0>;
 			};
 		};
 
@@ -101,14 +79,13 @@
 			compatible = "adi,axi-clkgen-2.00.a";
 			reg = <0x79000000 0x10000>;
 			#clock-cells = <0>;
-			clocks = <&clkc 15>, <&clkc 16>;
-			clock-names = "s_axi_aclk", "clkin1";
+			clocks = <&clkc 16>;
 		};
 
 		axi_hdmi@70e00000 {
 			compatible = "adi,axi-hdmi-tx-1.00.a";
 			reg = <0x70e00000 0x10000>;
-			dmas = <&hdmi_dma 0>;
+			dmas = <&axi_vdma_0 0>;
 			dma-names = "video";
 			clocks = <&hdmi_clock>;
 
@@ -140,11 +117,6 @@
 
 			#sound-dai-cells = <0>;
 		};
-
-		axi_sysid_0: axi-sysid-0@45000000 {
-			compatible = "adi,axi-sysid-1.00.a";
-			reg = <0x45000000 0x10000>;
-		};
 	};
 
 	audio_clock: audio_clock {
@@ -165,9 +137,11 @@
 			format = "spdif";
 			cpu {
 				sound-dai = <&axi_spdif_tx_0>;
+				frame-master;
+				bitclock-master;
 			};
 			codec {
-				sound-dai = <&adv7511 1>;
+				sound-dai = <&adv7511>;
 			};
 		};
 	};
@@ -195,6 +169,8 @@
 			format = "i2s";
 			cpu {
 				sound-dai = <&axi_i2s_0>;
+				frame-master;
+				bitclock-master;
 			};
 			codec {
 				sound-dai = <&adau1761>;

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* 8390 core for usual drivers */
 
 static const char version[] =
@@ -36,9 +35,9 @@ void ei_set_multicast_list(struct net_device *dev)
 }
 EXPORT_SYMBOL(ei_set_multicast_list);
 
-void ei_tx_timeout(struct net_device *dev, unsigned int txqueue)
+void ei_tx_timeout(struct net_device *dev)
 {
-	__ei_tx_timeout(dev, txqueue);
+	__ei_tx_timeout(dev);
 }
 EXPORT_SYMBOL(ei_tx_timeout);
 
@@ -65,6 +64,7 @@ const struct net_device_ops ei_netdev_ops = {
 	.ndo_set_rx_mode	= ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= ei_poll,
 #endif

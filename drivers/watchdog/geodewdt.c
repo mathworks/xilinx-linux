@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* Watchdog timer for machines with the CS5535/CS5536 companion chip
  *
  * Copyright (C) 2006-2007, Advanced Micro Devices, Inc.
  * Copyright (C) 2009  Andres Salomon <dilinger@collabora.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -88,7 +92,7 @@ static int geodewdt_open(struct inode *inode, struct file *file)
 		__module_get(THIS_MODULE);
 
 	geodewdt_ping();
-	return stream_open(inode, file);
+	return nonseekable_open(inode, file);
 }
 
 static int geodewdt_release(struct inode *inode, struct file *file)
@@ -150,6 +154,8 @@ static long geodewdt_ioctl(struct file *file, unsigned int cmd,
 	case WDIOC_GETSUPPORT:
 		return copy_to_user(argp, &ident,
 				    sizeof(ident)) ? -EFAULT : 0;
+		break;
+
 	case WDIOC_GETSTATUS:
 	case WDIOC_GETBOOTSTATUS:
 		return put_user(0, p);
@@ -183,7 +189,7 @@ static long geodewdt_ioctl(struct file *file, unsigned int cmd,
 
 		if (geodewdt_set_heartbeat(interval))
 			return -EINVAL;
-		fallthrough;
+	/* Fall through */
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout, p);
 
@@ -199,7 +205,6 @@ static const struct file_operations geodewdt_fops = {
 	.llseek         = no_llseek,
 	.write          = geodewdt_write,
 	.unlocked_ioctl = geodewdt_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
 	.open           = geodewdt_open,
 	.release        = geodewdt_release,
 };
@@ -238,9 +243,10 @@ static int __init geodewdt_probe(struct platform_device *dev)
 	return ret;
 }
 
-static void geodewdt_remove(struct platform_device *dev)
+static int geodewdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&geodewdt_miscdev);
+	return 0;
 }
 
 static void geodewdt_shutdown(struct platform_device *dev)
@@ -249,7 +255,7 @@ static void geodewdt_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver geodewdt_driver = {
-	.remove_new	= geodewdt_remove,
+	.remove		= geodewdt_remove,
 	.shutdown	= geodewdt_shutdown,
 	.driver		= {
 		.name	= DRV_NAME,

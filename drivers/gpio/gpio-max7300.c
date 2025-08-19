@@ -1,6 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2009 Wolfram Sang, Pengutronix
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Check max730x.c for further details.
  */
@@ -28,7 +31,8 @@ static int max7300_i2c_read(struct device *dev, unsigned int reg)
 	return i2c_smbus_read_byte_data(client, reg);
 }
 
-static int max7300_probe(struct i2c_client *client)
+static int max7300_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct max7301 *ts;
 
@@ -47,9 +51,9 @@ static int max7300_probe(struct i2c_client *client)
 	return __max730x_probe(ts);
 }
 
-static void max7300_remove(struct i2c_client *client)
+static int max7300_remove(struct i2c_client *client)
 {
-	__max730x_remove(&client->dev);
+	return __max730x_remove(&client->dev);
 }
 
 static const struct i2c_device_id max7300_id[] = {

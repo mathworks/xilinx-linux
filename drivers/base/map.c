@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/drivers/base/map.c
  *
  * (C) Copyright Al Viro 2002,2003
+ *	Released under GPL v2.
  *
  * NOTE: data structure needs to be changed.  It works, but for large dev_t
  * it will be too slow.  It is isolated, though, so these changes will be
@@ -33,9 +33,9 @@ int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
 	     struct module *module, kobj_probe_t *probe,
 	     int (*lock)(dev_t, void *), void *data)
 {
-	unsigned int n = MAJOR(dev + range - 1) - MAJOR(dev) + 1;
-	unsigned int index = MAJOR(dev);
-	unsigned int i;
+	unsigned n = MAJOR(dev + range - 1) - MAJOR(dev) + 1;
+	unsigned index = MAJOR(dev);
+	unsigned i;
 	struct probe *p;
 
 	if (n > 255)
@@ -67,9 +67,9 @@ int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
 
 void kobj_unmap(struct kobj_map *domain, dev_t dev, unsigned long range)
 {
-	unsigned int n = MAJOR(dev + range - 1) - MAJOR(dev) + 1;
-	unsigned int index = MAJOR(dev);
-	unsigned int i;
+	unsigned n = MAJOR(dev + range - 1) - MAJOR(dev) + 1;
+	unsigned index = MAJOR(dev);
+	unsigned i;
 	struct probe *found = NULL;
 
 	if (n > 255)

@@ -1,19 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/math64.h>
-
 #include "utils.h"
 
 #define LOWER_16(A) ((A) & 0xFFFF)
 #define UPPER_16(A) (((A) >> 16) & 0xFFFF)
 #define LOWER_32(A) ((A) & (uint32_t) 0xFFFFFFFF)
 
-int64_t adi_api_utils_gcd(int64_t u, int64_t v)
+int adi_api_utils_gcd(int u, int v)
 {
-	int64_t t;
+	int t;
 	while (v != 0) {
-		t = u;
-		u = v;
-		div64_u64_rem(t, v, &v);
+		t = u; 
+		u = v; 
+		v = t % v;
 	}
 	return u < 0 ? -u : u; /* abs(u) */
 }

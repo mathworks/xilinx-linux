@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 1991, 1992  Linus Torvalds
  *
@@ -13,7 +12,7 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/fcntl.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/major.h>
 #include <linux/mm.h>
@@ -25,11 +24,6 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/poll.h>
-#include <linux/mount.h>
-#include <linux/file.h>
-#include <linux/ioctl.h>
-#include <linux/compat.h>
-#include "tty.h"
 
 #undef TTY_DEBUG_HANGUP
 #ifdef TTY_DEBUG_HANGUP
@@ -46,6 +40,7 @@ static DEFINE_MUTEX(devpts_mutex);
 
 static void pty_close(struct tty_struct *tty, struct file *filp)
 {
+	BUG_ON(!tty);
 	if (tty->driver->subtype == PTY_TYPE_MASTER)
 		WARN_ON(tty->count > 1);
 	else {
@@ -57,9 +52,9 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 	set_bit(TTY_IO_ERROR, &tty->flags);
 	wake_up_interruptible(&tty->read_wait);
 	wake_up_interruptible(&tty->write_wait);
-	spin_lock_irq(&tty->ctrl.lock);
-	tty->ctrl.packet = false;
-	spin_unlock_irq(&tty->ctrl.lock);
+	spin_lock_irq(&tty->ctrl_lock);
+	tty->packet = 0;
+	spin_unlock_irq(&tty->ctrl_lock);
 	/* Review - krefs on tty_link ?? */
 	if (!tty->link)
 		return;
@@ -100,7 +95,7 @@ static void pty_unthrottle(struct tty_struct *tty)
  *	pty_write		-	write to a pty
  *	@tty: the tty we write from
  *	@buf: kernel buffer of data
- *	@c: bytes to write
+ *	@count: bytes to write
  *
  *	Our "hardware" write method. Data is coming from the ldisc which
  *	may be in a non sleeping state. We simply throw this at the other
@@ -108,14 +103,21 @@ static void pty_unthrottle(struct tty_struct *tty)
  *	the other side of the pty/tty pair.
  */
 
-static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
+static int pty_write(struct tty_struct *tty, const unsigned char *buf, int c)
 {
 	struct tty_struct *to = tty->link;
 
-	if (tty->flow.stopped || !c)
+	if (tty->stopped)
 		return 0;
 
-	return tty_insert_flip_string_and_push_buffer(to->port, buf, c);
+	if (c > 0) {
+		/* Stuff the data into the input queue of the other end */
+		c = tty_insert_flip_string(to->port, buf, c);
+		/* And shovel */
+		if (c)
+			tty_flip_buffer_push(to->port);
+	}
+	return c;
 }
 
 /**
@@ -126,18 +128,30 @@ static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
  *	the other device.
  */
 
-static unsigned int pty_write_room(struct tty_struct *tty)
+static int pty_write_room(struct tty_struct *tty)
 {
-	if (tty->flow.stopped)
+	if (tty->stopped)
 		return 0;
 	return tty_buffer_space_avail(tty->link->port);
+}
+
+/**
+ *	pty_chars_in_buffer	-	characters currently in our tx queue
+ *	@tty: our tty
+ *
+ *	Report how much we have in the transmit queue. As everything is
+ *	instantly at the other end this is easy to implement.
+ */
+
+static int pty_chars_in_buffer(struct tty_struct *tty)
+{
+	return 0;
 }
 
 /* Set the lock flag on a pty */
 static int pty_set_lock(struct tty_struct *tty, int __user *arg)
 {
 	int val;
-
 	if (get_user(val, arg))
 		return -EFAULT;
 	if (val)
@@ -150,7 +164,6 @@ static int pty_set_lock(struct tty_struct *tty, int __user *arg)
 static int pty_get_lock(struct tty_struct *tty, int __user *arg)
 {
 	int locked = test_bit(TTY_PTY_LOCK, &tty->flags);
-
 	return put_user(locked, arg);
 }
 
@@ -162,16 +175,16 @@ static int pty_set_pktmode(struct tty_struct *tty, int __user *arg)
 	if (get_user(pktmode, arg))
 		return -EFAULT;
 
-	spin_lock_irq(&tty->ctrl.lock);
+	spin_lock_irq(&tty->ctrl_lock);
 	if (pktmode) {
-		if (!tty->ctrl.packet) {
-			tty->link->ctrl.pktstatus = 0;
+		if (!tty->packet) {
+			tty->link->ctrl_status = 0;
 			smp_mb();
-			tty->ctrl.packet = true;
+			tty->packet = 1;
 		}
 	} else
-		tty->ctrl.packet = false;
-	spin_unlock_irq(&tty->ctrl.lock);
+		tty->packet = 0;
+	spin_unlock_irq(&tty->ctrl_lock);
 
 	return 0;
 }
@@ -179,8 +192,7 @@ static int pty_set_pktmode(struct tty_struct *tty, int __user *arg)
 /* Get the packet mode of a pty */
 static int pty_get_pktmode(struct tty_struct *tty, int __user *arg)
 {
-	int pktmode = tty->ctrl.packet;
-
+	int pktmode = tty->packet;
 	return put_user(pktmode, arg);
 }
 
@@ -204,16 +216,21 @@ static int pty_signal(struct tty_struct *tty, int sig)
 static void pty_flush_buffer(struct tty_struct *tty)
 {
 	struct tty_struct *to = tty->link;
+	struct tty_ldisc *ld;
 
 	if (!to)
 		return;
 
-	tty_buffer_flush(to, NULL);
-	if (to->ctrl.packet) {
-		spin_lock_irq(&tty->ctrl.lock);
-		tty->ctrl.pktstatus |= TIOCPKT_FLUSHWRITE;
+	ld = tty_ldisc_ref(to);
+	tty_buffer_flush(to, ld);
+	if (ld)
+		tty_ldisc_deref(ld);
+
+	if (to->packet) {
+		spin_lock_irq(&tty->ctrl_lock);
+		tty->ctrl_status |= TIOCPKT_FLUSHWRITE;
 		wake_up_interruptible(&to->read_wait);
-		spin_unlock_irq(&tty->ctrl.lock);
+		spin_unlock_irq(&tty->ctrl_lock);
 	}
 }
 
@@ -240,10 +257,10 @@ out:
 }
 
 static void pty_set_termios(struct tty_struct *tty,
-			    const struct ktermios *old_termios)
+					struct ktermios *old_termios)
 {
 	/* See if packet mode change of state. */
-	if (tty->link && tty->link->ctrl.packet) {
+	if (tty->link && tty->link->packet) {
 		int extproc = (old_termios->c_lflag & EXTPROC) | L_EXTPROC(tty);
 		int old_flow = ((old_termios->c_iflag & IXON) &&
 				(old_termios->c_cc[VSTOP] == '\023') &&
@@ -252,17 +269,17 @@ static void pty_set_termios(struct tty_struct *tty,
 				STOP_CHAR(tty) == '\023' &&
 				START_CHAR(tty) == '\021');
 		if ((old_flow != new_flow) || extproc) {
-			spin_lock_irq(&tty->ctrl.lock);
+			spin_lock_irq(&tty->ctrl_lock);
 			if (old_flow != new_flow) {
-				tty->ctrl.pktstatus &= ~(TIOCPKT_DOSTOP | TIOCPKT_NOSTOP);
+				tty->ctrl_status &= ~(TIOCPKT_DOSTOP | TIOCPKT_NOSTOP);
 				if (new_flow)
-					tty->ctrl.pktstatus |= TIOCPKT_DOSTOP;
+					tty->ctrl_status |= TIOCPKT_DOSTOP;
 				else
-					tty->ctrl.pktstatus |= TIOCPKT_NOSTOP;
+					tty->ctrl_status |= TIOCPKT_NOSTOP;
 			}
 			if (extproc)
-				tty->ctrl.pktstatus |= TIOCPKT_IOCTL;
-			spin_unlock_irq(&tty->ctrl.lock);
+				tty->ctrl_status |= TIOCPKT_IOCTL;
+			spin_unlock_irq(&tty->ctrl_lock);
 			wake_up_interruptible(&tty->link->read_wait);
 		}
 	}
@@ -272,7 +289,7 @@ static void pty_set_termios(struct tty_struct *tty,
 }
 
 /**
- *	pty_resize		-	resize event
+ *	pty_do_resize		-	resize event
  *	@tty: tty being resized
  *	@ws: window size being set.
  *
@@ -323,12 +340,12 @@ static void pty_start(struct tty_struct *tty)
 {
 	unsigned long flags;
 
-	if (tty->link && tty->link->ctrl.packet) {
-		spin_lock_irqsave(&tty->ctrl.lock, flags);
-		tty->ctrl.pktstatus &= ~TIOCPKT_STOP;
-		tty->ctrl.pktstatus |= TIOCPKT_START;
-		spin_unlock_irqrestore(&tty->ctrl.lock, flags);
-		wake_up_interruptible_poll(&tty->link->read_wait, EPOLLIN);
+	if (tty->link && tty->link->packet) {
+		spin_lock_irqsave(&tty->ctrl_lock, flags);
+		tty->ctrl_status &= ~TIOCPKT_STOP;
+		tty->ctrl_status |= TIOCPKT_START;
+		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
 	}
 }
 
@@ -336,12 +353,12 @@ static void pty_stop(struct tty_struct *tty)
 {
 	unsigned long flags;
 
-	if (tty->link && tty->link->ctrl.packet) {
-		spin_lock_irqsave(&tty->ctrl.lock, flags);
-		tty->ctrl.pktstatus &= ~TIOCPKT_START;
-		tty->ctrl.pktstatus |= TIOCPKT_STOP;
-		spin_unlock_irqrestore(&tty->ctrl.lock, flags);
-		wake_up_interruptible_poll(&tty->link->read_wait, EPOLLIN);
+	if (tty->link && tty->link->packet) {
+		spin_lock_irqsave(&tty->ctrl_lock, flags);
+		tty->ctrl_status &= ~TIOCPKT_START;
+		tty->ctrl_status |= TIOCPKT_STOP;
+		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
 	}
 }
 
@@ -444,7 +461,6 @@ static int pty_install(struct tty_driver *driver, struct tty_struct *tty)
 static void pty_remove(struct tty_driver *driver, struct tty_struct *tty)
 {
 	struct tty_struct *pair = tty->link;
-
 	driver->ttys[tty->index] = NULL;
 	if (pair)
 		pair->driver->ttys[pair->index] = NULL;
@@ -470,20 +486,6 @@ static int pty_bsd_ioctl(struct tty_struct *tty,
 	return -ENOIOCTLCMD;
 }
 
-#ifdef CONFIG_COMPAT
-static long pty_bsd_compat_ioctl(struct tty_struct *tty,
-				 unsigned int cmd, unsigned long arg)
-{
-	/*
-	 * PTY ioctls don't require any special translation between 32-bit and
-	 * 64-bit userspace, they are already compatible.
-	 */
-	return pty_bsd_ioctl(tty, cmd, (unsigned long)compat_ptr(arg));
-}
-#else
-#define pty_bsd_compat_ioctl NULL
-#endif
-
 static int legacy_count = CONFIG_LEGACY_PTY_COUNT;
 /*
  * not really modular, but the easiest way to keep compat with existing
@@ -502,9 +504,9 @@ static const struct tty_operations master_pty_ops_bsd = {
 	.write = pty_write,
 	.write_room = pty_write_room,
 	.flush_buffer = pty_flush_buffer,
+	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.ioctl = pty_bsd_ioctl,
-	.compat_ioctl = pty_bsd_compat_ioctl,
 	.cleanup = pty_cleanup,
 	.resize = pty_resize,
 	.remove = pty_remove
@@ -517,6 +519,7 @@ static const struct tty_operations slave_pty_ops_bsd = {
 	.write = pty_write,
 	.write_room = pty_write_room,
 	.flush_buffer = pty_flush_buffer,
+	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.set_termios = pty_set_termios,
 	.cleanup = pty_cleanup,
@@ -587,57 +590,8 @@ static inline void legacy_pty_init(void) { }
 
 /* Unix98 devices */
 #ifdef CONFIG_UNIX98_PTYS
+
 static struct cdev ptmx_cdev;
-
-/**
- *	ptm_open_peer - open the peer of a pty
- *	@master: the open struct file of the ptmx device node
- *	@tty: the master of the pty being opened
- *	@flags: the flags for open
- *
- *	Provide a race free way for userspace to open the slave end of a pty
- *	(where they have the master fd and cannot access or trust the mount
- *	namespace /dev/pts was mounted inside).
- */
-int ptm_open_peer(struct file *master, struct tty_struct *tty, int flags)
-{
-	int fd;
-	struct file *filp;
-	int retval = -EINVAL;
-	struct path path;
-
-	if (tty->driver != ptm_driver)
-		return -EIO;
-
-	fd = get_unused_fd_flags(flags);
-	if (fd < 0) {
-		retval = fd;
-		goto err;
-	}
-
-	/* Compute the slave's path */
-	path.mnt = devpts_mntget(master, tty->driver_data);
-	if (IS_ERR(path.mnt)) {
-		retval = PTR_ERR(path.mnt);
-		goto err_put;
-	}
-	path.dentry = tty->link->driver_data;
-
-	filp = dentry_open(&path, flags, current_cred());
-	mntput(path.mnt);
-	if (IS_ERR(filp)) {
-		retval = PTR_ERR(filp);
-		goto err_put;
-	}
-
-	fd_install(fd, filp);
-	return fd;
-
-err_put:
-	put_unused_fd(fd);
-err:
-	return retval;
-}
 
 static int pty_unix98_ioctl(struct tty_struct *tty,
 			    unsigned int cmd, unsigned long arg)
@@ -660,25 +614,9 @@ static int pty_unix98_ioctl(struct tty_struct *tty,
 	return -ENOIOCTLCMD;
 }
 
-#ifdef CONFIG_COMPAT
-static long pty_unix98_compat_ioctl(struct tty_struct *tty,
-				 unsigned int cmd, unsigned long arg)
-{
-	/*
-	 * PTY ioctls don't require any special translation between 32-bit and
-	 * 64-bit userspace, they are already compatible.
-	 */
-	return pty_unix98_ioctl(tty, cmd,
-		cmd == TIOCSIG ? arg : (unsigned long)compat_ptr(arg));
-}
-#else
-#define pty_unix98_compat_ioctl NULL
-#endif
-
 /**
  *	ptm_unix98_lookup	-	find a pty master
  *	@driver: ptm driver
- *	@file: unused
  *	@idx: tty index
  *
  *	Look up a pty master device. Called under the tty_mutex for now.
@@ -695,7 +633,6 @@ static struct tty_struct *ptm_unix98_lookup(struct tty_driver *driver,
 /**
  *	pts_unix98_lookup	-	find a pty slave
  *	@driver: pts driver
- *	@file: file pointer to tty
  *	@idx: tty index
  *
  *	Look up a pty master device. Called under the tty_mutex for now.
@@ -737,11 +674,6 @@ static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 	}
 }
 
-static void pty_show_fdinfo(struct tty_struct *tty, struct seq_file *m)
-{
-	seq_printf(m, "tty-index:\t%d\n", tty->index);
-}
-
 static const struct tty_operations ptm_unix98_ops = {
 	.lookup = ptm_unix98_lookup,
 	.install = pty_unix98_install,
@@ -751,12 +683,11 @@ static const struct tty_operations ptm_unix98_ops = {
 	.write = pty_write,
 	.write_room = pty_write_room,
 	.flush_buffer = pty_flush_buffer,
+	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.ioctl = pty_unix98_ioctl,
-	.compat_ioctl = pty_unix98_compat_ioctl,
 	.resize = pty_resize,
-	.cleanup = pty_cleanup,
-	.show_fdinfo = pty_show_fdinfo,
+	.cleanup = pty_cleanup
 };
 
 static const struct tty_operations pty_unix98_ops = {
@@ -768,6 +699,7 @@ static const struct tty_operations pty_unix98_ops = {
 	.write = pty_write,
 	.write_room = pty_write_room,
 	.flush_buffer = pty_flush_buffer,
+	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.set_termios = pty_set_termios,
 	.start = pty_start,
@@ -931,7 +863,7 @@ static void __init unix98_pty_init(void)
 	if (cdev_add(&ptmx_cdev, MKDEV(TTYAUX_MAJOR, 2), 1) ||
 	    register_chrdev_region(MKDEV(TTYAUX_MAJOR, 2), 1, "/dev/ptmx") < 0)
 		panic("Couldn't register /dev/ptmx driver");
-	device_create(&tty_class, NULL, MKDEV(TTYAUX_MAJOR, 2), NULL, "ptmx");
+	device_create(tty_class, NULL, MKDEV(TTYAUX_MAJOR, 2), NULL, "ptmx");
 }
 
 #else

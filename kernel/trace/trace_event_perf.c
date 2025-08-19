@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * trace event based perf event profiling/tracing
  *
@@ -8,15 +7,13 @@
 
 #include <linux/module.h>
 #include <linux/kprobes.h>
-#include <linux/security.h>
 #include "trace.h"
-#include "trace_probe.h"
 
 static char __percpu *perf_trace_buf[PERF_NR_CONTEXTS];
 
 /*
  * Force it to be aligned to unsigned long to avoid misaligned accesses
- * surprises
+ * suprises
  */
 typedef typeof(unsigned long [PERF_MAX_TRACE_SIZE / sizeof(unsigned long)])
 	perf_trace_t;
@@ -27,10 +24,8 @@ static int	total_ref_count;
 static int perf_trace_event_perm(struct trace_event_call *tp_event,
 				 struct perf_event *p_event)
 {
-	int ret;
-
 	if (tp_event->perf_perm) {
-		ret = tp_event->perf_perm(tp_event, p_event);
+		int ret = tp_event->perf_perm(tp_event, p_event);
 		if (ret)
 			return ret;
 	}
@@ -49,9 +44,8 @@ static int perf_trace_event_perm(struct trace_event_call *tp_event,
 
 	/* The ftrace function trace is allowed only for root. */
 	if (ftrace_event_is_function(tp_event)) {
-		ret = perf_allow_tracepoint(&p_event->attr);
-		if (ret)
-			return ret;
+		if (perf_paranoid_tracepoint_raw() && !capable(CAP_SYS_ADMIN))
+			return -EPERM;
 
 		if (!is_sampling_event(p_event))
 			return 0;
@@ -86,9 +80,8 @@ static int perf_trace_event_perm(struct trace_event_call *tp_event,
 	 * ...otherwise raw tracepoint data can be a severe data leak,
 	 * only allow root to have these.
 	 */
-	ret = perf_allow_tracepoint(&p_event->attr);
-	if (ret)
-		return ret;
+	if (perf_paranoid_tracepoint_raw() && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
 
 	return 0;
 }
@@ -157,7 +150,7 @@ static void perf_trace_event_unreg(struct perf_event *p_event)
 	int i;
 
 	if (--tp_event->perf_refcount > 0)
-		return;
+		goto out;
 
 	tp_event->class->reg(tp_event, TRACE_REG_PERF_UNREGISTER, NULL);
 
@@ -176,6 +169,8 @@ static void perf_trace_event_unreg(struct perf_event *p_event)
 			perf_trace_buf[i] = NULL;
 		}
 	}
+out:
+	module_put(tp_event->mod);
 }
 
 static int perf_trace_event_open(struct perf_event *p_event)
@@ -222,10 +217,10 @@ int perf_trace_init(struct perf_event *p_event)
 	list_for_each_entry(tp_event, &ftrace_events, list) {
 		if (tp_event->event.type == event_id &&
 		    tp_event->class && tp_event->class->reg &&
-		    trace_event_try_get_ref(tp_event)) {
+		    try_module_get(tp_event->mod)) {
 			ret = perf_trace_event_init(tp_event, p_event);
 			if (ret)
-				trace_event_put_ref(tp_event);
+				module_put(tp_event->mod);
 			break;
 		}
 	}
@@ -239,154 +234,33 @@ void perf_trace_destroy(struct perf_event *p_event)
 	mutex_lock(&event_mutex);
 	perf_trace_event_close(p_event);
 	perf_trace_event_unreg(p_event);
-	trace_event_put_ref(p_event->tp_event);
 	mutex_unlock(&event_mutex);
 }
-
-#ifdef CONFIG_KPROBE_EVENTS
-int perf_kprobe_init(struct perf_event *p_event, bool is_retprobe)
-{
-	int ret;
-	char *func = NULL;
-	struct trace_event_call *tp_event;
-
-	if (p_event->attr.kprobe_func) {
-		func = strndup_user(u64_to_user_ptr(p_event->attr.kprobe_func),
-				    KSYM_NAME_LEN);
-		if (IS_ERR(func)) {
-			ret = PTR_ERR(func);
-			return (ret == -EINVAL) ? -E2BIG : ret;
-		}
-
-		if (func[0] == '\0') {
-			kfree(func);
-			func = NULL;
-		}
-	}
-
-	tp_event = create_local_trace_kprobe(
-		func, (void *)(unsigned long)(p_event->attr.kprobe_addr),
-		p_event->attr.probe_offset, is_retprobe);
-	if (IS_ERR(tp_event)) {
-		ret = PTR_ERR(tp_event);
-		goto out;
-	}
-
-	mutex_lock(&event_mutex);
-	ret = perf_trace_event_init(tp_event, p_event);
-	if (ret)
-		destroy_local_trace_kprobe(tp_event);
-	mutex_unlock(&event_mutex);
-out:
-	kfree(func);
-	return ret;
-}
-
-void perf_kprobe_destroy(struct perf_event *p_event)
-{
-	mutex_lock(&event_mutex);
-	perf_trace_event_close(p_event);
-	perf_trace_event_unreg(p_event);
-	trace_event_put_ref(p_event->tp_event);
-	mutex_unlock(&event_mutex);
-
-	destroy_local_trace_kprobe(p_event->tp_event);
-}
-#endif /* CONFIG_KPROBE_EVENTS */
-
-#ifdef CONFIG_UPROBE_EVENTS
-int perf_uprobe_init(struct perf_event *p_event,
-		     unsigned long ref_ctr_offset, bool is_retprobe)
-{
-	int ret;
-	char *path = NULL;
-	struct trace_event_call *tp_event;
-
-	if (!p_event->attr.uprobe_path)
-		return -EINVAL;
-
-	path = strndup_user(u64_to_user_ptr(p_event->attr.uprobe_path),
-			    PATH_MAX);
-	if (IS_ERR(path)) {
-		ret = PTR_ERR(path);
-		return (ret == -EINVAL) ? -E2BIG : ret;
-	}
-	if (path[0] == '\0') {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	tp_event = create_local_trace_uprobe(path, p_event->attr.probe_offset,
-					     ref_ctr_offset, is_retprobe);
-	if (IS_ERR(tp_event)) {
-		ret = PTR_ERR(tp_event);
-		goto out;
-	}
-
-	/*
-	 * local trace_uprobe need to hold event_mutex to call
-	 * uprobe_buffer_enable() and uprobe_buffer_disable().
-	 * event_mutex is not required for local trace_kprobes.
-	 */
-	mutex_lock(&event_mutex);
-	ret = perf_trace_event_init(tp_event, p_event);
-	if (ret)
-		destroy_local_trace_uprobe(tp_event);
-	mutex_unlock(&event_mutex);
-out:
-	kfree(path);
-	return ret;
-}
-
-void perf_uprobe_destroy(struct perf_event *p_event)
-{
-	mutex_lock(&event_mutex);
-	perf_trace_event_close(p_event);
-	perf_trace_event_unreg(p_event);
-	trace_event_put_ref(p_event->tp_event);
-	mutex_unlock(&event_mutex);
-	destroy_local_trace_uprobe(p_event->tp_event);
-}
-#endif /* CONFIG_UPROBE_EVENTS */
 
 int perf_trace_add(struct perf_event *p_event, int flags)
 {
 	struct trace_event_call *tp_event = p_event->tp_event;
+	struct hlist_head __percpu *pcpu_list;
+	struct hlist_head *list;
+
+	pcpu_list = tp_event->perf_events;
+	if (WARN_ON_ONCE(!pcpu_list))
+		return -EINVAL;
 
 	if (!(flags & PERF_EF_START))
 		p_event->hw.state = PERF_HES_STOPPED;
 
-	/*
-	 * If TRACE_REG_PERF_ADD returns false; no custom action was performed
-	 * and we need to take the default action of enqueueing our event on
-	 * the right per-cpu hlist.
-	 */
-	if (!tp_event->class->reg(tp_event, TRACE_REG_PERF_ADD, p_event)) {
-		struct hlist_head __percpu *pcpu_list;
-		struct hlist_head *list;
+	list = this_cpu_ptr(pcpu_list);
+	hlist_add_head_rcu(&p_event->hlist_entry, list);
 
-		pcpu_list = tp_event->perf_events;
-		if (WARN_ON_ONCE(!pcpu_list))
-			return -EINVAL;
-
-		list = this_cpu_ptr(pcpu_list);
-		hlist_add_head_rcu(&p_event->hlist_entry, list);
-	}
-
-	return 0;
+	return tp_event->class->reg(tp_event, TRACE_REG_PERF_ADD, p_event);
 }
 
 void perf_trace_del(struct perf_event *p_event, int flags)
 {
 	struct trace_event_call *tp_event = p_event->tp_event;
-
-	/*
-	 * If TRACE_REG_PERF_DEL returns false; no custom action was performed
-	 * and we need to take the default action of dequeueing our event from
-	 * the right per-cpu hlist.
-	 */
-	if (!tp_event->class->reg(tp_event, TRACE_REG_PERF_DEL, p_event))
-		hlist_del_rcu(&p_event->hlist_entry);
+	hlist_del_rcu(&p_event->hlist_entry);
+	tp_event->class->reg(tp_event, TRACE_REG_PERF_DEL, p_event);
 }
 
 void *perf_trace_buf_alloc(int size, struct pt_regs **regs, int *rctxp)
@@ -397,8 +271,7 @@ void *perf_trace_buf_alloc(int size, struct pt_regs **regs, int *rctxp)
 	BUILD_BUG_ON(PERF_MAX_TRACE_SIZE % sizeof(unsigned long));
 
 	if (WARN_ONCE(size > PERF_MAX_TRACE_SIZE,
-		      "perf buffer not large enough, wanted %d, have %d",
-		      size, PERF_MAX_TRACE_SIZE))
+		      "perf buffer not large enough"))
 		return NULL;
 
 	*rctxp = rctx = perf_swevent_get_recursion_context();
@@ -419,42 +292,28 @@ NOKPROBE_SYMBOL(perf_trace_buf_alloc);
 void perf_trace_buf_update(void *record, u16 type)
 {
 	struct trace_entry *entry = record;
+	int pc = preempt_count();
+	unsigned long flags;
 
-	tracing_generic_entry_update(entry, type, tracing_gen_ctx());
+	local_save_flags(flags);
+	tracing_generic_entry_update(entry, flags, pc);
+	entry->type = type;
 }
 NOKPROBE_SYMBOL(perf_trace_buf_update);
 
 #ifdef CONFIG_FUNCTION_TRACER
 static void
 perf_ftrace_function_call(unsigned long ip, unsigned long parent_ip,
-			  struct ftrace_ops *ops,  struct ftrace_regs *fregs)
+			  struct ftrace_ops *ops, struct pt_regs *pt_regs)
 {
 	struct ftrace_entry *entry;
-	struct perf_event *event;
-	struct hlist_head head;
+	struct hlist_head *head;
 	struct pt_regs regs;
 	int rctx;
-	int bit;
 
-	if (!rcu_is_watching())
+	head = this_cpu_ptr(event_function.perf_events);
+	if (hlist_empty(head))
 		return;
-
-	bit = ftrace_test_recursion_trylock(ip, parent_ip);
-	if (bit < 0)
-		return;
-
-	if ((unsigned long)ops->private != smp_processor_id())
-		goto out;
-
-	event = container_of(ops, struct perf_event, ftrace_ops);
-
-	/*
-	 * @event->hlist entry is NULL (per INIT_HLIST_NODE), and all
-	 * the perf code does is hlist_for_each_entry_rcu(), so we can
-	 * get away with simply setting the @head.first pointer in order
-	 * to create a singular list.
-	 */
-	head.first = &event->hlist_entry;
 
 #define ENTRY_SIZE (ALIGN(sizeof(struct ftrace_entry) + sizeof(u32), \
 		    sizeof(u64)) - sizeof(u32))
@@ -466,15 +325,13 @@ perf_ftrace_function_call(unsigned long ip, unsigned long parent_ip,
 
 	entry = perf_trace_buf_alloc(ENTRY_SIZE, NULL, &rctx);
 	if (!entry)
-		goto out;
+		return;
 
 	entry->ip = ip;
 	entry->parent_ip = parent_ip;
 	perf_trace_buf_submit(entry, ENTRY_SIZE, rctx, TRACE_FN,
-			      1, &regs, &head, NULL);
+			      1, &regs, head, NULL);
 
-out:
-	ftrace_test_recursion_unlock(bit);
 #undef ENTRY_SIZE
 }
 
@@ -482,9 +339,8 @@ static int perf_ftrace_function_register(struct perf_event *event)
 {
 	struct ftrace_ops *ops = &event->ftrace_ops;
 
-	ops->func    = perf_ftrace_function_call;
-	ops->private = (void *)(unsigned long)nr_cpu_ids;
-
+	ops->flags |= FTRACE_OPS_FL_PER_CPU | FTRACE_OPS_FL_RCU;
+	ops->func = perf_ftrace_function_call;
 	return register_ftrace_function(ops);
 }
 
@@ -496,11 +352,19 @@ static int perf_ftrace_function_unregister(struct perf_event *event)
 	return ret;
 }
 
+static void perf_ftrace_function_enable(struct perf_event *event)
+{
+	ftrace_function_local_enable(&event->ftrace_ops);
+}
+
+static void perf_ftrace_function_disable(struct perf_event *event)
+{
+	ftrace_function_local_disable(&event->ftrace_ops);
+}
+
 int perf_ftrace_event_register(struct trace_event_call *call,
 			       enum trace_reg type, void *data)
 {
-	struct perf_event *event = data;
-
 	switch (type) {
 	case TRACE_REG_REGISTER:
 	case TRACE_REG_UNREGISTER:
@@ -513,11 +377,11 @@ int perf_ftrace_event_register(struct trace_event_call *call,
 	case TRACE_REG_PERF_CLOSE:
 		return perf_ftrace_function_unregister(data);
 	case TRACE_REG_PERF_ADD:
-		event->ftrace_ops.private = (void *)(unsigned long)smp_processor_id();
-		return 1;
+		perf_ftrace_function_enable(data);
+		return 0;
 	case TRACE_REG_PERF_DEL:
-		event->ftrace_ops.private = (void *)(unsigned long)nr_cpu_ids;
-		return 1;
+		perf_ftrace_function_disable(data);
+		return 0;
 	}
 
 	return -EINVAL;

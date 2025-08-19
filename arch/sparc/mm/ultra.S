@@ -1,12 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ultra.S: Don't expand these all over the place...
  *
  * Copyright (C) 1997, 2000, 2008 David S. Miller (davem@davemloft.net)
  */
 
-#include <linux/pgtable.h>
 #include <asm/asi.h>
+#include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/spitfire.h>
 #include <asm/mmu_context.h>
@@ -587,7 +586,7 @@ xcall_flush_tlb_kernel_range:	/* 44 insns */
 	sub		%g7, %g1, %g3
 	srlx		%g3, 18, %g2
 	brnz,pn		%g2, 2f
-	 sethi		%hi(PAGE_SIZE), %g2
+	 add		%g2, 1, %g2
 	sub		%g3, %g2, %g3
 	or		%g1, 0x20, %g1		! Nucleus
 1:	stxa		%g0, [%g1 + %g3] ASI_DMMU_DEMAP
@@ -751,7 +750,7 @@ __cheetah_xcall_flush_tlb_kernel_range:	/* 44 insns */
 	sub		%g7, %g1, %g3
 	srlx		%g3, 18, %g2
 	brnz,pn		%g2, 2f
-	 sethi		%hi(PAGE_SIZE), %g2
+	 add		%g2, 1, %g2
 	sub		%g3, %g2, %g3
 	or		%g1, 0x20, %g1		! Nucleus
 1:	stxa		%g0, [%g1 + %g3] ASI_DMMU_DEMAP
@@ -970,6 +969,11 @@ xcall_receive_signal:
 	.globl		xcall_capture
 xcall_capture:
 	wr		%g0, (1 << PIL_SMP_CAPTURE), %set_softint
+	retry
+
+	.globl		xcall_new_mmu_context_version
+xcall_new_mmu_context_version:
+	wr		%g0, (1 << PIL_SMP_CTX_NEW_VERSION), %set_softint
 	retry
 
 #ifdef CONFIG_KGDB

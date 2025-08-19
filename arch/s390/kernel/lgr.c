@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Linux Guest Relocation (LGR) detection
  *
@@ -6,8 +5,7 @@
  * Author(s): Michael Holzheu <holzheu@linux.vnet.ibm.com>
  */
 
-#include <linux/init.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/timer.h>
 #include <linux/slab.h>
 #include <asm/facility.h>
@@ -88,7 +86,8 @@ static void lgr_stsi_2_2_2(struct lgr_info *lgr_info)
 	if (stsi(si, 2, 2, 2))
 		return;
 	cpascii(lgr_info->name, si->name, sizeof(si->name));
-	lgr_info->lpar_number = si->lpar_number;
+	memcpy(&lgr_info->lpar_number, &si->lpar_number,
+	       sizeof(lgr_info->lpar_number));
 }
 
 /*
@@ -153,20 +152,21 @@ static void lgr_timer_set(void);
 /*
  * LGR timer callback
  */
-static void lgr_timer_fn(struct timer_list *unused)
+static void lgr_timer_fn(unsigned long ignored)
 {
 	lgr_info_log();
 	lgr_timer_set();
 }
 
-static struct timer_list lgr_timer;
+static struct timer_list lgr_timer =
+	TIMER_DEFERRED_INITIALIZER(lgr_timer_fn, 0, 0);
 
 /*
  * Setup next LGR timer
  */
 static void lgr_timer_set(void)
 {
-	mod_timer(&lgr_timer, jiffies + msecs_to_jiffies(LGR_TIMER_INTERVAL_SECS * MSEC_PER_SEC));
+	mod_timer(&lgr_timer, jiffies + LGR_TIMER_INTERVAL_SECS * HZ);
 }
 
 /*
@@ -180,8 +180,7 @@ static int __init lgr_init(void)
 	debug_register_view(lgr_dbf, &debug_hex_ascii_view);
 	lgr_info_get(&lgr_info_last);
 	debug_event(lgr_dbf, 1, &lgr_info_last, sizeof(lgr_info_last));
-	timer_setup(&lgr_timer, lgr_timer_fn, TIMER_DEFERRABLE);
 	lgr_timer_set();
 	return 0;
 }
-device_initcall(lgr_init);
+module_init(lgr_init);

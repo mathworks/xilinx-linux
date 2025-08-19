@@ -1,7 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2002
  *   Portions Copyright (C) Christoph Hellwig, 2001-2002
+ *
+ *   This program is free software;  you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+ *   the GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program;  if not, write to the Free Software
+ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/mm.h>
@@ -21,7 +34,7 @@ int jfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	struct inode *inode = file->f_mapping->host;
 	int rc = 0;
 
-	rc = file_write_and_wait_range(file, start, end);
+	rc = filemap_write_and_wait_range(inode->i_mapping, start, end);
 	if (rc)
 		return rc;
 
@@ -85,24 +98,23 @@ static int jfs_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-int jfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
-		struct iattr *iattr)
+int jfs_setattr(struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
 	int rc;
 
-	rc = setattr_prepare(&nop_mnt_idmap, dentry, iattr);
+	rc = setattr_prepare(dentry, iattr);
 	if (rc)
 		return rc;
 
-	if (is_quota_modification(&nop_mnt_idmap, inode, iattr)) {
+	if (is_quota_modification(inode, iattr)) {
 		rc = dquot_initialize(inode);
 		if (rc)
 			return rc;
 	}
 	if ((iattr->ia_valid & ATTR_UID && !uid_eq(iattr->ia_uid, inode->i_uid)) ||
 	    (iattr->ia_valid & ATTR_GID && !gid_eq(iattr->ia_gid, inode->i_gid))) {
-		rc = dquot_transfer(&nop_mnt_idmap, inode, iattr);
+		rc = dquot_transfer(inode, iattr);
 		if (rc)
 			return rc;
 	}
@@ -119,21 +131,19 @@ int jfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		jfs_truncate(inode);
 	}
 
-	setattr_copy(&nop_mnt_idmap, inode, iattr);
+	setattr_copy(inode, iattr);
 	mark_inode_dirty(inode);
 
 	if (iattr->ia_valid & ATTR_MODE)
-		rc = posix_acl_chmod(&nop_mnt_idmap, dentry, inode->i_mode);
+		rc = posix_acl_chmod(inode, inode->i_mode);
 	return rc;
 }
 
 const struct inode_operations jfs_file_inode_operations = {
 	.listxattr	= jfs_listxattr,
 	.setattr	= jfs_setattr,
-	.fileattr_get	= jfs_fileattr_get,
-	.fileattr_set	= jfs_fileattr_set,
 #ifdef CONFIG_JFS_POSIX_ACL
-	.get_inode_acl	= jfs_get_acl,
+	.get_acl	= jfs_get_acl,
 	.set_acl	= jfs_set_acl,
 #endif
 };
@@ -144,10 +154,12 @@ const struct file_operations jfs_file_operations = {
 	.read_iter	= generic_file_read_iter,
 	.write_iter	= generic_file_write_iter,
 	.mmap		= generic_file_mmap,
-	.splice_read	= filemap_splice_read,
+	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.fsync		= jfs_fsync,
 	.release	= jfs_release,
 	.unlocked_ioctl = jfs_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= jfs_compat_ioctl,
+#endif
 };

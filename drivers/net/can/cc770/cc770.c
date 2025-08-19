@@ -1,8 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Core driver for the CC770 and AN82527 CAN controllers
  *
  * Copyright (C) 2009, 2011 Wolfgang Grandegger <wg@grandegger.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the version 2 of the GNU General Public License
+ * as published by the Free Software Foundation
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -17,7 +25,6 @@
 #include <linux/ptrace.h>
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/ethtool.h>
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_ether.h>
@@ -60,13 +67,13 @@ MODULE_DESCRIPTION(KBUILD_MODNAME "CAN netdevice driver");
  * otherwise 11 bit SFF messages.
  */
 static int msgobj15_eff;
-module_param(msgobj15_eff, int, 0444);
+module_param(msgobj15_eff, int, S_IRUGO);
 MODULE_PARM_DESC(msgobj15_eff, "Extended 29-bit frames for message object 15 "
 		 "(default: 11-bit standard frames)");
 
 static int i82527_compat;
-module_param(i82527_compat, int, 0444);
-MODULE_PARM_DESC(i82527_compat, "Strict Intel 82527 compatibility mode "
+module_param(i82527_compat, int, S_IRUGO);
+MODULE_PARM_DESC(i82527_compat, "Strict Intel 82527 comptibility mode "
 		 "without using additional functions");
 
 /*
@@ -383,23 +390,37 @@ static int cc770_get_berr_counter(const struct net_device *dev,
 	return 0;
 }
 
-static void cc770_tx(struct net_device *dev, int mo)
+static netdev_tx_t cc770_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct cc770_priv *priv = netdev_priv(dev);
-	struct can_frame *cf = (struct can_frame *)priv->tx_skb->data;
+	struct net_device_stats *stats = &dev->stats;
+	struct can_frame *cf = (struct can_frame *)skb->data;
+	unsigned int mo = obj2msgobj(CC770_OBJ_TX);
 	u8 dlc, rtr;
 	u32 id;
 	int i;
 
-	dlc = cf->len;
-	id = cf->can_id;
-	rtr = cf->can_id & CAN_RTR_FLAG ? 0 : MSGCFG_DIR;
+	if (can_dropped_invalid_skb(dev, skb))
+		return NETDEV_TX_OK;
 
-	cc770_write_reg(priv, msgobj[mo].ctrl0,
-			MSGVAL_RES | TXIE_RES | RXIE_RES | INTPND_RES);
+	if ((cc770_read_reg(priv,
+			    msgobj[mo].ctrl1) & TXRQST_UNC) == TXRQST_SET) {
+		netdev_err(dev, "TX register is still occupied!\n");
+		return NETDEV_TX_BUSY;
+	}
+
+	netif_stop_queue(dev);
+
+	dlc = cf->can_dlc;
+	id = cf->can_id;
+	if (cf->can_id & CAN_RTR_FLAG)
+		rtr = 0;
+	else
+		rtr = MSGCFG_DIR;
 	cc770_write_reg(priv, msgobj[mo].ctrl1,
 			RMTPND_RES | TXRQST_RES | CPUUPD_SET | NEWDAT_RES);
-
+	cc770_write_reg(priv, msgobj[mo].ctrl0,
+			MSGVAL_SET | TXIE_SET | RXIE_RES | INTPND_RES);
 	if (id & CAN_EFF_FLAG) {
 		id &= CAN_EFF_MASK;
 		cc770_write_reg(priv, msgobj[mo].config,
@@ -418,30 +439,22 @@ static void cc770_tx(struct net_device *dev, int mo)
 	for (i = 0; i < dlc; i++)
 		cc770_write_reg(priv, msgobj[mo].data[i], cf->data[i]);
 
+	/* Store echo skb before starting the transfer */
+	can_put_echo_skb(skb, dev, 0);
+
 	cc770_write_reg(priv, msgobj[mo].ctrl1,
-			RMTPND_UNC | TXRQST_SET | CPUUPD_RES | NEWDAT_UNC);
+			RMTPND_RES | TXRQST_SET | CPUUPD_RES | NEWDAT_UNC);
+
+	stats->tx_bytes += dlc;
+
+
+	/*
+	 * HM: We had some cases of repeated IRQs so make sure the
+	 * INT is acknowledged I know it's already further up, but
+	 * doing again fixed the issue
+	 */
 	cc770_write_reg(priv, msgobj[mo].ctrl0,
-			MSGVAL_SET | TXIE_SET | RXIE_SET | INTPND_UNC);
-}
-
-static netdev_tx_t cc770_start_xmit(struct sk_buff *skb, struct net_device *dev)
-{
-	struct cc770_priv *priv = netdev_priv(dev);
-	unsigned int mo = obj2msgobj(CC770_OBJ_TX);
-
-	if (can_dev_dropped_skb(dev, skb))
-		return NETDEV_TX_OK;
-
-	netif_stop_queue(dev);
-
-	if ((cc770_read_reg(priv,
-			    msgobj[mo].ctrl1) & TXRQST_UNC) == TXRQST_SET) {
-		netdev_err(dev, "TX register is still occupied!\n");
-		return NETDEV_TX_BUSY;
-	}
-
-	priv->tx_skb = skb;
-	cc770_tx(dev, mo);
+			MSGVAL_UNC | TXIE_UNC | RXIE_UNC | INTPND_RES);
 
 	return NETDEV_TX_OK;
 }
@@ -471,7 +484,7 @@ static void cc770_rx(struct net_device *dev, unsigned int mo, u8 ctrl1)
 		cf->can_id = CAN_RTR_FLAG;
 		if (config & MSGCFG_XTD)
 			cf->can_id |= CAN_EFF_FLAG;
-		cf->len = 0;
+		cf->can_dlc = 0;
 	} else {
 		if (config & MSGCFG_XTD) {
 			id = cc770_read_reg(priv, msgobj[mo].id[3]);
@@ -487,20 +500,20 @@ static void cc770_rx(struct net_device *dev, unsigned int mo, u8 ctrl1)
 		}
 
 		cf->can_id = id;
-		cf->len = can_cc_dlc2len((config & 0xf0) >> 4);
-		for (i = 0; i < cf->len; i++)
+		cf->can_dlc = get_can_dlc((config & 0xf0) >> 4);
+		for (i = 0; i < cf->can_dlc; i++)
 			cf->data[i] = cc770_read_reg(priv, msgobj[mo].data[i]);
-
-		stats->rx_bytes += cf->len;
 	}
-	stats->rx_packets++;
 
+	stats->rx_packets++;
+	stats->rx_bytes += cf->can_dlc;
 	netif_rx(skb);
 }
 
 static int cc770_err(struct net_device *dev, u8 status)
 {
 	struct cc770_priv *priv = netdev_priv(dev);
+	struct net_device_stats *stats = &dev->stats;
 	struct can_frame *cf;
 	struct sk_buff *skb;
 	u8 lec;
@@ -513,7 +526,6 @@ static int cc770_err(struct net_device *dev, u8 status)
 
 	/* Use extended functions of the CC770 */
 	if (priv->control_normal_mode & CTRL_EAF) {
-		cf->can_id |= CAN_ERR_CNT;
 		cf->data[6] = cc770_read_reg(priv, tx_error_counter);
 		cf->data[7] = cc770_read_reg(priv, rx_error_counter);
 	}
@@ -540,7 +552,7 @@ static int cc770_err(struct net_device *dev, u8 status)
 			priv->can.can_stats.error_warning++;
 		}
 	} else {
-		/* Back to error active */
+		/* Back to error avtive */
 		cf->can_id |= CAN_ERR_PROT;
 		cf->data[2] = CAN_ERR_PROT_ACTIVE;
 		priv->can.state = CAN_STATE_ERROR_ACTIVE;
@@ -573,6 +585,8 @@ static int cc770_err(struct net_device *dev, u8 status)
 	}
 
 
+	stats->rx_packets++;
+	stats->rx_bytes += cf->can_dlc;
 	netif_rx(skb);
 
 	return 0;
@@ -666,42 +680,19 @@ static void cc770_tx_interrupt(struct net_device *dev, unsigned int o)
 	struct cc770_priv *priv = netdev_priv(dev);
 	struct net_device_stats *stats = &dev->stats;
 	unsigned int mo = obj2msgobj(o);
-	u8 ctrl1;
 
-	ctrl1 = cc770_read_reg(priv, msgobj[mo].ctrl1);
-
+	/* Nothing more to send, switch off interrupts */
 	cc770_write_reg(priv, msgobj[mo].ctrl0,
 			MSGVAL_RES | TXIE_RES | RXIE_RES | INTPND_RES);
-	cc770_write_reg(priv, msgobj[mo].ctrl1,
-			RMTPND_RES | TXRQST_RES | MSGLST_RES | NEWDAT_RES);
-
-	if (unlikely(!priv->tx_skb)) {
-		netdev_err(dev, "missing tx skb in tx interrupt\n");
-		return;
-	}
-
-	if (unlikely(ctrl1 & MSGLST_SET)) {
-		stats->rx_over_errors++;
-		stats->rx_errors++;
-	}
-
-	/* When the CC770 is sending an RTR message and it receives a regular
-	 * message that matches the id of the RTR message, it will overwrite the
-	 * outgoing message in the TX register. When this happens we must
-	 * process the received message and try to transmit the outgoing skb
-	 * again.
+	/*
+	 * We had some cases of repeated IRQ so make sure the
+	 * INT is acknowledged
 	 */
-	if (unlikely(ctrl1 & NEWDAT_SET)) {
-		cc770_rx(dev, mo, ctrl1);
-		cc770_tx(dev, mo);
-		return;
-	}
+	cc770_write_reg(priv, msgobj[mo].ctrl0,
+			MSGVAL_UNC | TXIE_UNC | RXIE_UNC | INTPND_RES);
 
-	can_put_echo_skb(priv->tx_skb, dev, 0, 0);
-	stats->tx_bytes += can_get_echo_skb(dev, 0, NULL);
 	stats->tx_packets++;
-	priv->tx_skb = NULL;
-
+	can_get_echo_skb(dev, 0);
 	netif_wake_queue(dev);
 }
 
@@ -813,7 +804,6 @@ struct net_device *alloc_cc770dev(int sizeof_priv)
 	priv->can.do_set_bittiming = cc770_set_bittiming;
 	priv->can.do_set_mode = cc770_set_mode;
 	priv->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
-	priv->tx_skb = NULL;
 
 	memcpy(priv->obj_flags, cc770_obj_flags, sizeof(cc770_obj_flags));
 
@@ -837,10 +827,6 @@ static const struct net_device_ops cc770_netdev_ops = {
 	.ndo_change_mtu = can_change_mtu,
 };
 
-static const struct ethtool_ops cc770_ethtool_ops = {
-	.get_ts_info = ethtool_op_get_ts_info,
-};
-
 int register_cc770dev(struct net_device *dev)
 {
 	struct cc770_priv *priv = netdev_priv(dev);
@@ -851,7 +837,6 @@ int register_cc770dev(struct net_device *dev)
 		return err;
 
 	dev->netdev_ops = &cc770_netdev_ops;
-	dev->ethtool_ops = &cc770_ethtool_ops;
 
 	dev->flags |= IFF_ECHO;	/* we support local echo */
 

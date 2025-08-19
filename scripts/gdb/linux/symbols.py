@@ -15,7 +15,7 @@ import gdb
 import os
 import re
 
-from linux import modules, utils, constants
+from linux import modules
 
 
 if hasattr(gdb, 'Breakpoint'):
@@ -77,43 +77,38 @@ lx-symbols command."""
             gdb.write("scanning for modules in {0}\n".format(path))
             for root, dirs, files in os.walk(path):
                 for name in files:
-                    if name.endswith(".ko") or name.endswith(".ko.debug"):
+                    if name.endswith(".ko"):
                         self.module_files.append(root + "/" + name)
         self.module_files_updated = True
 
     def _get_module_file(self, module_name):
-        module_pattern = ".*/{0}\.ko(?:.debug)?$".format(
+        module_pattern = ".*/{0}\.ko$".format(
             module_name.replace("_", r"[_\-]"))
         for name in self.module_files:
             if re.match(module_pattern, name) and os.path.exists(name):
                 return name
         return None
 
-    def _section_arguments(self, module, module_addr):
+    def _section_arguments(self, module):
         try:
             sect_attrs = module['sect_attrs'].dereference()
         except gdb.error:
-            return str(module_addr)
-
+            return ""
         attrs = sect_attrs['attrs']
         section_name_to_address = {
-            attrs[n]['battr']['attr']['name'].string(): attrs[n]['address']
+            attrs[n]['name'].string(): attrs[n]['address']
             for n in range(int(sect_attrs['nsections']))}
-
-        textaddr = section_name_to_address.get(".text", module_addr)
         args = []
-        for section_name in [".data", ".data..read_mostly", ".rodata", ".bss",
-                             ".text.hot", ".text.unlikely"]:
+        for section_name in [".data", ".data..read_mostly", ".rodata", ".bss"]:
             address = section_name_to_address.get(section_name)
             if address:
                 args.append(" -s {name} {addr}".format(
                     name=section_name, addr=str(address)))
-        return "{textaddr} {sections}".format(
-            textaddr=textaddr, sections="".join(args))
+        return "".join(args)
 
     def load_module_symbols(self, module):
         module_name = module['name'].string()
-        module_addr = str(module['mem'][constants.LX_MOD_TEXT]['base']).split()[0]
+        module_addr = str(module['core_layout']['base']).split()[0]
 
         module_file = self._get_module_file(module_name)
         if not module_file and not self.module_files_updated:
@@ -121,17 +116,12 @@ lx-symbols command."""
             module_file = self._get_module_file(module_name)
 
         if module_file:
-            if utils.is_target_arch('s390'):
-                # Module text is preceded by PLT stubs on s390.
-                module_arch = module['arch']
-                plt_offset = int(module_arch['plt_offset'])
-                plt_size = int(module_arch['plt_size'])
-                module_addr = hex(int(module_addr, 0) + plt_offset + plt_size)
             gdb.write("loading @{addr}: {filename}\n".format(
                 addr=module_addr, filename=module_file))
-            cmdline = "add-symbol-file {filename} {sections}".format(
+            cmdline = "add-symbol-file {filename} {addr}{sections}".format(
                 filename=module_file,
-                sections=self._section_arguments(module, module_addr))
+                addr=module_addr,
+                sections=self._section_arguments(module))
             gdb.execute(cmdline, to_string=True)
             if module_name not in self.loaded_modules:
                 self.loaded_modules.append(module_name)
@@ -149,13 +139,8 @@ lx-symbols command."""
                 saved_states.append({'breakpoint': bp, 'enabled': bp.enabled})
 
         # drop all current symbols and reload vmlinux
-        orig_vmlinux = 'vmlinux'
-        for obj in gdb.objfiles():
-            if (obj.filename.endswith('vmlinux') or
-                obj.filename.endswith('vmlinux.debug')):
-                orig_vmlinux = obj.filename
         gdb.execute("symbol-file", to_string=True)
-        gdb.execute("symbol-file {0}".format(orig_vmlinux))
+        gdb.execute("symbol-file vmlinux")
 
         self.loaded_modules = []
         module_list = modules.module_list()
@@ -168,8 +153,7 @@ lx-symbols command."""
             saved_state['breakpoint'].enabled = saved_state['enabled']
 
     def invoke(self, arg, from_tty):
-        self.module_paths = [os.path.abspath(os.path.expanduser(p))
-                             for p in arg.split()]
+        self.module_paths = [os.path.expanduser(p) for p in arg.split()]
         self.module_paths.append(os.getcwd())
 
         # enforce update
@@ -183,7 +167,7 @@ lx-symbols command."""
                 self.breakpoint.delete()
                 self.breakpoint = None
             self.breakpoint = LoadModuleBreakpoint(
-                "kernel/module/main.c:do_init_module", self)
+                "kernel/module.c:do_init_module", self)
         else:
             gdb.write("Note: symbol update on module loading not supported "
                       "with this gdb version\n")

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 #ifndef _ASM_POWERPC_STAT_H
 #define _ASM_POWERPC_STAT_H
 /*
@@ -29,18 +28,18 @@ struct __old_kernel_stat {
 
 struct stat {
 	unsigned long	st_dev;
-	__kernel_ino_t	st_ino;
+	ino_t		st_ino;
 #ifdef __powerpc64__
 	unsigned long	st_nlink;
-	__kernel_mode_t	st_mode;
+	mode_t		st_mode;
 #else
-	__kernel_mode_t	st_mode;
+	mode_t		st_mode;
 	unsigned short	st_nlink;
 #endif
-	__kernel_uid32_t st_uid;
-	__kernel_gid32_t st_gid;
+	uid_t		st_uid;
+	gid_t		st_gid;
 	unsigned long	st_rdev;
-	long		st_size;
+	off_t		st_size;
 	unsigned long	st_blksize;
 	unsigned long	st_blocks;
 	unsigned long	st_atime;

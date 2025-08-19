@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  ARM HDLCD Controller register definition
  */
@@ -7,12 +6,12 @@
 #define __HDLCD_DRV_H__
 
 struct hdlcd_drm_private {
-	struct drm_device		base;
 	void __iomem			*mmio;
 	struct clk			*clk;
+	struct drm_fbdev_cma		*fbdev;
 	struct drm_crtc			crtc;
 	struct drm_plane		*plane;
-	unsigned int			irq;
+	struct drm_atomic_state		*state;
 #ifdef CONFIG_DEBUG_FS
 	atomic_t buffer_underrun_count;
 	atomic_t bus_error_count;
@@ -21,7 +20,6 @@ struct hdlcd_drm_private {
 #endif
 };
 
-#define drm_to_hdlcd_priv(x)	container_of(x, struct hdlcd_drm_private, base)
 #define crtc_to_hdlcd_priv(x)	container_of(x, struct hdlcd_drm_private, crtc)
 
 static inline void hdlcd_write(struct hdlcd_drm_private *hdlcd,

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.0+ WITH Linux-syscall-note */
 /*  Generic MTRR (Memory Type Range Register) ioctls.
 
     Copyright (C) 1997-1999  Richard Gooch
@@ -81,6 +80,14 @@ typedef __u8 mtrr_type;
 #define MTRR_NUM_FIXED_RANGES 88
 #define MTRR_MAX_VAR_RANGES 256
 
+struct mtrr_state_type {
+	struct mtrr_var_range var_ranges[MTRR_MAX_VAR_RANGES];
+	mtrr_type fixed_ranges[MTRR_NUM_FIXED_RANGES];
+	unsigned char enabled;
+	unsigned char have_fixed;
+	mtrr_type def_type;
+};
+
 #define MTRRphysBase_MSR(reg) (0x200 + 2 * (reg))
 #define MTRRphysMask_MSR(reg) (0x200 + 2 * (reg) + 1)
 
@@ -107,9 +114,9 @@ typedef __u8 mtrr_type;
 #define MTRR_NUM_TYPES       7
 
 /*
- * Invalid MTRR memory type.  No longer used outside of MTRR code.
- * Note, this value is allocated from the reserved values (0x7-0xff) of
- * the MTRR memory types.
+ * Invalid MTRR memory type.  mtrr_type_lookup() returns this value when
+ * MTRRs are disabled.  Note, this value is allocated from the reserved
+ * values (0x7-0xff) of the MTRR memory types.
  */
 #define MTRR_TYPE_INVALID    0xff
 

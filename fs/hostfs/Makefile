@@ -3,11 +3,9 @@
 # Licensed under the GPL
 #
 
-hostfs-objs := hostfs_kern.o
+hostfs-objs := hostfs_kern.o hostfs_user.o
 
-hostfs-builtin-$(CONFIG_HOSTFS) += hostfs_user.o hostfs_user_exp.o
-
-obj-y := $(hostfs-builtin-y) $(hostfs-builtin-m)
+obj-y :=
 obj-$(CONFIG_HOSTFS) += hostfs.o
 
-include $(srctree)/arch/um/scripts/Makefile.rules
+include arch/um/scripts/Makefile.rules

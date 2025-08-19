@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2007 Freescale Semiconductor, Inc. All rights reserved.
  *
@@ -9,6 +8,11 @@
  * Limitation:
  * Can only get/set settings of the first queue.
  * Need to re-open the interface manually after changing some parameters.
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -28,7 +32,7 @@
 
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/types.h>
 
 #include "ucc_geth.h"
@@ -57,7 +61,7 @@ static const char hw_stat_gstrings[][ETH_GSTRING_LEN] = {
 static const char tx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"tx-single-collision",
 	"tx-multiple-collision",
-	"tx-late-collision",
+	"tx-late-collsion",
 	"tx-aborted-frames",
 	"tx-lost-frames",
 	"tx-carrier-sense-errors",
@@ -109,9 +113,7 @@ uec_get_ksettings(struct net_device *netdev, struct ethtool_link_ksettings *cmd)
 	if (!phydev)
 		return -ENODEV;
 
-	phy_ethtool_ksettings_get(phydev, cmd);
-
-	return 0;
+	return phy_ethtool_ksettings_get(phydev, cmd);
 }
 
 static int
@@ -207,9 +209,7 @@ uec_get_regs(struct net_device *netdev,
 
 static void
 uec_get_ringparam(struct net_device *netdev,
-		  struct ethtool_ringparam *ring,
-		  struct kernel_ethtool_ringparam *kernel_ring,
-		  struct netlink_ext_ack *extack)
+                    struct ethtool_ringparam *ring)
 {
 	struct ucc_geth_private *ugeth = netdev_priv(netdev);
 	struct ucc_geth_info *ug_info = ugeth->ug_info;
@@ -228,9 +228,7 @@ uec_get_ringparam(struct net_device *netdev,
 
 static int
 uec_set_ringparam(struct net_device *netdev,
-		  struct ethtool_ringparam *ring,
-		  struct kernel_ethtool_ringparam *kernel_ring,
-		  struct netlink_ext_ack *extack)
+                    struct ethtool_ringparam *ring)
 {
 	struct ucc_geth_private *ugeth = netdev_priv(netdev);
 	struct ucc_geth_info *ug_info = ugeth->ug_info;
@@ -252,11 +250,13 @@ uec_set_ringparam(struct net_device *netdev,
 		return -EINVAL;
 	}
 
-	if (netif_running(netdev))
-		return -EBUSY;
-
 	ug_info->bdRingLenRx[queue] = ring->rx_pending;
 	ug_info->bdRingLenTx[queue] = ring->tx_pending;
+
+	if (netif_running(netdev)) {
+		/* FIXME: restart automatically */
+		netdev_info(netdev, "Please re-open the interface\n");
+	}
 
 	return ret;
 }
@@ -332,13 +332,22 @@ static void uec_get_ethtool_stats(struct net_device *netdev,
 	}
 }
 
+static int uec_nway_reset(struct net_device *netdev)
+{
+	struct ucc_geth_private *ugeth = netdev_priv(netdev);
+
+	return phy_start_aneg(ugeth->phydev);
+}
+
 /* Report driver information */
 static void
 uec_get_drvinfo(struct net_device *netdev,
                        struct ethtool_drvinfo *drvinfo)
 {
-	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
-	strscpy(drvinfo->bus_info, "QUICC ENGINE", sizeof(drvinfo->bus_info));
+	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strlcpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
+	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
+	strlcpy(drvinfo->bus_info, "QUICC ENGINE", sizeof(drvinfo->bus_info));
 }
 
 #ifdef CONFIG_PM
@@ -385,7 +394,7 @@ static const struct ethtool_ops uec_ethtool_ops = {
 	.get_regs               = uec_get_regs,
 	.get_msglevel           = uec_get_msglevel,
 	.set_msglevel           = uec_set_msglevel,
-	.nway_reset             = phy_ethtool_nway_reset,
+	.nway_reset             = uec_nway_reset,
 	.get_link               = ethtool_op_get_link,
 	.get_ringparam          = uec_get_ringparam,
 	.set_ringparam          = uec_set_ringparam,

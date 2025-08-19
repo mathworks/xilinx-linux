@@ -11,7 +11,6 @@
 #include <linux/clk-provider.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/delay.h>
@@ -21,15 +20,17 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/fpga/adi-axi-common.h>
 
-#include <linux/jesd204/jesd204.h>
+#define PCORE_VERSION_MAJOR(version)		(version >> 16)
+#define PCORE_VERSION_MINOR(version)		((version >> 8) & 0xff)
+#define PCORE_VERSION_PATCH(version)		(version & 0xff)
 
-#include "axi_jesd204.h"
-
+#define JESD204_TX_REG_VERSION			0x00
+#define JESD204_TX_REG_ID			0x04
+#define JESD204_TX_REG_SCRATCH			0x08
 #define JESD204_TX_REG_MAGIC			0x0c
-
 #define JESD204_TX_REG_CONF_NUM_LANES		0x10
+#define JESD204_TX_REG_CONF_DATA_PATH_WIDTH	0x14
 
 #define JESD204_TX_REG_IRQ_ENABLE		0x80
 #define JESD204_TX_REG_IRQ_PENDING		0x84
@@ -38,7 +39,6 @@
 #define JESD204_TX_REG_LINK_DISABLE		0xc0
 #define JESD204_TX_REG_LINK_STATE		0xc4
 #define JESD204_TX_REG_LINK_CLK_RATIO		0xc8
-#define JESD204_TX_REG_DEVICE_CLK_RATIO		0xcc
 
 #define JESD204_TX_REG_SYSREF_CONF		0x100
 #define JESD204_TX_REG_SYSREF_LMFC_OFFSET	0x104
@@ -49,7 +49,6 @@
 #define JESD204_TX_REG_CONF1			0x214
 #define JESD204_TX_REG_CONF2			0x240
 #define JESD204_TX_REG_CONF3			0x244
-#define JESD204_TX_REG_CONF4			0x21C
 
 #define JESD204_TX_REG_MANUAL_SYNC_REQUEST	0x248
 
@@ -62,8 +61,23 @@
 /* JESD204_TX_REG_SYSREF_CONF */
 #define JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE	BIT(0)
 
-/* JESD204_TX_REG_LINK_STATUS */
-#define JESD204_LINK_STATUS_DATA			3
+struct jesd204_tx_config {
+	uint8_t device_id;
+	uint8_t bank_id;
+	uint8_t lane_id;
+	uint8_t lanes_per_device;
+	uint8_t octets_per_frame;
+	uint8_t frames_per_multiframe;
+	uint8_t converters_per_device;
+	uint8_t resolution;
+	uint8_t bits_per_sample;
+	uint8_t samples_per_frame;
+	uint8_t jesd_version;
+	uint8_t subclass_version;
+	uint8_t control_bits_per_sample;
+	bool enable_scrambling;
+	bool high_density;
+};
 
 struct axi_jesd204_tx {
 	void __iomem *base;
@@ -71,30 +85,15 @@ struct axi_jesd204_tx {
 
 	struct clk *axi_clk;
 	struct clk *device_clk;
-	struct clk *link_clk;
-	struct clk *conv2_clk;
-	struct clk *sysref_clk;
 
-	struct jesd204_dev *jdev;
-
-	unsigned long axi_clk_freq;
 	int irq;
 
 	unsigned int num_lanes;
 	unsigned int data_path_width;
-	unsigned int tpl_data_path_width;
-	unsigned int version;
-	unsigned int axi_rate;
-	enum jesd204_encoder encoder;
 
 	/* Used for probe ordering */
 	struct clk_hw dummy_clk;
 	struct clk *lane_clk;
-
-	/* Versal specific gpios */
-	struct gpio_desc *reset_pll_datapath_gpio;
-	struct gpio_desc *reset_datapath_gpio;
-	struct gpio_desc *reset_done_gpio;
 };
 
 static const char * const axi_jesd204_tx_link_status_label[] = {
@@ -104,16 +103,6 @@ static const char * const axi_jesd204_tx_link_status_label[] = {
 	"DATA"
 };
 
-static unsigned long axi_jesd204_tx_calc_device_clk(struct axi_jesd204_tx *jesd,
-	unsigned long link_rate)
-{
-	if (jesd->version >= ADI_AXI_PCORE_VER(1, 6, 'a'))
-		return div_u64((u64) link_rate * jesd->data_path_width,
-			jesd->tpl_data_path_width);
-
-	return link_rate;
-}
-
 static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -121,21 +110,15 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 	unsigned int sysref_status;
 	unsigned int link_disabled;
 	unsigned int link_status;
-	unsigned int link_config0;
 	unsigned int clock_ratio;
 	unsigned int clock_rate;
 	unsigned int link_rate;
-	unsigned int lane_rate;
-	unsigned int sysref_config;
-	unsigned int lmfc_rate;
 	int ret;
 
 	link_disabled = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_STATE);
 	link_status = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_STATUS);
 	sysref_status = readl_relaxed(jesd->base + JESD204_TX_REG_SYSREF_STATUS);
 	clock_ratio = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_CLK_RATIO);
-	sysref_config = readl_relaxed(jesd->base + JESD204_TX_REG_SYSREF_CONF);
-	link_config0 = readl_relaxed(jesd->base + JESD204_TX_REG_CONF0);
 
 	ret = scnprintf(buf, PAGE_SIZE, "Link is %s\n",
 		(link_disabled & 0x1) ? "disabled" : "enabled");
@@ -144,82 +127,37 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: off\n");
 	} else {
-		clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
-			1000) * clock_ratio, 1ULL << 16);
+		clock_rate = DIV_ROUND_CLOSEST_ULL(100000ULL * clock_ratio,
+			1ULL << 16);
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Measured Link Clock: %d.%.3d MHz\n",
 			clock_rate / 1000, clock_rate % 1000);
 	}
 
-	clock_rate = DIV_ROUND_CLOSEST(clk_get_rate(IS_ERR_OR_NULL(jesd->link_clk) ?
-		 jesd->device_clk : jesd->link_clk), 1000);
+	clock_rate = DIV_ROUND_CLOSEST(clk_get_rate(jesd->device_clk), 1000);
 	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Reported Link Clock: %d.%.3d MHz\n",
 			clock_rate / 1000, clock_rate % 1000);
 
-	lane_rate = clk_get_rate(jesd->lane_clk);
-	if (jesd->encoder == JESD204_ENCODER_64B66B) {
-		link_rate = DIV_ROUND_CLOSEST(lane_rate, 66);
-		lmfc_rate = (lane_rate * 8) /
-			(66 * ((link_config0 & 0x3FF) + 1));
-	} else {
-		link_rate = DIV_ROUND_CLOSEST(lane_rate, 40);
-		lmfc_rate = lane_rate /
-			(10 * ((link_config0 & 0x3FF) + 1));
-	}
-
-	if (jesd->version >= ADI_AXI_PCORE_VER(1, 6, 'a')) {
-		clock_ratio = readl_relaxed(jesd->base + JESD204_TX_REG_DEVICE_CLK_RATIO);
-		if (clock_ratio == 0) {
-			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-				"Measured Device Clock: off\n");
-		} else {
-			clock_rate = DIV_ROUND_CLOSEST_ULL((u64)DIV_ROUND_CLOSEST(jesd->axi_clk_freq,
-				1000) * clock_ratio, 1ULL << 16);
-
-			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-				"Measured Device Clock: %d.%.3d MHz\n",
-				clock_rate / 1000, clock_rate % 1000);
-		}
-
-		clock_rate = DIV_ROUND_CLOSEST(clk_get_rate(jesd->device_clk), 1000);
-		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-			"Reported Device Clock: %d.%.3d MHz\n",
-			clock_rate / 1000, clock_rate % 1000);
-
-		clock_rate = axi_jesd204_tx_calc_device_clk(jesd, link_rate);
-		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-			"Desired Device Clock: %d.%.3d MHz\n",
-			clock_rate / 1000, clock_rate % 1000);
-	}
-
 	if (!link_disabled) {
-		const char *status = link_status & 0x10 ?
-				"SYNC~: deasserted\n" : "SYNC~: asserted\n";
-
+		clock_rate = clk_get_rate(jesd->lane_clk);
+		link_rate = DIV_ROUND_CLOSEST(clock_rate, 40);
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"Lane rate: %d.%.3d MHz\n"
-			"Lane rate / %d: %d.%.3d MHz\n"
-			"%s rate: %d.%.3d MHz\n",
-			lane_rate / 1000, lane_rate % 1000,
-			(jesd->encoder == JESD204_ENCODER_8B10B) ? 40 : 66,
-			link_rate / 1000, link_rate % 1000,
-			(jesd->encoder == JESD204_ENCODER_8B10B) ? "LMFC" :
-				"LEMC",
-			lmfc_rate / 1000, lmfc_rate % 1000);
+			"Lane rate / 40: %d.%.3d MHz\n",
+			clock_rate / 1000, clock_rate % 1000,
+			link_rate / 1000, link_rate % 1000);
 
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-			"%sLink status: %s\n"
+			"SYNC~: %s\n"
+			"Link status: %s\n"
 			"SYSREF captured: %s\n"
 			"SYSREF alignment error: %s\n",
-			jesd->encoder == JESD204_ENCODER_64B66B ? "" :
-								status,
+			(link_status & 0x10) ? "deasserted" : "asserted",
 			axi_jesd204_tx_link_status_label[link_status & 0x3],
-			(sysref_config & JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE) ?
-				"disabled" : (sysref_status & 1) ? "Yes" : "No",
-			(sysref_config & JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE) ?
-				"disabled" : (sysref_status & 2) ? "Yes" : "No");
+			(sysref_status & 1) ? "Yes" : "No",
+			(sysref_status & 2) ? "Yes" : "No");
 	} else {
 		ret += scnprintf(buf + ret, PAGE_SIZE, "External reset is %s\n",
 			(link_disabled & 0x2) ? "asserted" : "deasserted");
@@ -229,16 +167,6 @@ static ssize_t axi_jesd204_tx_status_read(struct device *dev,
 }
 
 static DEVICE_ATTR(status, 0444, axi_jesd204_tx_status_read, NULL);
-
-static ssize_t encoder_show(struct device *dev, struct device_attribute *attr,
-			    char *buf)
-{
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-
-	return sprintf(buf, "%s", jesd204_encoder_str(jesd->encoder));
-}
-
-static DEVICE_ATTR_RO(encoder);
 
 static irqreturn_t axi_jesd204_tx_irq(int irq, void *devid)
 {
@@ -255,24 +183,23 @@ static irqreturn_t axi_jesd204_tx_irq(int irq, void *devid)
 }
 
 static unsigned int axi_jesd204_tx_calc_ilas_chksum(
-	const struct jesd204_link *config,
-	unsigned int lane_id)
+	const struct jesd204_tx_config *config)
 {
 	unsigned int chksum;
 
 	chksum = config->device_id;
 	chksum += config->bank_id;
-	chksum += lane_id;
-	chksum += config->num_lanes - 1;
-	chksum += config->scrambling;
+	chksum += config->lane_id;
+	chksum += config->lanes_per_device - 1;
+	chksum += config->enable_scrambling;
 	chksum += config->octets_per_frame - 1;
 	chksum += config->frames_per_multiframe - 1;
-	chksum += config->num_converters - 1;
-	chksum += config->ctrl_bits_per_sample;
-	chksum += config->converter_resolution - 1;
+	chksum += config->converters_per_device - 1;
+	chksum += config->control_bits_per_sample;
+	chksum += config->resolution - 1;
 	chksum += config->bits_per_sample - 1;
-	chksum += config->subclass;
-	chksum += config->samples_per_conv_frame ? config->samples_per_conv_frame - 1 : 0;
+	chksum += config->subclass_version;
+	chksum += config->samples_per_frame  - 1;
 	chksum += config->jesd_version;
 	chksum += config->high_density;
 
@@ -280,10 +207,12 @@ static unsigned int axi_jesd204_tx_calc_ilas_chksum(
 }
 
 static void axi_jesd204_tx_set_lane_ilas(struct axi_jesd204_tx *jesd,
-	struct jesd204_link *config, unsigned int lane_id, unsigned int lane)
+	struct jesd204_tx_config *config, unsigned int lane)
 {
 	unsigned int i;
 	unsigned int val;
+
+	config->lane_id = lane;
 
 	for (i = 0; i < 4; i++) {
 		switch (i) {
@@ -292,24 +221,24 @@ static void axi_jesd204_tx_set_lane_ilas(struct axi_jesd204_tx *jesd,
 			val |= config->bank_id << 24;
 			break;
 		case 1:
-			val = lane_id;
-			val |= (config->num_lanes - 1) << 8;
-			val |= config->scrambling << 15;
+			val = config->lane_id;
+			val |= (config->lanes_per_device - 1) << 8;
+			val |= config->enable_scrambling << 15;
 			val |= (config->octets_per_frame - 1) << 16;
 			val |= (config->frames_per_multiframe - 1) << 24;
 			break;
 		case 2:
-			val = (config->num_converters - 1);
-			val |= (config->converter_resolution - 1) << 8;
-			val |= config->ctrl_bits_per_sample << 14;
+			val = (config->converters_per_device - 1);
+			val |= (config->resolution - 1) << 8;
+			val |= config->control_bits_per_sample << 14;
 			val |= (config->bits_per_sample - 1) << 16;
-			val |= config->subclass << 21;
-			val |= (config->samples_per_conv_frame ? config->samples_per_conv_frame  - 1 : 0) << 24;
+			val |= config->subclass_version << 21;
+			val |= (config->samples_per_frame - 1) << 24;
 			val |= config->jesd_version << 29;
 			break;
 		case 3:
 			val = config->high_density << 7;
-			val |= axi_jesd204_tx_calc_ilas_chksum(config, lane_id) << 24;
+			val |= axi_jesd204_tx_calc_ilas_chksum(config) << 24;
 			break;
 		}
 
@@ -318,23 +247,17 @@ static void axi_jesd204_tx_set_lane_ilas(struct axi_jesd204_tx *jesd,
 }
 
 static int axi_jesd204_tx_apply_config(struct axi_jesd204_tx *jesd,
-	struct jesd204_link *config)
+	struct jesd204_tx_config *config)
 {
 	unsigned int octets_per_multiframe;
 	unsigned int multiframe_align;
 	unsigned int val;
-	unsigned int lane, i;
+	unsigned int lane;
 
 	octets_per_multiframe = config->frames_per_multiframe *
 		config->octets_per_frame;
 
-	multiframe_align = jesd->data_path_width;
-
-	if (jesd->encoder == JESD204_ENCODER_64B66B &&
-	    (octets_per_multiframe % 256) != 0) {
-		dev_err(jesd->dev, "octets_per_frame * frames_per_multiframe must be a multiple of 256");
-		return -EINVAL;
-	}
+	multiframe_align = 1 << jesd->data_path_width;
 
 	if (octets_per_multiframe % multiframe_align != 0) {
 		dev_err(jesd->dev,
@@ -346,33 +269,14 @@ static int axi_jesd204_tx_apply_config(struct axi_jesd204_tx *jesd,
 	val = (octets_per_multiframe - 1);
 	val |= (config->octets_per_frame - 1) << 16;
 
-	if (config->subclass == JESD204_SUBCLASS_0)
+	if (config->subclass_version == 0)
 		writel_relaxed(JESD204_TX_REG_SYSREF_CONF_SYSREF_DISABLE,
 			       jesd->base + JESD204_TX_REG_SYSREF_CONF);
 
 	writel_relaxed(val, jesd->base + JESD204_TX_REG_CONF0);
 
-	if (jesd->version >= ADI_AXI_PCORE_VER(1, 6, 'a')) {
-		val = octets_per_multiframe / jesd->tpl_data_path_width - 1;
-		writel_relaxed(val, jesd->base + JESD204_TX_REG_CONF4);
-	}
-
-	if (jesd->encoder == JESD204_ENCODER_8B10B) {
-		for (i = 0, lane = 0; lane < jesd->num_lanes; lane++) {
-			unsigned int lane_id;
-
-			if (i >= config->num_lanes)
-				i = 0;
-
-			lane_id = config->lane_ids[i++];
-			axi_jesd204_tx_set_lane_ilas(jesd, config, lane_id, lane);
-
-		}
-	}
-
-	if (config->sysref.lmfc_offset != JESD204_LMFC_OFFSET_UNINITIALIZED)
-		writel_relaxed(config->sysref.lmfc_offset,
-			jesd->base + JESD204_TX_REG_SYSREF_LMFC_OFFSET);
+	for (lane = 0; lane < jesd->num_lanes; lane++)
+		axi_jesd204_tx_set_lane_ilas(jesd, config, lane);
 
 	return 0;
 }
@@ -382,20 +286,19 @@ static int axi_jesd204_tx_apply_config(struct axi_jesd204_tx *jesd,
  * description and does not belong into the devicetree.
  */
 static int axi_jesd204_tx_parse_dt_config(struct device_node *np,
-	struct axi_jesd204_tx *jesd, struct jesd204_link *config)
+	struct axi_jesd204_tx *jesd, struct jesd204_tx_config *config)
 {
 	int ret;
 	u32 val;
 
 	config->device_id = 0;
 	config->bank_id = 0;
-	config->scrambling = true;
-	config->num_lanes = jesd->num_lanes;
-	config->jesd_version = JESD204_VERSION_B;
-	config->subclass = JESD204_SUBCLASS_1;
-	config->ctrl_bits_per_sample = 0;
-	config->samples_per_conv_frame = 1;
-	config->sysref.lmfc_offset = 0;
+	config->enable_scrambling = true;
+	config->lanes_per_device = jesd->num_lanes;
+	config->jesd_version = 1;
+	config->subclass_version = 1;
+	config->control_bits_per_sample = 0;
+	config->samples_per_frame = 1;
 
 	ret = of_property_read_u32(np, "adi,octets-per-frame", &val);
 	if (ret)
@@ -412,7 +315,7 @@ static int axi_jesd204_tx_parse_dt_config(struct device_node *np,
 	ret = of_property_read_u32(np, "adi,converter-resolution", &val);
 	if (ret)
 		return ret;
-	config->converter_resolution = val;
+	config->resolution = val;
 
 	ret = of_property_read_u32(np, "adi,bits-per-sample", &val);
 	if (ret)
@@ -422,20 +325,16 @@ static int axi_jesd204_tx_parse_dt_config(struct device_node *np,
 	ret = of_property_read_u32(np, "adi,converters-per-device", &val);
 	if (ret)
 		return ret;
-	config->num_converters = val;
+	config->converters_per_device = val;
 
 	/* optional */
 	ret = of_property_read_u32(np, "adi,control-bits-per-sample", &val);
 	if (ret == 0)
-		config->ctrl_bits_per_sample = val;
+		config->control_bits_per_sample = val;
 
 	ret = of_property_read_u32(np, "adi,subclass", &val);
 	if (ret == 0)
-		config->subclass = val;
-
-	ret = of_property_read_u32(np, "adi,sysref-lmfc-offset", &val);
-	if (ret == 0)
-		config->sysref.lmfc_offset = val;
+		config->subclass_version = val;
 
 	return 0;
 }
@@ -446,12 +345,12 @@ static bool axi_jesd_tx_regmap_rdwr(struct device *dev, unsigned int reg)
 	unsigned int i;
 
 	switch (reg) {
-	case ADI_AXI_REG_VERSION:
-	case ADI_AXI_REG_ID:
-	case ADI_AXI_REG_SCRATCH:
+	case JESD204_TX_REG_VERSION:
+	case JESD204_TX_REG_ID:
+	case JESD204_TX_REG_SCRATCH:
 	case JESD204_TX_REG_MAGIC:
 	case JESD204_TX_REG_CONF_NUM_LANES:
-	case JESD204_REG_SYNTH_DATA_PATH_WIDTH:
+	case JESD204_TX_REG_CONF_DATA_PATH_WIDTH:
 	case JESD204_TX_REG_IRQ_ENABLE:
 	case JESD204_TX_REG_IRQ_PENDING:
 	case JESD204_TX_REG_IRQ_SOURCE:
@@ -463,7 +362,6 @@ static bool axi_jesd_tx_regmap_rdwr(struct device *dev, unsigned int reg)
 	case JESD204_TX_REG_CONF1:
 	case JESD204_TX_REG_CONF2:
 	case JESD204_TX_REG_CONF3:
-	case JESD204_TX_REG_CONF4:
 	case JESD204_TX_REG_LINK_STATUS:
 	case JESD204_TX_REG_MANUAL_SYNC_REQUEST:
 	case JESD204_TX_REG_SYSREF_CONF:
@@ -499,7 +397,6 @@ static int axi_jesd204_tx_lane_clk_enable(struct clk_hw *clk)
 	struct axi_jesd204_tx *jesd =
 		container_of(clk, struct axi_jesd204_tx, dummy_clk);
 
-	writel_relaxed(0x3, jesd->base + JESD204_TX_REG_SYSREF_STATUS);
 	writel_relaxed(0x0, jesd->base + JESD204_TX_REG_LINK_DISABLE);
 
 	return 0;
@@ -520,9 +417,9 @@ static const struct clk_ops axi_jesd204_tx_dummy_clk_ops = {
 
 /* FIXME: This is terrible and needs to be replaced */
 static int axi_jesd204_register_dummy_clk(struct axi_jesd204_tx *jesd,
-	struct device *dev)
+	struct platform_device *pdev)
 {
-	struct device_node *np = dev->of_node;
+	struct device_node *np = pdev->dev.of_node;
 	const char *parent_name, *clk_name;
 	struct clk_init_data init;
 	struct clk *dummy_clk;
@@ -543,7 +440,7 @@ static int axi_jesd204_register_dummy_clk(struct axi_jesd204_tx *jesd,
 
 	jesd->dummy_clk.init = &init;
 
-	dummy_clk = devm_clk_register(dev, &jesd->dummy_clk);
+	dummy_clk = devm_clk_register(&pdev->dev, &jesd->dummy_clk);
 	if (IS_ERR(dummy_clk))
 		return PTR_ERR(dummy_clk);
 
@@ -552,359 +449,17 @@ static int axi_jesd204_register_dummy_clk(struct axi_jesd204_tx *jesd,
 	return 0;
 }
 
-static int axi_jesd204_tx_pcore_check(struct axi_jesd204_tx *jesd)
-{
-	unsigned int magic, version;
-
-	magic = readl_relaxed(jesd->base + JESD204_TX_REG_MAGIC);
-	if (magic != JESD204_TX_MAGIC) {
-		dev_err(jesd->dev, "Unexpected peripheral identifier %.08x\n",
-			magic);
-		return -ENODEV;
-	}
-
-	version = readl_relaxed(jesd->base + ADI_AXI_REG_VERSION);
-	if (ADI_AXI_PCORE_VER_MAJOR(version) != 1) {
-		dev_err(jesd->dev, "Unsupported peripheral version %u.%u.%c\n",
-			ADI_AXI_PCORE_VER_MAJOR(version),
-			ADI_AXI_PCORE_VER_MINOR(version),
-			ADI_AXI_PCORE_VER_PATCH(version));
-		return -ENODEV;
-	}
-	jesd->version = version;
-
-	return 0;
-}
-
-static int axi_jesd204_tx_jesd204_link_pre_setup(struct jesd204_dev *jdev,
-		enum jesd204_state_op_reason reason,
-		struct jesd204_link *lnk)
-{
-	struct device *dev = jesd204_dev_to_device(jdev);
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-	unsigned long link_rate, device_rate, lane_rate;
-	long rate;
-	int ret;
-
-	switch (reason) {
-	case JESD204_STATE_OP_REASON_INIT:
-		break;
-	case JESD204_STATE_OP_REASON_UNINIT:
-		return JESD204_STATE_CHANGE_DONE;
-	default:
-		return JESD204_STATE_CHANGE_DONE;
-	}
-
-	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__, lnk->link_id, jesd204_state_op_reason_str(reason));
-
-	ret = jesd204_link_get_device_clock(lnk, &link_rate);
-	dev_dbg(dev, "%s: Link%u device clock rate %lu (%d)\n",
-		__func__, lnk->link_id, link_rate, ret);
-	if (ret) {
-		dev_err(dev, "%s: Link%u get device clock rate failed (%d)\n",
-			__func__, lnk->link_id, ret);
-		return ret;
-	}
-
-	ret = jesd204_link_get_rate_khz(lnk, &lane_rate);
-	dev_dbg(dev, "%s: Link%u lane rate %lu (%d)\n",
-		__func__, lnk->link_id, lane_rate, ret);
-	if (ret) {
-		dev_err(dev, "%s: Link%u get rate failed (%d)\n",
-			__func__, lnk->link_id, ret);
-		return ret;
-	}
-
-	device_rate = axi_jesd204_tx_calc_device_clk(jesd, link_rate);
-
-	ret = clk_set_rate(jesd->device_clk, device_rate);
-	if (ret) {
-		dev_err(dev, "%s: Link%u set device clock rate %lu Hz failed (%d)\n",
-			__func__, lnk->link_id, device_rate, ret);
-		return ret;
-	}
-
-	if (!IS_ERR(jesd->link_clk)) {
-		ret = clk_set_rate(jesd->link_clk, link_rate);
-		if (ret) {
-			dev_err(dev, "%s: Link%u set link clock rate %lu Hz failed (%d)\n",
-				__func__, lnk->link_id, link_rate, ret);
-			return ret;
-		}
-	}
-
-	rate = clk_round_rate(jesd->lane_clk, lane_rate);
-	dev_dbg(dev, "%s: Link%u round lane rate %lu returned %ld\n",
-		__func__, lnk->link_id, lane_rate, rate);
-
-	if (rate != (long)lane_rate) {
-		struct clk *parent;
-
-		/*
-		 * Check GT QPLL/CPLL reference clock and make
-		 * it equal to the link/device rate
-		 */
-		parent = clk_get_parent(jesd->lane_clk);
-		rate = clk_get_rate(parent);
-
-		dev_dbg(dev, "%s: Link%u lane parent rate %ld link_rate %ld\n",
-			__func__, lnk->link_id, rate, link_rate);
-
-		if (rate != (long)link_rate) {
-			rate = clk_round_rate(parent, link_rate);
-			dev_dbg(dev, "%s: Link%u round lane parent rate %ld\n",
-				__func__, lnk->link_id, rate);
-
-			if (rate == (long)link_rate) {
-				ret = clk_set_rate(parent, link_rate);
-				if (!ret && !IS_ERR(jesd->conv2_clk))
-					ret = clk_set_rate(jesd->conv2_clk, link_rate);
-			} else {
-				ret = -EINVAL;
-			}
-			if (ret < 0) {
-				dev_err(dev, "%s: Link%u set REFCLK to device/link rate %lu Hz failed (%d)\n",
-					__func__, lnk->link_id, link_rate, ret);
-			}
-		}
-	}
-
-	ret = clk_set_rate(jesd->lane_clk, lane_rate);
-	if (ret) {
-		dev_err(dev, "%s: Link%u set lane rate %lu kHz failed (%d)\n",
-			__func__, lnk->link_id, lane_rate, ret);
-		return ret;
-	}
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-
-
-static int axi_jesd204_tx_jesd204_link_setup(struct jesd204_dev *jdev,
-		enum jesd204_state_op_reason reason,
-		struct jesd204_link *lnk)
-{
-	struct device *dev = jesd204_dev_to_device(jdev);
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-	int ret;
-
-	switch (reason) {
-	case JESD204_STATE_OP_REASON_INIT:
-		break;
-	case JESD204_STATE_OP_REASON_UNINIT:
-		if (__clk_is_enabled(jesd->lane_clk)) /* REVIST */
-			clk_disable_unprepare(jesd->lane_clk);
-		if (!IS_ERR_OR_NULL(jesd->link_clk)) {
-			if (__clk_is_enabled(jesd->link_clk))
-				clk_disable_unprepare(jesd->link_clk);
-		}
-		if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
-			if (__clk_is_enabled(jesd->sysref_clk))
-				clk_disable_unprepare(jesd->sysref_clk);
-		}
-		if (__clk_is_enabled(jesd->device_clk))
-			clk_disable_unprepare(jesd->device_clk);
-		return JESD204_STATE_CHANGE_DONE;
-	default:
-		return JESD204_STATE_CHANGE_DONE;
-	}
-
-	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__,
-		lnk->link_id, jesd204_state_op_reason_str(reason));
-
-	if (jesd->num_lanes != lnk->num_lanes)
-		jesd204_notice(jdev,
-				"Possible instantiation for multiple chips; HDL lanes %u, Link[%u] lanes %u\n",
-				jesd->num_lanes, lnk->link_id, lnk->num_lanes);
-
-	ret = axi_jesd204_tx_apply_config(jesd, lnk);
-	if (ret) {
-		dev_err(dev, "%s: Apply config Link%u failed (%d)\n",
-			__func__, lnk->link_id, ret);
-		return ret;
-	}
-
-	ret = clk_prepare_enable(jesd->device_clk);
-	if (ret) {
-		dev_err(dev, "%s: Link%u enable device clock failed (%d)\n",
-			__func__, lnk->link_id, ret);
-		return ret;
-	}
-
-	if (!IS_ERR_OR_NULL(jesd->sysref_clk)) {
-		ret = clk_prepare_enable(jesd->sysref_clk);
-		if (ret) {
-			dev_err(dev, "%s: Link%u enable sysref clock failed (%d)\n",
-				__func__, lnk->link_id, ret);
-			return ret;
-		}
-	}
-
-	if (!IS_ERR_OR_NULL(jesd->link_clk)) {
-		ret = clk_prepare_enable(jesd->link_clk);
-		if (ret) {
-			dev_err(dev, "%s: Link%u enable link clock failed (%d)\n",
-				__func__, lnk->link_id, ret);
-			return ret;
-		}
-	}
-
-	ret = clk_prepare_enable(jesd->lane_clk);
-	if (ret) {
-		clk_disable_unprepare(jesd->device_clk);
-		dev_err(dev, "%s: Link%u enable lane clock failed (%d)\n",
-			__func__, lnk->link_id, ret);
-		return ret;
-	}
-
-	ret = axi_jesd_ext_reset(dev, "tx_pll_datapath", jesd->reset_pll_datapath_gpio,
-							 jesd->reset_done_gpio);
-	if (ret)
-		return ret;
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-
-static int axi_jesd204_tx_jesd204_clks_enable(struct jesd204_dev *jdev,
-		enum jesd204_state_op_reason reason,
-		struct jesd204_link *lnk)
-{
-	struct device *dev = jesd204_dev_to_device(jdev);
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-	int ret;
-
-	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__, lnk->link_id, jesd204_state_op_reason_str(reason));
-
-	if (reason != JESD204_STATE_OP_REASON_INIT)
-		return JESD204_STATE_CHANGE_DONE;
-
-	ret = axi_jesd_ext_reset(dev, "tx_datapath", jesd->reset_datapath_gpio,
-				 jesd->reset_done_gpio);
-	if (ret)
-		return ret;
-
-	writel_relaxed(0x1, jesd->base + JESD204_TX_REG_LINK_DISABLE);
-	udelay(1);
-	writel_relaxed(0x3, jesd->base + JESD204_TX_REG_SYSREF_STATUS);
-	writel_relaxed(0x0, jesd->base + JESD204_TX_REG_LINK_DISABLE);
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-
-static int axi_jesd204_tx_jesd204_link_enable(struct jesd204_dev *jdev,
-		enum jesd204_state_op_reason reason,
-		struct jesd204_link *lnk)
-{
-	struct device *dev = jesd204_dev_to_device(jdev);
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-
-	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__, lnk->link_id, jesd204_state_op_reason_str(reason));
-
-	switch (reason) {
-	case JESD204_STATE_OP_REASON_INIT:
-		break;
-	case JESD204_STATE_OP_REASON_UNINIT:
-		writel_relaxed(0x1, jesd->base + JESD204_TX_REG_LINK_DISABLE);
-		return JESD204_STATE_CHANGE_DONE;
-	default:
-		return JESD204_STATE_CHANGE_DONE;
-	}
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-
-static int axi_jesd204_tx_jesd204_link_running(struct jesd204_dev *jdev,
-		enum jesd204_state_op_reason reason,
-		struct jesd204_link *lnk)
-{
-	struct device *dev = jesd204_dev_to_device(jdev);
-	struct axi_jesd204_tx *jesd = dev_get_drvdata(dev);
-	unsigned int link_status;
-	int retry = 20;
-
-	dev_dbg(dev, "%s:%d link_num %u reason %s\n", __func__, __LINE__,
-		lnk->link_id, jesd204_state_op_reason_str(reason));
-
-	if (reason == JESD204_STATE_OP_REASON_INIT) {
-		do {
-			msleep(4);
-			link_status = readl_relaxed(jesd->base + JESD204_TX_REG_LINK_STATUS) & 0x3;
-		} while (link_status != JESD204_LINK_STATUS_DATA && retry--);
-
-		if (link_status != JESD204_LINK_STATUS_DATA) {
-			dev_err(dev, "%s: Link%u status failed (%s)\n",
-				__func__, lnk->link_id,
-				axi_jesd204_tx_link_status_label[link_status]);
-
-			return JESD204_STATE_CHANGE_ERROR;
-		}
-	}
-
-	return JESD204_STATE_CHANGE_DONE;
-}
-static const struct jesd204_dev_data jesd204_axi_jesd204_tx_init = {
-	.state_ops = {
-		[JESD204_OP_LINK_PRE_SETUP] = {
-			.per_link = axi_jesd204_tx_jesd204_link_pre_setup,
-		},
-		[JESD204_OP_LINK_SETUP] = {
-			.per_link = axi_jesd204_tx_jesd204_link_setup,
-		},
-		[JESD204_OP_CLOCKS_ENABLE] = {
-			.per_link = axi_jesd204_tx_jesd204_clks_enable,
-		},
-		[JESD204_OP_LINK_ENABLE] = {
-			.per_link = axi_jesd204_tx_jesd204_link_enable,
-		},
-		[JESD204_OP_LINK_RUNNING] = {
-			.per_link = axi_jesd204_tx_jesd204_link_running,
-		},
-	},
-};
-
-static int axi_jesd204_init_non_framework(struct device *dev,
-					  struct axi_jesd204_tx *jesd)
-{
-	struct jesd204_link config;
-	unsigned int lane;
-	int ret;
-
-	ret = axi_jesd204_tx_parse_dt_config(dev->of_node, jesd, &config);
-	if (ret)
-		return ret;
-
-	config.lane_ids = devm_kcalloc(dev, jesd->num_lanes,
-				       sizeof(*config.lane_ids),
-				       GFP_KERNEL);
-	if (!config.lane_ids)
-		return -ENOMEM;
-
-	for (lane = 0; lane < jesd->num_lanes; lane++)
-		config.lane_ids[lane] = lane;
-
-	ret = axi_jesd204_tx_apply_config(jesd, &config);
-	if (ret)
-		return ret;
-
-	return axi_jesd204_register_dummy_clk(jesd, dev);
-}
-
 static int axi_jesd204_tx_probe(struct platform_device *pdev)
 {
+	struct jesd204_tx_config config;
 	struct axi_jesd204_tx *jesd;
-	struct jesd204_dev *jdev;
+	unsigned int version, magic;
 	struct resource *res;
 	int irq;
 	int ret;
-	u32 tmp;
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
-
-	jdev = devm_jesd204_dev_register(&pdev->dev,
-					 &jesd204_axi_jesd204_tx_init);
-	if (IS_ERR(jdev))
-		return PTR_ERR(jdev);
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -917,7 +472,6 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	jesd->dev = &pdev->dev;
-	jesd->jdev = jdev;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	jesd->base = devm_ioremap_resource(&pdev->dev, res);
@@ -925,25 +479,6 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 		return PTR_ERR(jesd->base);
 
 	devm_regmap_init_mmio(&pdev->dev, jesd->base, &axi_jesd_tx_regmap_config);
-
-	ret = axi_jesd204_tx_pcore_check(jesd);
-	if (ret)
-		return ret;
-
-	jesd->reset_pll_datapath_gpio = devm_gpiod_get_optional(&pdev->dev,
-		"pll-datapath-reset", GPIOD_OUT_LOW);
-	if (IS_ERR(jesd->reset_pll_datapath_gpio))
-		return PTR_ERR(jesd->reset_pll_datapath_gpio);
-
-	jesd->reset_datapath_gpio = devm_gpiod_get_optional(&pdev->dev,
-		"datapath-reset", GPIOD_OUT_LOW);
-	if (IS_ERR(jesd->reset_datapath_gpio))
-		return PTR_ERR(jesd->reset_datapath_gpio);
-
-	jesd->reset_done_gpio = devm_gpiod_get_optional(&pdev->dev,
-		"reset-done", GPIOD_IN);
-	if (IS_ERR(jesd->reset_done_gpio))
-		return PTR_ERR(jesd->reset_done_gpio);
 
 	jesd->axi_clk = devm_clk_get(&pdev->dev, "s_axi_aclk");
 	if (IS_ERR(jesd->axi_clk))
@@ -957,61 +492,38 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 	if (IS_ERR(jesd->lane_clk))
 		return PTR_ERR(jesd->lane_clk);
 
-	/*
-	 * Optional CPLL/QPLL REFCLK from a difference source
-	 * which rate and state must be in sync with the main conv clk
-	 * This is used in axi_jesd204_rx_jesd204_link_setup() where the
-	 * main REFCLK is the parent of jesd->lane_clk.
-	 */
-	jesd->conv2_clk = devm_clk_get_optional(&pdev->dev, "conv2");
-	if (IS_ERR(jesd->conv2_clk))
-		return PTR_ERR(jesd->conv2_clk);
-
-	jesd->link_clk = devm_clk_get_optional(&pdev->dev, "link_clk");
-	if (IS_ERR(jesd->link_clk))
-		return PTR_ERR(jesd->link_clk);
-
-	jesd->sysref_clk = devm_clk_get_optional(&pdev->dev, "sysref_clk");
-	if (IS_ERR(jesd->sysref_clk))
-		return PTR_ERR(jesd->sysref_clk);
-
 	ret = clk_prepare_enable(jesd->axi_clk);
 	if (ret)
 		return ret;
 
-	jesd->axi_clk_freq = clk_get_rate(jesd->axi_clk);
-	if (!jesd->axi_clk_freq)
-		jesd->axi_clk_freq = 100000000; /* 100 MHz */
+	magic = readl_relaxed(jesd->base + JESD204_TX_REG_MAGIC);
+	if (magic != JESD204_TX_MAGIC) {
+		dev_err(&pdev->dev, "Unexpected peripheral identifier %.08x\n",
+			magic);
+		ret = -ENODEV;
+		goto err_axi_clk_disable;
+	}
 
-	if (jesd->conv2_clk) {
-		ret = clk_prepare_enable(jesd->conv2_clk);
-		if (ret)
-			goto err_axi_clk_disable;
+	version = readl_relaxed(jesd->base + JESD204_TX_REG_VERSION);
+	if (PCORE_VERSION_MAJOR(version) != 1) {
+		dev_err(&pdev->dev, "Unsupported peripheral version %u.%u.%c\n",
+			PCORE_VERSION_MAJOR(version),
+			PCORE_VERSION_MINOR(version),
+			PCORE_VERSION_PATCH(version));
+		ret = -ENODEV;
+		goto err_axi_clk_disable;
 	}
 
 	jesd->num_lanes = readl_relaxed(jesd->base + JESD204_TX_REG_CONF_NUM_LANES);
+	jesd->data_path_width = readl_relaxed(jesd->base + JESD204_TX_REG_CONF_DATA_PATH_WIDTH);
 
-	tmp = readl_relaxed(jesd->base + JESD204_REG_SYNTH_DATA_PATH_WIDTH);
-	jesd->data_path_width = 1 << JESD204_SYNTH_DATA_PATH_WIDTH_GET(tmp);
-	jesd->tpl_data_path_width = JESD204_TPL_DATA_PATH_WIDTH_GET(tmp);
+	ret = axi_jesd204_tx_parse_dt_config(pdev->dev.of_node, jesd, &config);
+	if (ret)
+		goto err_axi_clk_disable;
 
-	tmp = readl_relaxed(jesd->base + JESD204_REG_SYNTH_REG_1);
-	jesd->encoder = JESD204_ENCODER_GET(tmp);
-
-	/* backward compatibility with older HDL cores */
-	if (jesd->encoder == JESD204_ENCODER_UNKNOWN) {
-		jesd->encoder = JESD204_ENCODER_8B10B;
-	} else if (jesd->encoder >= JESD204_ENCODER_MAX) {
-		dev_err(&pdev->dev, "Invalid encoder value from HDL core %u\n",
-			jesd->encoder);
-		goto err_conv2_clk_disable;
-	}
-
-	if (!jesd->jdev) {
-		ret = axi_jesd204_init_non_framework(&pdev->dev, jesd);
-		if (ret)
-			goto err_conv2_clk_disable;
-	}
+	ret = axi_jesd204_tx_apply_config(jesd, &config);
+	if (ret)
+		goto err_axi_clk_disable;
 
 	writel_relaxed(0xff, jesd->base + JESD204_TX_REG_IRQ_PENDING);
 	writel_relaxed(0x00, jesd->base + JESD204_TX_REG_IRQ_ENABLE);
@@ -1019,38 +531,32 @@ static int axi_jesd204_tx_probe(struct platform_device *pdev)
 	ret = request_irq(irq, axi_jesd204_tx_irq, 0, dev_name(&pdev->dev),
 		jesd);
 	if (ret)
-		goto err_uninit_non_framework;
+		goto err_axi_clk_disable;
+
+/* FIXME: Enabling the clock here and keeping it enabled will prevent
+ * reconfiguration of the the clock when the lane rate changes. We need to find
+ * a mechanism to disable the clock before link reconfiguration. For the time
+ * being don't enable it and hope that some other driver does.
+ *	ret = clk_prepare_enable(jesd->device_clk);
+ *	if (ret)
+ *	    goto err_free_irq;
+ */
+
+	ret = axi_jesd204_register_dummy_clk(jesd, pdev);
+	if (ret)
+		goto err_disable_device_clk;
 
 	device_create_file(&pdev->dev, &dev_attr_status);
-	device_create_file(&pdev->dev, &dev_attr_encoder);
 
 	platform_set_drvdata(pdev, jesd);
 
-	ret = jesd204_fsm_start(jesd->jdev, JESD204_LINKS_ALL);
-	if (ret)
-		goto err_remove_debugfs;
-
-	dev_info(&pdev->dev, "AXI-JESD204-TX (%d.%.2d.%c) at 0x%08llX. Encoder %s, width %u/%u, lanes %d%s.",
-		ADI_AXI_PCORE_VER_MAJOR(jesd->version),
-		ADI_AXI_PCORE_VER_MINOR(jesd->version),
-		ADI_AXI_PCORE_VER_PATCH(jesd->version),
-		(unsigned long long)res->start,
-		jesd204_encoder_str(jesd->encoder),
-		jesd->data_path_width,
-		jesd->tpl_data_path_width,
-		jesd->num_lanes,
-		jdev ? ", jesd204-fsm" : "");
-
 	return 0;
-err_remove_debugfs:
-	device_remove_file(&pdev->dev, &dev_attr_status);
-	device_remove_file(&pdev->dev, &dev_attr_encoder);
+err_disable_device_clk:
+/*
+	clk_disable_unprepare(jesd->device_clk);
+err_free_irq:
+*/
 	free_irq(irq, jesd);
-err_uninit_non_framework:
-	if (!jesd->jdev)
-		 of_clk_del_provider(pdev->dev.of_node);
-err_conv2_clk_disable:
-	clk_disable_unprepare(jesd->conv2_clk);
 err_axi_clk_disable:
 	clk_disable_unprepare(jesd->axi_clk);
 
@@ -1062,22 +568,16 @@ static int axi_jesd204_tx_remove(struct platform_device *pdev)
 	struct axi_jesd204_tx *jesd = platform_get_drvdata(pdev);
 	int irq = platform_get_irq(pdev, 0);
 
-	jesd204_fsm_stop(jesd->jdev, JESD204_LINKS_ALL);
-
-	device_remove_file(&pdev->dev, &dev_attr_status);
-	device_remove_file(&pdev->dev, &dev_attr_encoder);
+	of_clk_del_provider(pdev->dev.of_node);
 
 	free_irq(irq, jesd);
-
-	if (!jesd->jdev)
-		of_clk_del_provider(pdev->dev.of_node);
 
 	writel_relaxed(0xff, jesd->base + JESD204_TX_REG_IRQ_PENDING);
 	writel_relaxed(0x00, jesd->base + JESD204_TX_REG_IRQ_ENABLE);
 
 	writel_relaxed(0x1, jesd->base + JESD204_TX_REG_LINK_DISABLE);
 
-	clk_disable_unprepare(jesd->conv2_clk);
+/*	clk_disable_unprepare(jesd->device_clk); */
 	clk_disable_unprepare(jesd->axi_clk);
 
 	return 0;
@@ -1085,10 +585,9 @@ static int axi_jesd204_tx_remove(struct platform_device *pdev)
 
 static const struct of_device_id axi_jesd204_tx_of_match[] = {
 	{ .compatible = "adi,axi-jesd204-tx-1.0" },
-	{ .compatible = "adi,axi-jesd204-tx-1.3" },
 	{ /* end of list */ },
 };
-MODULE_DEVICE_TABLE(of, axi_jesd204_tx_of_match);
+MODULE_DEVICE_TABLE(of, adxcvr_of_match);
 
 static struct platform_driver axi_jesd204_tx_driver = {
 	.probe = axi_jesd204_tx_probe,

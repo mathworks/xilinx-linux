@@ -1,7 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kexec.c - kexec_load system call
  * Copyright (C) 2002-2004 Eric Biederman  <ebiederm@xmission.com>
+ *
+ * This source code is licensed under the GNU General Public License,
+ * Version 2.  See the file COPYING for more details.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -9,7 +11,6 @@
 #include <linux/capability.h>
 #include <linux/mm.h>
 #include <linux/file.h>
-#include <linux/security.h>
 #include <linux/kexec.h>
 #include <linux/mutex.h>
 #include <linux/list.h>
@@ -19,9 +20,26 @@
 
 #include "kexec_internal.h"
 
+static int copy_user_segment_list(struct kimage *image,
+				  unsigned long nr_segments,
+				  struct kexec_segment __user *segments)
+{
+	int ret;
+	size_t segment_bytes;
+
+	/* Read in the segments */
+	image->nr_segments = nr_segments;
+	segment_bytes = nr_segments * sizeof(*segments);
+	ret = copy_from_user(image->segment, segments, segment_bytes);
+	if (ret)
+		ret = -EFAULT;
+
+	return ret;
+}
+
 static int kimage_alloc_init(struct kimage **rimage, unsigned long entry,
 			     unsigned long nr_segments,
-			     struct kexec_segment *segments,
+			     struct kexec_segment __user *segments,
 			     unsigned long flags)
 {
 	int ret;
@@ -41,8 +59,10 @@ static int kimage_alloc_init(struct kimage **rimage, unsigned long entry,
 		return -ENOMEM;
 
 	image->start = entry;
-	image->nr_segments = nr_segments;
-	memcpy(image->segment, segments, nr_segments * sizeof(*segments));
+
+	ret = copy_user_segment_list(image, nr_segments, segments);
+	if (ret)
+		goto out_free_image;
 
 	if (kexec_on_panic) {
 		/* Enable special crash kernel control page alloc policy. */
@@ -85,19 +105,11 @@ out_free_image:
 }
 
 static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
-		struct kexec_segment *segments, unsigned long flags)
+		struct kexec_segment __user *segments, unsigned long flags)
 {
 	struct kimage **dest_image, *image;
 	unsigned long i;
 	int ret;
-
-	/*
-	 * Because we write directly to the reserved memory region when loading
-	 * crash kernels we need a serialization here to prevent multiple crash
-	 * kernels from attempting to load simultaneously.
-	 */
-	if (!kexec_trylock())
-		return -EBUSY;
 
 	if (flags & KEXEC_ON_CRASH) {
 		dest_image = &kexec_crash_image;
@@ -110,8 +122,7 @@ static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
 	if (nr_segments == 0) {
 		/* Uninstall image */
 		kimage_free(xchg(dest_image, NULL));
-		ret = 0;
-		goto out_unlock;
+		return 0;
 	}
 	if (flags & KEXEC_ON_CRASH) {
 		/*
@@ -124,25 +135,12 @@ static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
 
 	ret = kimage_alloc_init(&image, entry, nr_segments, segments, flags);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
 	if (flags & KEXEC_PRESERVE_CONTEXT)
 		image->preserve_context = 1;
 
-#ifdef CONFIG_CRASH_HOTPLUG
-	if (flags & KEXEC_UPDATE_ELFCOREHDR)
-		image->update_elfcorehdr = 1;
-#endif
-
 	ret = machine_kexec_prepare(image);
-	if (ret)
-		goto out;
-
-	/*
-	 * Some architecture(like S390) may touch the crash memory before
-	 * machine_kexec_prepare(), we must copy vmcoreinfo data after it.
-	 */
-	ret = kimage_crash_copy_vmcoreinfo(image);
 	if (ret)
 		goto out;
 
@@ -154,10 +152,6 @@ static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
 
 	kimage_terminate(image);
 
-	ret = machine_kexec_post_load(image);
-	if (ret)
-		goto out;
-
 	/* Install the new kernel and uninstall the old */
 	image = xchg(dest_image, image);
 
@@ -166,8 +160,6 @@ out:
 		arch_kexec_protect_crashkres();
 
 	kimage_free(image);
-out_unlock:
-	kexec_unlock();
 	return ret;
 }
 
@@ -192,29 +184,14 @@ out_unlock:
  * that to happen you need to do that yourself.
  */
 
-static inline int kexec_load_check(unsigned long nr_segments,
-				   unsigned long flags)
+SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments,
+		struct kexec_segment __user *, segments, unsigned long, flags)
 {
-	int image_type = (flags & KEXEC_ON_CRASH) ?
-			 KEXEC_TYPE_CRASH : KEXEC_TYPE_DEFAULT;
 	int result;
 
 	/* We only trust the superuser with rebooting the system. */
-	if (!kexec_load_permitted(image_type))
+	if (!capable(CAP_SYS_BOOT) || kexec_load_disabled)
 		return -EPERM;
-
-	/* Permit LSMs and IMA to fail the kexec */
-	result = security_kernel_load_data(LOADING_KEXEC_IMAGE, false);
-	if (result < 0)
-		return result;
-
-	/*
-	 * kexec can be used to circumvent module loading restrictions, so
-	 * prevent loading in that case
-	 */
-	result = security_locked_down(LOCKDOWN_KEXEC);
-	if (result)
-		return result;
 
 	/*
 	 * Verify we have a legal set of flags
@@ -223,36 +200,31 @@ static inline int kexec_load_check(unsigned long nr_segments,
 	if ((flags & KEXEC_FLAGS) != (flags & ~KEXEC_ARCH_MASK))
 		return -EINVAL;
 
+	/* Verify we are on the appropriate architecture */
+	if (((flags & KEXEC_ARCH_MASK) != KEXEC_ARCH) &&
+		((flags & KEXEC_ARCH_MASK) != KEXEC_ARCH_DEFAULT))
+		return -EINVAL;
+
 	/* Put an artificial cap on the number
 	 * of segments passed to kexec_load.
 	 */
 	if (nr_segments > KEXEC_SEGMENT_MAX)
 		return -EINVAL;
 
-	return 0;
-}
+	/* Because we write directly to the reserved memory
+	 * region when loading crash kernels we need a mutex here to
+	 * prevent multiple crash  kernels from attempting to load
+	 * simultaneously, and to prevent a crash kernel from loading
+	 * over the top of a in use crash kernel.
+	 *
+	 * KISS: always take the mutex.
+	 */
+	if (!mutex_trylock(&kexec_mutex))
+		return -EBUSY;
 
-SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments,
-		struct kexec_segment __user *, segments, unsigned long, flags)
-{
-	struct kexec_segment *ksegments;
-	unsigned long result;
+	result = do_kexec_load(entry, nr_segments, segments, flags);
 
-	result = kexec_load_check(nr_segments, flags);
-	if (result)
-		return result;
-
-	/* Verify we are on the appropriate architecture */
-	if (((flags & KEXEC_ARCH_MASK) != KEXEC_ARCH) &&
-		((flags & KEXEC_ARCH_MASK) != KEXEC_ARCH_DEFAULT))
-		return -EINVAL;
-
-	ksegments = memdup_user(segments, nr_segments * sizeof(ksegments[0]));
-	if (IS_ERR(ksegments))
-		return PTR_ERR(ksegments);
-
-	result = do_kexec_load(entry, nr_segments, ksegments, flags);
-	kfree(ksegments);
+	mutex_unlock(&kexec_mutex);
 
 	return result;
 }
@@ -264,12 +236,8 @@ COMPAT_SYSCALL_DEFINE4(kexec_load, compat_ulong_t, entry,
 		       compat_ulong_t, flags)
 {
 	struct compat_kexec_segment in;
-	struct kexec_segment *ksegments;
+	struct kexec_segment out, __user *ksegments;
 	unsigned long i, result;
-
-	result = kexec_load_check(nr_segments, flags);
-	if (result)
-		return result;
 
 	/* Don't allow clients that don't understand the native
 	 * architecture to do anything.
@@ -277,26 +245,25 @@ COMPAT_SYSCALL_DEFINE4(kexec_load, compat_ulong_t, entry,
 	if ((flags & KEXEC_ARCH_MASK) == KEXEC_ARCH_DEFAULT)
 		return -EINVAL;
 
-	ksegments = kmalloc_array(nr_segments, sizeof(ksegments[0]),
-			GFP_KERNEL);
-	if (!ksegments)
-		return -ENOMEM;
+	if (nr_segments > KEXEC_SEGMENT_MAX)
+		return -EINVAL;
 
+	ksegments = compat_alloc_user_space(nr_segments * sizeof(out));
 	for (i = 0; i < nr_segments; i++) {
 		result = copy_from_user(&in, &segments[i], sizeof(in));
 		if (result)
-			goto fail;
+			return -EFAULT;
 
-		ksegments[i].buf   = compat_ptr(in.buf);
-		ksegments[i].bufsz = in.bufsz;
-		ksegments[i].mem   = in.mem;
-		ksegments[i].memsz = in.memsz;
+		out.buf   = compat_ptr(in.buf);
+		out.bufsz = in.bufsz;
+		out.mem   = in.mem;
+		out.memsz = in.memsz;
+
+		result = copy_to_user(&ksegments[i], &out, sizeof(out));
+		if (result)
+			return -EFAULT;
 	}
 
-	result = do_kexec_load(entry, nr_segments, ksegments, flags);
-
-fail:
-	kfree(ksegments);
-	return result;
+	return sys_kexec_load(entry, nr_segments, ksegments, flags);
 }
 #endif

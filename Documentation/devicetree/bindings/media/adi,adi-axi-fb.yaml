@@ -14,7 +14,6 @@ description: |
   Bindings for the Analog Devices Frame Buffer core. Spefications of the
   core can be found in:
   https://wiki.analog.com/resources/fpga/docs/axi_dmac
-  First example is used when FB is stored in PS RAM and second for PL RAM.
 
 properties:
   compatible:
@@ -24,14 +23,12 @@ properties:
   memory-region:
     description:
       Phandle to a node used to specify reserved memory for video frame buffers.
-      If not used, frame buffer address and size should be specified using reg
-      property.
     allOf:
       - $ref: /schemas/types.yaml#/definitions/phandle-array
 
   reg:
     minItems: 2
-    maxItems: 3
+    maxItems: 2
 
   adi,flock-resolution:
     description:
@@ -64,18 +61,6 @@ properties:
     minimum: 0
     maxItems: 1
 
-  adi,flock-line-stride:
-    description:
-      The number of bytes between the start of one row and the next row.
-      Needs to be aligned to the bus width.
-    maxItems: 1
-
-  adi,flock-frm-stride:
-    description:
-      Stride of consecutive frames in memory in bytes. Should be at least the
-      size of one frame.
-    maxItems: 1
-
   adi,flock-dwidth:
     description:
       Represent the number of bytes per pixel according to used color space.
@@ -84,6 +69,7 @@ properties:
 
 required:
   - compatible
+  - memory-region
   - reg
 
 examples:
@@ -109,16 +95,4 @@ examples:
                     no-map;
                     reg = <0x1C000000 0x2000000>;
             };
-    };
-
-  - |
-    adi-fb {
-            compatible = "adi,axi-framebuffer-1.00.a";
-            reg = <0x1C000000 0x2000>, <0x43000000 0x1000>, <0x43c20000 0x1000>;
-            reg-names = "fb_mem", "tx_dma", "rx_dma";
-            adi,flock-resolution = <1920>, <1080>;
-            adi,flock-distance = <0>;
-            adi,flock-mode = <0>;
-            adi,flock-dwidth = <4>;
-            adi,flock-frm-buf-nr = <3>;
     };

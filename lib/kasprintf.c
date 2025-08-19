@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/lib/kasprintf.c
  *
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
-#include <linux/stdarg.h>
+#include <stdarg.h>
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/types.h>

@@ -1,7 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 ST Microelectronics
  * Viresh Kumar <vireshk@kernel.org>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  *
  * Fractional Synthesizer clock implementation
  */
@@ -113,7 +116,7 @@ static int clk_frac_set_rate(struct clk_hw *hw, unsigned long drate,
 	return 0;
 }
 
-static const struct clk_ops clk_frac_ops = {
+static struct clk_ops clk_frac_ops = {
 	.recalc_rate = clk_frac_recalc_rate,
 	.round_rate = clk_frac_round_rate,
 	.set_rate = clk_frac_set_rate,
@@ -128,13 +131,15 @@ struct clk *clk_register_frac(const char *name, const char *parent_name,
 	struct clk *clk;
 
 	if (!name || !parent_name || !reg || !rtbl || !rtbl_cnt) {
-		pr_err("Invalid arguments passed\n");
+		pr_err("Invalid arguments passed");
 		return ERR_PTR(-EINVAL);
 	}
 
 	frac = kzalloc(sizeof(*frac), GFP_KERNEL);
-	if (!frac)
+	if (!frac) {
+		pr_err("could not allocate frac clk\n");
 		return ERR_PTR(-ENOMEM);
+	}
 
 	/* struct clk_frac assignments */
 	frac->reg = reg;

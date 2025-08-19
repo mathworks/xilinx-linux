@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: MIT */
 #ifndef __NV04_DEVINIT_H__
 #define __NV04_DEVINIT_H__
 #define nv04_devinit(p) container_of((p), struct nv04_devinit, base)
@@ -11,7 +10,7 @@ struct nv04_devinit {
 };
 
 int nv04_devinit_new_(const struct nvkm_devinit_func *, struct nvkm_device *,
-		      enum nvkm_subdev_type, int, struct nvkm_devinit **);
+		      int, struct nvkm_devinit **);
 void *nv04_devinit_dtor(struct nvkm_devinit *);
 void nv04_devinit_preinit(struct nvkm_devinit *);
 void nv04_devinit_fini(struct nvkm_devinit *);

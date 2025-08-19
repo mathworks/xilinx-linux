@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/arm/mach-footbridge/netwinder-pci.c
  *
@@ -18,7 +17,7 @@
  * We now use the slot ID instead of the device identifiers to select
  * which interrupt is routed where.
  */
-static int netwinder_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+static int __init netwinder_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	switch (slot) {
 	case 0:  /* host bridge */

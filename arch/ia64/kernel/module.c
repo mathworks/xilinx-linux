@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * IA-64-specific support for kernel module loader.
  *
@@ -36,7 +35,6 @@
 
 #include <asm/patch.h>
 #include <asm/unaligned.h>
-#include <asm/sections.h>
 
 #define ARCH_MODULE_DEBUG 0
 
@@ -155,7 +153,7 @@ slot (const struct insn *insn)
 static int
 apply_imm64 (struct module *mod, struct insn *insn, uint64_t val)
 {
-	if (slot(insn) != 1 && slot(insn) != 2) {
+	if (slot(insn) != 2) {
 		printk(KERN_ERR "%s: invalid slot number %d for IMM64\n",
 		       mod->name, slot(insn));
 		return 0;
@@ -167,7 +165,7 @@ apply_imm64 (struct module *mod, struct insn *insn, uint64_t val)
 static int
 apply_imm60 (struct module *mod, struct insn *insn, uint64_t val)
 {
-	if (slot(insn) != 1 && slot(insn) != 2) {
+	if (slot(insn) != 2) {
 		printk(KERN_ERR "%s: invalid slot number %d for IMM60\n",
 		       mod->name, slot(insn));
 		return 0;
@@ -485,19 +483,19 @@ module_frob_arch_sections (Elf_Ehdr *ehdr, Elf_Shdr *sechdrs, char *secstrings,
 	return 0;
 }
 
-static inline bool
+static inline int
 in_init (const struct module *mod, uint64_t addr)
 {
-	return within_module_init(addr, mod);
+	return addr - (uint64_t) mod->init_layout.base < mod->init_layout.size;
 }
 
-static inline bool
+static inline int
 in_core (const struct module *mod, uint64_t addr)
 {
-	return within_module_core(addr, mod);
+	return addr - (uint64_t) mod->core_layout.base < mod->core_layout.size;
 }
 
-static inline bool
+static inline int
 is_internal (const struct module *mod, uint64_t value)
 {
 	return in_init(mod, value) || in_core(mod, value);
@@ -602,15 +600,15 @@ get_fdesc (struct module *mod, uint64_t value, int *okp)
 		return value;
 
 	/* Look for existing function descriptor. */
-	while (fdesc->addr) {
-		if (fdesc->addr == value)
+	while (fdesc->ip) {
+		if (fdesc->ip == value)
 			return (uint64_t)fdesc;
 		if ((uint64_t) ++fdesc >= mod->arch.opd->sh_addr + mod->arch.opd->sh_size)
 			BUG();
 	}
 
 	/* Create new one */
-	fdesc->addr = value;
+	fdesc->ip = value;
 	fdesc->gp = mod->arch.gp;
 	return (uint64_t) fdesc;
 }
@@ -654,7 +652,7 @@ do_reloc (struct module *mod, uint8_t r_type, Elf64_Sym *sym, uint64_t addend,
 				}
 			} else if (!is_internal(mod, val))
 				val = get_plt(mod, location, val, &ok);
-			fallthrough;
+			/* FALL THROUGH */
 		      default:
 			val -= bundle(location);
 			break;
@@ -677,8 +675,7 @@ do_reloc (struct module *mod, uint8_t r_type, Elf64_Sym *sym, uint64_t addend,
 		break;
 
 	      case RV_BDREL:
-		val -= (uint64_t) (in_init(mod, val) ? mod->mem[MOD_INIT_TEXT].base :
-				   mod->mem[MOD_TEXT].base);
+		val -= (uint64_t) (in_init(mod, val) ? mod->init_layout.base : mod->core_layout.base);
 		break;
 
 	      case RV_LTV:
@@ -813,18 +810,15 @@ apply_relocate_add (Elf64_Shdr *sechdrs, const char *strtab, unsigned int symind
 		 *     addresses have been selected...
 		 */
 		uint64_t gp;
-		struct module_memory *mod_mem;
-
-		mod_mem = &mod->mem[MOD_DATA];
-		if (mod_mem->size > MAX_LTOFF)
+		if (mod->core_layout.size > MAX_LTOFF)
 			/*
 			 * This takes advantage of fact that SHF_ARCH_SMALL gets allocated
 			 * at the end of the module.
 			 */
-			gp = mod_mem->size - MAX_LTOFF / 2;
+			gp = mod->core_layout.size - MAX_LTOFF / 2;
 		else
-			gp = mod_mem->size / 2;
-		gp = (uint64_t) mod_mem->base + ((gp + 7) & -8);
+			gp = mod->core_layout.size / 2;
+		gp = (uint64_t) mod->core_layout.base + ((gp + 7) & -8);
 		mod->arch.gp = gp;
 		DEBUGP("%s: placing gp at 0x%lx\n", __func__, gp);
 	}
@@ -852,7 +846,7 @@ register_unwind_table (struct module *mod)
 {
 	struct unw_table_entry *start = (void *) mod->arch.unwind->sh_addr;
 	struct unw_table_entry *end = start + mod->arch.unwind->sh_size / sizeof (*start);
-	struct unw_table_entry *e1, *e2, *core, *init;
+	struct unw_table_entry tmp, *e1, *e2, *core, *init;
 	unsigned long num_init = 0, num_core = 0;
 
 	/* First, count how many init and core unwind-table entries there are.  */
@@ -869,7 +863,9 @@ register_unwind_table (struct module *mod)
 	for (e1 = start; e1 < end; ++e1) {
 		for (e2 = e1 + 1; e2 < end; ++e2) {
 			if (e2->start_offset < e1->start_offset) {
-				swap(*e1, *e2);
+				tmp = *e1;
+				*e1 = *e2;
+				*e2 = tmp;
 			}
 		}
 	}
@@ -907,53 +903,17 @@ register_unwind_table (struct module *mod)
 int
 module_finalize (const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs, struct module *mod)
 {
-	struct mod_arch_specific *mas = &mod->arch;
-
 	DEBUGP("%s: init: entry=%p\n", __func__, mod->init);
-	if (mas->unwind)
+	if (mod->arch.unwind)
 		register_unwind_table(mod);
-
-	/*
-	 * ".opd" was already relocated to the final destination. Store
-	 * it's address for use in symbolizer.
-	 */
-	mas->opd_addr = (void *)mas->opd->sh_addr;
-	mas->opd_size = mas->opd->sh_size;
-
-	/*
-	 * Module relocation was already done at this point. Section
-	 * headers are about to be deleted. Wipe out load-time context.
-	 */
-	mas->core_plt = NULL;
-	mas->init_plt = NULL;
-	mas->got = NULL;
-	mas->opd = NULL;
-	mas->unwind = NULL;
-	mas->gp = 0;
-	mas->next_got_entry = 0;
-
 	return 0;
 }
 
 void
 module_arch_cleanup (struct module *mod)
 {
-	if (mod->arch.init_unw_table) {
+	if (mod->arch.init_unw_table)
 		unw_remove_unwind_table(mod->arch.init_unw_table);
-		mod->arch.init_unw_table = NULL;
-	}
-	if (mod->arch.core_unw_table) {
+	if (mod->arch.core_unw_table)
 		unw_remove_unwind_table(mod->arch.core_unw_table);
-		mod->arch.core_unw_table = NULL;
-	}
-}
-
-void *dereference_module_function_descriptor(struct module *mod, void *ptr)
-{
-	struct mod_arch_specific *mas = &mod->arch;
-
-	if (ptr < mas->opd_addr || ptr >= mas->opd_addr + mas->opd_size)
-		return ptr;
-
-	return dereference_function_descriptor(ptr);
 }

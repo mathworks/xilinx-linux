@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __DRBD_NLA_H
 #define __DRBD_NLA_H
 

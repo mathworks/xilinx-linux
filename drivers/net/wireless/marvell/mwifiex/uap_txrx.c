@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * NXP Wireless LAN device driver: AP TX and RX data handling
+ * Marvell Wireless LAN device driver: AP TX and RX data handling
  *
- * Copyright 2011-2020 NXP
+ * Copyright (C) 2012-2014, Marvell International Ltd.
+ *
+ * This software file (the "File") is distributed by Marvell International
+ * Ltd. under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -59,10 +71,11 @@ mwifiex_uap_del_tx_pkts_in_ralist(struct mwifiex_private *priv,
  */
 static void mwifiex_uap_cleanup_tx_queues(struct mwifiex_private *priv)
 {
+	unsigned long flags;
 	struct list_head *ra_list;
 	int i;
 
-	spin_lock_bh(&priv->wmm.ra_list_spinlock);
+	spin_lock_irqsave(&priv->wmm.ra_list_spinlock, flags);
 
 	for (i = 0; i < MAX_NUM_TID; i++, priv->del_list_idx++) {
 		if (priv->del_list_idx == MAX_NUM_TID)
@@ -74,7 +87,7 @@ static void mwifiex_uap_cleanup_tx_queues(struct mwifiex_private *priv)
 		}
 	}
 
-	spin_unlock_bh(&priv->wmm.ra_list_spinlock);
+	spin_unlock_irqrestore(&priv->wmm.ra_list_spinlock, flags);
 }
 
 
@@ -100,16 +113,6 @@ static void mwifiex_uap_queue_bridged_pkt(struct mwifiex_private *priv,
 			    "Tx: Bridge packet limit reached. Drop packet!\n");
 		kfree_skb(skb);
 		mwifiex_uap_cleanup_tx_queues(priv);
-		return;
-	}
-
-	if (sizeof(*rx_pkt_hdr) +
-	    le16_to_cpu(uap_rx_pd->rx_pkt_offset) > skb->len) {
-		mwifiex_dbg(adapter, ERROR,
-			    "wrong rx packet offset: len=%d,rx_pkt_offset=%d\n",
-			    skb->len, le16_to_cpu(uap_rx_pd->rx_pkt_offset));
-		priv->stats.rx_dropped++;
-		dev_kfree_skb_any(skb);
 		return;
 	}
 
@@ -253,15 +256,7 @@ int mwifiex_handle_uap_rx_forward(struct mwifiex_private *priv,
 
 	if (is_multicast_ether_addr(ra)) {
 		skb_uap = skb_copy(skb, GFP_ATOMIC);
-		if (likely(skb_uap)) {
-			mwifiex_uap_queue_bridged_pkt(priv, skb_uap);
-		} else {
-			mwifiex_dbg(adapter, ERROR,
-				    "failed to copy skb for uAP\n");
-			priv->stats.rx_dropped++;
-			dev_kfree_skb_any(skb);
-			return -1;
-		}
+		mwifiex_uap_queue_bridged_pkt(priv, skb_uap);
 	} else {
 		if (mwifiex_get_sta_entry(priv, ra)) {
 			/* Requeue Intra-BSS packet */
@@ -293,6 +288,32 @@ int mwifiex_uap_recv_packet(struct mwifiex_private *priv,
 		src_node->stats.rx_bytes += skb->len;
 		src_node->stats.rx_packets++;
 	}
+
+	skb->dev = priv->netdev;
+	skb->protocol = eth_type_trans(skb, priv->netdev);
+	skb->ip_summed = CHECKSUM_NONE;
+
+	/* This is required only in case of 11n and USB/PCIE as we alloc
+	 * a buffer of 4K only if its 11N (to be able to receive 4K
+	 * AMSDU packets). In case of SD we allocate buffers based
+	 * on the size of packet and hence this is not needed.
+	 *
+	 * Modifying the truesize here as our allocation for each
+	 * skb is 4K but we only receive 2K packets and this cause
+	 * the kernel to start dropping packets in case where
+	 * application has allocated buffer based on 2K size i.e.
+	 * if there a 64K packet received (in IP fragments and
+	 * application allocates 64K to receive this packet but
+	 * this packet would almost double up because we allocate
+	 * each 1.5K fragment in 4K and pass it up. As soon as the
+	 * 64K limit hits kernel will start to drop rest of the
+	 * fragments. Currently we fail the Filesndl-ht.scr script
+	 * for UDP, hence this fix
+	 */
+	if ((adapter->iface_type == MWIFIEX_USB ||
+	     adapter->iface_type == MWIFIEX_PCIE) &&
+	    (skb->truesize > MWIFIEX_RX_DATA_BUF_SIZE))
+		skb->truesize += (skb->len - MWIFIEX_RX_DATA_BUF_SIZE);
 
 	if (is_multicast_ether_addr(p_ethhdr->h_dest) ||
 	    mwifiex_get_sta_entry(priv, p_ethhdr->h_dest)) {
@@ -329,34 +350,12 @@ int mwifiex_uap_recv_packet(struct mwifiex_private *priv,
 			return 0;
 	}
 
-	skb->dev = priv->netdev;
-	skb->protocol = eth_type_trans(skb, priv->netdev);
-	skb->ip_summed = CHECKSUM_NONE;
-
-	/* This is required only in case of 11n and USB/PCIE as we alloc
-	 * a buffer of 4K only if its 11N (to be able to receive 4K
-	 * AMSDU packets). In case of SD we allocate buffers based
-	 * on the size of packet and hence this is not needed.
-	 *
-	 * Modifying the truesize here as our allocation for each
-	 * skb is 4K but we only receive 2K packets and this cause
-	 * the kernel to start dropping packets in case where
-	 * application has allocated buffer based on 2K size i.e.
-	 * if there a 64K packet received (in IP fragments and
-	 * application allocates 64K to receive this packet but
-	 * this packet would almost double up because we allocate
-	 * each 1.5K fragment in 4K and pass it up. As soon as the
-	 * 64K limit hits kernel will start to drop rest of the
-	 * fragments. Currently we fail the Filesndl-ht.scr script
-	 * for UDP, hence this fix
-	 */
-	if ((adapter->iface_type == MWIFIEX_USB ||
-	     adapter->iface_type == MWIFIEX_PCIE) &&
-	    skb->truesize > MWIFIEX_RX_DATA_BUF_SIZE)
-		skb->truesize += (skb->len - MWIFIEX_RX_DATA_BUF_SIZE);
-
 	/* Forward multicast/broadcast packet to upper layer*/
-	netif_rx(skb);
+	if (in_interrupt())
+		netif_rx(skb);
+	else
+		netif_rx_ni(skb);
+
 	return 0;
 }
 
@@ -379,21 +378,12 @@ int mwifiex_process_uap_rx_packet(struct mwifiex_private *priv,
 	struct rx_packet_hdr *rx_pkt_hdr;
 	u16 rx_pkt_type;
 	u8 ta[ETH_ALEN], pkt_type;
+	unsigned long flags;
 	struct mwifiex_sta_node *node;
 
 	uap_rx_pd = (struct uap_rxpd *)(skb->data);
 	rx_pkt_type = le16_to_cpu(uap_rx_pd->rx_pkt_type);
 	rx_pkt_hdr = (void *)uap_rx_pd + le16_to_cpu(uap_rx_pd->rx_pkt_offset);
-
-	if (le16_to_cpu(uap_rx_pd->rx_pkt_offset) +
-	    sizeof(rx_pkt_hdr->eth803_hdr) > skb->len) {
-		mwifiex_dbg(adapter, ERROR,
-			    "wrong rx packet for struct ethhdr: len=%d, offset=%d\n",
-			    skb->len, le16_to_cpu(uap_rx_pd->rx_pkt_offset));
-		priv->stats.rx_dropped++;
-		dev_kfree_skb_any(skb);
-		return 0;
-	}
 
 	ether_addr_copy(ta, rx_pkt_hdr->eth803_hdr.h_source);
 
@@ -423,12 +413,12 @@ int mwifiex_process_uap_rx_packet(struct mwifiex_private *priv,
 
 
 	if (rx_pkt_type != PKT_TYPE_BAR && uap_rx_pd->priority < MAX_NUM_TID) {
-		spin_lock_bh(&priv->sta_list_spinlock);
+		spin_lock_irqsave(&priv->sta_list_spinlock, flags);
 		node = mwifiex_get_sta_entry(priv, ta);
 		if (node)
 			node->rx_seq[uap_rx_pd->priority] =
 						le16_to_cpu(uap_rx_pd->seq_num);
-		spin_unlock_bh(&priv->sta_list_spinlock);
+		spin_unlock_irqrestore(&priv->sta_list_spinlock, flags);
 	}
 
 	if (!priv->ap_11n_enabled ||
@@ -470,20 +460,30 @@ int mwifiex_process_uap_rx_packet(struct mwifiex_private *priv,
  *      - Priority specific Tx control
  *      - Flags
  */
-void mwifiex_process_uap_txpd(struct mwifiex_private *priv,
-			      struct sk_buff *skb)
+void *mwifiex_process_uap_txpd(struct mwifiex_private *priv,
+			       struct sk_buff *skb)
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct uap_txpd *txpd;
 	struct mwifiex_txinfo *tx_info = MWIFIEX_SKB_TXCB(skb);
 	int pad;
 	u16 pkt_type, pkt_offset;
-	int hroom = adapter->intf_hdr_len;
+	int hroom = (priv->adapter->iface_type == MWIFIEX_USB) ? 0 :
+		       INTF_HEADER_LEN;
+
+	if (!skb->len) {
+		mwifiex_dbg(adapter, ERROR,
+			    "Tx: bad packet length: %d\n", skb->len);
+		tx_info->status_code = -1;
+		return skb->data;
+	}
+
+	BUG_ON(skb_headroom(skb) < MWIFIEX_MIN_DATA_HEADER_LEN);
 
 	pkt_type = mwifiex_is_skb_mgmt_frame(skb) ? PKT_TYPE_MGMT : 0;
 
-	pad = ((uintptr_t)skb->data - (sizeof(*txpd) + hroom)) &
-	       (MWIFIEX_DMA_ALIGN_SZ - 1);
+	pad = ((void *)skb->data - (sizeof(*txpd) + hroom) - NULL) &
+			(MWIFIEX_DMA_ALIGN_SZ - 1);
 
 	skb_push(skb, sizeof(*txpd) + pad);
 
@@ -521,10 +521,12 @@ void mwifiex_process_uap_txpd(struct mwifiex_private *priv,
 
 	txpd->tx_pkt_offset = cpu_to_le16(pkt_offset);
 
-	/* make space for adapter->intf_hdr_len */
+	/* make space for INTF_HEADER_LEN */
 	skb_push(skb, hroom);
 
 	if (!txpd->tx_control)
 		/* TxCtrl set by user or default */
 		txpd->tx_control = cpu_to_le32(priv->pkt_tx_ctrl);
+
+	return skb->data;
 }

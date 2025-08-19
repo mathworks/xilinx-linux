@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * interface.c - contains everything related to the user interface
  *
@@ -18,7 +17,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #include "base.h"
 
@@ -33,7 +32,6 @@ struct pnp_info_buffer {
 
 typedef struct pnp_info_buffer pnp_info_buffer_t;
 
-__printf(2, 3)
 static int pnp_printf(pnp_info_buffer_t * buffer, char *fmt, ...)
 {
 	va_list args;
@@ -214,7 +212,7 @@ static ssize_t options_show(struct device *dmdev, struct device_attribute *attr,
 	int ret, dep = 0, set = 0;
 	char *indent;
 
-	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
+	buffer = pnp_alloc(sizeof(pnp_info_buffer_t));
 	if (!buffer)
 		return -ENOMEM;
 
@@ -257,7 +255,7 @@ static ssize_t resources_show(struct device *dmdev,
 	if (!dev)
 		return -EINVAL;
 
-	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
+	buffer = pnp_alloc(sizeof(pnp_info_buffer_t));
 	if (!buffer)
 		return -ENOMEM;
 

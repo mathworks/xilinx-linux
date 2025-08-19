@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * Filename:  target_core_tpg.c
  *
@@ -7,6 +6,20 @@
  * (c) Copyright 2002-2013 Datera, Inc.
  *
  * Nicholas A. Bellinger <nab@kernel.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  ******************************************************************************/
 
@@ -31,7 +44,9 @@
 #include "target_core_ua.h"
 
 extern struct se_device *g_lun0_dev;
-static DEFINE_XARRAY_ALLOC(tpg_xa);
+
+static DEFINE_SPINLOCK(tpg_lock);
+static LIST_HEAD(tpg_list);
 
 /*	__core_tpg_get_initiator_node_acl():
  *
@@ -136,7 +151,7 @@ void core_tpg_add_node_to_devs(
 
 		pr_debug("TARGET_CORE[%s]->TPG[%u]_LUN[%llu] - Adding %s"
 			" access for LUN in Demo Mode\n",
-			tpg->se_tpg_tfo->fabric_name,
+			tpg->se_tpg_tfo->get_fabric_name(),
 			tpg->se_tpg_tfo->tpg_get_tag(tpg), lun->unpacked_lun,
 			lun_access_ro ? "READ-ONLY" : "READ-WRITE");
 
@@ -161,7 +176,7 @@ target_set_nacl_queue_depth(struct se_portal_group *tpg,
 
 	if (!acl->queue_depth) {
 		pr_warn("Queue depth for %s Initiator Node: %s is 0,"
-			"defaulting to 1.\n", tpg->se_tpg_tfo->fabric_name,
+			"defaulting to 1.\n", tpg->se_tpg_tfo->get_fabric_name(),
 			acl->initiatorname);
 		acl->queue_depth = 1;
 	}
@@ -212,11 +227,11 @@ static void target_add_node_acl(struct se_node_acl *acl)
 
 	pr_debug("%s_TPG[%hu] - Added %s ACL with TCQ Depth: %d for %s"
 		" Initiator Node: %s\n",
-		tpg->se_tpg_tfo->fabric_name,
+		tpg->se_tpg_tfo->get_fabric_name(),
 		tpg->se_tpg_tfo->tpg_get_tag(tpg),
 		acl->dynamic_node_acl ? "DYNAMIC" : "",
 		acl->queue_depth,
-		tpg->se_tpg_tfo->fabric_name,
+		tpg->se_tpg_tfo->get_fabric_name(),
 		acl->initiatorname);
 }
 
@@ -298,7 +313,7 @@ struct se_node_acl *core_tpg_add_initiator_node_acl(
 		if (acl->dynamic_node_acl) {
 			acl->dynamic_node_acl = 0;
 			pr_debug("%s_TPG[%u] - Replacing dynamic ACL"
-				" for %s\n", tpg->se_tpg_tfo->fabric_name,
+				" for %s\n", tpg->se_tpg_tfo->get_fabric_name(),
 				tpg->se_tpg_tfo->tpg_get_tag(tpg), initiatorname);
 			mutex_unlock(&tpg->acl_node_mutex);
 			return acl;
@@ -306,7 +321,7 @@ struct se_node_acl *core_tpg_add_initiator_node_acl(
 
 		pr_err("ACL entry for %s Initiator"
 			" Node %s already exists for TPG %u, ignoring"
-			" request.\n",  tpg->se_tpg_tfo->fabric_name,
+			" request.\n",  tpg->se_tpg_tfo->get_fabric_name(),
 			initiatorname, tpg->se_tpg_tfo->tpg_get_tag(tpg));
 		mutex_unlock(&tpg->acl_node_mutex);
 		return ERR_PTR(-EEXIST);
@@ -329,7 +344,7 @@ static void target_shutdown_sessions(struct se_node_acl *acl)
 restart:
 	spin_lock_irqsave(&acl->nacl_sess_lock, flags);
 	list_for_each_entry(sess, &acl->acl_sess_list, sess_acl_list) {
-		if (sess->cmd_cnt && atomic_read(&sess->cmd_cnt->stopped))
+		if (sess->sess_tearing_down)
 			continue;
 
 		list_del_init(&sess->sess_acl_list);
@@ -349,7 +364,7 @@ void core_tpg_del_initiator_node_acl(struct se_node_acl *acl)
 	mutex_lock(&tpg->acl_node_mutex);
 	if (acl->dynamic_node_acl)
 		acl->dynamic_node_acl = 0;
-	list_del_init(&acl->acl_list);
+	list_del(&acl->acl_list);
 	mutex_unlock(&tpg->acl_node_mutex);
 
 	target_shutdown_sessions(acl);
@@ -365,9 +380,9 @@ void core_tpg_del_initiator_node_acl(struct se_node_acl *acl)
 	core_free_device_list_for_node(acl, tpg);
 
 	pr_debug("%s_TPG[%hu] - Deleted ACL with TCQ Depth: %d for %s"
-		" Initiator Node: %s\n", tpg->se_tpg_tfo->fabric_name,
+		" Initiator Node: %s\n", tpg->se_tpg_tfo->get_fabric_name(),
 		tpg->se_tpg_tfo->tpg_get_tag(tpg), acl->queue_depth,
-		tpg->se_tpg_tfo->fabric_name, acl->initiatorname);
+		tpg->se_tpg_tfo->get_fabric_name(), acl->initiatorname);
 
 	kfree(acl);
 }
@@ -383,13 +398,6 @@ int core_tpg_set_initiator_node_queue_depth(
 	struct se_portal_group *tpg = acl->se_tpg;
 
 	/*
-	 * Allow the setting of se_node_acl queue_depth to be idempotent,
-	 * and not force a session shutdown event if the value is not
-	 * changing.
-	 */
-	if (acl->queue_depth == queue_depth)
-		return 0;
-	/*
 	 * User has requested to change the queue depth for a Initiator Node.
 	 * Change the value in the Node's struct se_node_acl, and call
 	 * target_set_nacl_queue_depth() to set the new queue depth.
@@ -403,7 +411,7 @@ int core_tpg_set_initiator_node_queue_depth(
 
 	pr_debug("Successfully changed queue depth to: %d for Initiator"
 		" Node: %s on %s Target Portal Group: %u\n", acl->queue_depth,
-		acl->initiatorname, tpg->se_tpg_tfo->fabric_name,
+		acl->initiatorname, tpg->se_tpg_tfo->get_fabric_name(),
 		tpg->se_tpg_tfo->tpg_get_tag(tpg));
 
 	return 0;
@@ -437,72 +445,9 @@ static void core_tpg_lun_ref_release(struct percpu_ref *ref)
 {
 	struct se_lun *lun = container_of(ref, struct se_lun, lun_ref);
 
-	complete(&lun->lun_shutdown_comp);
+	complete(&lun->lun_ref_comp);
 }
 
-static int target_tpg_register_rtpi(struct se_portal_group *se_tpg)
-{
-	u32 val;
-	int ret;
-
-	if (se_tpg->rtpi_manual) {
-		ret = xa_insert(&tpg_xa, se_tpg->tpg_rtpi, se_tpg, GFP_KERNEL);
-		if (ret) {
-			pr_info("%s_TPG[%hu] - Can not set RTPI %#x, it is already busy",
-				se_tpg->se_tpg_tfo->fabric_name,
-				se_tpg->se_tpg_tfo->tpg_get_tag(se_tpg),
-				se_tpg->tpg_rtpi);
-			return -EINVAL;
-		}
-	} else {
-		ret = xa_alloc(&tpg_xa, &val, se_tpg,
-			       XA_LIMIT(1, USHRT_MAX), GFP_KERNEL);
-		if (!ret)
-			se_tpg->tpg_rtpi = val;
-	}
-
-	return ret;
-}
-
-static void target_tpg_deregister_rtpi(struct se_portal_group *se_tpg)
-{
-	if (se_tpg->tpg_rtpi && se_tpg->enabled)
-		xa_erase(&tpg_xa, se_tpg->tpg_rtpi);
-}
-
-int target_tpg_enable(struct se_portal_group *se_tpg)
-{
-	int ret;
-
-	ret = target_tpg_register_rtpi(se_tpg);
-	if (ret)
-		return ret;
-
-	ret = se_tpg->se_tpg_tfo->fabric_enable_tpg(se_tpg, true);
-	if (ret) {
-		target_tpg_deregister_rtpi(se_tpg);
-		return ret;
-	}
-
-	se_tpg->enabled = true;
-
-	return 0;
-}
-
-int target_tpg_disable(struct se_portal_group *se_tpg)
-{
-	int ret;
-
-	target_tpg_deregister_rtpi(se_tpg);
-
-	ret = se_tpg->se_tpg_tfo->fabric_enable_tpg(se_tpg, false);
-	if (!ret)
-		se_tpg->enabled = false;
-
-	return ret;
-}
-
-/* Does not change se_wwn->priv. */
 int core_tpg_register(
 	struct se_wwn *se_wwn,
 	struct se_portal_group *se_tpg,
@@ -535,6 +480,7 @@ int core_tpg_register(
 	se_tpg->se_tpg_wwn = se_wwn;
 	atomic_set(&se_tpg->tpg_pr_ref_count, 0);
 	INIT_LIST_HEAD(&se_tpg->acl_node_list);
+	INIT_LIST_HEAD(&se_tpg->se_tpg_node);
 	INIT_LIST_HEAD(&se_tpg->tpg_sess_list);
 	spin_lock_init(&se_tpg->session_lock);
 	mutex_init(&se_tpg->tpg_lun_mutex);
@@ -553,8 +499,12 @@ int core_tpg_register(
 		}
 	}
 
+	spin_lock_bh(&tpg_lock);
+	list_add_tail(&se_tpg->se_tpg_node, &tpg_list);
+	spin_unlock_bh(&tpg_lock);
+
 	pr_debug("TARGET_CORE[%s]: Allocated portal_group for endpoint: %s, "
-		 "Proto: %d, Portal Tag: %u\n", se_tpg->se_tpg_tfo->fabric_name,
+		 "Proto: %d, Portal Tag: %u\n", se_tpg->se_tpg_tfo->get_fabric_name(),
 		se_tpg->se_tpg_tfo->tpg_get_wwn(se_tpg) ?
 		se_tpg->se_tpg_tfo->tpg_get_wwn(se_tpg) : NULL,
 		se_tpg->proto_id, se_tpg->se_tpg_tfo->tpg_get_tag(se_tpg));
@@ -570,9 +520,13 @@ int core_tpg_deregister(struct se_portal_group *se_tpg)
 	LIST_HEAD(node_list);
 
 	pr_debug("TARGET_CORE[%s]: Deallocating portal_group for endpoint: %s, "
-		 "Proto: %d, Portal Tag: %u\n", tfo->fabric_name,
+		 "Proto: %d, Portal Tag: %u\n", tfo->get_fabric_name(),
 		tfo->tpg_get_wwn(se_tpg) ? tfo->tpg_get_wwn(se_tpg) : NULL,
 		se_tpg->proto_id, tfo->tpg_get_tag(se_tpg));
+
+	spin_lock_bh(&tpg_lock);
+	list_del(&se_tpg->se_tpg_node);
+	spin_unlock_bh(&tpg_lock);
 
 	while (atomic_read(&se_tpg->tpg_pr_ref_count) != 0)
 		cpu_relax();
@@ -586,7 +540,7 @@ int core_tpg_deregister(struct se_portal_group *se_tpg)
 	 * in transport_deregister_session().
 	 */
 	list_for_each_entry_safe(nacl, nacl_tmp, &node_list, acl_list) {
-		list_del_init(&nacl->acl_list);
+		list_del(&nacl->acl_list);
 
 		core_tpg_wait_for_nacl_pr_ref(nacl);
 		core_free_device_list_for_node(nacl, se_tpg);
@@ -597,8 +551,6 @@ int core_tpg_deregister(struct se_portal_group *se_tpg)
 		core_tpg_remove_lun(se_tpg, se_tpg->tpg_virt_lun0);
 		kfree_rcu(se_tpg->tpg_virt_lun0, rcu_head);
 	}
-
-	target_tpg_deregister_rtpi(se_tpg);
 
 	return 0;
 }
@@ -616,8 +568,9 @@ struct se_lun *core_tpg_alloc_lun(
 		return ERR_PTR(-ENOMEM);
 	}
 	lun->unpacked_lun = unpacked_lun;
+	lun->lun_link_magic = SE_LUN_LINK_MAGIC;
 	atomic_set(&lun->lun_acl_count, 0);
-	init_completion(&lun->lun_shutdown_comp);
+	init_completion(&lun->lun_ref_comp);
 	INIT_LIST_HEAD(&lun->lun_deve_list);
 	INIT_LIST_HEAD(&lun->lun_dev_link);
 	atomic_set(&lun->lun_tg_pt_secondary_offline, 0);
@@ -643,7 +596,11 @@ int core_tpg_add_lun(
 	if (ret < 0)
 		goto out;
 
-	if (!(dev->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_ALUA) &&
+	ret = core_alloc_rtpi(lun, dev);
+	if (ret)
+		goto out_kill_ref;
+
+	if (!(dev->transport->transport_flags & TRANSPORT_FLAG_PASSTHROUGH) &&
 	    !(dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE))
 		target_attach_tg_pt_gp(lun, dev->t10_alua.default_tg_pt_gp);
 
@@ -666,6 +623,8 @@ int core_tpg_add_lun(
 
 	return 0;
 
+out_kill_ref:
+	percpu_ref_exit(&lun->lun_ref);
 out:
 	return ret;
 }
@@ -679,8 +638,6 @@ void core_tpg_remove_lun(
 	 * reference to se_device->dev_group.
 	 */
 	struct se_device *dev = rcu_dereference_raw(lun->lun_se_dev);
-
-	lun->lun_shutdown = true;
 
 	core_clear_lun_from_tpg(lun, tpg);
 	/*
@@ -703,8 +660,6 @@ void core_tpg_remove_lun(
 	}
 	if (!(dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE))
 		hlist_del_rcu(&lun->link);
-
-	lun->lun_shutdown = false;
 	mutex_unlock(&tpg->tpg_lun_mutex);
 
 	percpu_ref_exit(&lun->lun_ref);

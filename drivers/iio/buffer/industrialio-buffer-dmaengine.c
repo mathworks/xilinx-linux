@@ -1,7 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2014-2015 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/slab.h>
@@ -13,9 +14,7 @@
 #include <linux/module.h>
 
 #include <linux/iio/iio.h>
-#include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
-#include <linux/iio/buffer_impl.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 
@@ -45,8 +44,7 @@ static struct dmaengine_buffer *iio_buffer_to_dmaengine_buffer(
 	return container_of(buffer, struct dmaengine_buffer, queue.buffer);
 }
 
-static void iio_dmaengine_buffer_block_done(void *data,
-		const struct dmaengine_result *result)
+static void iio_dmaengine_buffer_block_done(void *data)
 {
 	struct iio_dma_buffer_block *block = data;
 	unsigned long flags;
@@ -54,32 +52,24 @@ static void iio_dmaengine_buffer_block_done(void *data,
 	spin_lock_irqsave(&block->queue->list_lock, flags);
 	list_del(&block->head);
 	spin_unlock_irqrestore(&block->queue->list_lock, flags);
-	block->block.bytes_used -= result->residue;
 	iio_dma_buffer_block_done(block);
 }
 
 int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
-	struct iio_dma_buffer_block *block)
+	struct iio_dma_buffer_block *block, int direction)
 {
 	struct dmaengine_buffer *dmaengine_buffer;
-	enum dma_transfer_direction direction;
 	struct dma_async_tx_descriptor *desc;
 	dma_cookie_t cookie;
 
 	dmaengine_buffer = iio_buffer_to_dmaengine_buffer(&block->queue->buffer);
 
-	if (queue->buffer.direction == IIO_BUFFER_DIRECTION_IN) {
-		direction = DMA_DEV_TO_MEM;
+	if (direction == DMA_DEV_TO_MEM)
 		block->block.bytes_used = block->block.size;
-	} else {
-		direction = DMA_MEM_TO_DEV;
-	}
-
-	block->block.bytes_used = min_t(size_t, block->block.bytes_used,
-					dmaengine_buffer->max_size);
-	block->block.bytes_used = round_down(block->block.bytes_used,
-					     dmaengine_buffer->align);
-
+	block->block.bytes_used = min(block->block.bytes_used,
+			dmaengine_buffer->max_size);
+	block->block.bytes_used = rounddown(block->block.bytes_used,
+			dmaengine_buffer->align);
 	if (block->block.bytes_used == 0) {
 		iio_dma_buffer_block_done(block);
 		return 0;
@@ -98,7 +88,7 @@ int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 		if (!desc)
 			return -ENOMEM;
 
-		desc->callback_result = iio_dmaengine_buffer_block_done;
+		desc->callback = iio_dmaengine_buffer_block_done;
 		desc->callback_param = block;
 	}
 
@@ -114,7 +104,7 @@ int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_submit_block, IIO_DMAENGINE_BUFFER);
+EXPORT_SYMBOL_GPL(iio_dmaengine_buffer_submit_block);
 
 void iio_dmaengine_buffer_abort(struct iio_dma_buffer_queue *queue)
 {
@@ -124,7 +114,7 @@ void iio_dmaengine_buffer_abort(struct iio_dma_buffer_queue *queue)
 	dmaengine_terminate_sync(dmaengine_buffer->chan);
 	iio_dma_buffer_block_list_abort(queue, &dmaengine_buffer->active);
 }
-EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_abort, IIO_DMAENGINE_BUFFER);
+EXPORT_SYMBOL_GPL(iio_dmaengine_buffer_abort);
 
 static void iio_dmaengine_buffer_release(struct iio_buffer *buf)
 {
@@ -157,28 +147,12 @@ static const struct iio_buffer_access_funcs iio_dmaengine_buffer_ops = {
 	.flags = INDIO_BUFFER_FLAG_FIXED_WATERMARK,
 };
 
+#if 0
 static const struct iio_dma_buffer_ops iio_dmaengine_default_ops = {
 	.submit = iio_dmaengine_buffer_submit_block,
 	.abort = iio_dmaengine_buffer_abort,
 };
-
-static ssize_t iio_dmaengine_buffer_get_length_align(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	struct iio_buffer *buffer = to_iio_dev_attr(attr)->buffer;
-	struct dmaengine_buffer *dmaengine_buffer =
-		iio_buffer_to_dmaengine_buffer(buffer);
-
-	return sysfs_emit(buf, "%zu\n", dmaengine_buffer->align);
-}
-
-static IIO_DEVICE_ATTR(length_align_bytes, 0444,
-		       iio_dmaengine_buffer_get_length_align, NULL, 0);
-
-static const struct attribute *iio_dmaengine_buffer_attrs[] = {
-	&iio_dev_attr_length_align_bytes.dev_attr.attr,
-	NULL,
-};
+#endif
 
 /**
  * iio_dmaengine_buffer_alloc() - Allocate new buffer which uses DMAengine
@@ -194,7 +168,7 @@ static const struct attribute *iio_dmaengine_buffer_attrs[] = {
  */
 struct iio_buffer *iio_dmaengine_buffer_alloc(struct device *dev,
 	const char *channel, const struct iio_dma_buffer_ops *ops,
-	void *data)
+	void *driver_data)
 {
 	struct dmaengine_buffer *dmaengine_buffer;
 	unsigned int width, src_width, dest_width;
@@ -206,7 +180,7 @@ struct iio_buffer *iio_dmaengine_buffer_alloc(struct device *dev,
 	if (!dmaengine_buffer)
 		return ERR_PTR(-ENOMEM);
 
-	chan = dma_request_chan(dev, channel);
+	chan = dma_request_slave_channel_reason(dev, channel);
 	if (IS_ERR(chan)) {
 		ret = PTR_ERR(chan);
 		goto err_free;
@@ -238,13 +212,9 @@ struct iio_buffer *iio_dmaengine_buffer_alloc(struct device *dev,
 	dmaengine_buffer->align = width;
 	dmaengine_buffer->max_size = dma_get_max_seg_size(chan->device->dev);
 
-	if (!ops)
-		ops = &iio_dmaengine_default_ops;
-
 	iio_dma_buffer_init(&dmaengine_buffer->queue, chan->device->dev, ops,
-		data);
+		driver_data);
 
-	dmaengine_buffer->queue.buffer.attrs = iio_dmaengine_buffer_attrs;
 	dmaengine_buffer->queue.buffer.access = &iio_dmaengine_buffer_ops;
 
 	return &dmaengine_buffer->queue.buffer;
@@ -253,7 +223,7 @@ err_free:
 	kfree(dmaengine_buffer);
 	return ERR_PTR(ret);
 }
-EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_alloc, IIO_DMAENGINE_BUFFER);
+EXPORT_SYMBOL(iio_dmaengine_buffer_alloc);
 
 /**
  * iio_dmaengine_buffer_free() - Free dmaengine buffer
@@ -271,74 +241,7 @@ void iio_dmaengine_buffer_free(struct iio_buffer *buffer)
 
 	iio_buffer_put(buffer);
 }
-EXPORT_SYMBOL_NS_GPL(iio_dmaengine_buffer_free, IIO_DMAENGINE_BUFFER);
-
-static void __devm_iio_dmaengine_buffer_free(void *buffer)
-{
-	iio_dmaengine_buffer_free(buffer);
-}
-
-/**
- * devm_iio_dmaengine_buffer_alloc() - Resource-managed iio_dmaengine_buffer_alloc()
- * @dev: Parent device for the buffer
- * @channel: DMA channel name, typically "rx".
- *
- * This allocates a new IIO buffer which internally uses the DMAengine framework
- * to perform its transfers. The parent device will be used to request the DMA
- * channel.
- *
- * The buffer will be automatically de-allocated once the device gets destroyed.
- */
-struct iio_buffer *devm_iio_dmaengine_buffer_alloc(struct device *dev,
-	const char *channel, const struct iio_dma_buffer_ops *ops,
-	void *driver_data)
-{
-	struct iio_buffer *buffer;
-	int ret;
-
-	buffer = iio_dmaengine_buffer_alloc(dev, channel, ops, driver_data);
-	if (IS_ERR(buffer))
-		return ERR_CAST(buffer);
-
-	ret = devm_add_action_or_reset(dev, __devm_iio_dmaengine_buffer_free,
-				       buffer);
-	if (ret)
-		return ERR_PTR(ret);
-
-	return buffer;
-}
-EXPORT_SYMBOL_NS_GPL(devm_iio_dmaengine_buffer_alloc, IIO_DMAENGINE_BUFFER);
-
-/**
- * devm_iio_dmaengine_buffer_setup() - Setup a DMA buffer for an IIO device
- * @dev: Parent device for the buffer
- * @indio_dev: IIO device to which to attach this buffer.
- * @channel: DMA channel name, typically "rx".
- *
- * This allocates a new IIO buffer with devm_iio_dmaengine_buffer_alloc()
- * and attaches it to an IIO device with iio_device_attach_buffer().
- * It also appends the INDIO_BUFFER_HARDWARE mode to the supported modes of the
- * IIO device.
- */
-int devm_iio_dmaengine_buffer_setup(struct device *dev,
-				    struct iio_dev *indio_dev,
-				    const char *channel,
-				    enum iio_buffer_direction dir)
-{
-	struct iio_buffer *buffer;
-
-	buffer = devm_iio_dmaengine_buffer_alloc(indio_dev->dev.parent,
-						 channel, NULL, NULL);
-	if (IS_ERR(buffer))
-		return PTR_ERR(buffer);
-
-	indio_dev->modes |= INDIO_BUFFER_HARDWARE;
-
-	buffer->direction = dir;
-
-	return iio_device_attach_buffer(indio_dev, buffer);
-}
-EXPORT_SYMBOL_NS_GPL(devm_iio_dmaengine_buffer_setup, IIO_DMAENGINE_BUFFER);
+EXPORT_SYMBOL_GPL(iio_dmaengine_buffer_free);
 
 MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");
 MODULE_DESCRIPTION("DMA buffer for the IIO framework");

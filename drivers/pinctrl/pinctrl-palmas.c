@@ -1,16 +1,30 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pinctrl-palmas.c -- TI PALMAS series pin control driver.
  *
  * Copyright (c) 2013, NVIDIA Corporation.
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any kind,
+ * whether express or implied; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+ * 02111-1307, USA
  */
 
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mfd/palmas.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinctrl.h>
@@ -846,7 +860,7 @@ static int palmas_pinconf_set(struct pinctrl_dev *pctldev,
 {
 	struct palmas_pctrl_chip_info *pci = pinctrl_dev_get_drvdata(pctldev);
 	enum pin_config_param param;
-	u32 param_val;
+	u16 param_val;
 	const struct palmas_pingroup *g;
 	const struct palmas_pin_info *opt;
 	int ret;
@@ -998,8 +1012,10 @@ static int palmas_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	pci = devm_kzalloc(&pdev->dev, sizeof(*pci), GFP_KERNEL);
-	if (!pci)
+	if (!pci) {
+		dev_err(&pdev->dev, "Malloc for pci failed\n");
 		return -ENOMEM;
+	}
 
 	pci->dev = &pdev->dev;
 	pci->palmas = dev_get_drvdata(pdev->dev.parent);

@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_sourcesink.c - USB peripheral source/sink configuration driver
  *
  * Copyright (C) 2003-2008 David Brownell
  * Copyright (C) 2008 by Nokia Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 /* #define VERBOSE_DEBUG */
@@ -431,12 +435,13 @@ no_iso:
 	ss_iso_sink_desc.bEndpointAddress = fs_iso_sink_desc.bEndpointAddress;
 
 	ret = usb_assign_descriptors(f, fs_source_sink_descs,
-			hs_source_sink_descs, ss_source_sink_descs,
-			ss_source_sink_descs);
+			hs_source_sink_descs, ss_source_sink_descs, NULL);
 	if (ret)
 		return ret;
 
-	DBG(cdev, "%s: IN/%s, OUT/%s, ISO-IN/%s, ISO-OUT/%s\n",
+	DBG(cdev, "%s speed %s: IN/%s, OUT/%s, ISO-IN/%s, ISO-OUT/%s\n",
+	    (gadget_is_superspeed(c->cdev->gadget) ? "super" :
+	     (gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full")),
 			f->name, ss->in_ep->name, ss->out_ep->name,
 			ss->iso_in_ep ? ss->iso_in_ep->name : "<none>",
 			ss->iso_out_ep ? ss->iso_out_ep->name : "<none>");
@@ -558,7 +563,6 @@ static void source_sink_complete(struct usb_ep *ep, struct usb_request *req)
 #if 1
 		DBG(cdev, "%s complete --> %d, %d/%d\n", ep->name,
 				status, req->actual, req->length);
-		break;
 #endif
 	case -EREMOTEIO:		/* short read */
 		break;
@@ -582,7 +586,6 @@ static int source_sink_start_ep(struct f_sourcesink *ss, bool is_in,
 
 	if (is_iso) {
 		switch (speed) {
-		case USB_SPEED_SUPER_PLUS:
 		case USB_SPEED_SUPER:
 			size = ss->isoc_maxpacket *
 					(ss->isoc_mult + 1) *
@@ -839,7 +842,7 @@ static struct usb_function *source_sink_alloc_func(
 
 	ss = kzalloc(sizeof(*ss), GFP_KERNEL);
 	if (!ss)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	ss_opts =  container_of(fi, struct f_ss_opts, func_inst);
 
@@ -1227,7 +1230,7 @@ static struct configfs_attribute *ss_attrs[] = {
 	NULL,
 };
 
-static const struct config_item_type ss_func_type = {
+static struct config_item_type ss_func_type = {
 	.ct_item_ops    = &ss_item_ops,
 	.ct_attrs	= ss_attrs,
 	.ct_owner       = THIS_MODULE,

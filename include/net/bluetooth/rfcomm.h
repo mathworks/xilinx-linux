@@ -21,8 +21,6 @@
    SOFTWARE IS DISCLAIMED.
 */
 
-#include <linux/refcount.h>
-
 #ifndef __RFCOMM_H
 #define __RFCOMM_H
 
@@ -34,6 +32,7 @@
 #define RFCOMM_DEFAULT_MTU	127
 #define RFCOMM_DEFAULT_CREDITS	7
 
+#define RFCOMM_MAX_L2CAP_MTU	1013
 #define RFCOMM_MAX_CREDITS	40
 
 #define RFCOMM_SKB_HEAD_RESERVE	8
@@ -175,7 +174,7 @@ struct rfcomm_dlc {
 	struct mutex  lock;
 	unsigned long state;
 	unsigned long flags;
-	refcount_t    refcnt;
+	atomic_t      refcnt;
 	u8            dlci;
 	u8            addr;
 	u8            priority;
@@ -248,12 +247,12 @@ struct rfcomm_dlc *rfcomm_dlc_exists(bdaddr_t *src, bdaddr_t *dst, u8 channel);
 
 static inline void rfcomm_dlc_hold(struct rfcomm_dlc *d)
 {
-	refcount_inc(&d->refcnt);
+	atomic_inc(&d->refcnt);
 }
 
 static inline void rfcomm_dlc_put(struct rfcomm_dlc *d)
 {
-	if (refcount_dec_and_test(&d->refcnt))
+	if (atomic_dec_and_test(&d->refcnt))
 		rfcomm_dlc_free(d);
 }
 
@@ -355,7 +354,7 @@ struct rfcomm_dev_info {
 
 struct rfcomm_dev_list_req {
 	u16      dev_num;
-	struct   rfcomm_dev_info dev_info[];
+	struct   rfcomm_dev_info dev_info[0];
 };
 
 int  rfcomm_dev_ioctl(struct sock *sk, unsigned int cmd, void __user *arg);

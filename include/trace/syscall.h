@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _TRACE_SYSCALL_H
 #define _TRACE_SYSCALL_H
 
@@ -37,10 +36,10 @@ struct syscall_metadata {
 #if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_HAVE_SYSCALL_TRACEPOINTS)
 static inline void syscall_tracepoint_update(struct task_struct *p)
 {
-	if (test_syscall_work(SYSCALL_TRACEPOINT))
-		set_task_syscall_work(p, SYSCALL_TRACEPOINT);
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		set_tsk_thread_flag(p, TIF_SYSCALL_TRACEPOINT);
 	else
-		clear_task_syscall_work(p, SYSCALL_TRACEPOINT);
+		clear_tsk_thread_flag(p, TIF_SYSCALL_TRACEPOINT);
 }
 #else
 static inline void syscall_tracepoint_update(struct task_struct *p)

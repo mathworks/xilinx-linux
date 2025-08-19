@@ -1,41 +1,32 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for Red Hat Linux AFS client.
 #
 
-kafs-y := \
-	addr_list.o \
+afs-cache-$(CONFIG_AFS_FSCACHE) := cache.o
+
+kafs-objs := \
+	$(afs-cache-y) \
 	callback.o \
 	cell.o \
 	cmservice.o \
 	dir.o \
-	dir_edit.o \
-	dir_silly.o \
-	dynroot.o \
 	file.o \
 	flock.o \
 	fsclient.o \
-	fs_operation.o \
-	fs_probe.o \
 	inode.o \
 	main.o \
 	misc.o \
 	mntpt.o \
-	rotate.o \
+	proc.o \
 	rxrpc.o \
 	security.o \
 	server.o \
-	server_list.o \
 	super.o \
+	netdevices.o \
 	vlclient.o \
-	vl_alias.o \
-	vl_list.o \
-	vl_probe.o \
-	vl_rotate.o \
+	vlocation.o \
+	vnode.o \
 	volume.o \
-	write.o \
-	xattr.o \
-	yfsclient.o
+	write.o
 
-kafs-$(CONFIG_PROC_FS) += proc.o
 obj-$(CONFIG_AFS_FS)  := kafs.o

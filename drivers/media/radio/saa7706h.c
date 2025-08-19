@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * saa7706.c Philips SAA7706H Car Radio DSP driver
  * Copyright (c) 2009 Intel Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -331,7 +343,8 @@ static const struct v4l2_subdev_ops empty_ops = {};
  * concerning the addresses: i2c wants 7 bit (without the r/w bit), so '>>1'
  */
 
-static int saa7706h_probe(struct i2c_client *client)
+static int saa7706h_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
 {
 	struct saa7706h_state *state;
 	struct v4l2_subdev *sd;
@@ -383,7 +396,7 @@ err:
 	return err;
 }
 
-static void saa7706h_remove(struct i2c_client *client)
+static int saa7706h_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct saa7706h_state *state = to_state(sd);
@@ -392,6 +405,7 @@ static void saa7706h_remove(struct i2c_client *client)
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&state->hdl);
 	kfree(to_state(sd));
+	return 0;
 }
 
 static const struct i2c_device_id saa7706h_id[] = {

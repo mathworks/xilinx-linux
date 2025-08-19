@@ -1,9 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: utdelete - object deletion and reference count utilities
  *
  ******************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2016, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -112,7 +148,7 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 						       gpe_block);
 		}
 
-		ACPI_FALLTHROUGH;
+		/*lint -fallthrough */
 
 	case ACPI_TYPE_PROCESSOR:
 	case ACPI_TYPE_THERMAL:
@@ -257,10 +293,6 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 
 			acpi_ut_delete_object_desc(second_desc);
 		}
-		if (object->field.internal_pcc_buffer) {
-			ACPI_FREE(object->field.internal_pcc_buffer);
-		}
-
 		break;
 
 	case ACPI_TYPE_BUFFER_FIELD:
@@ -285,14 +317,6 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 		}
 		break;
 
-	case ACPI_TYPE_LOCAL_ADDRESS_HANDLER:
-
-		ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
-				  "***** Address handler %p\n", object));
-
-		acpi_os_delete_mutex(object->address_space.context_mutex);
-		break;
-
 	default:
 
 		break;
@@ -308,10 +332,8 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 
 	/* Now the object can be safely deleted */
 
-	ACPI_DEBUG_PRINT_RAW((ACPI_DB_ALLOCATIONS,
-			      "%s: Deleting Object %p [%s]\n",
-			      ACPI_GET_FUNCTION_NAME, object,
-			      acpi_ut_get_object_type_name(object)));
+	ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS, "Deleting Object %p [%s]\n",
+			  object, acpi_ut_get_object_type_name(object)));
 
 	acpi_ut_delete_object_desc(object);
 	return_VOID;
@@ -367,7 +389,6 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
 	u16 original_count;
 	u16 new_count = 0;
 	acpi_cpu_flags lock_flags;
-	char *message;
 
 	ACPI_FUNCTION_NAME(ut_update_ref_count);
 
@@ -400,11 +421,8 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
 		}
 
 		ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
-				  "Obj %p Type %.2X [%s] Refs %.2X [Incremented]\n",
-				  object, object->common.type,
-				  acpi_ut_get_object_type_name(object),
-				  new_count));
-		message = "Incremement";
+				  "Obj %p Type %.2X Refs %.2X [Incremented]\n",
+				  object, object->common.type, new_count));
 		break;
 
 	case REF_DECREMENT:
@@ -422,20 +440,17 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
 			ACPI_WARNING((AE_INFO,
 				      "Obj %p, Reference Count is already zero, cannot decrement\n",
 				      object));
-			return;
 		}
 
-		ACPI_DEBUG_PRINT_RAW((ACPI_DB_ALLOCATIONS,
-				      "%s: Obj %p Type %.2X Refs %.2X [Decremented]\n",
-				      ACPI_GET_FUNCTION_NAME, object,
-				      object->common.type, new_count));
+		ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
+				  "Obj %p Type %.2X Refs %.2X [Decremented]\n",
+				  object, object->common.type, new_count));
 
 		/* Actually delete the object on a reference count of zero */
 
 		if (new_count == 0) {
 			acpi_ut_delete_internal_obj(object);
 		}
-		message = "Decrement";
 		break;
 
 	default:
@@ -452,8 +467,8 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
 	 */
 	if (new_count > ACPI_MAX_REFERENCE_COUNT) {
 		ACPI_WARNING((AE_INFO,
-			      "Large Reference Count (0x%X) in object %p, Type=0x%.2X Operation=%s",
-			      new_count, object, object->common.type, message));
+			      "Large Reference Count (0x%X) in object %p, Type=0x%.2X",
+			      new_count, object, object->common.type));
 	}
 }
 
@@ -461,13 +476,13 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
  *
  * FUNCTION:    acpi_ut_update_object_reference
  *
- * PARAMETERS:  object              - Increment or decrement the ref count for
- *                                    this object and all sub-objects
+ * PARAMETERS:  object              - Increment ref count for this object
+ *                                    and all sub-objects
  *              action              - Either REF_INCREMENT or REF_DECREMENT
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Increment or decrement the object reference count
+ * DESCRIPTION: Increment the object reference count
  *
  * Object references are incremented when:
  * 1) An object is attached to a Node (namespace object)
@@ -501,7 +516,7 @@ acpi_ut_update_object_reference(union acpi_operand_object *object, u16 action)
 		}
 
 		/*
-		 * All sub-objects must have their reference count updated
+		 * All sub-objects must have their reference count incremented
 		 * also. Different object types have different subobjects.
 		 */
 		switch (object->common.type) {
@@ -568,13 +583,17 @@ acpi_ut_update_object_reference(union acpi_operand_object *object, u16 action)
 					break;
 				}
 			}
-
 			next_object = NULL;
 			break;
 
 		case ACPI_TYPE_BUFFER_FIELD:
 
 			next_object = object->buffer_field.buffer_obj;
+			break;
+
+		case ACPI_TYPE_LOCAL_REGION_FIELD:
+
+			next_object = object->field.region_obj;
 			break;
 
 		case ACPI_TYPE_LOCAL_BANK_FIELD:
@@ -617,7 +636,6 @@ acpi_ut_update_object_reference(union acpi_operand_object *object, u16 action)
 			}
 			break;
 
-		case ACPI_TYPE_LOCAL_REGION_FIELD:
 		case ACPI_TYPE_REGION:
 		default:
 
@@ -727,10 +745,9 @@ void acpi_ut_remove_reference(union acpi_operand_object *object)
 		return;
 	}
 
-	ACPI_DEBUG_PRINT_RAW((ACPI_DB_ALLOCATIONS,
-			      "%s: Obj %p Current Refs=%X [To Be Decremented]\n",
-			      ACPI_GET_FUNCTION_NAME, object,
-			      object->common.reference_count));
+	ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
+			  "Obj %p Current Refs=%X [To Be Decremented]\n",
+			  object, object->common.reference_count));
 
 	/*
 	 * Decrement the reference count, and only actually delete the object

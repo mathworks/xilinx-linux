@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * RapidIO mport character device
  *
@@ -9,6 +8,11 @@
  *    Jerry Jacobs <jerry.jacobs@prodrive-technologies.com>
  * Copyright (C) 2014 Texas Instruments Incorporated
  *    Aurelien Jacquiot <a-jacquiot@ti.com>
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -208,6 +212,7 @@ struct mport_cdev_priv {
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 	struct dma_chan		*dmach;
 	struct list_head	async_list;
+	struct list_head	pend_list;
 	spinlock_t              req_lock;
 	struct mutex		dma_lock;
 	struct kref		dma_ref;
@@ -252,6 +257,8 @@ static DECLARE_WAIT_QUEUE_HEAD(mport_cdev_wait);
 
 static struct class *dev_class;
 static dev_t dev_number;
+
+static struct workqueue_struct *dma_wq;
 
 static void mport_release_mapping(struct kref *ref);
 
@@ -532,7 +539,6 @@ static int maint_comptag_set(struct mport_cdev_priv *priv, void __user *arg)
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 
 struct mport_dma_req {
-	struct kref refcount;
 	struct list_head node;
 	struct file *filp;
 	struct mport_cdev_priv *priv;
@@ -546,6 +552,11 @@ struct mport_dma_req {
 	dma_cookie_t cookie;
 	enum dma_status	status;
 	struct completion req_comp;
+};
+
+struct mport_faf_work {
+	struct work_struct work;
+	struct mport_dma_req *req;
 };
 
 static void mport_release_def_dma(struct kref *dma_ref)
@@ -567,17 +578,17 @@ static void mport_release_dma(struct kref *dma_ref)
 	complete(&priv->comp);
 }
 
-static void dma_req_free(struct kref *ref)
+static void dma_req_free(struct mport_dma_req *req)
 {
-	struct mport_dma_req *req = container_of(ref, struct mport_dma_req,
-			refcount);
 	struct mport_cdev_priv *priv = req->priv;
+	unsigned int i;
 
 	dma_unmap_sg(req->dmach->device->dev,
 		     req->sgt.sgl, req->sgt.nents, req->dir);
 	sg_free_table(&req->sgt);
 	if (req->page_list) {
-		unpin_user_pages(req->page_list, req->nr_pages);
+		for (i = 0; i < req->nr_pages; i++)
+			put_page(req->page_list[i]);
 		kfree(req->page_list);
 	}
 
@@ -600,7 +611,30 @@ static void dma_xfer_callback(void *param)
 	req->status = dma_async_is_tx_complete(priv->dmach, req->cookie,
 					       NULL, NULL);
 	complete(&req->req_comp);
-	kref_put(&req->refcount, dma_req_free);
+}
+
+static void dma_faf_cleanup(struct work_struct *_work)
+{
+	struct mport_faf_work *work = container_of(_work,
+						struct mport_faf_work, work);
+	struct mport_dma_req *req = work->req;
+
+	dma_req_free(req);
+	kfree(work);
+}
+
+static void dma_faf_callback(void *param)
+{
+	struct mport_dma_req *req = (struct mport_dma_req *)param;
+	struct mport_faf_work *work;
+
+	work = kmalloc(sizeof(*work), GFP_ATOMIC);
+	if (!work)
+		return;
+
+	INIT_WORK(&work->work, dma_faf_cleanup);
+	work->req = req;
+	queue_work(dma_wq, &work->work);
 }
 
 /*
@@ -731,11 +765,16 @@ static int do_dma_request(struct mport_dma_req *req,
 		goto err_out;
 	}
 
-	tx->callback = dma_xfer_callback;
+	if (sync == RIO_TRANSFER_FAF)
+		tx->callback = dma_faf_callback;
+	else
+		tx->callback = dma_xfer_callback;
 	tx->callback_param = req;
 
+	req->dmach = chan;
+	req->sync = sync;
 	req->status = DMA_IN_PROGRESS;
-	kref_get(&req->refcount);
+	init_completion(&req->req_comp);
 
 	cookie = dmaengine_submit(tx);
 	req->cookie = cookie;
@@ -746,7 +785,6 @@ static int do_dma_request(struct mport_dma_req *req,
 	if (dma_submit_error(cookie)) {
 		rmcd_error("submit err=%d (addr:0x%llx len:0x%llx)",
 			   cookie, xfer->rio_addr, xfer->length);
-		kref_put(&req->refcount, dma_req_free);
 		ret = -EIO;
 		goto err_out;
 	}
@@ -813,7 +851,7 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 	struct mport_dma_req *req;
 	struct mport_dev *md = priv->md;
 	struct dma_chan *chan;
-	int ret;
+	int i, ret;
 	int nents;
 
 	if (xfer->length == 0)
@@ -827,15 +865,6 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 		kfree(req);
 		return ret;
 	}
-	chan = priv->dmach;
-
-	kref_init(&req->refcount);
-	init_completion(&req->req_comp);
-	req->dir = dir;
-	req->filp = filp;
-	req->priv = priv;
-	req->dmach = chan;
-	req->sync = sync;
 
 	/*
 	 * If parameter loc_addr != NULL, we are transferring data from/to
@@ -847,10 +876,10 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 	 * offset within the internal buffer specified by handle parameter.
 	 */
 	if (xfer->loc_addr) {
-		unsigned int offset;
+		unsigned long offset;
 		long pinned;
 
-		offset = lower_32_bits(offset_in_page(xfer->loc_addr));
+		offset = (unsigned long)(uintptr_t)xfer->loc_addr & ~PAGE_MASK;
 		nr_pages = PAGE_ALIGN(xfer->length + offset) >> PAGE_SHIFT;
 
 		page_list = kmalloc_array(nr_pages,
@@ -860,26 +889,21 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 			goto err_req;
 		}
 
-		pinned = pin_user_pages_fast(
+		down_read(&current->mm->mmap_sem);
+		pinned = get_user_pages(
 				(unsigned long)xfer->loc_addr & PAGE_MASK,
 				nr_pages,
 				dir == DMA_FROM_DEVICE ? FOLL_WRITE : 0,
-				page_list);
+				page_list, NULL);
+		up_read(&current->mm->mmap_sem);
 
 		if (pinned != nr_pages) {
 			if (pinned < 0) {
-				rmcd_error("pin_user_pages_fast err=%ld",
-					   pinned);
+				rmcd_error("get_user_pages err=%ld", pinned);
 				nr_pages = 0;
-			} else {
+			} else
 				rmcd_error("pinned %ld out of %ld pages",
 					   pinned, nr_pages);
-				/*
-				 * Set nr_pages up to mean "how many pages to unpin, in
-				 * the error handler:
-				 */
-				nr_pages = pinned;
-			}
 			ret = -EFAULT;
 			goto err_pg;
 		}
@@ -915,7 +939,7 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 			goto err_req;
 		}
 
-		if (xfer->length + xfer->offset > req->map->size) {
+		if (xfer->length + xfer->offset > map->size) {
 			ret = -EINVAL;
 			goto err_req;
 		}
@@ -927,34 +951,61 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
 		}
 
 		sg_set_buf(req->sgt.sgl,
-			   req->map->virt_addr + (baddr - req->map->phys_addr) +
+			   map->virt_addr + (baddr - map->phys_addr) +
 				xfer->offset, xfer->length);
 	}
 
+	req->dir = dir;
+	req->filp = filp;
+	req->priv = priv;
+	chan = priv->dmach;
+
 	nents = dma_map_sg(chan->device->dev,
 			   req->sgt.sgl, req->sgt.nents, dir);
-	if (nents == 0) {
+	if (nents == -EFAULT) {
 		rmcd_error("Failed to map SG list");
-		ret = -EFAULT;
-		goto err_pg;
+		return -EFAULT;
 	}
 
 	ret = do_dma_request(req, xfer, sync, nents);
 
 	if (ret >= 0) {
-		if (sync == RIO_TRANSFER_ASYNC)
-			return ret; /* return ASYNC cookie */
-	} else {
-		rmcd_debug(DMA, "do_dma_request failed with err=%d", ret);
+		if (sync == RIO_TRANSFER_SYNC)
+			goto sync_out;
+		return ret; /* return ASYNC cookie */
 	}
 
+	if (ret == -ETIMEDOUT || ret == -EINTR) {
+		/*
+		 * This can happen only in case of SYNC transfer.
+		 * Do not free unfinished request structure immediately.
+		 * Place it into pending list and deal with it later
+		 */
+		spin_lock(&priv->req_lock);
+		list_add_tail(&req->node, &priv->pend_list);
+		spin_unlock(&priv->req_lock);
+		return ret;
+	}
+
+
+	rmcd_debug(DMA, "do_dma_request failed with err=%d", ret);
+sync_out:
+	dma_unmap_sg(chan->device->dev, req->sgt.sgl, req->sgt.nents, dir);
+	sg_free_table(&req->sgt);
 err_pg:
-	if (!req->page_list) {
-		unpin_user_pages(page_list, nr_pages);
+	if (page_list) {
+		for (i = 0; i < nr_pages; i++)
+			put_page(page_list[i]);
 		kfree(page_list);
 	}
 err_req:
-	kref_put(&req->refcount, dma_req_free);
+	if (req->map) {
+		mutex_lock(&md->buf_mutex);
+		kref_put(&req->map->ref, mport_release_mapping);
+		mutex_unlock(&md->buf_mutex);
+	}
+	put_dma_channel(priv);
+	kfree(req);
 	return ret;
 }
 
@@ -965,7 +1016,6 @@ static int rio_mport_transfer_ioctl(struct file *filp, void __user *arg)
 	struct rio_transfer_io *transfer;
 	enum dma_data_direction dir;
 	int i, ret = 0;
-	size_t size;
 
 	if (unlikely(copy_from_user(&transaction, arg, sizeof(transaction))))
 		return -EFAULT;
@@ -977,14 +1027,13 @@ static int rio_mport_transfer_ioctl(struct file *filp, void __user *arg)
 	     priv->md->properties.transfer_mode) == 0)
 		return -ENODEV;
 
-	size = array_size(sizeof(*transfer), transaction.count);
-	transfer = vmalloc(size);
+	transfer = vmalloc(transaction.count * sizeof(*transfer));
 	if (!transfer)
 		return -ENOMEM;
 
 	if (unlikely(copy_from_user(transfer,
 				    (void __user *)(uintptr_t)transaction.block,
-				    size))) {
+				    transaction.count * sizeof(*transfer)))) {
 		ret = -EFAULT;
 		goto out_free;
 	}
@@ -996,7 +1045,8 @@ static int rio_mport_transfer_ioctl(struct file *filp, void __user *arg)
 			transaction.sync, dir, &transfer[i]);
 
 	if (unlikely(copy_to_user((void __user *)(uintptr_t)transaction.block,
-				  transfer, size)))
+				  transfer,
+				  transaction.count * sizeof(*transfer))))
 		ret = -EFAULT;
 
 out_free:
@@ -1008,6 +1058,7 @@ out_free:
 static int rio_mport_wait_for_async_dma(struct file *filp, void __user *arg)
 {
 	struct mport_cdev_priv *priv;
+	struct mport_dev *md;
 	struct rio_async_tx_wait w_param;
 	struct mport_dma_req *req;
 	dma_cookie_t cookie;
@@ -1017,6 +1068,7 @@ static int rio_mport_wait_for_async_dma(struct file *filp, void __user *arg)
 	int ret;
 
 	priv = (struct mport_cdev_priv *)filp->private_data;
+	md = priv->md;
 
 	if (unlikely(copy_from_user(&w_param, arg, sizeof(w_param))))
 		return -EFAULT;
@@ -1071,7 +1123,7 @@ static int rio_mport_wait_for_async_dma(struct file *filp, void __user *arg)
 		ret = 0;
 
 	if (req->status != DMA_IN_PROGRESS && req->status != DMA_PAUSED)
-		kref_put(&req->refcount, dma_req_free);
+		dma_req_free(req);
 
 	return ret;
 
@@ -1681,7 +1733,6 @@ static int rio_mport_add_riodev(struct mport_cdev_priv *priv,
 	struct rio_dev *rdev;
 	struct rio_switch *rswitch = NULL;
 	struct rio_mport *mport;
-	struct device *dev;
 	size_t size;
 	u32 rval;
 	u32 swpinfo = 0;
@@ -1691,15 +1742,12 @@ static int rio_mport_add_riodev(struct mport_cdev_priv *priv,
 
 	if (copy_from_user(&dev_info, arg, sizeof(dev_info)))
 		return -EFAULT;
-	dev_info.name[sizeof(dev_info.name) - 1] = '\0';
 
 	rmcd_debug(RDEV, "name:%s ct:0x%x did:0x%x hc:0x%x", dev_info.name,
 		   dev_info.comptag, dev_info.destid, dev_info.hopcount);
 
-	dev = bus_find_device_by_name(&rio_bus_type, NULL, dev_info.name);
-	if (dev) {
+	if (bus_find_device_by_name(&rio_bus_type, NULL, dev_info.name)) {
 		rmcd_debug(RDEV, "device %s already exists", dev_info.name);
-		put_device(dev);
 		return -EEXIST;
 	}
 
@@ -1715,7 +1763,8 @@ static int rio_mport_add_riodev(struct mport_cdev_priv *priv,
 	if (rval & RIO_PEF_SWITCH) {
 		rio_mport_read_config_32(mport, destid, hopcount,
 					 RIO_SWP_INFO_CAR, &swpinfo);
-		size += struct_size(rswitch, nextdev, RIO_GET_TOTAL_PORTS(swpinfo));
+		size += (RIO_GET_TOTAL_PORTS(swpinfo) *
+			 sizeof(rswitch->nextdev[0])) + sizeof(*rswitch);
 	}
 
 	rdev = kzalloc(size, GFP_KERNEL);
@@ -1804,11 +1853,8 @@ static int rio_mport_add_riodev(struct mport_cdev_priv *priv,
 		rio_init_dbell_res(&rdev->riores[RIO_DOORBELL_RESOURCE],
 				   0, 0xffff);
 	err = rio_add_device(rdev);
-	if (err) {
-		put_device(&rdev->dev);
-		return err;
-	}
-
+	if (err)
+		goto cleanup;
 	rio_dev_get(rdev);
 
 	return 0;
@@ -1827,7 +1873,6 @@ static int rio_mport_del_riodev(struct mport_cdev_priv *priv, void __user *arg)
 
 	if (copy_from_user(&dev_info, arg, sizeof(dev_info)))
 		return -EFAULT;
-	dev_info.name[sizeof(dev_info.name) - 1] = '\0';
 
 	mport = priv->md->mport;
 
@@ -1904,6 +1949,10 @@ static int mport_cdev_open(struct inode *inode, struct file *filp)
 
 	priv->md = chdev;
 
+	mutex_lock(&chdev->file_mutex);
+	list_add_tail(&priv->list, &chdev->file_list);
+	mutex_unlock(&chdev->file_mutex);
+
 	INIT_LIST_HEAD(&priv->db_filters);
 	INIT_LIST_HEAD(&priv->pw_filters);
 	spin_lock_init(&priv->fifo_lock);
@@ -1912,7 +1961,6 @@ static int mport_cdev_open(struct inode *inode, struct file *filp)
 			  sizeof(struct rio_event) * MPORT_EVENT_DEPTH,
 			  GFP_KERNEL);
 	if (ret < 0) {
-		put_device(&chdev->dev);
 		dev_err(&chdev->dev, DRV_NAME ": kfifo_alloc failed\n");
 		ret = -ENOMEM;
 		goto err_fifo;
@@ -1920,12 +1968,10 @@ static int mport_cdev_open(struct inode *inode, struct file *filp)
 
 #ifdef CONFIG_RAPIDIO_DMA_ENGINE
 	INIT_LIST_HEAD(&priv->async_list);
+	INIT_LIST_HEAD(&priv->pend_list);
 	spin_lock_init(&priv->req_lock);
 	mutex_init(&priv->dma_lock);
 #endif
-	mutex_lock(&chdev->file_mutex);
-	list_add_tail(&priv->list, &chdev->file_list);
-	mutex_unlock(&chdev->file_mutex);
 
 	filp->private_data = priv;
 	goto out;
@@ -1962,6 +2008,8 @@ static void mport_cdev_release_dma(struct file *filp)
 
 	md = priv->md;
 
+	flush_workqueue(dma_wq);
+
 	spin_lock(&priv->req_lock);
 	if (!list_empty(&priv->async_list)) {
 		rmcd_debug(EXIT, "async list not empty filp=%p %s(%d)",
@@ -1977,7 +2025,20 @@ static void mport_cdev_release_dma(struct file *filp)
 				   req->filp, req->cookie,
 				   completion_done(&req->req_comp)?"yes":"no");
 			list_del(&req->node);
-			kref_put(&req->refcount, dma_req_free);
+			dma_req_free(req);
+		}
+	}
+
+	if (!list_empty(&priv->pend_list)) {
+		rmcd_debug(EXIT, "Free pending DMA requests for filp=%p %s(%d)",
+			   filp, current->comm, task_pid_nr(current));
+		list_for_each_entry_safe(req,
+					 req_next, &priv->pend_list, node) {
+			rmcd_debug(EXIT, "free req->filp=%p cookie=%d compl=%s",
+				   req->filp, req->cookie,
+				   completion_done(&req->req_comp)?"yes":"no");
+			list_del(&req->node);
+			dma_req_free(req);
 		}
 	}
 
@@ -1988,6 +2049,15 @@ static void mport_cdev_release_dma(struct file *filp)
 		rmcd_error("%s(%d) failed waiting for DMA release err=%ld",
 			current->comm, task_pid_nr(current), wret);
 	}
+
+	spin_lock(&priv->req_lock);
+
+	if (!list_empty(&priv->pend_list)) {
+		rmcd_debug(EXIT, "ATTN: pending DMA requests, filp=%p %s(%d)",
+			   filp, current->comm, task_pid_nr(current));
+	}
+
+	spin_unlock(&priv->req_lock);
 
 	if (priv->dmach != priv->md->dma_chan) {
 		rmcd_debug(EXIT, "Release DMA channel for filp=%p %s(%d)",
@@ -2158,7 +2228,6 @@ static void mport_release_mapping(struct kref *ref)
 	switch (map->dir) {
 	case MAP_INBOUND:
 		rio_unmap_inb_region(mport, map->phys_addr);
-		fallthrough;
 	case MAP_DMA:
 		dma_free_coherent(mport->dev.parent, map->size,
 				  map->virt_addr, map->phys_addr);
@@ -2252,13 +2321,13 @@ static int mport_cdev_mmap(struct file *filp, struct vm_area_struct *vma)
 	return ret;
 }
 
-static __poll_t mport_cdev_poll(struct file *filp, poll_table *wait)
+static unsigned int mport_cdev_poll(struct file *filp, poll_table *wait)
 {
 	struct mport_cdev_priv *priv = filp->private_data;
 
 	poll_wait(filp, &priv->event_rx_wait, wait);
 	if (kfifo_len(&priv->event_fifo))
-		return EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 
 	return 0;
 }
@@ -2376,17 +2445,30 @@ static struct mport_dev *mport_cdev_add(struct rio_mport *mport)
 	mutex_init(&md->buf_mutex);
 	mutex_init(&md->file_mutex);
 	INIT_LIST_HEAD(&md->file_list);
+	cdev_init(&md->cdev, &mport_fops);
+	md->cdev.owner = THIS_MODULE;
+	ret = cdev_add(&md->cdev, MKDEV(MAJOR(dev_number), mport->id), 1);
+	if (ret < 0) {
+		kfree(md);
+		rmcd_error("Unable to register a device, err=%d", ret);
+		return NULL;
+	}
 
-	device_initialize(&md->dev);
-	md->dev.devt = MKDEV(MAJOR(dev_number), mport->id);
+	md->dev.devt = md->cdev.dev;
 	md->dev.class = dev_class;
 	md->dev.parent = &mport->dev;
 	md->dev.release = mport_device_release;
 	dev_set_name(&md->dev, DEV_NAME "%d", mport->id);
 	atomic_set(&md->active, 1);
 
-	cdev_init(&md->cdev, &mport_fops);
-	md->cdev.owner = THIS_MODULE;
+	ret = device_register(&md->dev);
+	if (ret) {
+		rmcd_error("Failed to register mport %d (err=%d)",
+		       mport->id, ret);
+		goto err_cdev;
+	}
+
+	get_device(&md->dev);
 
 	INIT_LIST_HEAD(&md->doorbells);
 	spin_lock_init(&md->db_lock);
@@ -2407,13 +2489,6 @@ static struct mport_dev *mport_cdev_add(struct rio_mport *mport)
 #else
 	md->properties.transfer_mode |= RIO_TRANSFER_MODE_TRANSFER;
 #endif
-
-	ret = cdev_device_add(&md->cdev, &md->dev);
-	if (ret) {
-		rmcd_error("Failed to register mport %d (err=%d)",
-		       mport->id, ret);
-		goto err_cdev;
-	}
 	ret = rio_query_mport(mport, &attr);
 	if (!ret) {
 		md->properties.flags = attr.flags;
@@ -2439,7 +2514,8 @@ static struct mport_dev *mport_cdev_add(struct rio_mport *mport)
 	return md;
 
 err_cdev:
-	put_device(&md->dev);
+	cdev_del(&md->cdev);
+	kfree(md);
 	return NULL;
 }
 
@@ -2503,8 +2579,10 @@ static void mport_cdev_remove(struct mport_dev *md)
 	atomic_set(&md->active, 0);
 	mport_cdev_terminate_dma(md);
 	rio_del_mport_pw_handler(md->mport, md, rio_mport_pw_handler);
-	cdev_device_del(&md->cdev, &md->dev);
+	cdev_del(&(md->cdev));
 	mport_cdev_kill_fasync(md);
+
+	flush_workqueue(dma_wq);
 
 	/* TODO: do we need to give clients some time to close file
 	 * descriptors? Simple wait for XX, or kref?
@@ -2526,6 +2604,7 @@ static void mport_cdev_remove(struct mport_dev *md)
 
 	rio_release_inb_dbell(md->mport, 0, 0x0fff);
 
+	device_unregister(&md->dev);
 	put_device(&md->dev);
 }
 
@@ -2536,8 +2615,10 @@ static void mport_cdev_remove(struct mport_dev *md)
 /*
  * mport_add_mport() - Add rio_mport from LDM device struct
  * @dev:		Linux device model struct
+ * @class_intf:	Linux class_interface
  */
-static int mport_add_mport(struct device *dev)
+static int mport_add_mport(struct device *dev,
+		struct class_interface *class_intf)
 {
 	struct rio_mport *mport = NULL;
 	struct mport_dev *chdev = NULL;
@@ -2557,7 +2638,8 @@ static int mport_add_mport(struct device *dev)
  * mport_remove_mport() - Remove rio_mport from global list
  * TODO remove device from global mport_dev list
  */
-static void mport_remove_mport(struct device *dev)
+static void mport_remove_mport(struct device *dev,
+		struct class_interface *class_intf)
 {
 	struct rio_mport *mport = NULL;
 	struct mport_dev *chdev;
@@ -2600,7 +2682,7 @@ static int __init mport_init(void)
 	int ret;
 
 	/* Create device class needed by udev */
-	dev_class = class_create(DRV_NAME);
+	dev_class = class_create(THIS_MODULE, DRV_NAME);
 	if (IS_ERR(dev_class)) {
 		rmcd_error("Unable to create " DRV_NAME " class");
 		return PTR_ERR(dev_class);
@@ -2619,8 +2701,17 @@ static int __init mport_init(void)
 		goto err_cli;
 	}
 
+	dma_wq = create_singlethread_workqueue("dma_wq");
+	if (!dma_wq) {
+		rmcd_error("failed to create DMA work queue");
+		ret = -ENOMEM;
+		goto err_wq;
+	}
+
 	return 0;
 
+err_wq:
+	class_interface_unregister(&rio_mport_interface);
 err_cli:
 	unregister_chrdev_region(dev_number, RIO_MAX_MPORTS);
 err_chr:
@@ -2636,6 +2727,7 @@ static void __exit mport_exit(void)
 	class_interface_unregister(&rio_mport_interface);
 	class_destroy(dev_class);
 	unregister_chrdev_region(dev_number, RIO_MAX_MPORTS);
+	destroy_workqueue(dma_wq);
 }
 
 module_init(mport_init);

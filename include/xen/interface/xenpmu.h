@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: MIT */
 #ifndef __XEN_PUBLIC_XENPMU_H__
 #define __XEN_PUBLIC_XENPMU_H__
 

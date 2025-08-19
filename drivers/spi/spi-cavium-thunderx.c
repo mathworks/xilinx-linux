@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Cavium ThunderX SPI driver.
  *
@@ -20,15 +19,15 @@ static int thunderx_spi_probe(struct pci_dev *pdev,
 			      const struct pci_device_id *ent)
 {
 	struct device *dev = &pdev->dev;
-	struct spi_controller *host;
+	struct spi_master *master;
 	struct octeon_spi *p;
 	int ret;
 
-	host = spi_alloc_host(dev, sizeof(struct octeon_spi));
-	if (!host)
+	master = spi_alloc_master(dev, sizeof(struct octeon_spi));
+	if (!master)
 		return -ENOMEM;
 
-	p = spi_controller_get_devdata(host);
+	p = spi_master_get_devdata(master);
 
 	ret = pcim_enable_device(pdev);
 	if (ret)
@@ -64,18 +63,17 @@ static int thunderx_spi_probe(struct pci_dev *pdev,
 		p->sys_freq = SYS_FREQ_DEFAULT;
 	dev_info(dev, "Set system clock to %u\n", p->sys_freq);
 
-	host->flags = SPI_CONTROLLER_HALF_DUPLEX;
-	host->num_chipselect = 4;
-	host->mode_bits = SPI_CPHA | SPI_CPOL | SPI_CS_HIGH |
+	master->num_chipselect = 4;
+	master->mode_bits = SPI_CPHA | SPI_CPOL | SPI_CS_HIGH |
 			    SPI_LSB_FIRST | SPI_3WIRE;
-	host->transfer_one_message = octeon_spi_transfer_one_message;
-	host->bits_per_word_mask = SPI_BPW_MASK(8);
-	host->max_speed_hz = OCTEON_SPI_MAX_CLOCK_HZ;
-	host->dev.of_node = pdev->dev.of_node;
+	master->transfer_one_message = octeon_spi_transfer_one_message;
+	master->bits_per_word_mask = SPI_BPW_MASK(8);
+	master->max_speed_hz = OCTEON_SPI_MAX_CLOCK_HZ;
+	master->dev.of_node = pdev->dev.of_node;
 
-	pci_set_drvdata(pdev, host);
+	pci_set_drvdata(pdev, master);
 
-	ret = devm_spi_register_controller(dev, host);
+	ret = devm_spi_register_master(dev, master);
 	if (ret)
 		goto error;
 
@@ -83,22 +81,20 @@ static int thunderx_spi_probe(struct pci_dev *pdev,
 
 error:
 	clk_disable_unprepare(p->clk);
-	pci_release_regions(pdev);
-	spi_controller_put(host);
+	spi_master_put(master);
 	return ret;
 }
 
 static void thunderx_spi_remove(struct pci_dev *pdev)
 {
-	struct spi_controller *host = pci_get_drvdata(pdev);
+	struct spi_master *master = pci_get_drvdata(pdev);
 	struct octeon_spi *p;
 
-	p = spi_controller_get_devdata(host);
+	p = spi_master_get_devdata(master);
 	if (!p)
 		return;
 
 	clk_disable_unprepare(p->clk);
-	pci_release_regions(pdev);
 	/* Put everything in a known state. */
 	writeq(0, p->register_base + OCTEON_SPI_CFG(p));
 }

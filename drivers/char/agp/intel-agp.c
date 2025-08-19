@@ -817,17 +817,18 @@ static void agp_intel_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static int agp_intel_resume(struct device *dev)
+#ifdef CONFIG_PM
+static int agp_intel_resume(struct pci_dev *pdev)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 
 	bridge->driver->configure();
 
 	return 0;
 }
+#endif
 
-static const struct pci_device_id agp_intel_pci_table[] = {
+static struct pci_device_id agp_intel_pci_table[] = {
 #define ID(x)						\
 	{						\
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),	\
@@ -894,14 +895,14 @@ static const struct pci_device_id agp_intel_pci_table[] = {
 
 MODULE_DEVICE_TABLE(pci, agp_intel_pci_table);
 
-static DEFINE_SIMPLE_DEV_PM_OPS(agp_intel_pm_ops, NULL, agp_intel_resume);
-
 static struct pci_driver agp_intel_pci_driver = {
 	.name		= "agpgart-intel",
 	.id_table	= agp_intel_pci_table,
 	.probe		= agp_intel_probe,
 	.remove		= agp_intel_remove,
-	.driver.pm	= &agp_intel_pm_ops,
+#ifdef CONFIG_PM
+	.resume		= agp_intel_resume,
+#endif
 };
 
 static int __init agp_intel_init(void)

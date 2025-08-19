@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2003 Sistina Software
  * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
@@ -34,7 +33,7 @@ struct dm_dirty_log_type {
 	struct list_head list;
 
 	int (*ctr)(struct dm_dirty_log *log, struct dm_target *ti,
-		   unsigned int argc, char **argv);
+		   unsigned argc, char **argv);
 	void (*dtr)(struct dm_dirty_log *log);
 
 	/*
@@ -97,7 +96,7 @@ struct dm_dirty_log_type {
 	 * Do not confuse this function with 'in_sync()', one
 	 * tells you if an area is synchronised, the other
 	 * assigns recovery work.
-	 */
+	*/
 	int (*get_resync_work)(struct dm_dirty_log *log, region_t *region);
 
 	/*
@@ -117,7 +116,7 @@ struct dm_dirty_log_type {
 	 * Support function for mirror status requests.
 	 */
 	int (*status)(struct dm_dirty_log *log, status_type_t status_type,
-		      char *result, unsigned int maxlen);
+		      char *result, unsigned maxlen);
 
 	/*
 	 * is_remote_recovering is necessary for cluster mirroring. It provides
@@ -140,7 +139,7 @@ int dm_dirty_log_type_unregister(struct dm_dirty_log_type *type);
 struct dm_dirty_log *dm_dirty_log_create(const char *type_name,
 			struct dm_target *ti,
 			int (*flush_callback_fn)(struct dm_target *ti),
-			unsigned int argc, char **argv);
+			unsigned argc, char **argv);
 void dm_dirty_log_destroy(struct dm_dirty_log *log);
 
 #endif	/* __KERNEL__ */

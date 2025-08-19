@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TCP Illinois congestion control.
  * Home page:
@@ -7,7 +6,7 @@
  * The algorithm is described in:
  * "TCP-Illinois: A Loss and Delay-Based Congestion Control Algorithm
  *  for High-Speed Networks"
- * http://tamerbasar.csl.illinois.edu/LiuBasarSrikantPerfEvalArtJun2008.pdf
+ * http://www.ifp.illinois.edu/~srikant/Papers/liubassri06perf.pdf
  *
  * Implemented from description in paper and ns-2 simulation.
  * Copyright (C) 2007 Stephen Hemminger <shemminger@linux-foundation.org>
@@ -224,7 +223,7 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct illinois *ca = inet_csk_ca(sk);
 
-	if (tcp_snd_cwnd(tp) < win_thresh) {
+	if (tp->snd_cwnd < win_thresh) {
 		ca->alpha = ALPHA_BASE;
 		ca->beta = BETA_BASE;
 	} else if (ca->cnt_rtt > 0) {
@@ -284,9 +283,9 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		 * tp->snd_cwnd += alpha/tp->snd_cwnd
 		*/
 		delta = (tp->snd_cwnd_cnt * ca->alpha) >> ALPHA_SHIFT;
-		if (delta >= tcp_snd_cwnd(tp)) {
-			tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp) + delta / tcp_snd_cwnd(tp),
-						 (u32)tp->snd_cwnd_clamp));
+		if (delta >= tp->snd_cwnd) {
+			tp->snd_cwnd = min(tp->snd_cwnd + delta / tp->snd_cwnd,
+					   (u32)tp->snd_cwnd_clamp);
 			tp->snd_cwnd_cnt = 0;
 		}
 	}
@@ -296,11 +295,9 @@ static u32 tcp_illinois_ssthresh(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct illinois *ca = inet_csk_ca(sk);
-	u32 decr;
 
 	/* Multiplicative decrease */
-	decr = (tcp_snd_cwnd(tp) * ca->beta) >> BETA_SHIFT;
-	return max(tcp_snd_cwnd(tp) - decr, 2U);
+	return max(tp->snd_cwnd - ((tp->snd_cwnd * ca->beta) >> BETA_SHIFT), 2U);
 }
 
 /* Extract info for Tcp socket info provided via netlink. */
@@ -330,7 +327,6 @@ static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
 static struct tcp_congestion_ops tcp_illinois __read_mostly = {
 	.init		= tcp_illinois_init,
 	.ssthresh	= tcp_illinois_ssthresh,
-	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= tcp_illinois_cong_avoid,
 	.set_state	= tcp_illinois_state,
 	.get_info	= tcp_illinois_info,

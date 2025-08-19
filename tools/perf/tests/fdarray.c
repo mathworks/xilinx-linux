@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <api/fd/array.h>
 #include <poll.h>
 #include "util/debug.h"
@@ -12,7 +11,6 @@ static void fdarray__init_revents(struct fdarray *fda, short revents)
 
 	for (fd = 0; fd < fda->nr; ++fd) {
 		fda->entries[fd].fd	 = fda->nr - fd;
-		fda->entries[fd].events  = revents;
 		fda->entries[fd].revents = revents;
 	}
 }
@@ -21,16 +19,16 @@ static int fdarray__fprintf_prefix(struct fdarray *fda, const char *prefix, FILE
 {
 	int printed = 0;
 
-	if (verbose <= 0)
+	if (!verbose)
 		return 0;
 
 	printed += fprintf(fp, "\n%s: ", prefix);
 	return printed + fdarray__fprintf(fda, fp);
 }
 
-static int test__fdarray__filter(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
+int test__fdarray__filter(int subtest __maybe_unused)
 {
-	int nr_fds, err = TEST_FAIL;
+	int nr_fds, expected_fd[2], fd, err = TEST_FAIL;
 	struct fdarray *fda = fdarray__new(5, 5);
 
 	if (fda == NULL) {
@@ -56,6 +54,7 @@ static int test__fdarray__filter(struct test_suite *test __maybe_unused, int sub
 
 	fdarray__init_revents(fda, POLLHUP);
 	fda->entries[2].revents = POLLIN;
+	expected_fd[0] = fda->entries[2].fd;
 
 	pr_debug("\nfiltering all but fda->entries[2]:");
 	fdarray__fprintf_prefix(fda, "before", stderr);
@@ -66,9 +65,17 @@ static int test__fdarray__filter(struct test_suite *test __maybe_unused, int sub
 		goto out_delete;
 	}
 
+	if (fda->entries[0].fd != expected_fd[0]) {
+		pr_debug("\nfda->entries[0].fd=%d != %d\n",
+			 fda->entries[0].fd, expected_fd[0]);
+		goto out_delete;
+	}
+
 	fdarray__init_revents(fda, POLLHUP);
 	fda->entries[0].revents = POLLIN;
+	expected_fd[0] = fda->entries[0].fd;
 	fda->entries[3].revents = POLLIN;
+	expected_fd[1] = fda->entries[3].fd;
 
 	pr_debug("\nfiltering all but (fda->entries[0], fda->entries[3]):");
 	fdarray__fprintf_prefix(fda, "before", stderr);
@@ -80,6 +87,14 @@ static int test__fdarray__filter(struct test_suite *test __maybe_unused, int sub
 		goto out_delete;
 	}
 
+	for (fd = 0; fd < 2; ++fd) {
+		if (fda->entries[fd].fd != expected_fd[fd]) {
+			pr_debug("\nfda->entries[%d].fd=%d != %d\n", fd,
+				 fda->entries[fd].fd, expected_fd[fd]);
+			goto out_delete;
+		}
+	}
+
 	pr_debug("\n");
 
 	err = 0;
@@ -89,7 +104,7 @@ out:
 	return err;
 }
 
-static int test__fdarray__add(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
+int test__fdarray__add(int subtest __maybe_unused)
 {
 	int err = TEST_FAIL;
 	struct fdarray *fda = fdarray__new(2, 2);
@@ -112,7 +127,7 @@ static int test__fdarray__add(struct test_suite *test __maybe_unused, int subtes
 	}
 
 #define FDA_ADD(_idx, _fd, _revents, _nr)				   \
-	if (fdarray__add(fda, _fd, _revents, fdarray_flag__default) < 0) { \
+	if (fdarray__add(fda, _fd, _revents) < 0) {			   \
 		pr_debug("\n%d: fdarray__add(fda, %d, %d) failed!",	   \
 			 __LINE__,_fd, _revents);			   \
 		goto out_delete;					   \
@@ -158,6 +173,3 @@ out_delete:
 out:
 	return err;
 }
-
-DEFINE_SUITE("Filter fds with revents mask in a fdarray", fdarray__filter);
-DEFINE_SUITE("Add fd to a fdarray, making it autogrow", fdarray__add);

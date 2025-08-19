@@ -1,21 +1,14 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_KCONFIG_H
 #define __LINUX_KCONFIG_H
 
 #include <generated/autoconf.h>
-
-#ifdef CONFIG_CPU_BIG_ENDIAN
-#define __BIG_ENDIAN 4321
-#else
-#define __LITTLE_ENDIAN 1234
-#endif
 
 #define __ARG_PLACEHOLDER_1 0,
 #define __take_second_arg(__ignored, val, ...) val
 
 /*
  * The use of "&&" / "||" is limited in certain expressions.
- * The following enable to calculate "and" / "or" with macro expansion only.
+ * The followings enable to calculate "and" / "or" with macro expansion only.
  */
 #define __and(x, y)			___and(x, y)
 #define ___and(x, y)			____and(__ARG_PLACEHOLDER_##x, y)
@@ -51,8 +44,7 @@
 
 /*
  * IS_MODULE(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'm', 0
- * otherwise.  CONFIG_FOO=m results in "#define CONFIG_FOO_MODULE 1" in
- * autoconf.h.
+ * otherwise.
  */
 #define IS_MODULE(option) __is_defined(option##_MODULE)
 
@@ -67,8 +59,7 @@
 
 /*
  * IS_ENABLED(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'y' or 'm',
- * 0 otherwise.  Note that CONFIG_FOO=y results in "#define CONFIG_FOO 1" in
- * autoconf.h, while CONFIG_FOO=m results in "#define CONFIG_FOO_MODULE 1".
+ * 0 otherwise.
  */
 #define IS_ENABLED(option) __or(IS_BUILTIN(option), IS_MODULE(option))
 

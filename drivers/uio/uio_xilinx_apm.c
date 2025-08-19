@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Xilinx AXI Performance Monitor
  *
- * Copyright (C) 2013 - 2019 Xilinx, Inc. All rights reserved.
+ * Copyright (C) 2013 Xilinx, Inc. All rights reserved.
  *
  * Description:
  * This driver is developed for AXI Performance Monitor IP,
@@ -10,6 +9,18 @@
  * of AXI bus in the system. Driver maps HW registers and parameters
  * to userspace. Userspace need not clear the interrupt of IP since
  * driver clears the interrupt.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 2 of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/clk.h>
@@ -212,15 +223,14 @@ static int xapm_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	xapm->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(xapm->regs)) {
+	if (!xapm->regs) {
 		dev_err(&pdev->dev, "unable to iomap registers\n");
-		return PTR_ERR(xapm->regs);
+		return -ENOMEM;
 	}
 
 	xapm->param.clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(xapm->param.clk)) {
-		if (PTR_ERR(xapm->param.clk) != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "axi clock error\n");
+		dev_err(&pdev->dev, "axi clock error\n");
 		return PTR_ERR(xapm->param.clk);
 	}
 
@@ -229,7 +239,6 @@ static int xapm_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Unable to enable clock.\n");
 		return ret;
 	}
-	pm_runtime_get_noresume(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 	/* Initialize mode as Advanced so that if no mode in dts, default
@@ -264,7 +273,6 @@ static int xapm_probe(struct platform_device *pdev)
 	xapm->info.irq = irq;
 	xapm->info.handler = xapm_handler;
 	xapm->info.priv = xapm;
-	xapm->info.irq_flags = IRQF_SHARED;
 
 	memcpy(ptr, &xapm->param, sizeof(struct xapm_param));
 
@@ -355,4 +363,4 @@ module_platform_driver(xapm_driver);
 
 MODULE_AUTHOR("Xilinx Inc.");
 MODULE_DESCRIPTION("Xilinx AXI Performance Monitor driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

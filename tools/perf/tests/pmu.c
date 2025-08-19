@@ -1,13 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
 #include "parse-events.h"
 #include "pmu.h"
+#include "util.h"
 #include "tests.h"
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <linux/kernel.h>
-#include <linux/limits.h>
-#include <linux/zalloc.h>
 
 /* Simulated format definitions. */
 static struct test_format {
@@ -28,55 +22,55 @@ static struct test_format {
 /* Simulated users input. */
 static struct parse_events_term test_terms[] = {
 	{
-		.config    = "krava01",
+		.config    = (char *) "krava01",
 		.val.num   = 15,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava02",
+		.config    = (char *) "krava02",
 		.val.num   = 170,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava03",
+		.config    = (char *) "krava03",
 		.val.num   = 1,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava11",
+		.config    = (char *) "krava11",
 		.val.num   = 27,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava12",
+		.config    = (char *) "krava12",
 		.val.num   = 1,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava13",
+		.config    = (char *) "krava13",
 		.val.num   = 2,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava21",
+		.config    = (char *) "krava21",
 		.val.num   = 119,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava22",
+		.config    = (char *) "krava22",
 		.val.num   = 11,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
 	},
 	{
-		.config    = "krava23",
+		.config    = (char *) "krava23",
 		.val.num   = 2,
 		.type_val  = PARSE_EVENTS__TERM_TYPE_NUM,
 		.type_term = PARSE_EVENTS__TERM_TYPE_USER,
@@ -87,20 +81,21 @@ static struct parse_events_term test_terms[] = {
  * Prepare format directory data, exported by kernel
  * at /sys/bus/event_source/devices/<dev>/format.
  */
-static char *test_format_dir_get(char *dir, size_t sz)
+static char *test_format_dir_get(void)
 {
+	static char dir[PATH_MAX];
 	unsigned int i;
 
-	snprintf(dir, sz, "/tmp/perf-pmu-test-format-XXXXXX");
+	snprintf(dir, PATH_MAX, "/tmp/perf-pmu-test-format-XXXXXX");
 	if (!mkdtemp(dir))
 		return NULL;
 
 	for (i = 0; i < ARRAY_SIZE(test_formats); i++) {
-		char name[PATH_MAX];
+		static char name[PATH_MAX];
 		struct test_format *format = &test_formats[i];
 		FILE *file;
 
-		scnprintf(name, PATH_MAX, "%s/%s", dir, format->name);
+		snprintf(name, PATH_MAX, "%s/%s", dir, format->name);
 
 		file = fopen(name, "w");
 		if (!file)
@@ -118,13 +113,12 @@ static char *test_format_dir_get(char *dir, size_t sz)
 /* Cleanup format directory. */
 static int test_format_dir_put(char *dir)
 {
-	char buf[PATH_MAX + 20];
-
-	snprintf(buf, sizeof(buf), "rm -f %s/*\n", dir);
+	char buf[PATH_MAX];
+	snprintf(buf, PATH_MAX, "rm -f %s/*\n", dir);
 	if (system(buf))
 		return -1;
 
-	snprintf(buf, sizeof(buf), "rmdir %s\n", dir);
+	snprintf(buf, PATH_MAX, "rmdir %s\n", dir);
 	return system(buf);
 }
 
@@ -139,59 +133,42 @@ static struct list_head *test_terms_list(void)
 	return &terms;
 }
 
-static int test__pmu(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
+int test__pmu(int subtest __maybe_unused)
 {
-	char dir[PATH_MAX];
-	char *format;
+	char *format = test_format_dir_get();
+	LIST_HEAD(formats);
 	struct list_head *terms = test_terms_list();
-	struct perf_event_attr attr;
-	struct perf_pmu *pmu;
-	int fd;
 	int ret;
 
-	pmu = zalloc(sizeof(*pmu));
-	if (!pmu)
-		return -ENOMEM;
-
-	INIT_LIST_HEAD(&pmu->format);
-	INIT_LIST_HEAD(&pmu->aliases);
-	INIT_LIST_HEAD(&pmu->caps);
-	format = test_format_dir_get(dir, sizeof(dir));
-	if (!format) {
-		free(pmu);
+	if (!format)
 		return -EINVAL;
-	}
 
-	memset(&attr, 0, sizeof(attr));
+	do {
+		struct perf_event_attr attr;
 
-	fd = open(format, O_DIRECTORY);
-	if (fd < 0) {
-		ret = fd;
-		goto out;
-	}
+		memset(&attr, 0, sizeof(attr));
 
-	pmu->name = strdup("perf-pmu-test");
-	ret = perf_pmu__format_parse(pmu, fd, /*eager_load=*/true);
-	if (ret)
-		goto out;
+		ret = perf_pmu__format_parse(format, &formats);
+		if (ret)
+			break;
 
-	ret = perf_pmu__config_terms(pmu, &attr, terms, /*zero=*/false, /*err=*/NULL);
-	if (ret)
-		goto out;
+		ret = perf_pmu__config_terms(&formats, &attr, terms,
+					     false, NULL);
+		if (ret)
+			break;
 
-	ret = -EINVAL;
-	if (attr.config  != 0xc00000000002a823)
-		goto out;
-	if (attr.config1 != 0x8000400000000145)
-		goto out;
-	if (attr.config2 != 0x0400000020041d07)
-		goto out;
+		ret = -EINVAL;
 
-	ret = 0;
-out:
+		if (attr.config  != 0xc00000000002a823)
+			break;
+		if (attr.config1 != 0x8000400000000145)
+			break;
+		if (attr.config2 != 0x0400000020041d07)
+			break;
+
+		ret = 0;
+	} while (0);
+
 	test_format_dir_put(format);
-	perf_pmu__delete(pmu);
 	return ret;
 }
-
-DEFINE_SUITE("Parse perf pmu format", pmu);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * amd76xrom.c
  *
@@ -163,7 +162,7 @@ static int amd76xrom_init_one(struct pci_dev *pdev,
 	/* FIXME handle registers 0x80 - 0x8C the bios region locks */
 
 	/* For write accesses caches are useless */
-	window->virt = ioremap(window->phys, window->size);
+	window->virt = ioremap_nocache(window->phys, window->size);
 	if (!window->virt) {
 		printk(KERN_ERR MOD_NAME ": ioremap(%08lx, %08lx) failed\n",
 			window->phys, window->size);
@@ -189,8 +188,10 @@ static int amd76xrom_init_one(struct pci_dev *pdev,
 
 		if (!map) {
 			map = kmalloc(sizeof(*map), GFP_KERNEL);
-			if (!map)
-				goto out;
+		}
+		if (!map) {
+			printk(KERN_ERR MOD_NAME ": kmalloc failed");
+			goto out;
 		}
 		memset(map, 0, sizeof(*map));
 		INIT_LIST_HEAD(&map->list);
@@ -295,7 +296,7 @@ static void amd76xrom_remove_one(struct pci_dev *pdev)
 	amd76xrom_cleanup(window);
 }
 
-static const struct pci_device_id amd76xrom_pci_tbl[] = {
+static struct pci_device_id amd76xrom_pci_tbl[] = {
 	{ PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7410,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7440,
@@ -318,7 +319,7 @@ static struct pci_driver amd76xrom_driver = {
 static int __init init_amd76xrom(void)
 {
 	struct pci_dev *pdev;
-	const struct pci_device_id *id;
+	struct pci_device_id *id;
 	pdev = NULL;
 	for(id = amd76xrom_pci_tbl; id->vendor; id++) {
 		pdev = pci_get_device(id->vendor, id->device, NULL);

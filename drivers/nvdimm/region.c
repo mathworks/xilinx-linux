@@ -1,13 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  */
-#include <linux/memregion.h>
 #include <linux/cpumask.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/nd.h>
-#include "nd-core.h"
 #include "nd.h"
 
 static int nd_region_probe(struct device *dev)
@@ -16,18 +22,14 @@ static int nd_region_probe(struct device *dev)
 	static unsigned long once;
 	struct nd_region_data *ndrd;
 	struct nd_region *nd_region = to_nd_region(dev);
-	struct range range = {
-		.start = nd_region->ndr_start,
-		.end = nd_region->ndr_start + nd_region->ndr_size - 1,
-	};
 
 	if (nd_region->num_lanes > num_online_cpus()
 			&& nd_region->num_lanes < num_possible_cpus()
 			&& !test_and_set_bit(0, &once)) {
-		dev_dbg(dev, "online cpus (%d) < concurrent i/o lanes (%d) < possible cpus (%d)\n",
+		dev_info(dev, "online cpus (%d) < concurrent i/o lanes (%d) < possible cpus (%d)\n",
 				num_online_cpus(), nd_region->num_lanes,
 				num_possible_cpus());
-		dev_dbg(dev, "setting nr_cpus=%d may yield better libnvdimm device performance\n",
+		dev_info(dev, "setting nr_cpus=%d may yield better libnvdimm device performance\n",
 				nd_region->num_lanes);
 	}
 
@@ -35,13 +37,9 @@ static int nd_region_probe(struct device *dev)
 	if (rc)
 		return rc;
 
-	if (devm_init_badblocks(dev, &nd_region->bb))
-		return -ENODEV;
-	nd_region->bb_state =
-		sysfs_get_dirent(nd_region->dev.kobj.sd, "badblocks");
-	if (!nd_region->bb_state)
-		dev_warn(dev, "'badblocks' notification disabled\n");
-	nvdimm_badblocks_populate(nd_region, &nd_region->bb, &range);
+	rc = nd_blk_region_init(nd_region);
+	if (rc)
+		return rc;
 
 	rc = nd_region_register_namespaces(nd_region, &err);
 	if (rc < 0)
@@ -80,7 +78,7 @@ static int child_unregister(struct device *dev, void *data)
 	return 0;
 }
 
-static void nd_region_remove(struct device *dev)
+static int nd_region_remove(struct device *dev)
 {
 	struct nd_region *nd_region = to_nd_region(dev);
 
@@ -95,22 +93,7 @@ static void nd_region_remove(struct device *dev)
 	dev_set_drvdata(dev, NULL);
 	nvdimm_bus_unlock(dev);
 
-	/*
-	 * Note, this assumes device_lock() context to not race
-	 * nd_region_notify()
-	 */
-	sysfs_put(nd_region->bb_state);
-	nd_region->bb_state = NULL;
-
-	/*
-	 * Try to flush caches here since a disabled region may be subject to
-	 * secure erase while disabled, and previous dirty data should not be
-	 * written back to a new instance of the region. This only matters on
-	 * bare metal where security commands are available, so silent failure
-	 * here is ok.
-	 */
-	if (cpu_cache_has_invalidate_memregion())
-		cpu_cache_invalidate_memregion(IORES_DESC_PERSISTENT_MEMORY);
+	return 0;
 }
 
 static int child_notify(struct device *dev, void *data)
@@ -121,22 +104,6 @@ static int child_notify(struct device *dev, void *data)
 
 static void nd_region_notify(struct device *dev, enum nvdimm_event event)
 {
-	if (event == NVDIMM_REVALIDATE_POISON) {
-		struct nd_region *nd_region = to_nd_region(dev);
-
-		if (is_memory(&nd_region->dev)) {
-			struct range range = {
-				.start = nd_region->ndr_start,
-				.end = nd_region->ndr_start +
-					nd_region->ndr_size - 1,
-			};
-
-			nvdimm_badblocks_populate(nd_region,
-					&nd_region->bb, &range);
-			if (nd_region->bb_state)
-				sysfs_notify_dirent(nd_region->bb_state);
-		}
-	}
 	device_for_each_child(dev, &event, child_notify);
 }
 
@@ -161,3 +128,4 @@ void nd_region_exit(void)
 }
 
 MODULE_ALIAS_ND_DEVICE(ND_DEVICE_REGION_PMEM);
+MODULE_ALIAS_ND_DEVICE(ND_DEVICE_REGION_BLK);

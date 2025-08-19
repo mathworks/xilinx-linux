@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * budget-av.c: driver for the SAA7146 based Budget DVB cards
  *              with analog video in
@@ -12,6 +11,24 @@
  *
  * Copyright (C) 1999-2002 Ralph  Metzler
  *                       & Marcus Metzler for convergence integrated media GmbH
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
+ *
  *
  * the project's page is at https://linuxtv.org
  */
@@ -31,14 +48,13 @@
 #include "dvb-pll.h"
 #include <media/drv-intf/saa7146_vv.h>
 #include <linux/module.h>
-#include <linux/etherdevice.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/input.h>
 #include <linux/spinlock.h>
 
-#include <media/dvb_ca_en50221.h>
+#include "dvb_ca_en50221.h"
 
 #define DEBICICAM		0x02420000
 
@@ -123,7 +139,7 @@ static int i2c_writereg(struct i2c_adapter *i2c, u8 id, u8 reg, u8 val)
 
 static int ciintf_read_attribute_mem(struct dvb_ca_en50221 *ca, int slot, int address)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	int result;
 
 	if (slot != 0)
@@ -142,7 +158,7 @@ static int ciintf_read_attribute_mem(struct dvb_ca_en50221 *ca, int slot, int ad
 
 static int ciintf_write_attribute_mem(struct dvb_ca_en50221 *ca, int slot, int address, u8 value)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	int result;
 
 	if (slot != 0)
@@ -161,7 +177,7 @@ static int ciintf_write_attribute_mem(struct dvb_ca_en50221 *ca, int slot, int a
 
 static int ciintf_read_cam_control(struct dvb_ca_en50221 *ca, int slot, u8 address)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	int result;
 
 	if (slot != 0)
@@ -181,7 +197,7 @@ static int ciintf_read_cam_control(struct dvb_ca_en50221 *ca, int slot, u8 addre
 
 static int ciintf_write_cam_control(struct dvb_ca_en50221 *ca, int slot, u8 address, u8 value)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	int result;
 
 	if (slot != 0)
@@ -200,7 +216,7 @@ static int ciintf_write_cam_control(struct dvb_ca_en50221 *ca, int slot, u8 addr
 
 static int ciintf_slot_reset(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	struct saa7146_dev *saa = budget_av->budget.dev;
 
 	if (slot != 0)
@@ -229,7 +245,7 @@ static int ciintf_slot_reset(struct dvb_ca_en50221 *ca, int slot)
 
 static int ciintf_slot_shutdown(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	struct saa7146_dev *saa = budget_av->budget.dev;
 
 	if (slot != 0)
@@ -245,7 +261,7 @@ static int ciintf_slot_shutdown(struct dvb_ca_en50221 *ca, int slot)
 
 static int ciintf_slot_ts_enable(struct dvb_ca_en50221 *ca, int slot)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	struct saa7146_dev *saa = budget_av->budget.dev;
 
 	if (slot != 0)
@@ -260,7 +276,7 @@ static int ciintf_slot_ts_enable(struct dvb_ca_en50221 *ca, int slot)
 
 static int ciintf_poll_slot_status(struct dvb_ca_en50221 *ca, int slot, int open)
 {
-	struct budget_av *budget_av = ca->data;
+	struct budget_av *budget_av = (struct budget_av *) ca->data;
 	struct saa7146_dev *saa = budget_av->budget.dev;
 	int result;
 
@@ -491,7 +507,7 @@ static int philips_su1278_ty_ci_tuner_set_params(struct dvb_frontend *fe)
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	u32 div;
 	u8 buf[4];
-	struct budget *budget = fe->dvb->priv;
+	struct budget *budget = (struct budget *) fe->dvb->priv;
 	struct i2c_msg msg = {.addr = 0x61,.flags = 0,.buf = buf,.len = sizeof(buf) };
 
 	if ((c->frequency < 950000) || (c->frequency > 2150000))
@@ -564,7 +580,7 @@ static u8 typhoon_cinergy1200s_inittab[] = {
 	0xff, 0xff
 };
 
-static const struct stv0299_config typhoon_config = {
+static struct stv0299_config typhoon_config = {
 	.demod_address = 0x68,
 	.inittab = typhoon_cinergy1200s_inittab,
 	.mclk = 88000000UL,
@@ -577,7 +593,7 @@ static const struct stv0299_config typhoon_config = {
 };
 
 
-static const struct stv0299_config cinergy_1200s_config = {
+static struct stv0299_config cinergy_1200s_config = {
 	.demod_address = 0x68,
 	.inittab = typhoon_cinergy1200s_inittab,
 	.mclk = 88000000UL,
@@ -589,7 +605,7 @@ static const struct stv0299_config cinergy_1200s_config = {
 	.set_symbol_rate = philips_su1278_ty_ci_set_symbol_rate,
 };
 
-static const struct stv0299_config cinergy_1200s_1894_0010_config = {
+static struct stv0299_config cinergy_1200s_1894_0010_config = {
 	.demod_address = 0x68,
 	.inittab = typhoon_cinergy1200s_inittab,
 	.mclk = 88000000UL,
@@ -604,7 +620,7 @@ static const struct stv0299_config cinergy_1200s_1894_0010_config = {
 static int philips_cu1216_tuner_set_params(struct dvb_frontend *fe)
 {
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	struct budget *budget = fe->dvb->priv;
+	struct budget *budget = (struct budget *) fe->dvb->priv;
 	u8 buf[6];
 	struct i2c_msg msg = {.addr = 0x60,.flags = 0,.buf = buf,.len = sizeof(buf) };
 	int i;
@@ -668,7 +684,7 @@ static struct tda10023_config philips_cu1216_tda10023_config = {
 
 static int philips_tu1216_tuner_init(struct dvb_frontend *fe)
 {
-	struct budget *budget = fe->dvb->priv;
+	struct budget *budget = (struct budget *) fe->dvb->priv;
 	static u8 tu1216_init[] = { 0x0b, 0xf5, 0x85, 0xab };
 	struct i2c_msg tuner_msg = {.addr = 0x60,.flags = 0,.buf = tu1216_init,.len = sizeof(tu1216_init) };
 
@@ -685,7 +701,7 @@ static int philips_tu1216_tuner_init(struct dvb_frontend *fe)
 static int philips_tu1216_tuner_set_params(struct dvb_frontend *fe)
 {
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	struct budget *budget = fe->dvb->priv;
+	struct budget *budget = (struct budget *) fe->dvb->priv;
 	u8 tuner_buf[4];
 	struct i2c_msg tuner_msg = {.addr = 0x60,.flags = 0,.buf = tuner_buf,.len =
 			sizeof(tuner_buf) };
@@ -769,7 +785,7 @@ static int philips_tu1216_tuner_set_params(struct dvb_frontend *fe)
 static int philips_tu1216_request_firmware(struct dvb_frontend *fe,
 					   const struct firmware **fw, char *name)
 {
-	struct budget *budget = fe->dvb->priv;
+	struct budget *budget = (struct budget *) fe->dvb->priv;
 
 	return request_firmware(fw, name, &budget->dev->pci->dev);
 }
@@ -863,7 +879,7 @@ static int philips_sd1878_ci_set_symbol_rate(struct dvb_frontend *fe,
 	return 0;
 }
 
-static const struct stv0299_config philips_sd1878_config = {
+static struct stv0299_config philips_sd1878_config = {
 	.demod_address = 0x68,
      .inittab = philips_sd1878_inittab,
 	.mclk = 88000000UL,
@@ -1168,14 +1184,14 @@ static u8 read_pwm(struct budget_av *budget_av)
 #define SUBID_DVBS_KNC1_PLUS		0x0011
 #define SUBID_DVBS_TYPHOON		0x4f56
 #define SUBID_DVBS_CINERGY1200		0x1154
-#define SUBID_DVBS_CYNERGY1200N		0x1155
+#define SUBID_DVBS_CYNERGY1200N 	0x1155
 #define SUBID_DVBS_TV_STAR		0x0014
 #define SUBID_DVBS_TV_STAR_PLUS_X4	0x0015
 #define SUBID_DVBS_TV_STAR_CI		0x0016
 #define SUBID_DVBS2_KNC1		0x0018
 #define SUBID_DVBS2_KNC1_OEM		0x0019
-#define SUBID_DVBS_EASYWATCH_1		0x001a
-#define SUBID_DVBS_EASYWATCH_2		0x001b
+#define SUBID_DVBS_EASYWATCH_1  	0x001a
+#define SUBID_DVBS_EASYWATCH_2  	0x001b
 #define SUBID_DVBS2_EASYWATCH		0x001d
 #define SUBID_DVBS_EASYWATCH		0x001e
 
@@ -1227,7 +1243,7 @@ static void frontend_init(struct budget_av *budget_av)
 		 * but so far it has been only confirmed for this type
 		 */
 		budget_av->reinitialise_demod = 1;
-		fallthrough;
+		/* fall through */
 	case SUBID_DVBS_KNC1_PLUS:
 	case SUBID_DVBS_EASYWATCH_1:
 		if (saa->pci->subsystem_vendor == 0x1894) {
@@ -1353,7 +1369,7 @@ static void frontend_init(struct budget_av *budget_av)
 
 static void budget_av_irq(struct saa7146_dev *dev, u32 * isr)
 {
-	struct budget_av *budget_av = dev->ext_priv;
+	struct budget_av *budget_av = (struct budget_av *) dev->ext_priv;
 
 	dprintk(8, "dev: %p, budget_av: %p\n", dev, budget_av);
 
@@ -1363,7 +1379,7 @@ static void budget_av_irq(struct saa7146_dev *dev, u32 * isr)
 
 static int budget_av_detach(struct saa7146_dev *dev)
 {
-	struct budget_av *budget_av = dev->ext_priv;
+	struct budget_av *budget_av = (struct budget_av *) dev->ext_priv;
 	int err;
 
 	dprintk(2, "dev: %p\n", dev);
@@ -1411,8 +1427,8 @@ static int vidioc_enum_input(struct file *file, void *fh, struct v4l2_input *i)
 
 static int vidioc_g_input(struct file *file, void *fh, unsigned int *i)
 {
-	struct saa7146_dev *dev = video_drvdata(file);
-	struct budget_av *budget_av = dev->ext_priv;
+	struct saa7146_dev *dev = ((struct saa7146_fh *)fh)->dev;
+	struct budget_av *budget_av = (struct budget_av *)dev->ext_priv;
 
 	*i = budget_av->cur_input;
 
@@ -1422,8 +1438,8 @@ static int vidioc_g_input(struct file *file, void *fh, unsigned int *i)
 
 static int vidioc_s_input(struct file *file, void *fh, unsigned int input)
 {
-	struct saa7146_dev *dev = video_drvdata(file);
-	struct budget_av *budget_av = dev->ext_priv;
+	struct saa7146_dev *dev = ((struct saa7146_fh *)fh)->dev;
+	struct budget_av *budget_av = (struct budget_av *)dev->ext_priv;
 
 	dprintk(1, "VIDIOC_S_INPUT %d\n", input);
 	return saa7113_setinput(budget_av, input);
@@ -1471,7 +1487,7 @@ static int budget_av_attach(struct saa7146_dev *dev, struct saa7146_pci_extensio
 		vv_data.vid_ops.vidioc_g_input = vidioc_g_input;
 		vv_data.vid_ops.vidioc_s_input = vidioc_s_input;
 
-		if ((err = saa7146_register_device(&budget_av->vd, dev, "knc1", VFL_TYPE_VIDEO))) {
+		if ((err = saa7146_register_device(&budget_av->vd, dev, "knc1", VFL_TYPE_GRABBER))) {
 			/* fixme: proper cleanup here */
 			ERR("cannot register capture v4l2 device\n");
 			saa7146_vv_release(dev);
@@ -1554,7 +1570,7 @@ MAKE_BUDGET_INFO(cin1200c, "Terratec Cinergy 1200 DVB-C", BUDGET_CIN1200C);
 MAKE_BUDGET_INFO(cin1200cmk3, "Terratec Cinergy 1200 DVB-C MK3", BUDGET_CIN1200C_MK3);
 MAKE_BUDGET_INFO(cin1200t, "Terratec Cinergy 1200 DVB-T", BUDGET_CIN1200T);
 
-static const struct pci_device_id pci_tbl[] = {
+static struct pci_device_id pci_tbl[] = {
 	MAKE_EXTENSION_PCI(knc1s, 0x1131, 0x4f56),
 	MAKE_EXTENSION_PCI(knc1s, 0x1131, 0x0010),
 	MAKE_EXTENSION_PCI(knc1s, 0x1894, 0x0010),
@@ -1620,4 +1636,5 @@ module_exit(budget_av_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ralph Metzler, Marcus Metzler, Michael Hunold, others");
-MODULE_DESCRIPTION("driver for the SAA7146 based so-called budget PCI DVB w/ analog input and CI-module (e.g. the KNC cards)");
+MODULE_DESCRIPTION("driver for the SAA7146 based so-called "
+		   "budget PCI DVB w/ analog input and CI-module (e.g. the KNC cards)");

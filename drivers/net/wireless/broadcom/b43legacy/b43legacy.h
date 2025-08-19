@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef B43legacy_H_
 #define B43legacy_H_
 
@@ -379,7 +378,7 @@ struct b43legacy_iv {
 	union {
 		__be16 d16;
 		__be32 d32;
-	} __packed data;
+	} data __packed;
 } __packed;
 
 #define B43legacy_PHYMODE(phytype)	(1 << (phytype))

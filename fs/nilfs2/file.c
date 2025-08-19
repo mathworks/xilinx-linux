@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
- * NILFS regular file handling primitives including fsync().
+ * file.c - NILFS regular file handling primitives including fsync().
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Written by Amagai Yoshiji and Ryusuke Konishi.
  */
@@ -42,9 +51,8 @@ int nilfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	return err;
 }
 
-static vm_fault_t nilfs_page_mkwrite(struct vm_fault *vmf)
+static int nilfs_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	struct vm_area_struct *vma = vmf->vma;
 	struct page *page = vmf->page;
 	struct inode *inode = file_inode(vma->vm_file);
 	struct nilfs_transaction_info ti;
@@ -108,7 +116,7 @@ static vm_fault_t nilfs_page_mkwrite(struct vm_fault *vmf)
 	wait_for_stable_page(page);
  out:
 	sb_end_pagefault(inode->i_sb);
-	return vmf_fs_error(ret);
+	return block_page_mkwrite_return(ret);
 }
 
 static const struct vm_operations_struct nilfs_file_vm_ops = {
@@ -140,16 +148,13 @@ const struct file_operations nilfs_file_operations = {
 	.open		= generic_file_open,
 	/* .release	= nilfs_release_file, */
 	.fsync		= nilfs_sync_file,
-	.splice_read	= filemap_splice_read,
-	.splice_write   = iter_file_splice_write,
+	.splice_read	= generic_file_splice_read,
 };
 
 const struct inode_operations nilfs_file_inode_operations = {
 	.setattr	= nilfs_setattr,
 	.permission     = nilfs_permission,
 	.fiemap		= nilfs_fiemap,
-	.fileattr_get	= nilfs_fileattr_get,
-	.fileattr_set	= nilfs_fileattr_set,
 };
 
 /* end of file */

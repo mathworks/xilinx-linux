@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MAXIM MAX77693/MAX77843 Haptic device driver
  *
@@ -7,6 +6,11 @@
  * Krzysztof Kozlowski <krzk@kernel.org>
  *
  * This program is not provided / owned by Maxim Integrated Products.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <linux/err.h>
@@ -375,7 +379,7 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int max77693_haptic_suspend(struct device *dev)
+static int __maybe_unused max77693_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
@@ -388,7 +392,7 @@ static int max77693_haptic_suspend(struct device *dev)
 	return 0;
 }
 
-static int max77693_haptic_resume(struct device *dev)
+static int __maybe_unused max77693_haptic_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
@@ -401,9 +405,8 @@ static int max77693_haptic_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(max77693_haptic_pm_ops,
-				max77693_haptic_suspend,
-				max77693_haptic_resume);
+static SIMPLE_DEV_PM_OPS(max77693_haptic_pm_ops,
+			 max77693_haptic_suspend, max77693_haptic_resume);
 
 static const struct platform_device_id max77693_haptic_id[] = {
 	{ "max77693-haptic", TYPE_MAX77693 },
@@ -415,7 +418,7 @@ MODULE_DEVICE_TABLE(platform, max77693_haptic_id);
 static struct platform_driver max77693_haptic_driver = {
 	.driver		= {
 		.name	= "max77693-haptic",
-		.pm	= pm_sleep_ptr(&max77693_haptic_pm_ops),
+		.pm	= &max77693_haptic_pm_ops,
 	},
 	.probe		= max77693_haptic_probe,
 	.id_table	= max77693_haptic_id,
@@ -425,4 +428,5 @@ module_platform_driver(max77693_haptic_driver);
 MODULE_AUTHOR("Jaewon Kim <jaewon02.kim@samsung.com>");
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
 MODULE_DESCRIPTION("MAXIM 77693/77843 Haptic driver");
+MODULE_ALIAS("platform:max77693-haptic");
 MODULE_LICENSE("GPL");

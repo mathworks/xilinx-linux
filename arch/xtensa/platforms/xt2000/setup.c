@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * arch/xtensa/platforms/xt2000/setup.c
  *
@@ -8,6 +7,12 @@
  *		Joe Taylor <joe@tensilica.com>
  *
  * Copyright 2001 - 2004 Tensilica Inc.
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
  */
 #include <linux/stddef.h>
 #include <linux/kernel.h>
@@ -23,7 +28,6 @@
 #include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_8250.h>
-#include <linux/timer.h>
 
 #include <asm/processor.h>
 #include <asm/platform.h>
@@ -42,46 +46,51 @@ static void led_print (int f, char *s)
 		    break;
 }
 
-static int xt2000_power_off(struct sys_off_data *unused)
+void platform_halt(void)
+{
+	led_print (0, "  HALT  ");
+	local_irq_disable();
+	while (1);
+}
+
+void platform_power_off(void)
 {
 	led_print (0, "POWEROFF");
 	local_irq_disable();
 	while (1);
-	return NOTIFY_DONE;
 }
 
-static int xt2000_restart(struct notifier_block *this,
-			  unsigned long event, void *ptr)
+void platform_restart(void)
 {
 	/* Flush and reset the mmu, simulate a processor reset, and
 	 * jump to the reset vector. */
 	cpu_reset();
-
-	return NOTIFY_DONE;
+	/* control never gets here */
 }
-
-static struct notifier_block xt2000_restart_block = {
-	.notifier_call = xt2000_restart,
-};
 
 void __init platform_setup(char** cmdline)
 {
 	led_print (0, "LINUX   ");
 }
 
+/* early initialization */
+
+void __init platform_init(bp_tag_t *first)
+{
+}
+
 /* Heartbeat. Let the LED blink. */
 
-static void xt2000_heartbeat(struct timer_list *unused);
-
-static DEFINE_TIMER(heartbeat_timer, xt2000_heartbeat);
-
-static void xt2000_heartbeat(struct timer_list *unused)
+void platform_heartbeat(void)
 {
-	static int i;
+	static int i=0, t = 0;
 
-	led_print(7, i ? "." : " ");
-	i ^= 1;
-	mod_timer(&heartbeat_timer, jiffies + HZ / 2);
+	if (--t < 0)
+	{
+		t = 59;
+		led_print(7, i ? ".": " ");
+		i ^= 1;
+	}
 }
 
 //#define RS_TABLE_SIZE 2
@@ -139,11 +148,7 @@ static int __init xt2000_setup_devinit(void)
 {
 	platform_device_register(&xt2000_serial8250_device);
 	platform_device_register(&xt2000_sonic_device);
-	mod_timer(&heartbeat_timer, jiffies + HZ / 2);
-	register_restart_handler(&xt2000_restart_block);
-	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
-				 SYS_OFF_PRIO_DEFAULT,
-				 xt2000_power_off, NULL);
+
 	return 0;
 }
 

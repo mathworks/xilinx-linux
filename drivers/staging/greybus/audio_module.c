@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Greybus audio driver
  * Copyright 2015 Google Inc.
  * Copyright 2015 Linaro Ltd.
+ *
+ * Released under the GPLv2 only.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -18,16 +19,16 @@
  */
 
 static int gbaudio_request_jack(struct gbaudio_module_info *module,
-				struct gb_audio_jack_event_request *req)
+				  struct gb_audio_jack_event_request *req)
 {
 	int report;
-	struct snd_jack *jack = module->headset.jack.jack;
-	struct snd_jack *btn_jack = module->button.jack.jack;
+	struct snd_jack *jack = module->headset_jack.jack;
+	struct snd_jack *btn_jack = module->button_jack.jack;
 
 	if (!jack) {
 		dev_err_ratelimited(module->dev,
-				    "Invalid jack event received:type: %u, event: %u\n",
-				    req->jack_attribute, req->event);
+			"Invalid jack event received:type: %u, event: %u\n",
+			req->jack_attribute, req->event);
 		return -EINVAL;
 	}
 
@@ -38,11 +39,11 @@ static int gbaudio_request_jack(struct gbaudio_module_info *module,
 	if (req->event == GB_AUDIO_JACK_EVENT_REMOVAL) {
 		module->jack_type = 0;
 		if (btn_jack && module->button_status) {
-			snd_soc_jack_report(&module->button.jack, 0,
+			snd_soc_jack_report(&module->button_jack, 0,
 					    module->button_mask);
 			module->button_status = 0;
 		}
-		snd_soc_jack_report(&module->headset.jack, 0,
+		snd_soc_jack_report(&module->headset_jack, 0,
 				    module->jack_mask);
 		return 0;
 	}
@@ -50,8 +51,8 @@ static int gbaudio_request_jack(struct gbaudio_module_info *module,
 	report = req->jack_attribute & module->jack_mask;
 	if (!report) {
 		dev_err_ratelimited(module->dev,
-				    "Invalid jack event received:type: %u, event: %u\n",
-				    req->jack_attribute, req->event);
+			"Invalid jack event received:type: %u, event: %u\n",
+			req->jack_attribute, req->event);
 		return -EINVAL;
 	}
 
@@ -61,7 +62,7 @@ static int gbaudio_request_jack(struct gbaudio_module_info *module,
 				     module->jack_type, report);
 
 	module->jack_type = report;
-	snd_soc_jack_report(&module->headset.jack, report, module->jack_mask);
+	snd_soc_jack_report(&module->headset_jack, report, module->jack_mask);
 
 	return 0;
 }
@@ -70,12 +71,12 @@ static int gbaudio_request_button(struct gbaudio_module_info *module,
 				  struct gb_audio_button_event_request *req)
 {
 	int soc_button_id, report;
-	struct snd_jack *btn_jack = module->button.jack.jack;
+	struct snd_jack *btn_jack = module->button_jack.jack;
 
 	if (!btn_jack) {
 		dev_err_ratelimited(module->dev,
-				    "Invalid button event received:type: %u, event: %u\n",
-				    req->button_id, req->event);
+			"Invalid button event received:type: %u, event: %u\n",
+			req->button_id, req->event);
 		return -EINVAL;
 	}
 
@@ -124,7 +125,7 @@ static int gbaudio_request_button(struct gbaudio_module_info *module,
 
 	module->button_status = report;
 
-	snd_soc_jack_report(&module->button.jack, report, module->button_mask);
+	snd_soc_jack_report(&module->button_jack, report, module->button_mask);
 
 	return 0;
 }
@@ -133,7 +134,7 @@ static int gbaudio_request_stream(struct gbaudio_module_info *module,
 				  struct gb_audio_streaming_event_request *req)
 {
 	dev_warn(module->dev, "Audio Event received: cport: %u, event: %u\n",
-		 le16_to_cpu(req->data_cport), req->event);
+		 req->data_cport, req->event);
 
 	return 0;
 }
@@ -175,8 +176,8 @@ static int gbaudio_codec_request_handler(struct gb_operation *op)
 }
 
 static int gb_audio_add_mgmt_connection(struct gbaudio_module_info *gbmodule,
-					struct greybus_descriptor_cport *cport_desc,
-					struct gb_bundle *bundle)
+				struct greybus_descriptor_cport *cport_desc,
+				struct gb_bundle *bundle)
 {
 	struct gb_connection *connection;
 
@@ -199,19 +200,21 @@ static int gb_audio_add_mgmt_connection(struct gbaudio_module_info *gbmodule,
 }
 
 static int gb_audio_add_data_connection(struct gbaudio_module_info *gbmodule,
-					struct greybus_descriptor_cport *cport_desc,
-					struct gb_bundle *bundle)
+				struct greybus_descriptor_cport *cport_desc,
+				struct gb_bundle *bundle)
 {
 	struct gb_connection *connection;
 	struct gbaudio_data_connection *dai;
 
 	dai = devm_kzalloc(gbmodule->dev, sizeof(*dai), GFP_KERNEL);
-	if (!dai)
+	if (!dai) {
+		dev_err(gbmodule->dev, "DAI Malloc failure\n");
 		return -ENOMEM;
+	}
 
 	connection = gb_connection_create_offloaded(bundle,
-						    le16_to_cpu(cport_desc->id),
-						    GB_CONNECTION_FLAG_CSD);
+					le16_to_cpu(cport_desc->id),
+					GB_CONNECTION_FLAG_CSD);
 	if (IS_ERR(connection)) {
 		devm_kfree(gbmodule->dev, dai);
 		return PTR_ERR(connection);
@@ -219,7 +222,7 @@ static int gb_audio_add_data_connection(struct gbaudio_module_info *gbmodule,
 
 	greybus_set_drvdata(bundle, gbmodule);
 	dai->id = 0;
-	dai->data_cport = cpu_to_le16(connection->intf_cport_id);
+	dai->data_cport = connection->intf_cport_id;
 	dai->connection = connection;
 	list_add(&dai->list, &gbmodule->data_list);
 
@@ -258,9 +261,8 @@ static int gb_audio_probe(struct gb_bundle *bundle,
 	INIT_LIST_HEAD(&gbmodule->widget_list);
 	INIT_LIST_HEAD(&gbmodule->ctl_list);
 	INIT_LIST_HEAD(&gbmodule->widget_ctl_list);
-	INIT_LIST_HEAD(&gbmodule->jack_list);
 	gbmodule->dev = dev;
-	snprintf(gbmodule->name, sizeof(gbmodule->name), "%s.%s", dev->driver->name,
+	snprintf(gbmodule->name, NAME_SIZE, "%s.%s", dev->driver->name,
 		 dev_name(dev));
 	greybus_set_drvdata(bundle, gbmodule);
 
@@ -318,7 +320,7 @@ static int gb_audio_probe(struct gb_bundle *bundle,
 	ret = gbaudio_tplg_parse_data(gbmodule, topology);
 	if (ret) {
 		dev_err(dev, "%d:Error while parsing topology data\n",
-			ret);
+			  ret);
 		goto free_topology;
 	}
 	gbmodule->topology = topology;
@@ -329,7 +331,7 @@ static int gb_audio_probe(struct gb_bundle *bundle,
 		if (ret) {
 			dev_err(dev,
 				"%d:Error while enabling %d:data connection\n",
-				ret, le16_to_cpu(dai->data_cport));
+				ret, dai->data_cport);
 			goto disable_data_connection;
 		}
 	}
@@ -342,10 +344,11 @@ static int gb_audio_probe(struct gb_bundle *bundle,
 	/* inform above layer for uevent */
 	dev_dbg(dev, "Inform set_event:%d to above layer\n", 1);
 	/* prepare for the audio manager */
-	strscpy(desc.name, gbmodule->name, sizeof(desc.name));
+	strlcpy(desc.name, gbmodule->name, GB_AUDIO_MANAGER_MODULE_NAME_LEN);
+	desc.slot = 1; /* todo */
 	desc.vid = 2; /* todo */
 	desc.pid = 3; /* todo */
-	desc.intf_id = gbmodule->dev_id;
+	desc.cport = gbmodule->dev_id;
 	desc.op_devices = gbmodule->op_devices;
 	desc.ip_devices = gbmodule->ip_devices;
 	gbmodule->manager_id = gb_audio_manager_add(&desc);
@@ -451,7 +454,7 @@ static int gb_audio_resume(struct device *dev)
 		if (ret) {
 			dev_err(dev,
 				"%d:Error while enabling %d:data connection\n",
-				ret, le16_to_cpu(dai->data_cport));
+				ret, dai->data_cport);
 			return ret;
 		}
 	}

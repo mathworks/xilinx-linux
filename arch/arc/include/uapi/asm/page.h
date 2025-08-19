@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
  *
@@ -32,5 +31,6 @@
 #define PAGE_OFFSET	_AC(0x80000000, UL)	/* Kernel starts at 2G onwrds */
 
 #define PAGE_MASK	(~(PAGE_SIZE-1))
+
 
 #endif /* _UAPI__ASM_ARC_PAGE_H */

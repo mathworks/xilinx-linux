@@ -1,35 +1,14 @@
-# SPDX-License-Identifier: GPL-2.0-only
 #
 # Video configuration
 #
 
 menu "Graphics support"
-
-config APERTURE_HELPERS
-	bool
-	help
-	  Support tracking and hand-over of aperture ownership. Required
-	  by graphics drivers for firmware-provided framebuffers.
-
-config STI_CORE
-	bool
-	depends on PARISC
-	help
-	  STI refers to the HP "Standard Text Interface" which is a set of
-	  BIOS routines contained in a ROM chip in HP PA-RISC based machines.
-
-config VIDEO_CMDLINE
-	bool
-
-config VIDEO_NOMODESET
-	bool
-	default n
-
-source "drivers/auxdisplay/Kconfig"
-
-if HAS_IOMEM
+	depends on HAS_IOMEM
 
 config HAVE_FB_ATMEL
+	bool
+
+config SH_LCD_MIPI_DSI
 	bool
 
 source "drivers/char/agp/Kconfig"
@@ -57,23 +36,11 @@ config VIDEOMODE_HELPERS
 config HDMI
 	bool
 
-endif # HAS_IOMEM
-
-config FB_ALTERA_VIP
-	tristate "Altera VIP Frame Reader framebuffer support"
-	depends on FB
-	select FB_CFB_FILLRECT
-	select FB_CFB_COPYAREA
-	select FB_CFB_IMAGEBLIT
-	help
-	  This driver supports the Altera Video and Image Processing(VIP)
-	  Frame Reader
-
 if VT
 	source "drivers/video/console/Kconfig"
 endif
 
-if FB_CORE || SGI_NEWPORT_CONSOLE
+if FB || SGI_NEWPORT_CONSOLE
 	source "drivers/video/logo/Kconfig"
 
 endif

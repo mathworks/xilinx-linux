@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) Paul Mackerras 1997.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
  */
-#include <linux/string.h>
-#include <linux/stdarg.h>
+#include <stdarg.h>
+#include <stddef.h>
 
 size_t strnlen(const char * s, size_t count)
 {
@@ -42,8 +46,8 @@ static int skip_atoi(const char **s)
 
 static char * number(char * str, unsigned long long num, int base, int size, int precision, int type)
 {
-	char c, sign, tmp[66];
-	const char *digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+	char c,sign,tmp[66];
+	const char *digits="0123456789abcdefghijklmnopqrstuvwxyz";
 	int i;
 
 	if (type & LARGE)
@@ -83,14 +87,14 @@ static char * number(char * str, unsigned long long num, int base, int size, int
 		precision = i;
 	size -= precision;
 	if (!(type&(ZEROPAD+LEFT)))
-		while (size-- > 0)
+		while(size-->0)
 			*str++ = ' ';
 	if (sign)
 		*str++ = sign;
 	if (type & SPECIAL) {
 		if (base==8)
 			*str++ = '0';
-		else if (base == 16) {
+		else if (base==16) {
 			*str++ = '0';
 			*str++ = digits[33];
 		}
@@ -125,7 +129,7 @@ int vsprintf(char *buf, const char *fmt, va_list args)
 				/* 'z' changed to 'Z' --davidm 1/25/99 */
 
 
-	for (str = buf ; *fmt ; ++fmt) {
+	for (str=buf ; *fmt ; ++fmt) {
 		if (*fmt != '%') {
 			*str++ = *fmt;
 			continue;
@@ -296,7 +300,7 @@ int sprintf(char * buf, const char *fmt, ...)
 	int i;
 
 	va_start(args, fmt);
-	i = vsprintf(buf, fmt, args);
+	i=vsprintf(buf,fmt,args);
 	va_end(args);
 	return i;
 }

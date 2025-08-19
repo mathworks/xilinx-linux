@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Xilinx Video Timing Controller
  *
@@ -7,6 +6,10 @@
  *
  * Contacts: Hyun Kwon <hyun.kwon@xilinx.com>
  *           Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -141,9 +144,6 @@
 
 #define XVTC_GENERATOR_GLOBAL_DELAY		0x0104
 
-/* Value of 1 = .01% */
-#define XVTC_CLK_MAX_PCT_ERR			1
-
 /**
  * struct xvtc_device - Xilinx Video Timing Controller device structure
  * @xvip: Xilinx Video IP device
@@ -178,24 +178,9 @@ int xvtc_generator_start(struct xvtc_device *xvtc,
 			 const struct xvtc_config *config)
 {
 	int ret;
-	unsigned long s_rate;
-	unsigned long g_rate;
-	unsigned long clk_err;
 
 	if (!xvtc->has_generator)
 		return -ENXIO;
-
-	s_rate = (unsigned long)config->fps * config->hsize * config->vsize;
-	ret = clk_set_rate(xvtc->xvip.clk, s_rate);
-	if (ret < 0)
-		return ret;
-
-	/* Verify that the clock is within a reasonable tolerance. */
-	g_rate = clk_get_rate(xvtc->xvip.clk);
-	clk_err = (abs(g_rate - s_rate) * 10000) / (s_rate);
-	if (clk_err > XVTC_CLK_MAX_PCT_ERR)
-		dev_warn(xvtc->xvip.dev, "Failed to set clk rate: %lu, actual rate: %lu\n",
-				s_rate, g_rate);
 
 	ret = clk_prepare_enable(xvtc->xvip.clk);
 	if (ret < 0)
@@ -272,7 +257,7 @@ struct xvtc_device *xvtc_of_get(struct device_node *np)
 	struct xvtc_device *found = NULL;
 	struct xvtc_device *xvtc;
 
-	if (!of_property_present(np, "xlnx,vtc"))
+	if (!of_find_property(np, "xlnx,vtc", NULL))
 		return NULL;
 
 	xvtc_node = of_parse_phandle(np, "xlnx,vtc", 0);
@@ -362,13 +347,15 @@ static int xvtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void xvtc_remove(struct platform_device *pdev)
+static int xvtc_remove(struct platform_device *pdev)
 {
 	struct xvtc_device *xvtc = platform_get_drvdata(pdev);
 
 	xvtc_unregister_device(xvtc);
 
 	xvip_cleanup_resources(&xvtc->xvip);
+
+	return 0;
 }
 
 static const struct of_device_id xvtc_of_id_table[] = {
@@ -383,7 +370,7 @@ static struct platform_driver xvtc_driver = {
 		.of_match_table = xvtc_of_id_table,
 	},
 	.probe = xvtc_probe,
-	.remove_new = xvtc_remove,
+	.remove = xvtc_remove,
 };
 
 module_platform_driver(xvtc_driver);

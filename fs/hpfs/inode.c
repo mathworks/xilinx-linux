@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/hpfs/inode.c
  *
@@ -36,7 +35,7 @@ void hpfs_init_inode(struct inode *i)
 	hpfs_inode->i_rddir_off = NULL;
 	hpfs_inode->i_dirty = 0;
 
-	inode_set_ctime(i, 0, 0);
+	i->i_ctime.tv_sec = i->i_ctime.tv_nsec = 0;
 	i->i_mtime.tv_sec = i->i_mtime.tv_nsec = 0;
 	i->i_atime.tv_sec = i->i_atime.tv_nsec = 0;
 }
@@ -232,7 +231,7 @@ void hpfs_write_inode_nolock(struct inode *i)
 	if (de) {
 		de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_mtime.tv_sec));
 		de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_atime.tv_sec));
-		de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_ctime(i).tv_sec));
+		de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_ctime.tv_sec));
 		de->read_only = !(i->i_mode & 0222);
 		de->ea_size = cpu_to_le32(hpfs_inode->i_ea_size);
 		hpfs_mark_4buffers_dirty(&qbh);
@@ -242,7 +241,7 @@ void hpfs_write_inode_nolock(struct inode *i)
 		if ((de = map_dirent(i, hpfs_inode->i_dno, "\001\001", 2, NULL, &qbh))) {
 			de->write_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_mtime.tv_sec));
 			de->read_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_atime.tv_sec));
-			de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, inode_get_ctime(i).tv_sec));
+			de->creation_date = cpu_to_le32(gmt_to_local(i->i_sb, i->i_ctime.tv_sec));
 			de->read_only = !(i->i_mode & 0222);
 			de->ea_size = cpu_to_le32(/*hpfs_inode->i_ea_size*/0);
 			de->file_size = cpu_to_le32(0);
@@ -257,8 +256,7 @@ void hpfs_write_inode_nolock(struct inode *i)
 	brelse(bh);
 }
 
-int hpfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
-		 struct iattr *attr)
+int hpfs_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
 	int error = -EINVAL;
@@ -275,7 +273,7 @@ int hpfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	if ((attr->ia_valid & ATTR_SIZE) && attr->ia_size > inode->i_size)
 		goto out_unlock;
 
-	error = setattr_prepare(&nop_mnt_idmap, dentry, attr);
+	error = setattr_prepare(dentry, attr);
 	if (error)
 		goto out_unlock;
 
@@ -289,7 +287,7 @@ int hpfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		hpfs_truncate(inode);
 	}
 
-	setattr_copy(&nop_mnt_idmap, inode, attr);
+	setattr_copy(inode, attr);
 
 	hpfs_write_inode(inode);
 

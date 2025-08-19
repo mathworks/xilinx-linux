@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  *\file mykonos_gpio.c
  *
  *\brief Contains Mykonos APIs for transceiver GPIO configuration and control.
  *
- * Mykonos API version: 1.5.2.3566
+ * Mykonos API version: 1.5.1.3565
  */
 
 /**
@@ -4558,7 +4557,7 @@ mykonosGpioErr_t MYKONOS_setupTempSensor(mykonosDevice_t *device, mykonosTempSen
     const uint8_t TEMP_DEC_MASK = 0x07;
     const uint8_t OFFSET_OVERRIDE_MASK = 0x10;
 
-#if (MYKONOS_VERBOSE == 1)
+#ifdef MYKONOS_VERBOSE
     CMB_writeToLog(ADIHAL_LOG_ERROR, device->spiSettings->chipSelectIndex, MYKONOS_ERR_GPIO_OK, "MYKONOS_setupTempSensor()\n");
 #endif
 
@@ -4649,7 +4648,7 @@ mykonosGpioErr_t MYKONOS_getTempSensorConfig(mykonosDevice_t *device, mykonosTem
     const uint8_t TEMP_DECIMATION_MASK = 0x07;
     const uint8_t TEMP_FUSE_SHIFT = 0x04;
 
-#if (MYKONOS_VERBOSE == 1)
+#ifdef MYKONOS_VERBOSE
     CMB_writeToLog(ADIHAL_LOG_ERROR, device->spiSettings->chipSelectIndex, MYKONOS_ERR_GPIO_OK, "MYKONOS_getTempSensorConfig()\n");
 #endif
 
@@ -4703,7 +4702,7 @@ mykonosGpioErr_t MYKONOS_startTempMeasurement(mykonosDevice_t *device)
     const uint8_t TEMP_LOCK_BIT = 0x01;
     const uint8_t MEASUREMENT_MASK = 0x01;
 
-#if (MYKONOS_VERBOSE == 1)
+#ifdef MYKONOS_VERBOSE
     CMB_writeToLog(ADIHAL_LOG_ERROR, device->spiSettings->chipSelectIndex, MYKONOS_ERR_GPIO_OK, "MYKONOS_startTempMeasurement()\n");
 #endif
 
@@ -4763,7 +4762,7 @@ mykonosGpioErr_t MYKONOS_readTempSensor(mykonosDevice_t *device, mykonosTempSens
     const uint8_t WINDOW_HI_LO_MASK = 0x04;
     const uint8_t TEMP_LOCK = 0x80;
 
-#if (MYKONOS_VERBOSE == 1)
+#ifdef MYKONOS_VERBOSE
     CMB_writeToLog(ADIHAL_LOG_ERROR, device->spiSettings->chipSelectIndex, MYKONOS_ERR_GPIO_OK, "MYKONOS_readTempSensor()\n");
 #endif
 
@@ -5332,7 +5331,7 @@ mykonosGpioErr_t MYKONOS_spi2GpioSetup(mykonosDevice_t *device, uint8_t enable, 
 
     const uint32_t SPI2_PIN_MASK = 0x03;
 
-#if (MYKONOS_VERBOSE == 1)
+#ifdef MYKONOS_VERBOSE
     CMB_writeToLog(ADIHAL_LOG_MESSAGE, device->spiSettings->chipSelectIndex, MYKONOS_ERR_GPIO_OK, "MYKONOS_spi2GpioSetup()\n");
 #endif
 

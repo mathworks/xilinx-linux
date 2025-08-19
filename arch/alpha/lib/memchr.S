@@ -31,7 +31,7 @@ For correctness consider that:
       - only minimum number of quadwords may be accessed
       - the third argument is an unsigned long
 */
-#include <linux/export.h>
+#include <asm/export.h>
         .set noreorder
         .set noat
 

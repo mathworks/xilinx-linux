@@ -1,16 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson AB 2010
  * Author:	Sjur Brendeland
+ * License terms: GNU General Public License (GPL) version 2
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
 
-#include <linux/filter.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/list.h>
@@ -47,7 +46,7 @@ enum caif_states {
 struct caifsock {
 	struct sock sk; /* must be first member */
 	struct cflayer layer;
-	unsigned long flow_state;
+	u32 flow_state;
 	struct caif_connect_request conn_req;
 	struct mutex readlock;
 	struct dentry *debugfs_socket_dir;
@@ -56,32 +55,38 @@ struct caifsock {
 
 static int rx_flow_is_on(struct caifsock *cf_sk)
 {
-	return test_bit(RX_FLOW_ON_BIT, &cf_sk->flow_state);
+	return test_bit(RX_FLOW_ON_BIT,
+			(void *) &cf_sk->flow_state);
 }
 
 static int tx_flow_is_on(struct caifsock *cf_sk)
 {
-	return test_bit(TX_FLOW_ON_BIT, &cf_sk->flow_state);
+	return test_bit(TX_FLOW_ON_BIT,
+			(void *) &cf_sk->flow_state);
 }
 
 static void set_rx_flow_off(struct caifsock *cf_sk)
 {
-	clear_bit(RX_FLOW_ON_BIT, &cf_sk->flow_state);
+	 clear_bit(RX_FLOW_ON_BIT,
+		 (void *) &cf_sk->flow_state);
 }
 
 static void set_rx_flow_on(struct caifsock *cf_sk)
 {
-	set_bit(RX_FLOW_ON_BIT, &cf_sk->flow_state);
+	 set_bit(RX_FLOW_ON_BIT,
+			(void *) &cf_sk->flow_state);
 }
 
 static void set_tx_flow_off(struct caifsock *cf_sk)
 {
-	clear_bit(TX_FLOW_ON_BIT, &cf_sk->flow_state);
+	 clear_bit(TX_FLOW_ON_BIT,
+		(void *) &cf_sk->flow_state);
 }
 
 static void set_tx_flow_on(struct caifsock *cf_sk)
 {
-	set_bit(TX_FLOW_ON_BIT, &cf_sk->flow_state);
+	 set_bit(TX_FLOW_ON_BIT,
+		(void *) &cf_sk->flow_state);
 }
 
 static void caif_read_lock(struct sock *sk)
@@ -238,7 +243,7 @@ static void caif_ctrl_cb(struct cflayer *layr,
 		cf_sk->sk.sk_shutdown = SHUTDOWN_MASK;
 		cf_sk->sk.sk_err = ECONNRESET;
 		set_rx_flow_on(cf_sk);
-		sk_error_report(&cf_sk->sk);
+		cf_sk->sk.sk_error_report(&cf_sk->sk);
 		break;
 
 	default:
@@ -276,7 +281,7 @@ static int caif_seqpkt_recvmsg(struct socket *sock, struct msghdr *m,
 	if (flags & MSG_OOB)
 		goto read_error;
 
-	skb = skb_recv_datagram(sk, flags, &ret);
+	skb = skb_recv_datagram(sk, flags, 0 , &ret);
 	if (!skb)
 		goto read_error;
 	copylen = skb->len;
@@ -533,6 +538,9 @@ static int caif_seqpkt_sendmsg(struct socket *sock, struct msghdr *msg,
 	if (msg->msg_namelen)
 		goto err;
 
+	ret = -EINVAL;
+	if (unlikely(msg->msg_iter.iov->iov_base == NULL))
+		goto err;
 	noblock = msg->msg_flags & MSG_DONTWAIT;
 
 	timeo = sock_sndtimeo(sk, noblock);
@@ -661,8 +669,8 @@ out_err:
 	return sent ? : err;
 }
 
-static int setsockopt(struct socket *sock, int lvl, int opt, sockptr_t ov,
-		unsigned int ol)
+static int setsockopt(struct socket *sock,
+		      int lvl, int opt, char __user *ov, unsigned int ol)
 {
 	struct sock *sk = sock->sk;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
@@ -677,7 +685,7 @@ static int setsockopt(struct socket *sock, int lvl, int opt, sockptr_t ov,
 			return -EINVAL;
 		if (lvl != SOL_CAIF)
 			goto bad_sol;
-		if (copy_from_sockptr(&linksel, ov, sizeof(int)))
+		if (copy_from_user(&linksel, ov, sizeof(int)))
 			return -EINVAL;
 		lock_sock(&(cf_sk->sk));
 		cf_sk->conn_req.link_selector = linksel;
@@ -691,7 +699,7 @@ static int setsockopt(struct socket *sock, int lvl, int opt, sockptr_t ov,
 			return -ENOPROTOOPT;
 		lock_sock(&(cf_sk->sk));
 		if (ol > sizeof(cf_sk->conn_req.param.data) ||
-		    copy_from_sockptr(&cf_sk->conn_req.param.data, ov, ol)) {
+			copy_from_user(&cf_sk->conn_req.param.data, ov, ol)) {
 			release_sock(&cf_sk->sk);
 			return -EINVAL;
 		}
@@ -745,10 +753,6 @@ static int caif_connect(struct socket *sock, struct sockaddr *uaddr,
 	struct net_device *dev;
 
 	lock_sock(sk);
-
-	err = -EINVAL;
-	if (addr_len < offsetofend(struct sockaddr, sa_family))
-		goto out;
 
 	err = -EAFNOSUPPORT;
 	if (uaddr->sa_family != AF_CAIF)
@@ -916,7 +920,7 @@ static int caif_release(struct socket *sock)
 
 	caif_disconnect_client(sock_net(sk), &cf_sk->layer);
 	cf_sk->sk.sk_socket->state = SS_DISCONNECTING;
-	wake_up_interruptible_poll(sk_sleep(sk), EPOLLERR|EPOLLHUP);
+	wake_up_interruptible_poll(sk_sleep(sk), POLLERR|POLLHUP);
 
 	sock_orphan(sk);
 	sk_stream_kill_queues(&cf_sk->sk);
@@ -926,35 +930,35 @@ static int caif_release(struct socket *sock)
 }
 
 /* Copied from af_unix.c:unix_poll(), added CAIF tx_flow handling */
-static __poll_t caif_poll(struct file *file,
+static unsigned int caif_poll(struct file *file,
 			      struct socket *sock, poll_table *wait)
 {
 	struct sock *sk = sock->sk;
-	__poll_t mask;
+	unsigned int mask;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
 
-	sock_poll_wait(file, sock, wait);
+	sock_poll_wait(file, sk_sleep(sk), wait);
 	mask = 0;
 
 	/* exceptional events? */
 	if (sk->sk_err)
-		mask |= EPOLLERR;
+		mask |= POLLERR;
 	if (sk->sk_shutdown == SHUTDOWN_MASK)
-		mask |= EPOLLHUP;
+		mask |= POLLHUP;
 	if (sk->sk_shutdown & RCV_SHUTDOWN)
-		mask |= EPOLLRDHUP;
+		mask |= POLLRDHUP;
 
 	/* readable? */
-	if (!skb_queue_empty_lockless(&sk->sk_receive_queue) ||
+	if (!skb_queue_empty(&sk->sk_receive_queue) ||
 		(sk->sk_shutdown & RCV_SHUTDOWN))
-		mask |= EPOLLIN | EPOLLRDNORM;
+		mask |= POLLIN | POLLRDNORM;
 
 	/*
 	 * we set writable also when the other side has shut down the
 	 * connection. This prevents stuck sockets.
 	 */
 	if (sock_writeable(sk) && tx_flow_is_on(cf_sk))
-		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
+		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
 
 	return mask;
 }
@@ -973,9 +977,11 @@ static const struct proto_ops caif_seqpacket_ops = {
 	.listen = sock_no_listen,
 	.shutdown = sock_no_shutdown,
 	.setsockopt = setsockopt,
+	.getsockopt = sock_no_getsockopt,
 	.sendmsg = caif_seqpkt_sendmsg,
 	.recvmsg = caif_seqpkt_recvmsg,
 	.mmap = sock_no_mmap,
+	.sendpage = sock_no_sendpage,
 };
 
 static const struct proto_ops caif_stream_ops = {
@@ -992,16 +998,18 @@ static const struct proto_ops caif_stream_ops = {
 	.listen = sock_no_listen,
 	.shutdown = sock_no_shutdown,
 	.setsockopt = setsockopt,
+	.getsockopt = sock_no_getsockopt,
 	.sendmsg = caif_stream_sendmsg,
 	.recvmsg = caif_stream_recvmsg,
 	.mmap = sock_no_mmap,
+	.sendpage = sock_no_sendpage,
 };
 
 /* This function is called when a socket is finally destroyed. */
 static void caif_sock_destructor(struct sock *sk)
 {
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
-	caif_assert(!refcount_read(&sk->sk_wmem_alloc));
+	caif_assert(!atomic_read(&sk->sk_wmem_alloc));
 	caif_assert(sk_unhashed(sk));
 	caif_assert(!sk->sk_socket);
 	if (!sock_flag(sk, SOCK_DEAD)) {
@@ -1009,7 +1017,6 @@ static void caif_sock_destructor(struct sock *sk)
 		return;
 	}
 	sk_stream_kill_queues(&cf_sk->sk);
-	WARN_ON_ONCE(sk->sk_forward_alloc);
 	caif_free_client(&cf_sk->layer);
 }
 
@@ -1021,8 +1028,6 @@ static int caif_create(struct net *net, struct socket *sock, int protocol,
 	static struct proto prot = {.name = "PF_CAIF",
 		.owner = THIS_MODULE,
 		.obj_size = sizeof(struct caifsock),
-		.useroffset = offsetof(struct caifsock, conn_req.param),
-		.usersize = sizeof_field(struct caifsock, conn_req.param)
 	};
 
 	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_NET_ADMIN))
@@ -1094,7 +1099,7 @@ static int caif_create(struct net *net, struct socket *sock, int protocol,
 }
 
 
-static const struct net_proto_family caif_family_ops = {
+static struct net_proto_family caif_family_ops = {
 	.family = PF_CAIF,
 	.create = caif_create,
 	.owner = THIS_MODULE,

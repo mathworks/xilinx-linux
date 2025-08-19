@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * POWER Data Stream Control Register (DSCR) sysfs interface test
  *
@@ -7,21 +6,35 @@
  * well verified from their sysfs interfaces.
  *
  * Copyright 2015, Anshuman Khandual, IBM Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published
+ * by the Free Software Foundation.
  */
 #include "dscr.h"
 
 static int check_cpu_dscr_default(char *file, unsigned long val)
 {
-	unsigned long cpu_dscr;
-	int err;
+	char buf[10];
+	int fd, rc;
 
-	err = read_ulong(file, &cpu_dscr, 16);
-	if (err)
-		return err;
+	fd = open(file, O_RDWR);
+	if (fd == -1) {
+		perror("open() failed");
+		return 1;
+	}
 
-	if (cpu_dscr != val) {
+	rc = read(fd, buf, sizeof(buf));
+	if (rc == -1) {
+		perror("read() failed");
+		return 1;
+	}
+	close(fd);
+
+	buf[rc] = '\0';
+	if (strtol(buf, NULL, 16) != val) {
 		printf("DSCR match failed: %ld (system) %ld (cpu)\n",
-					val, cpu_dscr);
+					val, strtol(buf, NULL, 16));
 		return 1;
 	}
 	return 0;
@@ -40,8 +53,6 @@ static int check_all_cpu_dscr_defaults(unsigned long val)
 	}
 
 	while ((dp = readdir(sysfs))) {
-		int len;
-
 		if (!(dp->d_type & DT_DIR))
 			continue;
 		if (!strcmp(dp->d_name, "cpuidle"))
@@ -49,16 +60,12 @@ static int check_all_cpu_dscr_defaults(unsigned long val)
 		if (!strstr(dp->d_name, "cpu"))
 			continue;
 
-		len = snprintf(file, LEN_MAX, "%s%s/dscr", CPU_PATH, dp->d_name);
-		if (len >= LEN_MAX)
-			continue;
+		sprintf(file, "%s%s/dscr", CPU_PATH, dp->d_name);
 		if (access(file, F_OK))
 			continue;
 
-		if (check_cpu_dscr_default(file, val)) {
-			closedir(sysfs);
+		if (check_cpu_dscr_default(file, val))
 			return 1;
-		}
 	}
 	closedir(sysfs);
 	return 0;
@@ -67,14 +74,15 @@ static int check_all_cpu_dscr_defaults(unsigned long val)
 int dscr_sysfs(void)
 {
 	unsigned long orig_dscr_default;
-
-	SKIP_IF(!have_hwcap2(PPC_FEATURE2_DSCR));
+	int i, j;
 
 	orig_dscr_default = get_default_dscr();
-	for (int i = 0; i < DSCR_MAX; i++) {
-		set_default_dscr(i);
-		if (check_all_cpu_dscr_defaults(i))
-			goto fail;
+	for (i = 0; i < COUNT; i++) {
+		for (j = 0; j < DSCR_MAX; j++) {
+			set_default_dscr(j);
+			if (check_all_cpu_dscr_defaults(j))
+				goto fail;
+		}
 	}
 	set_default_dscr(orig_dscr_default);
 	return 0;

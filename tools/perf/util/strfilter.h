@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_STRFILTER_H
 #define __PERF_STRFILTER_H
 /* General purpose glob matching filter */
@@ -8,8 +7,8 @@
 
 /* A node of string filter */
 struct strfilter_node {
-	struct strfilter_node *l;	/* Tree left branch (for &,|) */
-	struct strfilter_node *r;	/* Tree right branch (for !,&,|) */
+	struct strfilter_node *l;	/* Tree left branche (for &,|) */
+	struct strfilter_node *r;	/* Tree right branche (for !,&,|) */
 	const char *p;		/* Operator or rule */
 };
 

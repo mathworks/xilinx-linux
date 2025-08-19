@@ -772,10 +772,10 @@ void jffs2_clear_xattr_subsystem(struct jffs2_sb_info *c)
 }
 
 #define XREF_TMPHASH_SIZE	(128)
-int jffs2_build_xattr_subsystem(struct jffs2_sb_info *c)
+void jffs2_build_xattr_subsystem(struct jffs2_sb_info *c)
 {
 	struct jffs2_xattr_ref *ref, *_ref;
-	struct jffs2_xattr_ref **xref_tmphash;
+	struct jffs2_xattr_ref *xref_tmphash[XREF_TMPHASH_SIZE];
 	struct jffs2_xattr_datum *xd, *_xd;
 	struct jffs2_inode_cache *ic;
 	struct jffs2_raw_node_ref *raw;
@@ -784,12 +784,9 @@ int jffs2_build_xattr_subsystem(struct jffs2_sb_info *c)
 
 	BUG_ON(!(c->flags & JFFS2_SB_FLAG_BUILDING));
 
-	xref_tmphash = kcalloc(XREF_TMPHASH_SIZE,
-			       sizeof(struct jffs2_xattr_ref *), GFP_KERNEL);
-	if (!xref_tmphash)
-		return -ENOMEM;
-
 	/* Phase.1 : Merge same xref */
+	for (i=0; i < XREF_TMPHASH_SIZE; i++)
+		xref_tmphash[i] = NULL;
 	for (ref=c->xref_temp; ref; ref=_ref) {
 		struct jffs2_xattr_ref *tmp;
 
@@ -887,8 +884,6 @@ int jffs2_build_xattr_subsystem(struct jffs2_sb_info *c)
 		     "%u of xref (%u dead, %u orphan) found.\n",
 		     xdatum_count, xdatum_unchecked_count, xdatum_orphan_count,
 		     xref_count, xref_dead_count, xref_orphan_count);
-	kfree(xref_tmphash);
-	return 0;
 }
 
 struct jffs2_xattr_datum *jffs2_setup_xattr_datum(struct jffs2_sb_info *c,
@@ -925,13 +920,16 @@ const struct xattr_handler *jffs2_xattr_handlers[] = {
 #ifdef CONFIG_JFFS2_FS_SECURITY
 	&jffs2_security_xattr_handler,
 #endif
+#ifdef CONFIG_JFFS2_FS_POSIX_ACL
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
+#endif
 	&jffs2_trusted_xattr_handler,
 	NULL
 };
 
-static const char *jffs2_xattr_prefix(int xprefix, struct dentry *dentry)
-{
-	const struct xattr_handler *ret = NULL;
+static const struct xattr_handler *xprefix_to_handler(int xprefix) {
+	const struct xattr_handler *ret;
 
 	switch (xprefix) {
 	case JFFS2_XPREFIX_USER:
@@ -944,23 +942,20 @@ static const char *jffs2_xattr_prefix(int xprefix, struct dentry *dentry)
 #endif
 #ifdef CONFIG_JFFS2_FS_POSIX_ACL
 	case JFFS2_XPREFIX_ACL_ACCESS:
-		ret = &nop_posix_acl_access;
+		ret = &posix_acl_access_xattr_handler;
 		break;
 	case JFFS2_XPREFIX_ACL_DEFAULT:
-		ret = &nop_posix_acl_default;
+		ret = &posix_acl_default_xattr_handler;
 		break;
 #endif
 	case JFFS2_XPREFIX_TRUSTED:
 		ret = &jffs2_trusted_xattr_handler;
 		break;
 	default:
-		return NULL;
+		ret = NULL;
+		break;
 	}
-
-	if (!xattr_handler_can_list(ret, dentry))
-		return NULL;
-
-	return xattr_prefix(ret);
+	return ret;
 }
 
 ssize_t jffs2_listxattr(struct dentry *dentry, char *buffer, size_t size)
@@ -971,6 +966,7 @@ ssize_t jffs2_listxattr(struct dentry *dentry, char *buffer, size_t size)
 	struct jffs2_inode_cache *ic = f->inocache;
 	struct jffs2_xattr_ref *ref, **pref;
 	struct jffs2_xattr_datum *xd;
+	const struct xattr_handler *xhandle;
 	const char *prefix;
 	ssize_t prefix_len, len, rc;
 	int retry = 0;
@@ -1002,10 +998,10 @@ ssize_t jffs2_listxattr(struct dentry *dentry, char *buffer, size_t size)
 					goto out;
 			}
 		}
-
-		prefix = jffs2_xattr_prefix(xd->xprefix, dentry);
-		if (!prefix)
+		xhandle = xprefix_to_handler(xd->xprefix);
+		if (!xhandle || (xhandle->list && !xhandle->list(dentry)))
 			continue;
+		prefix = xhandle->prefix ?: xhandle->name;
 		prefix_len = strlen(prefix);
 		rc = prefix_len + xd->name_len + 1;
 

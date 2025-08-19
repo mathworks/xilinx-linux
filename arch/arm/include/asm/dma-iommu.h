@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ASMARM_DMA_IOMMU_H
 #define ASMARM_DMA_IOMMU_H
 
@@ -6,6 +5,8 @@
 
 #include <linux/mm_types.h>
 #include <linux/scatterlist.h>
+#include <linux/dma-debug.h>
+#include <linux/kmemcheck.h>
 #include <linux/kref.h>
 
 struct dma_iommu_mapping {
@@ -24,7 +25,7 @@ struct dma_iommu_mapping {
 };
 
 struct dma_iommu_mapping *
-arm_iommu_create_mapping(const struct bus_type *bus, dma_addr_t base, u64 size);
+arm_iommu_create_mapping(struct bus_type *bus, dma_addr_t base, u64 size);
 
 void arm_iommu_release_mapping(struct dma_iommu_mapping *mapping);
 

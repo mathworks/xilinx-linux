@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	webcam.c -- USB webcam gadget driver
  *
  *	Copyright (C) 2009-2010
  *	    Laurent Pinchart (laurent.pinchart@ideasonboard.com)
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -30,6 +34,9 @@ static unsigned int streaming_maxburst;
 module_param(streaming_maxburst, uint, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(streaming_maxburst, "0 - 15 (ss only)");
 
+static unsigned int trace;
+module_param(trace, uint, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(trace, "Trace level bitmask");
 /* --------------------------------------------------------------------------
  * Device descriptor
  */
@@ -90,7 +97,7 @@ static const struct UVC_HEADER_DESCRIPTOR(1) uvc_control_header = {
 	.bLength		= UVC_DT_HEADER_SIZE(1),
 	.bDescriptorType	= USB_DT_CS_INTERFACE,
 	.bDescriptorSubType	= UVC_VC_HEADER,
-	.bcdUVC			= cpu_to_le16(0x0110),
+	.bcdUVC			= cpu_to_le16(0x0100),
 	.wTotalLength		= 0, /* dynamic */
 	.dwClockFrequency	= cpu_to_le32(48000000),
 	.bInCollection		= 0, /* dynamic */
@@ -125,7 +132,6 @@ static const struct uvc_processing_unit_descriptor uvc_processing = {
 	.bmControls[0]		= 1,
 	.bmControls[1]		= 0,
 	.iProcessing		= 0,
-	.bmVideoStandards	= 0,
 };
 
 static const struct uvc_output_terminal_descriptor uvc_output_terminal = {
@@ -163,7 +169,7 @@ static const struct uvc_format_uncompressed uvc_format_yuv = {
 	.bDescriptorType	= USB_DT_CS_INTERFACE,
 	.bDescriptorSubType	= UVC_VS_FORMAT_UNCOMPRESSED,
 	.bFormatIndex		= 1,
-	.bNumFrameDescriptors	= 4,
+	.bNumFrameDescriptors	= 2,
 	.guidFormat		=
 		{ 'Y',  'U',  'Y',  '2', 0x00, 0x00, 0x10, 0x00,
 		 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71},
@@ -171,15 +177,15 @@ static const struct uvc_format_uncompressed uvc_format_yuv = {
 	.bDefaultFrameIndex	= 1,
 	.bAspectRatioX		= 0,
 	.bAspectRatioY		= 0,
-	.bmInterlaceFlags	= 0,
+	.bmInterfaceFlags	= 0,
 	.bCopyProtect		= 0,
 };
 
 DECLARE_UVC_FRAME_UNCOMPRESSED(1);
-DECLARE_UVC_FRAME_UNCOMPRESSED(5);
+DECLARE_UVC_FRAME_UNCOMPRESSED(3);
 
-static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_360p = {
-	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(5),
+static const struct UVC_FRAME_UNCOMPRESSED(3) uvc_frame_yuv_360p = {
+	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(3),
 	.bDescriptorType	= USB_DT_CS_INTERFACE,
 	.bDescriptorSubType	= UVC_VS_FRAME_UNCOMPRESSED,
 	.bFrameIndex		= 1,
@@ -189,17 +195,15 @@ static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_360p = {
 	.dwMinBitRate		= cpu_to_le32(18432000),
 	.dwMaxBitRate		= cpu_to_le32(55296000),
 	.dwMaxVideoFrameBufferSize	= cpu_to_le32(460800),
-	.dwDefaultFrameInterval	= cpu_to_le32(166666),
-	.bFrameIntervalType	= 5,
-	.dwFrameInterval[0]	= cpu_to_le32(166666),
-	.dwFrameInterval[1]	= cpu_to_le32(333333),
-	.dwFrameInterval[2]	= cpu_to_le32(666666),
-	.dwFrameInterval[3]	= cpu_to_le32(1000000),
-	.dwFrameInterval[4]	= cpu_to_le32(5000000),
+	.dwDefaultFrameInterval	= cpu_to_le32(666666),
+	.bFrameIntervalType	= 3,
+	.dwFrameInterval[0]	= cpu_to_le32(666666),
+	.dwFrameInterval[1]	= cpu_to_le32(1000000),
+	.dwFrameInterval[2]	= cpu_to_le32(5000000),
 };
 
-static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_720p = {
-	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(5),
+static const struct UVC_FRAME_UNCOMPRESSED(1) uvc_frame_yuv_720p = {
+	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(1),
 	.bDescriptorType	= USB_DT_CS_INTERFACE,
 	.bDescriptorSubType	= UVC_VS_FRAME_UNCOMPRESSED,
 	.bFrameIndex		= 2,
@@ -209,54 +213,11 @@ static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_720p = {
 	.dwMinBitRate		= cpu_to_le32(29491200),
 	.dwMaxBitRate		= cpu_to_le32(29491200),
 	.dwMaxVideoFrameBufferSize	= cpu_to_le32(1843200),
-	.dwDefaultFrameInterval	= cpu_to_le32(166666),
-	.bFrameIntervalType	= 5,
-	.dwFrameInterval[0]	= cpu_to_le32(166666),
-	.dwFrameInterval[1]	= cpu_to_le32(333333),
-	.dwFrameInterval[2]	= cpu_to_le32(666666),
-	.dwFrameInterval[3]	= cpu_to_le32(1000000),
-	.dwFrameInterval[4]	= cpu_to_le32(5000000),
+	.dwDefaultFrameInterval	= cpu_to_le32(5000000),
+	.bFrameIntervalType	= 1,
+	.dwFrameInterval[0]	= cpu_to_le32(5000000),
 };
 
-static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_1080p = {
-	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(5),
-	.bDescriptorType	= USB_DT_CS_INTERFACE,
-	.bDescriptorSubType	= UVC_VS_FRAME_UNCOMPRESSED,
-	.bFrameIndex		= 3,
-	.bmCapabilities		= 0,
-	.wWidth			= cpu_to_le16(1920),
-	.wHeight		= cpu_to_le16(1080),
-	.dwMinBitRate		= cpu_to_le32(66355200),
-	.dwMaxBitRate		= cpu_to_le32(66355200),
-	.dwMaxVideoFrameBufferSize	= cpu_to_le32(4147200),
-	.dwDefaultFrameInterval	= cpu_to_le32(166666),
-	.bFrameIntervalType	= 5,
-	.dwFrameInterval[0]	= cpu_to_le32(166666),
-	.dwFrameInterval[1]	= cpu_to_le32(333333),
-	.dwFrameInterval[2]	= cpu_to_le32(666666),
-	.dwFrameInterval[3]	= cpu_to_le32(1000000),
-	.dwFrameInterval[4]	= cpu_to_le32(5000000),
-};
-
-static const struct UVC_FRAME_UNCOMPRESSED(5) uvc_frame_yuv_2160p = {
-	.bLength		= UVC_DT_FRAME_UNCOMPRESSED_SIZE(5),
-	.bDescriptorType	= USB_DT_CS_INTERFACE,
-	.bDescriptorSubType	= UVC_VS_FRAME_UNCOMPRESSED,
-	.bFrameIndex		= 4,
-	.bmCapabilities		= 0,
-	.wWidth			= cpu_to_le16(3840),
-	.wHeight		= cpu_to_le16(2160),
-	.dwMinBitRate		= cpu_to_le32(265420800),
-	.dwMaxBitRate		= cpu_to_le32(265420800),
-	.dwMaxVideoFrameBufferSize	= cpu_to_le32(16588800),
-	.dwDefaultFrameInterval	= cpu_to_le32(166666),
-	.bFrameIntervalType	= 5,
-	.dwFrameInterval[0]	= cpu_to_le32(166666),
-	.dwFrameInterval[1]	= cpu_to_le32(333333),
-	.dwFrameInterval[2]	= cpu_to_le32(666666),
-	.dwFrameInterval[3]	= cpu_to_le32(1000000),
-	.dwFrameInterval[4]	= cpu_to_le32(5000000),
-};
 static const struct uvc_format_mjpeg uvc_format_mjpg = {
 	.bLength		= UVC_DT_FORMAT_MJPEG_SIZE,
 	.bDescriptorType	= USB_DT_CS_INTERFACE,
@@ -267,7 +228,7 @@ static const struct uvc_format_mjpeg uvc_format_mjpg = {
 	.bDefaultFrameIndex	= 1,
 	.bAspectRatioX		= 0,
 	.bAspectRatioY		= 0,
-	.bmInterlaceFlags	= 0,
+	.bmInterfaceFlags	= 0,
 	.bCopyProtect		= 0,
 };
 
@@ -338,9 +299,6 @@ static const struct uvc_descriptor_header * const uvc_fs_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_1080p,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_2160p,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -353,9 +311,6 @@ static const struct uvc_descriptor_header * const uvc_hs_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_1080p,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_2160p,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -368,9 +323,6 @@ static const struct uvc_descriptor_header * const uvc_ss_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_1080p,
-	(const struct uvc_descriptor_header *) &uvc_frame_yuv_2160p,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -431,6 +383,7 @@ webcam_bind(struct usb_composite_dev *cdev)
 	uvc_opts->streaming_interval = streaming_interval;
 	uvc_opts->streaming_maxpacket = streaming_maxpacket;
 	uvc_opts->streaming_maxburst = streaming_maxburst;
+	uvc_set_trace_param(trace);
 
 	uvc_opts->fs_control = uvc_fs_control_cls;
 	uvc_opts->ss_control = uvc_ss_control_cls;
@@ -483,4 +436,5 @@ module_usb_composite_driver(webcam_driver);
 MODULE_AUTHOR("Laurent Pinchart");
 MODULE_DESCRIPTION("Webcam Video Gadget");
 MODULE_LICENSE("GPL");
+MODULE_VERSION("0.1.0");
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Mac80211 SPI driver for ST-Ericsson CW1200 device
  *
@@ -8,6 +7,10 @@
  * Based on cw1200_sdio.c
  * Copyright (c) 2010, ST-Ericsson
  * Author: Dmitry Tarnyagin <dmitry.tarnyagin@lockless.no>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -268,11 +271,15 @@ exit:
 	return ret;
 }
 
-static void cw1200_spi_irq_unsubscribe(struct hwbus_priv *self)
+static int cw1200_spi_irq_unsubscribe(struct hwbus_priv *self)
 {
+	int ret = 0;
+
 	pr_debug("SW IRQ unsubscribe\n");
 	disable_irq_wake(self->func->irq);
 	free_irq(self->func->irq, self);
+
+	return ret;
 }
 
 static int cw1200_spi_off(const struct cw1200_platform_data_spi *pdata)
@@ -345,7 +352,7 @@ static int cw1200_spi_pm(struct hwbus_priv *self, bool suspend)
 	return irq_set_irq_wake(self->func->irq, suspend);
 }
 
-static const struct hwbus_ops cw1200_spi_hwbus_ops = {
+static struct hwbus_ops cw1200_spi_hwbus_ops = {
 	.hwbus_memcpy_fromio	= cw1200_spi_memcpy_fromio,
 	.hwbus_memcpy_toio	= cw1200_spi_memcpy_toio,
 	.lock			= cw1200_spi_lock,
@@ -378,7 +385,7 @@ static int cw1200_spi_probe(struct spi_device *func)
 	func->mode = SPI_MODE_0;
 
 	pr_info("cw1200_wlan_spi: Probe called (CS %d M %d BPW %d CLK %d)\n",
-		spi_get_chipselect(func, 0), func->mode, func->bits_per_word,
+		func->chip_select, func->mode, func->bits_per_word,
 		func->max_speed_hz);
 
 	if (cw1200_spi_on(plat_data)) {
@@ -423,7 +430,7 @@ static int cw1200_spi_probe(struct spi_device *func)
 }
 
 /* Disconnect Function to be called by SPI stack when device is disconnected */
-static void cw1200_spi_disconnect(struct spi_device *func)
+static int cw1200_spi_disconnect(struct spi_device *func)
 {
 	struct hwbus_priv *self = spi_get_drvdata(func);
 
@@ -435,6 +442,8 @@ static void cw1200_spi_disconnect(struct spi_device *func)
 		}
 	}
 	cw1200_spi_off(dev_get_platdata(&func->dev));
+
+	return 0;
 }
 
 static int __maybe_unused cw1200_spi_suspend(struct device *dev)

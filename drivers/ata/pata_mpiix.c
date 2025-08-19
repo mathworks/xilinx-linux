@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_mpiix.c 	- Intel MPIIX PATA for new ATA layer
  *			  (C) 2005-2006 Red Hat Inc
@@ -136,7 +135,7 @@ static unsigned int mpiix_qc_issue(struct ata_queued_cmd *qc)
 	return ata_sff_qc_issue(qc);
 }
 
-static const struct scsi_host_template mpiix_sht = {
+static struct scsi_host_template mpiix_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 

@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file talise_radioctrl.h
  * \brief Contains Talise related function prototypes for talise_radioctrl.c
  *
- *  Talise API version: 3.6.2.1
+ *  Talise API version: 3.4.0.0
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -614,9 +613,9 @@ uint32_t TALISE_setPllLoopFilter(taliseDevice_t *device, taliseRfPllName_t pllNa
 uint32_t TALISE_getPllLoopFilter(taliseDevice_t *device, taliseRfPllName_t pllName, uint16_t *loopBandwidth_kHz, uint8_t *stability);
 
 /**
- * \brief Sets the ORx LO (local Oscillator) source (RF PLL or Aux PLL)
+ * \brief Sets the ORx LO (local Oscillator) source (RFLO or AuxLO)
  *
- * NOTE: This function sets the LO source for ORx to RF PLL or Aux PLL, but
+ * NOTE: This function sets the LO source for ORx to RFLO or AuxLO, but
  * the setting does not take affect until the ORx rising edge to power up the
  * ORx channel(s). If the LO source is changed while ORx is powered up, the
  * LO source will not take affect until ORx is disabled and re-enabled.  This is
@@ -632,7 +631,7 @@ uint32_t TALISE_getPllLoopFilter(taliseDevice_t *device, taliseRfPllName_t pllNa
  * \dep_end
  *
  * \param device Pointer to the Talise device data structure containing settings
- * \param orxLoSource Input parameter to choose the desired ORx LO source (RF PLL or Aux PLL)
+ * \param orxLoSource Input parameter to choose the desired ORx LO source (RFLO or AuxLO)
  *
  * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
  * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check
@@ -642,23 +641,20 @@ uint32_t TALISE_getPllLoopFilter(taliseDevice_t *device, taliseRfPllName_t pllNa
 uint32_t TALISE_setOrxLoSource(taliseDevice_t *device, taliseObsRxLoSource_t orxLoSource);
 
 /**
- * \brief Gets the ORx LO (local Oscillator) source (RF PLL or Aux PLL)
+ * \brief Gets the ORx LO (local Oscillator) source (RFLO or AuxLO)
  *
- * This function reads back the current ORx LO source (RF PLL or Aux PLL)
+ * This function reads back the current ORx LO source (RFLO or AuxLO)
  *
  * \pre This function can be used after the device has been fully initialized
  *      and the init cals have already run. This can be called in the
  *      radio On or Off state.
- *
- * \note In radio Off, this function will read back RF PLL
  *
  * \dep_begin
  * \dep{device->devHalInfo}
  * \dep_end
  *
  * \param device Pointer to the Talise device data structure containing settings
- * \param orx1LoSource Returns ORx1 LO source (RFLO or AuxLO)
- * \param orx2LoSource Returns ORx2 LO source (RFLO or AuxLO)
+ * \param orxLoSource Input parameter to choose the desired ORx LO source (RFLO or AuxLO)
  *
  * \retval TALACT_WARN_RESET_LOG Recovery action for log reset
  * \retval TALACT_ERR_CHECK_PARAM Recovery action for bad parameter check

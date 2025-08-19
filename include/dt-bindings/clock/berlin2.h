@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Berlin2 BG2/BG2CD clock tree IDs
  */

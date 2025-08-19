@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/alpha/kernel/pci-sysfs.c
  *
@@ -39,7 +38,7 @@ static int __pci_mmap_fits(struct pci_dev *pdev, int num,
 	unsigned long nr, start, size;
 	int shift = sparse ? 5 : 0;
 
-	nr = vma_pages(vma);
+	nr = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 	start = vma->vm_pgoff;
 	size = ((pci_resource_len(pdev, num) - 1) >> (PAGE_SHIFT - shift)) + 1;
 
@@ -60,23 +59,22 @@ static int __pci_mmap_fits(struct pci_dev *pdev, int num,
  * @sparse: address space type
  *
  * Use the bus mapping routines to map a PCI resource into userspace.
- *
- * Return: %0 on success, negative error code otherwise
  */
 static int pci_mmap_resource(struct kobject *kobj,
 			     struct bin_attribute *attr,
 			     struct vm_area_struct *vma, int sparse)
 {
-	struct pci_dev *pdev = to_pci_dev(kobj_to_dev(kobj));
+	struct pci_dev *pdev = to_pci_dev(container_of(kobj,
+						       struct device, kobj));
 	struct resource *res = attr->private;
 	enum pci_mmap_state mmap_type;
 	struct pci_bus_region bar;
 	int i;
 
-	for (i = 0; i < PCI_STD_NUM_BARS; i++)
+	for (i = 0; i < PCI_ROM_RESOURCE; i++)
 		if (res == &pdev->resource[i])
 			break;
-	if (i >= PCI_STD_NUM_BARS)
+	if (i >= PCI_ROM_RESOURCE)
 		return -ENODEV;
 
 	if (res->flags & IORESOURCE_MEM && iomem_is_exclusive(res->start))
@@ -108,7 +106,7 @@ static int pci_mmap_resource_dense(struct file *filp, struct kobject *kobj,
 
 /**
  * pci_remove_resource_files - cleanup resource files
- * @pdev: pci_dev to cleanup
+ * @dev: dev to cleanup
  *
  * If we created resource files for @dev, remove them from sysfs and
  * free their resources.
@@ -117,7 +115,7 @@ void pci_remove_resource_files(struct pci_dev *pdev)
 {
 	int i;
 
-	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+	for (i = 0; i < PCI_ROM_RESOURCE; i++) {
 		struct bin_attribute *res_attr;
 
 		res_attr = pdev->res_attr[i];
@@ -223,12 +221,10 @@ static int pci_create_attr(struct pci_dev *pdev, int num)
 }
 
 /**
- * pci_create_resource_files - create resource files in sysfs for @pdev
- * @pdev: pci_dev in question
+ * pci_create_resource_files - create resource files in sysfs for @dev
+ * @dev: dev in question
  *
  * Walk the resources in @dev creating files for each resource available.
- *
- * Return: %0 on success, or negative error code
  */
 int pci_create_resource_files(struct pci_dev *pdev)
 {
@@ -236,7 +232,7 @@ int pci_create_resource_files(struct pci_dev *pdev)
 	int retval;
 
 	/* Expose the PCI resources from this device as files */
-	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+	for (i = 0; i < PCI_ROM_RESOURCE; i++) {
 
 		/* skip empty resources */
 		if (!pci_resource_len(pdev, i))
@@ -259,7 +255,7 @@ static int __legacy_mmap_fits(struct pci_controller *hose,
 {
 	unsigned long nr, start, size;
 
-	nr = vma_pages(vma);
+	nr = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 	start = vma->vm_pgoff;
 	size = ((res_size - 1) >> PAGE_SHIFT) + 1;
 
@@ -300,7 +296,7 @@ int pci_mmap_legacy_page_range(struct pci_bus *bus, struct vm_area_struct *vma,
 
 /**
  * pci_adjust_legacy_attr - adjustment of legacy file attributes
- * @bus: bus to create files under
+ * @b: bus to create files under
  * @mmap_type: I/O port or memory
  *
  * Adjust file name and size for sparse mappings.

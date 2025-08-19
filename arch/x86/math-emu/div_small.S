@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 	.file	"div_small.S"
 /*---------------------------------------------------------------------------+
  |  div_small.S                                                              |
@@ -19,7 +18,7 @@
 #include "fpu_emu.h"
 
 .text
-SYM_FUNC_START(FPU_div_small)
+ENTRY(FPU_div_small)
 	pushl	%ebp
 	movl	%esp,%ebp
 
@@ -44,5 +43,5 @@ SYM_FUNC_START(FPU_div_small)
 	popl	%esi
 
 	leave
-	RET
-SYM_FUNC_END(FPU_div_small)
+	ret
+

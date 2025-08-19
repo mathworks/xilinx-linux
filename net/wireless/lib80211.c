@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lib80211 -- common bits for IEEE802.11 drivers
  *
@@ -26,6 +25,8 @@
 
 #include <net/lib80211.h>
 
+#define DRV_NAME        "lib80211"
+
 #define DRV_DESCRIPTION	"common routines for IEEE802.11 drivers"
 
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
@@ -43,7 +44,7 @@ static DEFINE_SPINLOCK(lib80211_crypto_lock);
 static void lib80211_crypt_deinit_entries(struct lib80211_crypt_info *info,
 					  int force);
 static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info);
-static void lib80211_crypt_deinit_handler(struct timer_list *t);
+static void lib80211_crypt_deinit_handler(unsigned long data);
 
 int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 				spinlock_t *lock)
@@ -54,8 +55,8 @@ int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 	info->lock = lock;
 
 	INIT_LIST_HEAD(&info->crypt_deinit_list);
-	timer_setup(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
-		    0);
+	setup_timer(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
+			(unsigned long)info);
 
 	return 0;
 }
@@ -115,10 +116,9 @@ static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info)
 	spin_unlock_irqrestore(info->lock, flags);
 }
 
-static void lib80211_crypt_deinit_handler(struct timer_list *t)
+static void lib80211_crypt_deinit_handler(unsigned long data)
 {
-	struct lib80211_crypt_info *info = from_timer(info, t,
-						      crypt_deinit_timer);
+	struct lib80211_crypt_info *info = (struct lib80211_crypt_info *)data;
 	unsigned long flags;
 
 	lib80211_crypt_deinit_entries(info, 0);

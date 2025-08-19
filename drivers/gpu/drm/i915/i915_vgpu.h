@@ -24,19 +24,10 @@
 #ifndef _I915_VGPU_H_
 #define _I915_VGPU_H_
 
-#include <linux/types.h>
+#include "i915_pvinfo.h"
 
-struct drm_i915_private;
-struct i915_ggtt;
-
-void intel_vgpu_detect(struct drm_i915_private *i915);
-bool intel_vgpu_active(struct drm_i915_private *i915);
-void intel_vgpu_register(struct drm_i915_private *i915);
-bool intel_vgpu_has_full_ppgtt(struct drm_i915_private *i915);
-bool intel_vgpu_has_hwsp_emulation(struct drm_i915_private *i915);
-bool intel_vgpu_has_huge_gtt(struct drm_i915_private *i915);
-
-int intel_vgt_balloon(struct i915_ggtt *ggtt);
-void intel_vgt_deballoon(struct i915_ggtt *ggtt);
+void i915_check_vgpu(struct drm_i915_private *dev_priv);
+int intel_vgt_balloon(struct drm_i915_private *dev_priv);
+void intel_vgt_deballoon(struct drm_i915_private *dev_priv);
 
 #endif /* _I915_VGPU_H_ */

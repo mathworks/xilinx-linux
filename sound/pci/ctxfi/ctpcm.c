@@ -1,6 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
+/**
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
+ *
+ * This source file is released under GPL v2 license (no other versions).
+ * See the COPYING file included in the main directory of this source
+ * distribution for the license terms and conditions.
  *
  * @File	ctpcm.c
  *
@@ -9,6 +12,7 @@
  *
  * @Author	Liu Chun
  * @Date 	Apr 2 2008
+ *
  */
 
 #include "ctpcm.h"
@@ -17,7 +21,7 @@
 #include <sound/pcm.h>
 
 /* Hardware descriptions for playback */
-static const struct snd_pcm_hardware ct_pcm_playback_hw = {
+static struct snd_pcm_hardware ct_pcm_playback_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -42,7 +46,7 @@ static const struct snd_pcm_hardware ct_pcm_playback_hw = {
 	.fifo_size		= 0,
 };
 
-static const struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
+static struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -65,7 +69,7 @@ static const struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
 };
 
 /* Hardware descriptions for capture */
-static const struct snd_pcm_hardware ct_pcm_capture_hw = {
+static struct snd_pcm_hardware ct_pcm_capture_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -136,28 +140,27 @@ static int ct_pcm_playback_open(struct snd_pcm_substream *substream)
 
 	err = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		goto free_pcm;
-
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 	err = snd_pcm_hw_constraint_minmax(runtime,
 					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 					   1024, UINT_MAX);
-	if (err < 0)
-		goto free_pcm;
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 
 	apcm->timer = ct_timer_instance_new(atc->timer, apcm);
 	if (!apcm->timer) {
-		err = -ENOMEM;
-		goto free_pcm;
+		kfree(apcm);
+		return -ENOMEM;
 	}
 	runtime->private_data = apcm;
 	runtime->private_free = ct_atc_pcm_free_substream;
 
 	return 0;
-
-free_pcm:
-	kfree(apcm);
-	return err;
 }
 
 static int ct_pcm_playback_close(struct snd_pcm_substream *substream)
@@ -178,10 +181,15 @@ static int ct_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	struct ct_atc *atc = snd_pcm_substream_chip(substream);
 	struct ct_atc_pcm *apcm = substream->runtime->private_data;
+	int err;
 
+	err = snd_pcm_lib_malloc_pages(substream,
+					params_buffer_bytes(hw_params));
+	if (err < 0)
+		return err;
 	/* clear previous resources */
 	atc->pcm_release_resources(atc, apcm);
-	return 0;
+	return err;
 }
 
 static int ct_pcm_hw_free(struct snd_pcm_substream *substream)
@@ -191,7 +199,8 @@ static int ct_pcm_hw_free(struct snd_pcm_substream *substream)
 
 	/* clear previous resources */
 	atc->pcm_release_resources(atc, apcm);
-	return 0;
+	/* Free snd-allocated pages */
+	return snd_pcm_lib_free_pages(substream);
 }
 
 
@@ -277,28 +286,27 @@ static int ct_pcm_capture_open(struct snd_pcm_substream *substream)
 
 	err = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		goto free_pcm;
-
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 	err = snd_pcm_hw_constraint_minmax(runtime,
 					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 					   1024, UINT_MAX);
-	if (err < 0)
-		goto free_pcm;
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 
 	apcm->timer = ct_timer_instance_new(atc->timer, apcm);
 	if (!apcm->timer) {
-		err = -ENOMEM;
-		goto free_pcm;
+		kfree(apcm);
+		return -ENOMEM;
 	}
 	runtime->private_data = apcm;
 	runtime->private_free = ct_atc_pcm_free_substream;
 
 	return 0;
-
-free_pcm:
-	kfree(apcm);
-	return err;
 }
 
 static int ct_pcm_capture_close(struct snd_pcm_substream *substream)
@@ -367,22 +375,26 @@ ct_pcm_capture_pointer(struct snd_pcm_substream *substream)
 static const struct snd_pcm_ops ct_pcm_playback_ops = {
 	.open	 	= ct_pcm_playback_open,
 	.close		= ct_pcm_playback_close,
+	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= ct_pcm_hw_params,
 	.hw_free	= ct_pcm_hw_free,
 	.prepare	= ct_pcm_playback_prepare,
 	.trigger	= ct_pcm_playback_trigger,
 	.pointer	= ct_pcm_playback_pointer,
+	.page		= snd_pcm_sgbuf_ops_page,
 };
 
 /* PCM operators for capture */
 static const struct snd_pcm_ops ct_pcm_capture_ops = {
 	.open	 	= ct_pcm_capture_open,
 	.close		= ct_pcm_capture_close,
+	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= ct_pcm_hw_params,
 	.hw_free	= ct_pcm_hw_free,
 	.prepare	= ct_pcm_capture_prepare,
 	.trigger	= ct_pcm_capture_trigger,
 	.pointer	= ct_pcm_capture_pointer,
+	.page		= snd_pcm_sgbuf_ops_page,
 };
 
 static const struct snd_pcm_chmap_elem surround_map[] = {
@@ -433,7 +445,7 @@ int ct_alsa_pcm_create(struct ct_atc *atc,
 	pcm->private_data = atc;
 	pcm->info_flags = 0;
 	pcm->dev_subclass = SNDRV_PCM_SUBCLASS_GENERIC_MIX;
-	strscpy(pcm->name, device_name, sizeof(pcm->name));
+	strlcpy(pcm->name, device_name, sizeof(pcm->name));
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &ct_pcm_playback_ops);
 
@@ -441,8 +453,8 @@ int ct_alsa_pcm_create(struct ct_atc *atc,
 		snd_pcm_set_ops(pcm,
 				SNDRV_PCM_STREAM_CAPTURE, &ct_pcm_capture_ops);
 
-	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV_SG,
-				       &atc->pci->dev, 128*1024, 128*1024);
+	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV_SG,
+			snd_dma_pci_data(atc->pci), 128*1024, 128*1024);
 
 	chs = 2;
 	switch (device) {

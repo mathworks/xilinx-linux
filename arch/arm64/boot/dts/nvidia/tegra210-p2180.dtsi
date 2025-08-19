@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <dt-bindings/mfd/max77620.h>
 
 #include "tegra210.dtsi"
@@ -17,37 +16,14 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory@80000000 {
+	memory {
 		device_type = "memory";
 		reg = <0x0 0x80000000 0x1 0x0>;
 	};
 
-	gpu@57000000 {
-		vdd-supply = <&vdd_gpu>;
-	};
-
 	/* debug port */
 	serial@70006000 {
-		/delete-property/ dmas;
-		/delete-property/ dma-names;
 		status = "okay";
-	};
-
-	i2c@7000c500 {
-		status = "okay";
-
-		/* module ID EEPROM */
-		eeprom@50 {
-			compatible = "atmel,24c02";
-			reg = <0x50>;
-
-			label = "module";
-			vcc-supply = <&vdd_1v8>;
-			address-width = <8>;
-			pagesize = <8>;
-			size = <256>;
-			read-only;
-		};
 	};
 
 	i2c@7000d000 {
@@ -57,8 +33,7 @@
 		pmic: pmic@3c {
 			compatible = "maxim,max77620";
 			reg = <0x3c>;
-			interrupt-parent = <&tegra_pmc>;
-			interrupts = <51 IRQ_TYPE_LEVEL_LOW>;
+			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
 
 			#interrupt-cells = <2>;
 			interrupt-controller;
@@ -68,22 +43,6 @@
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&max77620_default>;
-
-			fps {
-				fps0 {
-					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN0>;
-					maxim,suspend-fps-time-period-us = <1280>;
-				};
-
-				fps1 {
-					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN1>;
-					maxim,suspend-fps-time-period-us = <1280>;
-				};
-
-				fps2 {
-					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN0>;
-				};
-			};
 
 			max77620_default: pinmux {
 				gpio0 {
@@ -116,6 +75,22 @@
 					pins = "gpio5", "gpio6", "gpio7";
 					function = "gpio";
 					drive-push-pull = <1>;
+				};
+			};
+
+			fps {
+				fps0 {
+					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN0>;
+					maxim,suspend-fps-time-period-us = <1280>;
+				};
+
+				fps1 {
+					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN1>;
+					maxim,suspend-fps-time-period-us = <1280>;
+				};
+
+				fps2 {
+					maxim,fps-event-source = <MAX77620_FPS_EVENT_SRC_EN0>;
 				};
 			};
 
@@ -198,7 +173,16 @@
 
 				vddio_sdmmc: ldo2 {
 					regulator-name = "VDDIO_SDMMC";
-					regulator-min-microvolt = <1800000>;
+					/*
+					 * Technically this supply should have
+					 * a supported range from 1.8 - 3.3 V.
+					 * However, that would cause the SDHCI
+					 * driver to request 2.7 V upon access
+					 * and that in turn will cause traffic
+					 * to be broken. Leave it at 3.3 V for
+					 * now.
+					 */
+					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
 					regulator-always-on;
 					regulator-boot-on;
@@ -286,67 +270,25 @@
 
 	pmc@7000e400 {
 		nvidia,invert-interrupt;
-		nvidia,suspend-mode = <0>;
-		nvidia,cpu-pwr-good-time = <0>;
-		nvidia,cpu-pwr-off-time = <0>;
-		nvidia,core-pwr-good-time = <4587 3876>;
-		nvidia,core-pwr-off-time = <39065>;
-		nvidia,core-power-req-active-high;
-		nvidia,sys-clock-req-active-high;
 	};
 
 	/* eMMC */
-	mmc@700b0600 {
+	sdhci@700b0600 {
 		status = "okay";
 		bus-width = <8>;
 		non-removable;
-		vqmmc-supply = <&vdd_1v8>;
 	};
 
-	clk32k_in: clock-32k {
-		compatible = "fixed-clock";
-		clock-frequency = <32768>;
-		#clock-cells = <0>;
-	};
+	clocks {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-	cpus {
-		cpu@0 {
-			enable-method = "psci";
+		clk32k_in: clock@0 {
+			compatible = "fixed-clock";
+			reg = <0>;
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
 		};
-
-		cpu@1 {
-			enable-method = "psci";
-		};
-
-		cpu@2 {
-			enable-method = "psci";
-		};
-
-		cpu@3 {
-			enable-method = "psci";
-		};
-
-		idle-states {
-			cpu-sleep {
-				status = "okay";
-			};
-		};
-	};
-
-	psci {
-		compatible = "arm,psci-0.2";
-		method = "smc";
-	};
-
-	vdd_gpu: regulator-vdd-gpu {
-		compatible = "pwm-regulator";
-		pwms = <&pwm 1 8000>;
-		regulator-name = "VDD_GPU";
-		regulator-min-microvolt = <710000>;
-		regulator-max-microvolt = <1320000>;
-		enable-gpios = <&pmic 6 GPIO_ACTIVE_HIGH>;
-		regulator-ramp-delay = <80>;
-		regulator-enable-ramp-delay = <2000>;
-		regulator-settling-time-us = <160>;
 	};
 };

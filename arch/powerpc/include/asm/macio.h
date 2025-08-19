@@ -1,10 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __MACIO_ASIC_H__
 #define __MACIO_ASIC_H__
 #ifdef __KERNEL__
 
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 extern struct bus_type macio_bus_type;
 

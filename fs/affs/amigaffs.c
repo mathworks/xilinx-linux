@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/affs/amigaffs.c
  *
@@ -10,7 +9,6 @@
  */
 
 #include <linux/math64.h>
-#include <linux/iversion.h>
 #include "affs.h"
 
 /*
@@ -60,8 +58,8 @@ affs_insert_hash(struct inode *dir, struct buffer_head *bh)
 	mark_buffer_dirty_inode(dir_bh, dir);
 	affs_brelse(dir_bh);
 
-	dir->i_mtime = inode_set_ctime_current(dir);
-	inode_inc_iversion(dir);
+	dir->i_mtime = dir->i_ctime = current_time(dir);
+	dir->i_version++;
 	mark_inode_dirty(dir);
 
 	return 0;
@@ -114,8 +112,8 @@ affs_remove_hash(struct inode *dir, struct buffer_head *rem_bh)
 
 	affs_brelse(bh);
 
-	dir->i_mtime = inode_set_ctime_current(dir);
-	inode_inc_iversion(dir);
+	dir->i_mtime = dir->i_ctime = current_time(dir);
+	dir->i_version++;
 	mark_inode_dirty(dir);
 
 	return retval;
@@ -315,7 +313,7 @@ affs_remove_header(struct dentry *dentry)
 	else
 		clear_nlink(inode);
 	affs_unlock_link(inode);
-	inode_set_ctime_current(inode);
+	inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
 
 done:
@@ -369,13 +367,13 @@ affs_fix_checksum(struct super_block *sb, struct buffer_head *bh)
 }
 
 void
-affs_secs_to_datestamp(time64_t secs, struct affs_date *ds)
+secs_to_datestamp(time64_t secs, struct affs_date *ds)
 {
 	u32	 days;
 	u32	 minute;
 	s32	 rem;
 
-	secs -= sys_tz.tz_minuteswest * 60 + AFFS_EPOCH_DELTA;
+	secs -= sys_tz.tz_minuteswest * 60 + ((8 * 365 + 2) * 24 * 60 * 60);
 	if (secs < 0)
 		secs = 0;
 	days    = div_s64_rem(secs, 86400, &rem);
@@ -388,83 +386,56 @@ affs_secs_to_datestamp(time64_t secs, struct affs_date *ds)
 }
 
 umode_t
-affs_prot_to_mode(u32 prot)
+prot_to_mode(u32 prot)
 {
 	umode_t mode = 0;
 
 	if (!(prot & FIBF_NOWRITE))
-		mode |= 0200;
+		mode |= S_IWUSR;
 	if (!(prot & FIBF_NOREAD))
-		mode |= 0400;
+		mode |= S_IRUSR;
 	if (!(prot & FIBF_NOEXECUTE))
-		mode |= 0100;
+		mode |= S_IXUSR;
 	if (prot & FIBF_GRP_WRITE)
-		mode |= 0020;
+		mode |= S_IWGRP;
 	if (prot & FIBF_GRP_READ)
-		mode |= 0040;
+		mode |= S_IRGRP;
 	if (prot & FIBF_GRP_EXECUTE)
-		mode |= 0010;
+		mode |= S_IXGRP;
 	if (prot & FIBF_OTR_WRITE)
-		mode |= 0002;
+		mode |= S_IWOTH;
 	if (prot & FIBF_OTR_READ)
-		mode |= 0004;
+		mode |= S_IROTH;
 	if (prot & FIBF_OTR_EXECUTE)
-		mode |= 0001;
+		mode |= S_IXOTH;
 
 	return mode;
 }
 
 void
-affs_mode_to_prot(struct inode *inode)
+mode_to_prot(struct inode *inode)
 {
 	u32 prot = AFFS_I(inode)->i_protect;
 	umode_t mode = inode->i_mode;
 
-	/*
-	 * First, clear all RWED bits for owner, group, other.
-	 * Then, recalculate them afresh.
-	 *
-	 * We'll always clear the delete-inhibit bit for the owner, as that is
-	 * the classic single-user mode AmigaOS protection bit and we need to
-	 * stay compatible with all scenarios.
-	 *
-	 * Since multi-user AmigaOS is an extension, we'll only set the
-	 * delete-allow bit if any of the other bits in the same user class
-	 * (group/other) are used.
-	 */
-	prot &= ~(FIBF_NOEXECUTE | FIBF_NOREAD
-		  | FIBF_NOWRITE | FIBF_NODELETE
-		  | FIBF_GRP_EXECUTE | FIBF_GRP_READ
-		  | FIBF_GRP_WRITE   | FIBF_GRP_DELETE
-		  | FIBF_OTR_EXECUTE | FIBF_OTR_READ
-		  | FIBF_OTR_WRITE   | FIBF_OTR_DELETE);
-
-	/* Classic single-user AmigaOS flags. These are inverted. */
-	if (!(mode & 0100))
+	if (!(mode & S_IXUSR))
 		prot |= FIBF_NOEXECUTE;
-	if (!(mode & 0400))
+	if (!(mode & S_IRUSR))
 		prot |= FIBF_NOREAD;
-	if (!(mode & 0200))
+	if (!(mode & S_IWUSR))
 		prot |= FIBF_NOWRITE;
-
-	/* Multi-user extended flags. Not inverted. */
-	if (mode & 0010)
+	if (mode & S_IXGRP)
 		prot |= FIBF_GRP_EXECUTE;
-	if (mode & 0040)
+	if (mode & S_IRGRP)
 		prot |= FIBF_GRP_READ;
-	if (mode & 0020)
+	if (mode & S_IWGRP)
 		prot |= FIBF_GRP_WRITE;
-	if (mode & 0070)
-		prot |= FIBF_GRP_DELETE;
-
-	if (mode & 0001)
+	if (mode & S_IXOTH)
 		prot |= FIBF_OTR_EXECUTE;
-	if (mode & 0004)
+	if (mode & S_IROTH)
 		prot |= FIBF_OTR_READ;
-	if (mode & 0002)
+	if (mode & S_IWOTH)
 		prot |= FIBF_OTR_WRITE;
-	if (mode & 0007)
-		prot |= FIBF_OTR_DELETE;
 
 	AFFS_I(inode)->i_protect = prot;
 }
@@ -479,9 +450,9 @@ affs_error(struct super_block *sb, const char *function, const char *fmt, ...)
 	vaf.fmt = fmt;
 	vaf.va = &args;
 	pr_crit("error (device %s): %s(): %pV\n", sb->s_id, function, &vaf);
-	if (!sb_rdonly(sb))
+	if (!(sb->s_flags & MS_RDONLY))
 		pr_warn("Remounting filesystem read-only\n");
-	sb->s_flags |= SB_RDONLY;
+	sb->s_flags |= MS_RDONLY;
 	va_end(args);
 }
 

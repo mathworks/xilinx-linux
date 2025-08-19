@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	AMD Elan SC520 processor Watchdog Timer driver
  *
  *	Based on acquirewdt.c by Alan Cox,
  *	     and sbc60xxwdt.c by Jakob Oestergaard <jakob@unthought.net>
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
  *
  *	The authors do NOT admit liability nor provide warranty for
  *	any of this software. This material is provided "AS-IS" in
@@ -119,8 +123,8 @@ MODULE_PARM_DESC(nowayout,
 
 static __u16 __iomem *wdtmrctl;
 
-static void wdt_timer_ping(struct timer_list *);
-static DEFINE_TIMER(timer, wdt_timer_ping);
+static void wdt_timer_ping(unsigned long);
+static DEFINE_TIMER(timer, wdt_timer_ping, 0, 0);
 static unsigned long next_heartbeat;
 static unsigned long wdt_is_open;
 static char wdt_expect_close;
@@ -130,7 +134,7 @@ static DEFINE_SPINLOCK(wdt_spinlock);
  *	Whack the dog
  */
 
-static void wdt_timer_ping(struct timer_list *unused)
+static void wdt_timer_ping(unsigned long data)
 {
 	/* If we got a heartbeat pulse within the WDT_US_INTERVAL
 	 * we agree to ping the WDT
@@ -186,7 +190,7 @@ static int wdt_startup(void)
 static int wdt_turnoff(void)
 {
 	/* Stop the timer */
-	del_timer_sync(&timer);
+	del_timer(&timer);
 
 	/* Stop the watchdog */
 	wdt_config(0);
@@ -254,7 +258,7 @@ static int fop_open(struct inode *inode, struct file *file)
 
 	/* Good, fire up the show */
 	wdt_startup();
-	return stream_open(inode, file);
+	return nonseekable_open(inode, file);
 }
 
 static int fop_close(struct inode *inode, struct file *file)
@@ -320,8 +324,8 @@ static long fop_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 
 		wdt_keepalive();
+		/* Fall through */
 	}
-		fallthrough;
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout, p);
 	default:
@@ -336,7 +340,6 @@ static const struct file_operations wdt_fops = {
 	.open		= fop_open,
 	.release	= fop_close,
 	.unlocked_ioctl	= fop_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
 };
 
 static struct miscdevice wdt_miscdev = {

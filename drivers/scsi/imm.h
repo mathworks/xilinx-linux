@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 /*  Driver for the Iomega MatchMaker parallel port SCSI HBA embedded in 
  * the Iomega ZIP Plus drive
@@ -138,11 +137,6 @@ static char *IMM_MODE_STRING[] =
 #else
 #define w_ctr(x,y)      outb(y, (x)+2)
 #endif
-
-static inline struct scsi_pointer *imm_scsi_pointer(struct scsi_cmnd *cmd)
-{
-	return scsi_cmd_priv(cmd);
-}
 
 static int imm_engine(imm_struct *, struct scsi_cmnd *);
 

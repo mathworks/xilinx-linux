@@ -1,8 +1,22 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * This file is part of wlcore
  *
  * Copyright (C) 2011 Texas Instruments Inc.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA
+ *
  */
 
 #ifndef __WLCORE_H__
@@ -25,9 +39,6 @@
 
 /* wl12xx/wl18xx maximum transmission power (in dBm) */
 #define WLCORE_MAX_TXPWR        25
-
-/* Texas Instruments pre assigned OUI */
-#define WLCORE_TI_OUI_ADDRESS 0x080028
 
 /* forward declaration */
 struct wl1271_tx_hw_descr;
@@ -185,10 +196,8 @@ struct wl1271 {
 	struct wl1271_if_operations *if_ops;
 
 	int irq;
-	int wakeirq;
 
 	int irq_flags;
-	int wakeirq_flags;
 
 	spinlock_t wl_lock;
 
@@ -306,9 +315,9 @@ struct wl1271 {
 	bool watchdog_recovery;
 
 	/* Reg domain last configuration */
-	DECLARE_BITMAP(reg_ch_conf_last, 64);
+	u32 reg_ch_conf_last[2]  __aligned(8);
 	/* Reg domain pending configuration */
-	DECLARE_BITMAP(reg_ch_conf_pending, 64);
+	u32 reg_ch_conf_pending[2];
 
 	/* Pointer that holds DMA-friendly block for the mailbox */
 	void *mbox;
@@ -336,6 +345,7 @@ struct wl1271 {
 	enum nl80211_band band;
 
 	struct completion *elp_compl;
+	struct delayed_work elp_work;
 
 	/* in dBm */
 	int power_level;
@@ -546,6 +556,9 @@ wlcore_set_min_fw_ver(struct wl1271 *wl, unsigned int chip,
 
 /* Each RX/TX transaction requires an end-of-transaction transfer */
 #define WLCORE_QUIRK_END_OF_TRANSACTION		BIT(0)
+
+/* the first start_role(sta) sometimes doesn't work on wl12xx */
+#define WLCORE_QUIRK_START_STA_FAILS		BIT(1)
 
 /* wl127x and SPI don't support SDIO block size alignment */
 #define WLCORE_QUIRK_TX_BLOCKSIZE_ALIGN		BIT(2)

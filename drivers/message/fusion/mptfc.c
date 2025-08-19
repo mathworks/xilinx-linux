@@ -50,7 +50,7 @@
 #include <linux/kdev_t.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>	/* for mdelay */
-#include <linux/interrupt.h>
+#include <linux/interrupt.h>	/* needed for in_interrupt() proto */
 #include <linux/reboot.h>	/* notifier code */
 #include <linux/workqueue.h>
 #include <linux/sort.h>
@@ -104,8 +104,9 @@ static void mptfc_remove(struct pci_dev *pdev);
 static int mptfc_abort(struct scsi_cmnd *SCpnt);
 static int mptfc_dev_reset(struct scsi_cmnd *SCpnt);
 static int mptfc_bus_reset(struct scsi_cmnd *SCpnt);
+static int mptfc_host_reset(struct scsi_cmnd *SCpnt);
 
-static const struct scsi_host_template mptfc_driver_template = {
+static struct scsi_host_template mptfc_driver_template = {
 	.module				= THIS_MODULE,
 	.proc_name			= "mptfc",
 	.show_info			= mptscsih_show_info,
@@ -118,18 +119,18 @@ static const struct scsi_host_template mptfc_driver_template = {
 	.target_destroy			= mptfc_target_destroy,
 	.slave_destroy			= mptscsih_slave_destroy,
 	.change_queue_depth 		= mptscsih_change_queue_depth,
-	.eh_timed_out			= fc_eh_timed_out,
 	.eh_abort_handler		= mptfc_abort,
 	.eh_device_reset_handler	= mptfc_dev_reset,
 	.eh_bus_reset_handler		= mptfc_bus_reset,
-	.eh_host_reset_handler		= mptscsih_host_reset,
+	.eh_host_reset_handler		= mptfc_host_reset,
 	.bios_param			= mptscsih_bios_param,
 	.can_queue			= MPT_FC_CAN_QUEUE,
 	.this_id			= -1,
 	.sg_tablesize			= MPT_SCSI_SG_DEPTH,
 	.max_sectors			= 8192,
 	.cmd_per_lun			= 7,
-	.shost_groups			= mptscsih_host_attr_groups,
+	.use_clustering			= ENABLE_CLUSTERING,
+	.shost_attrs			= mptscsih_host_attrs,
 };
 
 /****************************************************************************
@@ -252,6 +253,13 @@ mptfc_bus_reset(struct scsi_cmnd *SCpnt)
 	    mptfc_block_error_handler(SCpnt, mptscsih_bus_reset, __func__);
 }
 
+static int
+mptfc_host_reset(struct scsi_cmnd *SCpnt)
+{
+	return
+	    mptfc_block_error_handler(SCpnt, mptscsih_host_reset, __func__);
+}
+
 static void
 mptfc_set_rport_loss_tmo(struct fc_rport *rport, uint32_t timeout)
 {
@@ -331,8 +339,8 @@ mptfc_GetFcDevPage0(MPT_ADAPTER *ioc, int ioc_port,
 			break;
 
 		data_sz = hdr.PageLength * 4;
-		ppage0_alloc = dma_alloc_coherent(&ioc->pcidev->dev, data_sz,
-						  &page0_dma, GFP_KERNEL);
+		ppage0_alloc = pci_alloc_consistent(ioc->pcidev, data_sz,
+		    					&page0_dma);
 		rc = -ENOMEM;
 		if (!ppage0_alloc)
 			break;
@@ -367,8 +375,8 @@ mptfc_GetFcDevPage0(MPT_ADAPTER *ioc, int ioc_port,
 			*p_p0 = *ppage0_alloc;	/* save data */
 			*p_pp0++ = p_p0++;	/* save addr */
 		}
-		dma_free_coherent(&ioc->pcidev->dev, data_sz,
-				  ppage0_alloc, page0_dma);
+		pci_free_consistent(ioc->pcidev, data_sz,
+		    			(u8 *) ppage0_alloc, page0_dma);
 		if (rc != 0)
 			break;
 
@@ -649,14 +657,14 @@ mptfc_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
 
 	if (!vdevice || !vdevice->vtarget) {
 		SCpnt->result = DID_NO_CONNECT << 16;
-		scsi_done(SCpnt);
+		SCpnt->scsi_done(SCpnt);
 		return 0;
 	}
 
 	err = fc_remote_port_chkready(rport);
 	if (unlikely(err)) {
 		SCpnt->result = err;
-		scsi_done(SCpnt);
+		SCpnt->scsi_done(SCpnt);
 		return 0;
 	}
 
@@ -664,7 +672,7 @@ mptfc_qcmd(struct Scsi_Host *shost, struct scsi_cmnd *SCpnt)
 	ri = *((struct mptfc_rport_info **)rport->dd_data);
 	if (unlikely(!ri)) {
 		SCpnt->result = DID_IMM_RETRY << 16;
-		scsi_done(SCpnt);
+		SCpnt->scsi_done(SCpnt);
 		return 0;
 	}
 
@@ -692,7 +700,7 @@ mptfc_display_port_link_speed(MPT_ADAPTER *ioc, int portnum, FCPortPage0_t *pp0d
 	state = pp0dest->PortState;
 
 	if (state != MPI_FCPORTPAGE0_PORTSTATE_OFFLINE &&
-	    new_speed != MPI_FCPORTPAGE0_CURRENT_SPEED_UNKNOWN) {
+	    new_speed != MPI_FCPORTPAGE0_CURRENT_SPEED_UKNOWN) {
 
 		old = old_speed == MPI_FCPORTPAGE0_CURRENT_SPEED_1GBIT ? "1 Gbps" :
 		       old_speed == MPI_FCPORTPAGE0_CURRENT_SPEED_2GBIT ? "2 Gbps" :
@@ -763,8 +771,7 @@ mptfc_GetFcPortPage0(MPT_ADAPTER *ioc, int portnum)
 
 	data_sz = hdr.PageLength * 4;
 	rc = -ENOMEM;
-	ppage0_alloc = dma_alloc_coherent(&ioc->pcidev->dev, data_sz,
-					  &page0_dma, GFP_KERNEL);
+	ppage0_alloc = (FCPortPage0_t *) pci_alloc_consistent(ioc->pcidev, data_sz, &page0_dma);
 	if (ppage0_alloc) {
 
  try_again:
@@ -818,8 +825,7 @@ mptfc_GetFcPortPage0(MPT_ADAPTER *ioc, int portnum)
 			mptfc_display_port_link_speed(ioc, portnum, pp0dest);
 		}
 
-		dma_free_coherent(&ioc->pcidev->dev, data_sz, ppage0_alloc,
-				  page0_dma);
+		pci_free_consistent(ioc->pcidev, data_sz, (u8 *) ppage0_alloc, page0_dma);
 	}
 
 	return rc;
@@ -906,8 +912,9 @@ start_over:
 		if (data_sz < sizeof(FCPortPage1_t))
 			data_sz = sizeof(FCPortPage1_t);
 
-		page1_alloc = dma_alloc_coherent(&ioc->pcidev->dev, data_sz,
-						 &page1_dma, GFP_KERNEL);
+		page1_alloc = (FCPortPage1_t *) pci_alloc_consistent(ioc->pcidev,
+						data_sz,
+						&page1_dma);
 		if (!page1_alloc)
 			return -ENOMEM;
 	}
@@ -917,11 +924,13 @@ start_over:
 		data_sz = ioc->fc_data.fc_port_page1[portnum].pg_sz;
 		if (hdr.PageLength * 4 > data_sz) {
 			ioc->fc_data.fc_port_page1[portnum].data = NULL;
-			dma_free_coherent(&ioc->pcidev->dev, data_sz,
-					  page1_alloc, page1_dma);
+			pci_free_consistent(ioc->pcidev, data_sz, (u8 *)
+				page1_alloc, page1_dma);
 			goto start_over;
 		}
 	}
+
+	memset(page1_alloc,0,data_sz);
 
 	cfg.physAddr = page1_dma;
 	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
@@ -933,8 +942,8 @@ start_over:
 	}
 	else {
 		ioc->fc_data.fc_port_page1[portnum].data = NULL;
-		dma_free_coherent(&ioc->pcidev->dev, data_sz, page1_alloc,
-				  page1_dma);
+		pci_free_consistent(ioc->pcidev, data_sz, (u8 *)
+			page1_alloc, page1_dma);
 	}
 
 	return rc;
@@ -1290,7 +1299,7 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* SCSI needs scsi_cmnd lookup table!
 	 * (with size equal to req_depth*PtrSz!)
 	 */
-	ioc->ScsiLookup = kcalloc(ioc->req_depth, sizeof(void *), GFP_KERNEL);
+	ioc->ScsiLookup = kcalloc(ioc->req_depth, sizeof(void *), GFP_ATOMIC);
 	if (!ioc->ScsiLookup) {
 		error = -ENOMEM;
 		goto out_mptfc_probe;
@@ -1319,7 +1328,7 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 					WQ_MEM_RECLAIM);
 	if (!ioc->fc_rescan_work_q) {
 		error = -ENOMEM;
-		goto out_mptfc_host;
+		goto out_mptfc_probe;
 	}
 
 	/*
@@ -1340,9 +1349,6 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	flush_workqueue(ioc->fc_rescan_work_q);
 
 	return 0;
-
-out_mptfc_host:
-	scsi_remove_host(sh);
 
 out_mptfc_probe:
 
@@ -1515,15 +1521,13 @@ static void mptfc_remove(struct pci_dev *pdev)
 
 	for (ii=0; ii<ioc->facts.NumberOfPorts; ii++) {
 		if (ioc->fc_data.fc_port_page1[ii].data) {
-			dma_free_coherent(&ioc->pcidev->dev,
-					  ioc->fc_data.fc_port_page1[ii].pg_sz,
-					  ioc->fc_data.fc_port_page1[ii].data,
-					  ioc->fc_data.fc_port_page1[ii].dma);
+			pci_free_consistent(ioc->pcidev,
+				ioc->fc_data.fc_port_page1[ii].pg_sz,
+				(u8 *) ioc->fc_data.fc_port_page1[ii].data,
+				ioc->fc_data.fc_port_page1[ii].dma);
 			ioc->fc_data.fc_port_page1[ii].data = NULL;
 		}
 	}
-
-	scsi_remove_host(ioc->sh);
 
 	mptscsih_remove(pdev);
 }

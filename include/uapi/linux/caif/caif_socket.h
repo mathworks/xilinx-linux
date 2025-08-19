@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* linux/caif_socket.h
  * CAIF Definitions for CAIF socket and network layer
  * Copyright (C) ST-Ericsson AB 2010
@@ -169,7 +168,7 @@ struct sockaddr_caif {
  * @CAIFSO_LINK_SELECT:		Selector used if multiple CAIF Link layers are
  *				available. Either a high bandwidth
  *				link can be selected (CAIF_LINK_HIGH_BANDW) or
- *				a low latency link (CAIF_LINK_LOW_LATENCY).
+ *				or a low latency link (CAIF_LINK_LOW_LATENCY).
  *                              This option is of type __u32.
  *				Alternatively SO_BINDTODEVICE can be used.
  *

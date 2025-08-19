@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * misc.c
  *
@@ -6,6 +5,11 @@
  *	Miscellaneous routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
+ *	This file is distributed under the terms of the GNU General Public
+ *	License (GPL). Copies of the GPL can be obtained from:
+ *		ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *	Each contributing author retains all rights to their own work.
+ *
  *  (C) 1998 Dave Boynton
  *  (C) 1998-2004 Ben Fennema
  *  (C) 1999-2000 Stelias Computing Inc
@@ -24,6 +28,22 @@
 #include "udf_i.h"
 #include "udf_sb.h"
 
+struct buffer_head *udf_tgetblk(struct super_block *sb, int block)
+{
+	if (UDF_QUERY_FLAG(sb, UDF_FLAG_VARCONV))
+		return sb_getblk(sb, udf_fixed_to_variable(block));
+	else
+		return sb_getblk(sb, block);
+}
+
+struct buffer_head *udf_tread(struct super_block *sb, int block)
+{
+	if (UDF_QUERY_FLAG(sb, UDF_FLAG_VARCONV))
+		return sb_bread(sb, udf_fixed_to_variable(block));
+	else
+		return sb_bread(sb, block);
+}
+
 struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 					   uint32_t type, uint8_t loc)
 {
@@ -32,9 +52,9 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 	uint16_t crclen;
 	struct udf_inode_info *iinfo = UDF_I(inode);
 
-	ea = iinfo->i_data;
+	ea = iinfo->i_ext.i_data;
 	if (iinfo->i_lenEAttr) {
-		ad = iinfo->i_data + iinfo->i_lenEAttr;
+		ad = iinfo->i_ext.i_data + iinfo->i_lenEAttr;
 	} else {
 		ad = ea;
 		size += sizeof(struct extendedAttrHeaderDesc);
@@ -121,6 +141,8 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 		iinfo->i_lenEAttr += size;
 		return (struct genericFormat *)&ea[offset];
 	}
+	if (loc & 0x02)
+		;
 
 	return NULL;
 }
@@ -133,7 +155,7 @@ struct genericFormat *udf_get_extendedattr(struct inode *inode, uint32_t type,
 	uint32_t offset;
 	struct udf_inode_info *iinfo = UDF_I(inode);
 
-	ea = iinfo->i_data;
+	ea = iinfo->i_ext.i_data;
 
 	if (iinfo->i_lenEAttr) {
 		struct extendedAttrHeaderDesc *eahd;
@@ -153,22 +175,13 @@ struct genericFormat *udf_get_extendedattr(struct inode *inode, uint32_t type,
 		else
 			offset = le32_to_cpu(eahd->appAttrLocation);
 
-		while (offset + sizeof(*gaf) < iinfo->i_lenEAttr) {
-			uint32_t attrLength;
-
+		while (offset < iinfo->i_lenEAttr) {
 			gaf = (struct genericFormat *)&ea[offset];
-			attrLength = le32_to_cpu(gaf->attrLength);
-
-			/* Detect undersized elements and buffer overflows */
-			if ((attrLength < sizeof(*gaf)) ||
-			    (attrLength > (iinfo->i_lenEAttr - offset)))
-				break;
-
 			if (le32_to_cpu(gaf->attrType) == type &&
 					gaf->attrSubtype == subtype)
 				return gaf;
 			else
-				offset += attrLength;
+				offset += le32_to_cpu(gaf->attrLength);
 		}
 	}
 
@@ -196,9 +209,9 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 	if (block == 0xFFFFFFFF)
 		return NULL;
 
-	bh = sb_bread(sb, block);
+	bh = udf_tread(sb, block);
 	if (!bh) {
-		udf_err(sb, "read failed, block=%u, location=%u\n",
+		udf_err(sb, "read failed, block=%u, location=%d\n",
 			block, location);
 		return NULL;
 	}
@@ -236,7 +249,7 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 					le16_to_cpu(tag_p->descCRCLength)))
 		return bh;
 
-	udf_debug("Crc failure block %u: crc = %u, crclen = %u\n", block,
+	udf_debug("Crc failure block %d: crc = %d, crclen = %d\n", block,
 		  le16_to_cpu(tag_p->descCRC),
 		  le16_to_cpu(tag_p->descCRCLength));
 error_out:

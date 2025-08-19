@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file contains functions used in USB interface module.
  */
@@ -50,11 +49,10 @@ static const struct lbs_fw_table fw_table[] = {
 	{ MODEL_8388, "libertas/usb8388_v5.bin", NULL },
 	{ MODEL_8388, "libertas/usb8388.bin", NULL },
 	{ MODEL_8388, "usb8388.bin", NULL },
-	{ MODEL_8682, "libertas/usb8682.bin", NULL },
-	{ 0, NULL, NULL }
+	{ MODEL_8682, "libertas/usb8682.bin", NULL }
 };
 
-static const struct usb_device_id if_usb_table[] = {
+static struct usb_device_id if_usb_table[] = {
 	/* Enter the device signature inside */
 	{ USB_DEVICE(0x1286, 0x2001), .driver_info = MODEL_8388 },
 	{ USB_DEVICE(0x05a3, 0x8388), .driver_info = MODEL_8388 },
@@ -113,6 +111,8 @@ static void if_usb_write_bulk_callback(struct urb *urb)
  */
 static void if_usb_free(struct if_usb_card *cardp)
 {
+	lbs_deb_enter(LBS_DEB_USB);
+
 	/* Unlink tx & rx urb */
 	usb_kill_urb(cardp->tx_urb);
 	usb_kill_urb(cardp->rx_urb);
@@ -125,6 +125,8 @@ static void if_usb_free(struct if_usb_card *cardp)
 
 	kfree(cardp->ep_out_buf);
 	cardp->ep_out_buf = NULL;
+
+	lbs_deb_leave(LBS_DEB_USB);
 }
 
 static void if_usb_setup_firmware(struct lbs_private *priv)
@@ -163,9 +165,9 @@ static void if_usb_setup_firmware(struct lbs_private *priv)
 	}
 }
 
-static void if_usb_fw_timeo(struct timer_list *t)
+static void if_usb_fw_timeo(unsigned long priv)
 {
-	struct if_usb_card *cardp = from_timer(cardp, t, fw_timeout);
+	struct if_usb_card *cardp = (void *)priv;
 
 	if (cardp->fwdnldover) {
 		lbs_deb_usb("Download complete, no event. Assuming success\n");
@@ -207,7 +209,7 @@ static int if_usb_probe(struct usb_interface *intf,
 	if (!cardp)
 		goto error;
 
-	timer_setup(&cardp->fw_timeout, if_usb_fw_timeo, 0);
+	setup_timer(&cardp->fw_timeout, if_usb_fw_timeo, (unsigned long)cardp);
 	init_waitqueue_head(&cardp->fw_wq);
 
 	cardp->udev = udev;
@@ -256,11 +258,8 @@ static int if_usb_probe(struct usb_interface *intf,
 		goto dealloc;
 	}
 
-	priv = lbs_add_card(cardp, &intf->dev);
-	if (IS_ERR(priv)) {
-		r = PTR_ERR(priv);
+	if (!(priv = lbs_add_card(cardp, &intf->dev)))
 		goto err_add_card;
-	}
 
 	cardp->priv = priv;
 
@@ -287,13 +286,11 @@ static int if_usb_probe(struct usb_interface *intf,
 	return 0;
 
 err_get_fw:
-	usb_put_dev(udev);
 	lbs_remove_card(priv);
 err_add_card:
 	if_usb_reset_device(cardp);
 dealloc:
 	if_usb_free(cardp);
-	kfree(cardp);
 
 error:
 	return r;
@@ -309,6 +306,8 @@ static void if_usb_disconnect(struct usb_interface *intf)
 	struct if_usb_card *cardp = usb_get_intfdata(intf);
 	struct lbs_private *priv = cardp->priv;
 
+	lbs_deb_enter(LBS_DEB_MAIN);
+
 	cardp->surprise_removed = 1;
 
 	if (priv) {
@@ -318,10 +317,11 @@ static void if_usb_disconnect(struct usb_interface *intf)
 
 	/* Unlink and free urb */
 	if_usb_free(cardp);
-	kfree(cardp);
 
 	usb_set_intfdata(intf, NULL);
 	usb_put_dev(interface_to_usbdev(intf));
+
+	lbs_deb_leave(LBS_DEB_MAIN);
 }
 
 /**
@@ -372,7 +372,7 @@ static int if_usb_send_fw_pkt(struct if_usb_card *cardp)
 			     cardp->fwseqnum, cardp->totalbytes);
 	} else if (fwdata->hdr.dnldcmd == cpu_to_le32(FW_HAS_LAST_BLOCK)) {
 		lbs_deb_usb2(&cardp->udev->dev, "Host has finished FW downloading\n");
-		lbs_deb_usb2(&cardp->udev->dev, "Downloading FW JUMP BLOCK\n");
+		lbs_deb_usb2(&cardp->udev->dev, "Donwloading FW JUMP BLOCK\n");
 
 		cardp->fwfinalblk = 1;
 	}
@@ -387,6 +387,8 @@ static int if_usb_reset_device(struct if_usb_card *cardp)
 {
 	struct cmd_header *cmd = cardp->ep_out_buf + 4;
 	int ret;
+
+	lbs_deb_enter(LBS_DEB_USB);
 
 	*(__le32 *)cardp->ep_out_buf = cpu_to_le32(CMD_TYPE_REQUEST);
 
@@ -404,6 +406,8 @@ static int if_usb_reset_device(struct if_usb_card *cardp)
 	if (ret && machine_is_olpc())
 		if_usb_reset_olpc_card(NULL);
 #endif
+
+	lbs_deb_leave_args(LBS_DEB_USB, "ret %d", ret);
 
 	return ret;
 }
@@ -463,6 +467,8 @@ static int __if_usb_submit_rx_urb(struct if_usb_card *cardp,
 			  skb->data + IPFIELD_ALIGN_OFFSET,
 			  MRVDRV_ETH_RX_PACKET_BUFFER_SIZE, callbackfn,
 			  cardp);
+
+	cardp->rx_urb->transfer_flags |= URB_ZERO_PACKET;
 
 	lbs_deb_usb2(&cardp->udev->dev, "Pointer for rx_urb %p\n", cardp->rx_urb);
 	if ((ret = usb_submit_urb(cardp->rx_urb, GFP_ATOMIC))) {
@@ -620,7 +626,6 @@ static inline void process_cmdrequest(int recvlength, uint8_t *recvbuff,
 				      struct if_usb_card *cardp,
 				      struct lbs_private *priv)
 {
-	unsigned long flags;
 	u8 i;
 
 	if (recvlength > LBS_CMD_BUFFER_SIZE) {
@@ -630,17 +635,19 @@ static inline void process_cmdrequest(int recvlength, uint8_t *recvbuff,
 		return;
 	}
 
-	spin_lock_irqsave(&priv->driver_lock, flags);
+	BUG_ON(!in_interrupt());
+
+	spin_lock(&priv->driver_lock);
 
 	i = (priv->resp_idx == 0) ? 1 : 0;
 	BUG_ON(priv->resp_len[i]);
 	priv->resp_len[i] = (recvlength - MESSAGE_HEADER_LEN);
 	memcpy(priv->resp_buf[i], recvbuff + MESSAGE_HEADER_LEN,
 		priv->resp_len[i]);
-	dev_kfree_skb_irq(skb);
+	kfree_skb(skb);
 	lbs_notify_command_response(priv, i);
 
-	spin_unlock_irqrestore(&priv->driver_lock, flags);
+	spin_unlock(&priv->driver_lock);
 
 	lbs_deb_usbd(&cardp->udev->dev,
 		    "Wake up main thread to handle cmd response\n");
@@ -664,6 +671,8 @@ static void if_usb_receive(struct urb *urb)
 	__le32 *pkt = (__le32 *)(skb->data + IPFIELD_ALIGN_OFFSET);
 	uint32_t event;
 
+	lbs_deb_enter(LBS_DEB_USB);
+
 	if (recvlength) {
 		if (urb->status) {
 			lbs_deb_usbd(&cardp->udev->dev, "RX URB failed: %d\n",
@@ -679,7 +688,7 @@ static void if_usb_receive(struct urb *urb)
 			    recvlength, recvtype);
 	} else if (urb->status) {
 		kfree_skb(skb);
-		return;
+		goto rx_exit;
 	}
 
 	switch (recvtype) {
@@ -715,6 +724,8 @@ static void if_usb_receive(struct urb *urb)
 
 setup_for_next:
 	if_usb_submit_rx_urb(cardp);
+rx_exit:
+	lbs_deb_leave(LBS_DEB_USB);
 }
 
 /**
@@ -824,6 +835,8 @@ static void if_usb_prog_firmware(struct lbs_private *priv, int ret,
 	int i = 0;
 	static int reset_count = 10;
 
+	lbs_deb_enter(LBS_DEB_USB);
+
 	if (ret) {
 		pr_err("failed to find firmware (%d)\n", ret);
 		goto done;
@@ -929,6 +942,7 @@ restart:
 
  done:
 	cardp->fw = NULL;
+	lbs_deb_leave(LBS_DEB_USB);
 }
 
 
@@ -938,6 +952,8 @@ static int if_usb_suspend(struct usb_interface *intf, pm_message_t message)
 	struct if_usb_card *cardp = usb_get_intfdata(intf);
 	struct lbs_private *priv = cardp->priv;
 	int ret;
+
+	lbs_deb_enter(LBS_DEB_USB);
 
 	if (priv->psstate != PS_STATE_FULL_POWER) {
 		ret = -1;
@@ -962,6 +978,7 @@ static int if_usb_suspend(struct usb_interface *intf, pm_message_t message)
 	usb_kill_urb(cardp->rx_urb);
 
  out:
+	lbs_deb_leave(LBS_DEB_USB);
 	return ret;
 }
 
@@ -970,10 +987,13 @@ static int if_usb_resume(struct usb_interface *intf)
 	struct if_usb_card *cardp = usb_get_intfdata(intf);
 	struct lbs_private *priv = cardp->priv;
 
+	lbs_deb_enter(LBS_DEB_USB);
+
 	if_usb_submit_rx_urb(cardp);
 
 	lbs_resume(priv);
 
+	lbs_deb_leave(LBS_DEB_USB);
 	return 0;
 }
 #else

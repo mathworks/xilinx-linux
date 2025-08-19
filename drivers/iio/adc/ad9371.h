@@ -1,7 +1,7 @@
 /*
  * AD9371
  *
- * Copyright 2016-2018 Analog Devices Inc.
+ * Copyright 2016 Analog Devices Inc.
  *
  * Licensed under the GPL-2.
  */
@@ -9,7 +9,6 @@
 #ifndef IIO_TRX_AD9371_H_
 #define IIO_TRX_AD9371_H_
 
-#include <linux/mutex.h>
 #include "mykonos/t_mykonos.h"
 
 #define MIN_GAIN_mdB		0
@@ -37,14 +36,8 @@ enum debugfs_cmd {
 	DBGFS_LOOPBACK_TX_RX,
 	DBGFS_LOOPBACK_TX_OBS,
 	DBGFS_BIST_PRBS_RX,
-	DBGFS_BIST_PRBS_ERR_RX,
 	DBGFS_BIST_PRBS_OBS,
-	DBGFS_BIST_PRBS_ERR_OBS,
-	DBGFS_BIST_PRBS_TX,
-	DBGFS_BIST_PRBS_ERR_TX,
 	DBGFS_BIST_TONE,
-	DBGFS_MONITOR_OUT,
-	DBGFS_PLLS_STATUS,
 };
 
 
@@ -188,8 +181,6 @@ struct ad9371_rf_phy {
 	mykonosDevice_t 	*mykDevice;
 	struct clk 		*dev_clk;
 	struct clk 		*fmc_clk;
-	struct clk		*sysref_dev_clk;
-	struct clk		*sysref_fmc_clk;
 	struct clk 		*jesd_rx_clk;
 	struct clk 		*jesd_tx_clk;
 	struct clk 		*jesd_rx_os_clk;
@@ -199,16 +190,12 @@ struct ad9371_rf_phy {
 	struct ad9371_clock	clk_priv[NUM_AD9371_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9371_phy_platform_data *pdata;
-	struct ad9371_debugfs_entry debugfs_entry[339];
+	struct ad9371_debugfs_entry debugfs_entry[338];
 	struct bin_attribute 	bin;
 	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
-	struct jesd204_dev	*jdev;
-	/* protect against device accesses */
-	struct mutex		lock;
 
 	struct gpio_desc	*reset_gpio;
-	struct gpio_desc	*test_gpio;
 	struct gpio_desc	*sysref_req_gpio;
 	struct gain_table_info  gt_info[LOOPBACK_GT + 1];
 
@@ -233,34 +220,13 @@ struct ad9371_rf_phy {
 	u32			init_cal_mask;
 	u32			cal_mask;
 	u32			rf_bandwith[3];
-	bool			is_initialized;
-	bool			large_freq_step_cal_en;
 };
 
+int ad9371_hdl_loopback(struct ad9371_rf_phy *phy, bool enable);
 int ad9371_register_axi_converter(struct ad9371_rf_phy *phy);
 struct ad9371_rf_phy* ad9371_spi_to_phy(struct spi_device *spi);
 int ad9371_spi_read(struct spi_device *spi, u32 reg);
 int ad9371_spi_write(struct spi_device *spi, u32 reg, u32 val);
-
-
-static inline bool has_tx_and_en(struct ad9371_rf_phy *phy)
-{
-	return (phy->mykDevice->tx->txChannels != TXOFF) &&
-		!IS_ERR_OR_NULL(phy->jesd_tx_clk);
-}
-
-static inline bool has_obs_and_en(struct ad9371_rf_phy *phy)
-{
-	return (phy->mykDevice->obsRx->obsRxChannelsEnable != MYK_OBS_RXOFF) &&
-		!IS_ERR_OR_NULL(phy->jesd_rx_os_clk);
-}
-
-static inline bool has_rx_and_en(struct ad9371_rf_phy *phy)
-{
-
-	return (phy->mykDevice->rx->rxChannels != RXOFF) &&
-		!IS_ERR_OR_NULL(phy->jesd_rx_clk);
-}
 
 #endif
 

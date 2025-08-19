@@ -1,13 +1,12 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Access vector cache interface for the security server.
  *
- * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
+ * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
  */
 #ifndef _SELINUX_AVC_SS_H_
 #define _SELINUX_AVC_SS_H_
 
-#include <linux/types.h>
+#include "flask.h"
 
 int avc_ss_reset(u32 seqno);
 
@@ -17,7 +16,13 @@ struct security_class_mapping {
 	const char *perms[sizeof(u32) * 8 + 1];
 };
 
-extern const struct security_class_mapping secclass_map[];
+extern struct security_class_mapping secclass_map[];
+
+/*
+ * The security server must be initialized before
+ * any labeling or access decisions can be provided.
+ */
+extern int ss_initialized;
 
 #endif /* _SELINUX_AVC_SS_H_ */
 

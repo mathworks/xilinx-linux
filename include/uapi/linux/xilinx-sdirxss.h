@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-
 #ifndef __UAPI_XILINX_SDIRXSS_H__
 #define __UAPI_XILINX_SDIRXSS_H__
 
@@ -9,12 +7,10 @@
 /*
  * Events
  *
- * V4L2_EVENT_XLNXSDIRX_UNDERFLOW: Video in to AXI4 Stream core underflowed
- * V4L2_EVENT_XLNXSDIRX_OVERFLOW: Video in to AXI4 Stream core overflowed
+ * V4L2_EVENT_XLNXSDIRX_VIDUNLOCK: Video unlock event
  */
 #define V4L2_EVENT_XLNXSDIRX_CLASS	(V4L2_EVENT_PRIVATE_START | 0x200)
-#define V4L2_EVENT_XLNXSDIRX_UNDERFLOW	(V4L2_EVENT_XLNXSDIRX_CLASS | 0x1)
-#define V4L2_EVENT_XLNXSDIRX_OVERFLOW	(V4L2_EVENT_XLNXSDIRX_CLASS | 0x2)
+#define V4L2_EVENT_XLNXSDIRX_VIDUNLOCK	(V4L2_EVENT_XLNXSDIRX_CLASS | 0x1)
 
 /*
  * This enum is used to prepare the bitmask
@@ -36,6 +32,14 @@ enum {
 					BIT(XSDIRX_MODE_6G_OFFSET) | \
 					BIT(XSDIRX_MODE_12GI_OFFSET) | \
 					BIT(XSDIRX_MODE_12GF_OFFSET))
+
+/*
+ * AXIS4 Bridge Status
+ */
+
+#define	XSDIRX_AXIS4_STATUS_OK		0x0
+#define	XSDIRX_AXIS4_STATUS_OVERFLOW	0x1
+#define	XSDIRX_AXIS4_STATUS_UNDERFLOW	0x2
 
 /*
  * EDH Error Types

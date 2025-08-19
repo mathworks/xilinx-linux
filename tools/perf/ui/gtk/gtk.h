@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PERF_GTK_H_
 #define _PERF_GTK_H_ 1
 
@@ -52,17 +51,16 @@ static inline GtkWidget *perf_gtk__setup_info_bar(void)
 }
 #endif
 
-struct evsel;
-struct evlist;
+struct perf_evsel;
+struct perf_evlist;
 struct hist_entry;
 struct hist_browser_timer;
-struct annotation_options;
 
-int evlist__gtk_browse_hists(struct evlist *evlist, const char *help,
-			     struct hist_browser_timer *hbt, float min_pcnt);
+int perf_evlist__gtk_browse_hists(struct perf_evlist *evlist, const char *help,
+				  struct hist_browser_timer *hbt,
+				  float min_pcnt);
 int hist_entry__gtk_annotate(struct hist_entry *he,
-			     struct evsel *evsel,
-			     struct annotation_options *options,
+			     struct perf_evsel *evsel,
 			     struct hist_browser_timer *hbt);
 void perf_gtk__show_annotations(void);
 

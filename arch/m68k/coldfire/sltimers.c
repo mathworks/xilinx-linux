@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /***************************************************************************/
 
 /*
@@ -50,19 +49,18 @@ irqreturn_t mcfslt_profile_tick(int irq, void *dummy)
 	return IRQ_HANDLED;
 }
 
+static struct irqaction mcfslt_profile_irq = {
+	.name	 = "profile timer",
+	.flags	 = IRQF_TIMER,
+	.handler = mcfslt_profile_tick,
+};
+
 void mcfslt_profile_init(void)
 {
-	int ret;
-
 	printk(KERN_INFO "PROFILE: lodging TIMER 1 @ %dHz as profile timer\n",
 	       PROFILEHZ);
 
-	ret = request_irq(MCF_IRQ_PROFILER, mcfslt_profile_tick, IRQF_TIMER,
-			  "profile timer", NULL);
-	if (ret) {
-		pr_err("Failed to request irq %d (profile timer): %pe\n",
-		       MCF_IRQ_PROFILER, ERR_PTR(ret));
-	}
+	setup_irq(MCF_IRQ_PROFILER, &mcfslt_profile_irq);
 
 	/* Set up TIMER 2 as high speed profile clock */
 	__raw_writel(MCF_BUSCLK / PROFILEHZ - 1, PA(MCFSLT_STCNT));
@@ -83,16 +81,23 @@ void mcfslt_profile_init(void)
 static u32 mcfslt_cycles_per_jiffy;
 static u32 mcfslt_cnt;
 
+static irq_handler_t timer_interrupt;
+
 static irqreturn_t mcfslt_tick(int irq, void *dummy)
 {
 	/* Reset Slice Timer 0 */
 	__raw_writel(MCFSLT_SSR_BE | MCFSLT_SSR_TE, TA(MCFSLT_SSR));
 	mcfslt_cnt += mcfslt_cycles_per_jiffy;
-	legacy_timer_tick(1);
-	return IRQ_HANDLED;
+	return timer_interrupt(irq, dummy);
 }
 
-static u64 mcfslt_read_clk(struct clocksource *cs)
+static struct irqaction mcfslt_timer_irq = {
+	.name	 = "timer",
+	.flags	 = IRQF_TIMER,
+	.handler = mcfslt_tick,
+};
+
+static cycle_t mcfslt_read_clk(struct clocksource *cs)
 {
 	unsigned long flags;
 	u32 cycles, scnt;
@@ -118,10 +123,8 @@ static struct clocksource mcfslt_clk = {
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
-void hw_timer_init(void)
+void hw_timer_init(irq_handler_t handler)
 {
-	int r;
-
 	mcfslt_cycles_per_jiffy = MCF_BUSCLK / HZ;
 	/*
 	 *	The coldfire slice timer (SLT) runs from STCNT to 0 included,
@@ -135,11 +138,8 @@ void hw_timer_init(void)
 	/* initialize mcfslt_cnt knowing that slice timers count down */
 	mcfslt_cnt = mcfslt_cycles_per_jiffy;
 
-	r = request_irq(MCF_IRQ_TIMER, mcfslt_tick, IRQF_TIMER, "timer", NULL);
-	if (r) {
-		pr_err("Failed to request irq %d (timer): %pe\n", MCF_IRQ_TIMER,
-		       ERR_PTR(r));
-	}
+	timer_interrupt = handler;
+	setup_irq(MCF_IRQ_TIMER, &mcfslt_timer_irq);
 
 	clocksource_register_hz(&mcfslt_clk, MCF_BUSCLK);
 

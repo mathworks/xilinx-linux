@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 
@@ -33,6 +32,12 @@ int gpio_request_one(unsigned gpio, unsigned long flags, const char *label)
 	if (err)
 		return err;
 
+	if (flags & GPIOF_OPEN_DRAIN)
+		set_bit(FLAG_OPEN_DRAIN, &desc->flags);
+
+	if (flags & GPIOF_OPEN_SOURCE)
+		set_bit(FLAG_OPEN_SOURCE, &desc->flags);
+
 	if (flags & GPIOF_ACTIVE_LOW)
 		set_bit(FLAG_ACTIVE_LOW, &desc->flags);
 
@@ -44,6 +49,12 @@ int gpio_request_one(unsigned gpio, unsigned long flags, const char *label)
 
 	if (err)
 		goto free_gpio;
+
+	if (flags & GPIOF_EXPORT) {
+		err = gpiod_export(desc, flags & GPIOF_EXPORT_CHANGEABLE);
+		if (err)
+			goto free_gpio;
+	}
 
 	return 0;
 

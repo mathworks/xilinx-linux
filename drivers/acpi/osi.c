@@ -1,9 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  osi.c - _OSI implementation
  *
  *  Copyright (C) 2016 Intel Corporation
  *    Author: Lv Zheng <lv.zheng@intel.com>
+ *
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or (at
+ *  your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but
+ *  WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ *  General Public License for more details.
+ *
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
 /* Uncomment next line to get verbose printout */
@@ -14,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/acpi.h>
 #include <linux/dmi.h>
-#include <linux/platform_data/x86/apple.h>
 
 #include "internal.h"
 
@@ -245,19 +257,26 @@ bool acpi_osi_is_win8(void)
 }
 EXPORT_SYMBOL(acpi_osi_is_win8);
 
-static void __init acpi_osi_dmi_darwin(void)
+static void __init acpi_osi_dmi_darwin(bool enable,
+				       const struct dmi_system_id *d)
 {
-	pr_notice("DMI detected to setup _OSI(\"Darwin\"): Apple hardware\n");
+	pr_notice("DMI detected to setup _OSI(\"Darwin\"): %s\n", d->ident);
 	osi_config.darwin_dmi = 1;
-	__acpi_osi_setup_darwin(true);
+	__acpi_osi_setup_darwin(enable);
 }
 
-static void __init acpi_osi_dmi_linux(bool enable,
-				      const struct dmi_system_id *d)
+void __init acpi_osi_dmi_linux(bool enable, const struct dmi_system_id *d)
 {
 	pr_notice("DMI detected to setup _OSI(\"Linux\"): %s\n", d->ident);
 	osi_config.linux_dmi = 1;
 	__acpi_osi_setup_linux(enable);
+}
+
+static int __init dmi_enable_osi_darwin(const struct dmi_system_id *d)
+{
+	acpi_osi_dmi_darwin(true, d);
+
+	return 0;
 }
 
 static int __init dmi_enable_osi_linux(const struct dmi_system_id *d)
@@ -299,7 +318,7 @@ static int __init dmi_disable_osi_win8(const struct dmi_system_id *d)
  * Note that _OSI("Linux")/_OSI("Darwin") determined here can be overridden
  * by acpi_osi=!Linux/acpi_osi=!Darwin command line options.
  */
-static const struct dmi_system_id acpi_osi_dmi_table[] __initconst = {
+static struct dmi_system_id acpi_osi_dmi_table[] __initdata = {
 	{
 	.callback = dmi_disable_osi_vista,
 	.ident = "Fujitsu Siemens",
@@ -449,9 +468,9 @@ static const struct dmi_system_id acpi_osi_dmi_table[] __initconst = {
 	 */
 
 	/*
-	 * Without this EEEpc exports a non working WMI interface, with
-	 * this it exports a working "good old" eeepc_laptop interface,
-	 * fixing both brightness control, and rfkill not working.
+	 * Without this this EEEpc exports a non working WMI interface, with
+	 * this it exports a working "good old" eeepc_laptop interface, fixing
+	 * both brightness control, and rfkill not working.
 	 */
 	{
 	.callback = dmi_enable_osi_linux,
@@ -461,16 +480,30 @@ static const struct dmi_system_id acpi_osi_dmi_table[] __initconst = {
 		     DMI_MATCH(DMI_PRODUCT_NAME, "1015PX"),
 		},
 	},
+
+	/*
+	 * Enable _OSI("Darwin") for all apple platforms.
+	 */
+	{
+	.callback = dmi_enable_osi_darwin,
+	.ident = "Apple hardware",
+	.matches = {
+		     DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
+		},
+	},
+	{
+	.callback = dmi_enable_osi_darwin,
+	.ident = "Apple hardware",
+	.matches = {
+		     DMI_MATCH(DMI_SYS_VENDOR, "Apple Computer, Inc."),
+		},
+	},
 	{}
 };
 
 static __init void acpi_osi_dmi_blacklisted(void)
 {
 	dmi_check_system(acpi_osi_dmi_table);
-
-	/* Enable _OSI("Darwin") for Apple platforms. */
-	if (x86_apple_machine)
-		acpi_osi_dmi_darwin();
 }
 
 int __init early_acpi_osi_init(void)

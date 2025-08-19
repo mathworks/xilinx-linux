@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Battery measurement code for WM97xx
  *
  * based on tosa_battery.c
  *
  * Copyright (C) 2008 Marek Vasut <marek.vasut@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  */
 
 #include <linux/init.h>
@@ -15,19 +19,19 @@
 #include <linux/wm97xx.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/irq.h>
 #include <linux/slab.h>
 
 static struct work_struct bat_work;
-static struct gpio_desc *charge_gpiod;
 static DEFINE_MUTEX(work_lock);
 static int bat_status = POWER_SUPPLY_STATUS_UNKNOWN;
 static enum power_supply_property *prop;
 
 static unsigned long wm97xx_read_bat(struct power_supply *bat_ps)
 {
-	struct wm97xx_batt_pdata *pdata = power_supply_get_drvdata(bat_ps);
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
+	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev.parent),
 					pdata->batt_aux) * pdata->batt_mult /
@@ -36,7 +40,8 @@ static unsigned long wm97xx_read_bat(struct power_supply *bat_ps)
 
 static unsigned long wm97xx_read_temp(struct power_supply *bat_ps)
 {
-	struct wm97xx_batt_pdata *pdata = power_supply_get_drvdata(bat_ps);
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
+	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev.parent),
 					pdata->temp_aux) * pdata->temp_mult /
@@ -47,7 +52,8 @@ static int wm97xx_bat_get_property(struct power_supply *bat_ps,
 			    enum power_supply_property psp,
 			    union power_supply_propval *val)
 {
-	struct wm97xx_batt_pdata *pdata = power_supply_get_drvdata(bat_ps);
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
+	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -97,11 +103,13 @@ static void wm97xx_bat_external_power_changed(struct power_supply *bat_ps)
 static void wm97xx_bat_update(struct power_supply *bat_ps)
 {
 	int old_status = bat_status;
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
+	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	mutex_lock(&work_lock);
 
-	bat_status = (charge_gpiod) ?
-			(gpiod_get_value(charge_gpiod) ?
+	bat_status = (pdata->charge_gpio >= 0) ?
+			(gpio_get_value(pdata->charge_gpio) ?
 			POWER_SUPPLY_STATUS_DISCHARGING :
 			POWER_SUPPLY_STATUS_CHARGING) :
 			POWER_SUPPLY_STATUS_UNKNOWN;
@@ -158,32 +166,36 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	int ret = 0;
 	int props = 1;	/* POWER_SUPPLY_PROP_PRESENT */
 	int i = 0;
-	struct wm97xx_batt_pdata *pdata = dev->dev.platform_data;
-	struct power_supply_config cfg = {};
+	struct wm97xx_pdata *wmdata = dev->dev.platform_data;
+	struct wm97xx_batt_pdata *pdata;
 
-	if (!pdata) {
+	if (!wmdata) {
 		dev_err(&dev->dev, "No platform data supplied\n");
 		return -EINVAL;
 	}
 
-	cfg.drv_data = pdata;
+	pdata = wmdata->batt_pdata;
 
 	if (dev->id != -1)
 		return -EINVAL;
 
-	charge_gpiod = devm_gpiod_get_optional(&dev->dev, NULL, GPIOD_IN);
-	if (IS_ERR(charge_gpiod))
-		return dev_err_probe(&dev->dev,
-				     PTR_ERR(charge_gpiod),
-				     "failed to get charge GPIO\n");
-	if (charge_gpiod) {
-		gpiod_set_consumer_name(charge_gpiod, "BATT CHRG");
-		ret = request_irq(gpiod_to_irq(charge_gpiod),
+	if (!pdata) {
+		dev_err(&dev->dev, "No platform_data supplied\n");
+		return -EINVAL;
+	}
+
+	if (gpio_is_valid(pdata->charge_gpio)) {
+		ret = gpio_request(pdata->charge_gpio, "BATT CHRG");
+		if (ret)
+			goto err;
+		ret = gpio_direction_input(pdata->charge_gpio);
+		if (ret)
+			goto err2;
+		ret = request_irq(gpio_to_irq(pdata->charge_gpio),
 				wm97xx_chrg_irq, 0,
 				"AC Detect", dev);
 		if (ret)
-			return dev_err_probe(&dev->dev, ret,
-					     "failed to request GPIO irq\n");
+			goto err2;
 		props++;	/* POWER_SUPPLY_PROP_STATUS */
 	}
 
@@ -198,14 +210,14 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	if (pdata->min_voltage >= 0)
 		props++;	/* POWER_SUPPLY_PROP_VOLTAGE_MIN */
 
-	prop = kcalloc(props, sizeof(*prop), GFP_KERNEL);
+	prop = kzalloc(props * sizeof(*prop), GFP_KERNEL);
 	if (!prop) {
 		ret = -ENOMEM;
 		goto err3;
 	}
 
 	prop[i++] = POWER_SUPPLY_PROP_PRESENT;
-	if (charge_gpiod)
+	if (pdata->charge_gpio >= 0)
 		prop[i++] = POWER_SUPPLY_PROP_STATUS;
 	if (pdata->batt_tech >= 0)
 		prop[i++] = POWER_SUPPLY_PROP_TECHNOLOGY;
@@ -231,7 +243,7 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	bat_psy_desc.properties = prop;
 	bat_psy_desc.num_properties = props;
 
-	bat_psy = power_supply_register(&dev->dev, &bat_psy_desc, &cfg);
+	bat_psy = power_supply_register(&dev->dev, &bat_psy_desc, NULL);
 	if (!IS_ERR(bat_psy)) {
 		schedule_work(&bat_work);
 	} else {
@@ -243,15 +255,24 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 err4:
 	kfree(prop);
 err3:
-	if (charge_gpiod)
-		free_irq(gpiod_to_irq(charge_gpiod), dev);
+	if (gpio_is_valid(pdata->charge_gpio))
+		free_irq(gpio_to_irq(pdata->charge_gpio), dev);
+err2:
+	if (gpio_is_valid(pdata->charge_gpio))
+		gpio_free(pdata->charge_gpio);
+err:
 	return ret;
 }
 
 static int wm97xx_bat_remove(struct platform_device *dev)
 {
-	if (charge_gpiod)
-		free_irq(gpiod_to_irq(charge_gpiod), dev);
+	struct wm97xx_pdata *wmdata = dev->dev.platform_data;
+	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
+
+	if (pdata && gpio_is_valid(pdata->charge_gpio)) {
+		free_irq(gpio_to_irq(pdata->charge_gpio), dev);
+		gpio_free(pdata->charge_gpio);
+	}
 	cancel_work_sync(&bat_work);
 	power_supply_unregister(bat_psy);
 	kfree(prop);
@@ -271,5 +292,6 @@ static struct platform_driver wm97xx_bat_driver = {
 
 module_platform_driver(wm97xx_bat_driver);
 
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Marek Vasut <marek.vasut@gmail.com>");
 MODULE_DESCRIPTION("WM97xx battery driver");

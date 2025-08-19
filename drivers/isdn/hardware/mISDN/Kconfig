@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-only
 #
 # Hardware for mISDN
 #
@@ -10,11 +9,11 @@ config MISDN_HFCPCI
 	depends on PCI
 	help
 	  Enable support for cards with Cologne Chip AG's
-	  HFC PCI chip.
+          HFC PCI chip.
 
 config MISDN_HFCMULTI
 	tristate "Support for HFC multiport cards (HFC-4S/8S/E1)"
-	depends on (PCI || CPM1) && HAS_IOPORT
+	depends on PCI || 8xx
 	depends on MISDN
 	help
 	  Enable support for cards with Cologne Chip AG's HFC multiport
@@ -28,8 +27,8 @@ config MISDN_HFCMULTI_8xx
 	bool "Support for XHFC embedded board in HFC multiport driver"
 	depends on MISDN
 	depends on MISDN_HFCMULTI
-	depends on CPM1
-	default CPM1
+	depends on 8xx
+	default 8xx
 	help
 	  Enable support for the XHFC embedded solution from Speech Design.
 
@@ -43,7 +42,7 @@ config MISDN_HFCUSB
 config MISDN_AVMFRITZ
 	tristate "Support for AVM FRITZ!CARD PCI"
 	depends on MISDN
-	depends on PCI && HAS_IOPORT
+	depends on PCI
 	select MISDN_IPAC
 	help
 	  Enable support for AVMs FRITZ!CARD PCI cards
@@ -51,7 +50,7 @@ config MISDN_AVMFRITZ
 config MISDN_SPEEDFAX
 	tristate "Support for Sedlbauer Speedfax+"
 	depends on MISDN
-	depends on PCI && HAS_IOPORT
+	depends on PCI
 	select MISDN_IPAC
 	select MISDN_ISAR
 	help
@@ -60,7 +59,7 @@ config MISDN_SPEEDFAX
 config MISDN_INFINEON
 	tristate "Support for cards with Infineon chipset"
 	depends on MISDN
-	depends on PCI && HAS_IOPORT
+	depends on PCI
 	select MISDN_IPAC
 	help
 	  Enable support for cards with ISAC + HSCX, IPAC or IPAC-SX
@@ -69,24 +68,21 @@ config MISDN_INFINEON
 config MISDN_W6692
 	tristate "Support for cards with Winbond 6692"
 	depends on MISDN
-	depends on PCI && HAS_IOPORT
+	depends on PCI
 	help
 	  Enable support for Winbond 6692 PCI chip based cards.
 
 config MISDN_NETJET
 	tristate "Support for NETJet cards"
 	depends on MISDN
-	depends on PCI && HAS_IOPORT
+	depends on PCI
 	depends on TTY
 	select MISDN_IPAC
-	select MISDN_HDLC
+	select ISDN_HDLC
+	select ISDN_I4L
 	help
 	  Enable support for Traverse Technologies NETJet PCI cards.
 
-config MISDN_HDLC
-	tristate
-	select CRC_CCITT
-	select BITREVERSE
 
 config MISDN_IPAC
 	tristate

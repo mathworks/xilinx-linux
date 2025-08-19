@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * \file talise_arm.h
  * \brief Contains Talise ARM related function prototypes for talise_arm.c
  *
- * Talise API version: 3.6.2.1
+ * Talise API version: 3.4.0.0
  *
  * Copyright 2015-2017 Analog Devices Inc.
  * Released under the AD9378-AD9379 API license, for more information see the "LICENSE.txt" file in this zip file.
@@ -363,7 +362,7 @@ uint32_t TALISE_loadAdcProfiles(taliseDevice_t *device, uint16_t *rxAdcProfile, 
  * - device->spiSettings->chipSelectIndex
  *
  * \param device is structure pointer to the Talise data structure containing settings
- * \param talArmVersionInfo is a pointer to a structure containing the ARM binary version and
+ * \param taliseArmVersionInfo_t is a pointer to a structure containing the ARM binary version and
  * build type data
  *
  * \retval TALACT_NO_ACTION Function completed successfully

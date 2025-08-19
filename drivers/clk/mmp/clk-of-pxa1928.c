@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pxa1928 clock framework source file
  *
@@ -8,6 +7,10 @@
  * Based on drivers/clk/mmp/clk-of-mmp2.c:
  * Copyright (C) 2012 Marvell
  * Chao Xie <xiechao.mail@gmail.com>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 #include <linux/kernel.h>
 #include <linux/io.h>
@@ -21,9 +24,6 @@
 #include "reset.h"
 
 #define MPMU_UART_PLL	0x14
-
-#define APBC_NR_CLKS	48
-#define APMU_NR_CLKS	96
 
 struct pxa1928_clk_unit {
 	struct mmp_clk_unit unit;
@@ -68,6 +68,7 @@ static struct mmp_clk_factor_tbl uart_factor_tbl[] = {
 
 static void pxa1928_pll_init(struct pxa1928_clk_unit *pxa_unit)
 {
+	struct clk *clk;
 	struct mmp_clk_unit *unit = &pxa_unit->unit;
 
 	mmp_register_fixed_rate_clks(unit, fixed_rate_clks,
@@ -76,7 +77,7 @@ static void pxa1928_pll_init(struct pxa1928_clk_unit *pxa_unit)
 	mmp_register_fixed_factor_clks(unit, fixed_factor_clks,
 					ARRAY_SIZE(fixed_factor_clks));
 
-	mmp_clk_register_factor("uart_pll", "pll1_416",
+	clk = mmp_clk_register_factor("uart_pll", "pll1_416",
 				CLK_SET_RATE_PARENT,
 				pxa_unit->mpmu_base + MPMU_UART_PLL,
 				&uart_factor_masks, uart_factor_tbl,
@@ -215,7 +216,6 @@ static void __init pxa1928_mpmu_clk_init(struct device_node *np)
 	pxa_unit->mpmu_base = of_iomap(np, 0);
 	if (!pxa_unit->mpmu_base) {
 		pr_err("failed to map mpmu registers\n");
-		kfree(pxa_unit);
 		return;
 	}
 
@@ -234,11 +234,10 @@ static void __init pxa1928_apmu_clk_init(struct device_node *np)
 	pxa_unit->apmu_base = of_iomap(np, 0);
 	if (!pxa_unit->apmu_base) {
 		pr_err("failed to map apmu registers\n");
-		kfree(pxa_unit);
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, APMU_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APMU_NR_CLKS);
 
 	pxa1928_axi_periph_clk_init(pxa_unit);
 }
@@ -255,11 +254,10 @@ static void __init pxa1928_apbc_clk_init(struct device_node *np)
 	pxa_unit->apbc_base = of_iomap(np, 0);
 	if (!pxa_unit->apbc_base) {
 		pr_err("failed to map apbc registers\n");
-		kfree(pxa_unit);
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, APBC_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APBC_NR_CLKS);
 
 	pxa1928_apb_periph_clk_init(pxa_unit);
 	pxa1928_clk_reset_init(np, pxa_unit);

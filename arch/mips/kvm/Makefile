@@ -1,20 +1,16 @@
-# SPDX-License-Identifier: GPL-2.0
 # Makefile for KVM support for MIPS
 #
 
-include $(srctree)/virt/kvm/Makefile.kvm
+common-objs-y = $(addprefix ../../../virt/kvm/, kvm_main.o coalesced_mmio.o)
 
-ccflags-y += -Ivirt/kvm -Iarch/mips/kvm
+EXTRA_CFLAGS += -Ivirt/kvm -Iarch/mips/kvm
 
-kvm-$(CONFIG_CPU_HAS_MSA) += msa.o
+common-objs-$(CONFIG_CPU_HAS_MSA) += msa.o
 
-kvm-y +=    mips.o emulate.o entry.o \
-	    interrupt.o stats.o \
-	    fpu.o
-kvm-y += hypcall.o
-kvm-y += mmu.o
-kvm-$(CONFIG_CPU_LOONGSON64) += loongson_ipi.o
+kvm-objs := $(common-objs-y) mips.o emulate.o entry.o \
+	    interrupt.o stats.o commpage.o \
+	    dyntrans.o trap_emul.o fpu.o
+kvm-objs += mmu.o
 
-kvm-y		+= vz.o
 obj-$(CONFIG_KVM)	+= kvm.o
-obj-y			+= tlb.o
+obj-y			+= callback.o tlb.o

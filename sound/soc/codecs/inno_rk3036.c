@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver of Inno codec for rk3036 by Rockchip Inc.
  *
@@ -48,9 +47,11 @@ static int rk3036_codec_antipop_get(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	int val, regval;
+	int val, ret, regval;
 
-	regval = snd_soc_component_read(component, INNO_R09);
+	ret = snd_soc_component_read(component, INNO_R09, &regval);
+	if (ret)
+		return ret;
 	val = ((regval >> INNO_R09_HPL_ANITPOP_SHIFT) &
 	       INNO_R09_HP_ANTIPOP_MSK) == INNO_R09_HP_ANTIPOP_ON;
 	ucontrol->value.integer.value[0] = val;
@@ -195,22 +196,22 @@ static const struct snd_soc_dapm_route rk3036_codec_dapm_routes[] = {
 
 static int rk3036_codec_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct snd_soc_component *component = dai->component;
+	struct snd_soc_codec *codec = dai->codec;
 	unsigned int reg01_val = 0,  reg02_val = 0, reg03_val = 0;
 
-	dev_dbg(component->dev, "rk3036_codec dai set fmt : %08x\n", fmt);
+	dev_dbg(codec->dev, "rk3036_codec dai set fmt : %08x\n", fmt);
 
-	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:
+	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	case SND_SOC_DAIFMT_CBS_CFS:
 		reg01_val |= INNO_R01_PINDIR_IN_SLAVE |
 			     INNO_R01_I2SMODE_SLAVE;
 		break;
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		reg01_val |= INNO_R01_PINDIR_OUT_MASTER |
 			     INNO_R01_I2SMODE_MASTER;
 		break;
 	default:
-		dev_err(component->dev, "invalid fmt\n");
+		dev_err(codec->dev, "invalid fmt\n");
 		return -EINVAL;
 	}
 
@@ -228,7 +229,7 @@ static int rk3036_codec_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		reg02_val |= INNO_R02_DACM_LJM;
 		break;
 	default:
-		dev_err(component->dev, "set dai format failed\n");
+		dev_err(codec->dev, "set dai format failed\n");
 		return -EINVAL;
 	}
 
@@ -250,15 +251,15 @@ static int rk3036_codec_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		reg03_val |= INNO_R03_BCP_REVERSAL;
 		break;
 	default:
-		dev_err(component->dev, "set dai format failed\n");
+		dev_err(codec->dev, "set dai format failed\n");
 		return -EINVAL;
 	}
 
-	snd_soc_component_update_bits(component, INNO_R01, INNO_R01_I2SMODE_MSK |
+	snd_soc_update_bits(codec, INNO_R01, INNO_R01_I2SMODE_MSK |
 			    INNO_R01_PINDIR_MSK, reg01_val);
-	snd_soc_component_update_bits(component, INNO_R02, INNO_R02_LRCP_MSK |
+	snd_soc_update_bits(codec, INNO_R02, INNO_R02_LRCP_MSK |
 			    INNO_R02_DACM_MSK, reg02_val);
-	snd_soc_component_update_bits(component, INNO_R03, INNO_R03_BCP_MSK, reg03_val);
+	snd_soc_update_bits(codec, INNO_R03, INNO_R03_BCP_MSK, reg03_val);
 
 	return 0;
 }
@@ -267,7 +268,7 @@ static int rk3036_codec_dai_hw_params(struct snd_pcm_substream *substream,
 				      struct snd_pcm_hw_params *hw_params,
 				      struct snd_soc_dai *dai)
 {
-	struct snd_soc_component *component = dai->component;
+	struct snd_soc_codec *codec = dai->codec;
 	unsigned int reg02_val = 0, reg03_val = 0;
 
 	switch (params_format(hw_params)) {
@@ -290,9 +291,9 @@ static int rk3036_codec_dai_hw_params(struct snd_pcm_substream *substream,
 	reg02_val |= INNO_R02_LRCP_NORMAL;
 	reg03_val |= INNO_R03_FWL_32BIT | INNO_R03_DACR_WORK;
 
-	snd_soc_component_update_bits(component, INNO_R02, INNO_R02_LRCP_MSK |
+	snd_soc_update_bits(codec, INNO_R02, INNO_R02_LRCP_MSK |
 			    INNO_R02_VWL_MSK, reg02_val);
-	snd_soc_component_update_bits(component, INNO_R03, INNO_R03_DACR_MSK |
+	snd_soc_update_bits(codec, INNO_R03, INNO_R03_DACR_MSK |
 			    INNO_R03_FWL_MSK, reg03_val);
 	return 0;
 }
@@ -309,7 +310,7 @@ static int rk3036_codec_dai_hw_params(struct snd_pcm_substream *substream,
 			   SNDRV_PCM_FMTBIT_S24_LE  | \
 			   SNDRV_PCM_FMTBIT_S32_LE)
 
-static const struct snd_soc_dai_ops rk3036_codec_dai_ops = {
+static struct snd_soc_dai_ops rk3036_codec_dai_ops = {
 	.set_fmt	= rk3036_codec_dai_set_fmt,
 	.hw_params	= rk3036_codec_dai_hw_params,
 };
@@ -325,46 +326,47 @@ static struct snd_soc_dai_driver rk3036_codec_dai_driver[] = {
 			.formats = RK3036_CODEC_FMTS,
 		},
 		.ops = &rk3036_codec_dai_ops,
-		.symmetric_rate = 1,
+		.symmetric_rates = 1,
 	},
 };
 
-static void rk3036_codec_reset(struct snd_soc_component *component)
+static void rk3036_codec_reset(struct snd_soc_codec *codec)
 {
-	snd_soc_component_write(component, INNO_R00,
+	snd_soc_write(codec, INNO_R00,
 		      INNO_R00_CSR_RESET | INNO_R00_CDCR_RESET);
-	snd_soc_component_write(component, INNO_R00,
+	snd_soc_write(codec, INNO_R00,
 		      INNO_R00_CSR_WORK | INNO_R00_CDCR_WORK);
 }
 
-static int rk3036_codec_probe(struct snd_soc_component *component)
+static int rk3036_codec_probe(struct snd_soc_codec *codec)
 {
-	rk3036_codec_reset(component);
+	rk3036_codec_reset(codec);
 	return 0;
 }
 
-static void rk3036_codec_remove(struct snd_soc_component *component)
+static int rk3036_codec_remove(struct snd_soc_codec *codec)
 {
-	rk3036_codec_reset(component);
+	rk3036_codec_reset(codec);
+	return 0;
 }
 
-static int rk3036_codec_set_bias_level(struct snd_soc_component *component,
+static int rk3036_codec_set_bias_level(struct snd_soc_codec *codec,
 				       enum snd_soc_bias_level level)
 {
 	switch (level) {
 	case SND_SOC_BIAS_STANDBY:
 		/* set a big current for capacitor charging. */
-		snd_soc_component_write(component, INNO_R10, INNO_R10_MAX_CUR);
+		snd_soc_write(codec, INNO_R10, INNO_R10_MAX_CUR);
 		/* start precharge */
-		snd_soc_component_write(component, INNO_R06, INNO_R06_DAC_PRECHARGE);
+		snd_soc_write(codec, INNO_R06, INNO_R06_DAC_PRECHARGE);
 
 		break;
 
 	case SND_SOC_BIAS_OFF:
 		/* set a big current for capacitor discharging. */
-		snd_soc_component_write(component, INNO_R10, INNO_R10_MAX_CUR);
+		snd_soc_write(codec, INNO_R10, INNO_R10_MAX_CUR);
 		/* start discharge. */
-		snd_soc_component_write(component, INNO_R06, INNO_R06_DAC_DISCHARGE);
+		snd_soc_write(codec, INNO_R06, INNO_R06_DAC_DISCHARGE);
 
 		break;
 	default:
@@ -374,19 +376,18 @@ static int rk3036_codec_set_bias_level(struct snd_soc_component *component,
 	return 0;
 }
 
-static const struct snd_soc_component_driver rk3036_codec_driver = {
+static struct snd_soc_codec_driver rk3036_codec_driver = {
 	.probe			= rk3036_codec_probe,
 	.remove			= rk3036_codec_remove,
 	.set_bias_level		= rk3036_codec_set_bias_level,
-	.controls		= rk3036_codec_dapm_controls,
-	.num_controls		= ARRAY_SIZE(rk3036_codec_dapm_controls),
-	.dapm_routes		= rk3036_codec_dapm_routes,
-	.num_dapm_routes	= ARRAY_SIZE(rk3036_codec_dapm_routes),
-	.dapm_widgets		= rk3036_codec_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(rk3036_codec_dapm_widgets),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
+	.component_driver = {
+		.controls		= rk3036_codec_dapm_controls,
+		.num_controls		= ARRAY_SIZE(rk3036_codec_dapm_controls),
+		.dapm_routes		= rk3036_codec_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(rk3036_codec_dapm_routes),
+		.dapm_widgets		= rk3036_codec_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(rk3036_codec_dapm_widgets),
+	},
 };
 
 static const struct regmap_config rk3036_codec_regmap_config = {
@@ -402,6 +403,7 @@ static int rk3036_codec_platform_probe(struct platform_device *pdev)
 {
 	struct rk3036_codec_priv *priv;
 	struct device_node *of_node = pdev->dev.of_node;
+	struct resource *res;
 	void __iomem *base;
 	struct regmap *grf;
 	int ret;
@@ -410,7 +412,8 @@ static int rk3036_codec_platform_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -446,7 +449,7 @@ static int rk3036_codec_platform_probe(struct platform_device *pdev)
 	priv->dev = &pdev->dev;
 	dev_set_drvdata(&pdev->dev, priv);
 
-	ret = devm_snd_soc_register_component(&pdev->dev, &rk3036_codec_driver,
+	ret = snd_soc_register_codec(&pdev->dev, &rk3036_codec_driver,
 				     rk3036_codec_dai_driver,
 				     ARRAY_SIZE(rk3036_codec_dai_driver));
 	if (ret) {
@@ -457,14 +460,17 @@ static int rk3036_codec_platform_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void rk3036_codec_platform_remove(struct platform_device *pdev)
+static int rk3036_codec_platform_remove(struct platform_device *pdev)
 {
 	struct rk3036_codec_priv *priv = dev_get_drvdata(&pdev->dev);
 
+	snd_soc_unregister_codec(&pdev->dev);
 	clk_disable_unprepare(priv->pclk);
+
+	return 0;
 }
 
-static const struct of_device_id rk3036_codec_of_match[] __maybe_unused = {
+static const struct of_device_id rk3036_codec_of_match[] = {
 	{ .compatible = "rockchip,rk3036-codec", },
 	{}
 };
@@ -476,7 +482,7 @@ static struct platform_driver rk3036_codec_platform_driver = {
 		.of_match_table = of_match_ptr(rk3036_codec_of_match),
 	},
 	.probe = rk3036_codec_platform_probe,
-	.remove_new = rk3036_codec_platform_remove,
+	.remove = rk3036_codec_platform_remove,
 };
 
 module_platform_driver(rk3036_codec_platform_driver);

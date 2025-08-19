@@ -1,6 +1,9 @@
-/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause) */
 /* QLogic qed NIC Driver
- * Copyright (c) 2015-2017  QLogic Corporation
+ * Copyright (c) 2015 QLogic Corporation
+ *
+ * This software is available under the terms of the GNU General Public License
+ * (GPL) Version 2, available from the file COPYING in the main directory of
+ * this source tree.
  */
 
 #ifndef _QED_VF_H
@@ -19,8 +22,7 @@ struct vf_pf_resc_request {
 	u8 num_mac_filters;
 	u8 num_vlan_filters;
 	u8 num_mc_filters;
-	u8 num_cids;
-	u8 padding;
+	u16 padding;
 };
 
 struct hw_sb_info {
@@ -38,7 +40,6 @@ enum {
 	PFVF_STATUS_NOT_SUPPORTED,
 	PFVF_STATUS_NO_RESOURCE,
 	PFVF_STATUS_FORCED,
-	PFVF_STATUS_MALICIOUS,
 };
 
 /* vf pf channel tlvs */
@@ -48,7 +49,7 @@ struct channel_tlv {
 	u16 length;
 };
 
-/* header of first vf->pf tlv carries the offset used to calculate response
+/* header of first vf->pf tlv carries the offset used to calculate reponse
  * buffer address
  */
 struct vfpf_first_tlv {
@@ -85,19 +86,8 @@ struct vfpf_acquire_tlv {
 	struct vfpf_first_tlv first_tlv;
 
 	struct vf_pf_vfdev_info {
-#define VFPF_ACQUIRE_CAP_PRE_FP_HSI     BIT(0) /* VF pre-FP hsi version */
-#define VFPF_ACQUIRE_CAP_100G		BIT(1) /* VF can support 100g */
-	/* A requirement for supporting multi-Tx queues on a single queue-zone,
-	 * VF would pass qids as additional information whenever passing queue
-	 * references.
-	 */
-#define VFPF_ACQUIRE_CAP_QUEUE_QIDS     BIT(2)
-
-	/* The VF is using the physical bar. While this is mostly internal
-	 * to the VF, might affect the number of CIDs supported assuming
-	 * QUEUE_QIDS is set.
-	 */
-#define VFPF_ACQUIRE_CAP_PHYSICAL_BAR   BIT(3)
+#define VFPF_ACQUIRE_CAP_PRE_FP_HSI     (1 << 0) /* VF pre-FP hsi version */
+#define VFPF_ACQUIRE_CAP_100G		(1 << 1) /* VF can support 100g */
 		u64 capabilities;
 		u8 fw_major;
 		u8 fw_minor;
@@ -170,9 +160,6 @@ struct pfvf_acquire_resp_tlv {
  */
 #define PFVF_ACQUIRE_CAP_POST_FW_OVERRIDE	BIT(2)
 
-	/* PF expects queues to be received with additional qids */
-#define PFVF_ACQUIRE_CAP_QUEUE_QIDS             BIT(3)
-
 		u16 db_size;
 		u8 indices_per_sb;
 		u8 os_type;
@@ -181,8 +168,7 @@ struct pfvf_acquire_resp_tlv {
 		u16 chip_rev;
 		u8 dev_type;
 
-		/* Doorbell bar size configured in HW: log(size) or 0 */
-		u8 bar_size;
+		u8 padding;
 
 		struct pfvf_stats_info stats_info;
 
@@ -210,8 +196,7 @@ struct pfvf_acquire_resp_tlv {
 		u8 num_mac_filters;
 		u8 num_vlan_filters;
 		u8 num_mc_filters;
-		u8 num_cids;
-		u8 padding;
+		u8 padding[2];
 	} resc;
 
 	u32 bulletin_size;
@@ -222,16 +207,6 @@ struct pfvf_start_queue_resp_tlv {
 	struct pfvf_tlv hdr;
 	u32 offset;		/* offset to consumer/producer of queue */
 	u8 padding[4];
-};
-
-/* Extended queue information - additional index for reference inside qzone.
- * If communicated between VF/PF, each TLV relating to queues should be
- * extended by one such [or have a future base TLV that already contains info].
- */
-struct vfpf_qid_tlv {
-	struct channel_tlv tl;
-	u8 qid;
-	u8 padding[3];
 };
 
 /* Setup Queue */
@@ -275,8 +250,6 @@ struct vfpf_stop_rxqs_tlv {
 	struct vfpf_first_tlv first_tlv;
 
 	u16 rx_qid;
-
-	/* this field is deprecated and should *always* be set to '1' */
 	u8 num_rxqs;
 	u8 cqe_completion;
 	u8 padding[4];
@@ -287,8 +260,6 @@ struct vfpf_stop_txqs_tlv {
 	struct vfpf_first_tlv first_tlv;
 
 	u16 tx_qid;
-
-	/* this field is deprecated and should *always* be set to '1' */
 	u8 num_txqs;
 	u8 padding[5];
 };
@@ -365,12 +336,7 @@ struct vfpf_vport_update_mcast_bin_tlv {
 	struct channel_tlv tl;
 	u8 padding[4];
 
-	/* There are only 256 approx bins, and in HSI they're divided into
-	 * 32-bit values. As old VFs used to set-bit to the values on its side,
-	 * the upper half of the array is never expected to contain any data.
-	 */
-	u64 bins[4];
-	u64 obsolete_bins[4];
+	u64 bins[8];
 };
 
 struct vfpf_vport_update_accept_param_tlv {
@@ -434,72 +400,8 @@ struct vfpf_ucast_filter_tlv {
 	u16 padding[3];
 };
 
-/* tunnel update param tlv */
-struct vfpf_update_tunn_param_tlv {
-	struct vfpf_first_tlv first_tlv;
-
-	u8 tun_mode_update_mask;
-	u8 tunn_mode;
-	u8 update_tun_cls;
-	u8 vxlan_clss;
-	u8 l2gre_clss;
-	u8 ipgre_clss;
-	u8 l2geneve_clss;
-	u8 ipgeneve_clss;
-	u8 update_geneve_port;
-	u8 update_vxlan_port;
-	u16 geneve_port;
-	u16 vxlan_port;
-	u8 padding[2];
-};
-
-struct pfvf_update_tunn_param_tlv {
-	struct pfvf_tlv hdr;
-
-	u16 tunn_feature_mask;
-	u8 vxlan_mode;
-	u8 l2geneve_mode;
-	u8 ipgeneve_mode;
-	u8 l2gre_mode;
-	u8 ipgre_mode;
-	u8 vxlan_clss;
-	u8 l2gre_clss;
-	u8 ipgre_clss;
-	u8 l2geneve_clss;
-	u8 ipgeneve_clss;
-	u16 vxlan_udp_port;
-	u16 geneve_udp_port;
-};
-
 struct tlv_buffer_size {
 	u8 tlv_buffer[TLV_BUFFER_SIZE];
-};
-
-struct vfpf_update_coalesce {
-	struct vfpf_first_tlv first_tlv;
-	u16 rx_coal;
-	u16 tx_coal;
-	u16 qid;
-	u8 padding[2];
-};
-
-struct vfpf_read_coal_req_tlv {
-	struct vfpf_first_tlv first_tlv;
-	u16 qid;
-	u8 is_rx;
-	u8 padding[5];
-};
-
-struct pfvf_read_coal_resp_tlv {
-	struct pfvf_tlv hdr;
-	u16 coal;
-	u8 padding[6];
-};
-
-struct vfpf_bulletin_update_mac_tlv {
-	struct vfpf_first_tlv first_tlv;
-	u8 mac[ETH_ALEN];
-	u8 padding[2];
 };
 
 union vfpf_tlvs {
@@ -513,10 +415,7 @@ union vfpf_tlvs {
 	struct vfpf_vport_start_tlv start_vport;
 	struct vfpf_vport_update_tlv vport_update;
 	struct vfpf_ucast_filter_tlv ucast_filter;
-	struct vfpf_update_tunn_param_tlv tunn_param_update;
-	struct vfpf_update_coalesce update_coalesce;
-	struct vfpf_read_coal_req_tlv read_coal_req;
-	struct vfpf_bulletin_update_mac_tlv bulletin_update_mac;
+	struct channel_list_end_tlv list_end;
 	struct tlv_buffer_size tlv_buf_size;
 };
 
@@ -525,8 +424,6 @@ union pfvf_tlvs {
 	struct pfvf_acquire_resp_tlv acquire_resp;
 	struct tlv_buffer_size tlv_buf_size;
 	struct pfvf_start_queue_resp_tlv queue_start;
-	struct pfvf_update_tunn_param_tlv tunn_param_resp;
-	struct pfvf_read_coal_resp_tlv read_coal_resp;
 };
 
 enum qed_bulletin_bit {
@@ -587,9 +484,7 @@ struct qed_bulletin_content {
 	u8 partner_rx_flow_ctrl_en;
 	u8 partner_adv_pause;
 	u8 sfp_tx_fault;
-	u16 vxlan_udp_port;
-	u16 geneve_udp_port;
-	u8 padding4[2];
+	u8 padding4[6];
 
 	u32 speed;
 	u32 partner_adv_speed;
@@ -631,11 +526,6 @@ enum {
 	CHANNEL_TLV_VPORT_UPDATE_RSS,
 	CHANNEL_TLV_VPORT_UPDATE_ACCEPT_ANY_VLAN,
 	CHANNEL_TLV_VPORT_UPDATE_SGE_TPA,
-	CHANNEL_TLV_UPDATE_TUNN_PARAM,
-	CHANNEL_TLV_COALESCE_UPDATE,
-	CHANNEL_TLV_QID,
-	CHANNEL_TLV_COALESCE_READ,
-	CHANNEL_TLV_BULLETIN_UPDATE_MAC,
 	CHANNEL_TLV_MAX,
 
 	/* Required for iterating over vport-update tlvs.
@@ -643,12 +533,6 @@ enum {
 	 */
 	CHANNEL_TLV_VPORT_UPDATE_MAX = CHANNEL_TLV_VPORT_UPDATE_SGE_TPA + 1,
 };
-
-/* Default number of CIDs [total of both Rx and Tx] to be requested
- * by default, and maximum possible number.
- */
-#define QED_ETH_VF_DEFAULT_NUM_CIDS (32)
-#define QED_ETH_VF_MAX_NUM_CIDS (250)
 
 /* This data is held in the qed_hwfn structure for VFs only. */
 struct qed_vf_iov {
@@ -672,317 +556,225 @@ struct qed_vf_iov {
 	 * this has to be propagated as it affects the fastpath.
 	 */
 	bool b_pre_fp_hsi;
-
-	/* Current day VFs are passing the SBs physical address on vport
-	 * start, and as they lack an IGU mapping they need to store the
-	 * addresses of previously registered SBs.
-	 * Even if we were to change configuration flow, due to backward
-	 * compatibility [with older PFs] we'd still need to store these.
-	 */
-	struct qed_sb_info *sbs_info[PFVF_MAX_SBS_PER_VF];
-
-	/* Determines whether VF utilizes doorbells via limited register
-	 * bar or via the doorbell bar.
-	 */
-	bool b_doorbell_bar;
 };
-
-/**
- * qed_vf_pf_set_coalesce(): VF - Set Rx/Tx coalesce per VF's relative queue.
- *                                Coalesce value '0' will omit the
- *                                configuration.
- *
- * @p_hwfn: HW device data.
- * @rx_coal: coalesce value in micro second for rx queue.
- * @tx_coal: coalesce value in micro second for tx queue.
- * @p_cid: queue cid.
- *
- * Return: Int.
- *
- **/
-int qed_vf_pf_set_coalesce(struct qed_hwfn *p_hwfn,
-			   u16 rx_coal,
-			   u16 tx_coal, struct qed_queue_cid *p_cid);
-
-/**
- * qed_vf_pf_get_coalesce(): VF - Get coalesce per VF's relative queue.
- *
- * @p_hwfn: HW device data.
- * @p_coal: coalesce value in micro second for VF queues.
- * @p_cid: queue cid.
- *
- * Return: Int.
- **/
-int qed_vf_pf_get_coalesce(struct qed_hwfn *p_hwfn,
-			   u16 *p_coal, struct qed_queue_cid *p_cid);
 
 #ifdef CONFIG_QED_SRIOV
 /**
- * qed_vf_read_bulletin(): Read the VF bulletin and act on it if needed.
+ * @brief Read the VF bulletin and act on it if needed
  *
- * @p_hwfn: HW device data.
- * @p_change: qed fills 1 iff bulletin board has changed, 0 otherwise.
+ * @param p_hwfn
+ * @param p_change - qed fills 1 iff bulletin board has changed, 0 otherwise.
  *
- * Return: enum _qed_status.
+ * @return enum _qed_status
  */
 int qed_vf_read_bulletin(struct qed_hwfn *p_hwfn, u8 *p_change);
 
 /**
- * qed_vf_get_link_params(): Get link parameters for VF from qed
+ * @brief Get link paramters for VF from qed
  *
- * @p_hwfn: HW device data.
- * @params: the link params structure to be filled for the VF.
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param params - the link params structure to be filled for the VF
  */
 void qed_vf_get_link_params(struct qed_hwfn *p_hwfn,
 			    struct qed_mcp_link_params *params);
 
 /**
- * qed_vf_get_link_state(): Get link state for VF from qed.
+ * @brief Get link state for VF from qed
  *
- * @p_hwfn: HW device data.
- * @link: the link state structure to be filled for the VF
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param link - the link state structure to be filled for the VF
  */
 void qed_vf_get_link_state(struct qed_hwfn *p_hwfn,
 			   struct qed_mcp_link_state *link);
 
 /**
- * qed_vf_get_link_caps(): Get link capabilities for VF from qed.
+ * @brief Get link capabilities for VF from qed
  *
- * @p_hwfn: HW device data.
- * @p_link_caps: the link capabilities structure to be filled for the VF
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param p_link_caps - the link capabilities structure to be filled for the VF
  */
 void qed_vf_get_link_caps(struct qed_hwfn *p_hwfn,
 			  struct qed_mcp_link_capabilities *p_link_caps);
 
 /**
- * qed_vf_get_num_rxqs(): Get number of Rx queues allocated for VF by qed
+ * @brief Get number of Rx queues allocated for VF by qed
  *
- * @p_hwfn: HW device data.
- * @num_rxqs: allocated RX queues
- *
- * Return: Void.
+ *  @param p_hwfn
+ *  @param num_rxqs - allocated RX queues
  */
 void qed_vf_get_num_rxqs(struct qed_hwfn *p_hwfn, u8 *num_rxqs);
 
 /**
- * qed_vf_get_num_txqs(): Get number of Rx queues allocated for VF by qed
+ * @brief Get port mac address for VF
  *
- * @p_hwfn: HW device data.
- * @num_txqs: allocated RX queues
- *
- * Return: Void.
- */
-void qed_vf_get_num_txqs(struct qed_hwfn *p_hwfn, u8 *num_txqs);
-
-/**
- * qed_vf_get_num_cids(): Get number of available connections
- *                        [both Rx and Tx] for VF
- *
- * @p_hwfn: HW device data.
- * @num_cids: allocated number of connections
- *
- * Return: Void.
- */
-void qed_vf_get_num_cids(struct qed_hwfn *p_hwfn, u8 *num_cids);
-
-/**
- * qed_vf_get_port_mac(): Get port mac address for VF.
- *
- * @p_hwfn: HW device data.
- * @port_mac: destination location for port mac
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param port_mac - destination location for port mac
  */
 void qed_vf_get_port_mac(struct qed_hwfn *p_hwfn, u8 *port_mac);
 
 /**
- * qed_vf_get_num_vlan_filters(): Get number of VLAN filters allocated
- *                                for VF by qed.
+ * @brief Get number of VLAN filters allocated for VF by qed
  *
- * @p_hwfn: HW device data.
- * @num_vlan_filters: allocated VLAN filters
- *
- * Return: Void.
+ *  @param p_hwfn
+ *  @param num_rxqs - allocated VLAN filters
  */
 void qed_vf_get_num_vlan_filters(struct qed_hwfn *p_hwfn,
 				 u8 *num_vlan_filters);
 
 /**
- * qed_vf_get_num_mac_filters(): Get number of MAC filters allocated
- *                               for VF by qed
+ * @brief Check if VF can set a MAC address
  *
- * @p_hwfn: HW device data.
- * @num_mac_filters: allocated MAC filters
+ * @param p_hwfn
+ * @param mac
  *
- * Return: Void.
- */
-void qed_vf_get_num_mac_filters(struct qed_hwfn *p_hwfn, u8 *num_mac_filters);
-
-/**
- * qed_vf_check_mac(): Check if VF can set a MAC address
- *
- * @p_hwfn: HW device data.
- * @mac: Mac.
- *
- * Return: bool.
+ * @return bool
  */
 bool qed_vf_check_mac(struct qed_hwfn *p_hwfn, u8 *mac);
 
 /**
- * qed_vf_get_fw_version(): Set firmware version information
- *                          in dev_info from VFs acquire response tlv
+ * @brief Set firmware version information in dev_info from VFs acquire response tlv
  *
- * @p_hwfn: HW device data.
- * @fw_major: FW major.
- * @fw_minor: FW minor.
- * @fw_rev: FW rev.
- * @fw_eng: FW eng.
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param fw_major
+ * @param fw_minor
+ * @param fw_rev
+ * @param fw_eng
  */
 void qed_vf_get_fw_version(struct qed_hwfn *p_hwfn,
 			   u16 *fw_major, u16 *fw_minor,
 			   u16 *fw_rev, u16 *fw_eng);
 
 /**
- * qed_vf_hw_prepare(): hw preparation for VF  sends ACQUIRE message
+ * @brief hw preparation for VF
+ *      sends ACQUIRE message
  *
- * @p_hwfn: HW device data.
+ * @param p_hwfn
  *
- * Return: Int.
+ * @return int
  */
 int qed_vf_hw_prepare(struct qed_hwfn *p_hwfn);
 
 /**
- * qed_vf_pf_rxq_start(): start the RX Queue by sending a message to the PF
+ * @brief VF - start the RX Queue by sending a message to the PF
+ * @param p_hwfn
+ * @param cid                   - zero based within the VF
+ * @param rx_queue_id           - zero based within the VF
+ * @param sb                    - VF status block for this queue
+ * @param sb_index              - Index within the status block
+ * @param bd_max_bytes          - maximum number of bytes per bd
+ * @param bd_chain_phys_addr    - physical address of bd chain
+ * @param cqe_pbl_addr          - physical address of pbl
+ * @param cqe_pbl_size          - pbl size
+ * @param pp_prod               - pointer to the producer to be
+ *				  used in fastpath
  *
- * @p_hwfn: HW device data.
- * @p_cid: Only relative fields are relevant
- * @bd_max_bytes: maximum number of bytes per bd
- * @bd_chain_phys_addr: physical address of bd chain
- * @cqe_pbl_addr: physical address of pbl
- * @cqe_pbl_size: pbl size
- * @pp_prod: pointer to the producer to be used in fastpath
- *
- * Return: Int.
+ * @return int
  */
 int qed_vf_pf_rxq_start(struct qed_hwfn *p_hwfn,
-			struct qed_queue_cid *p_cid,
+			u8 rx_queue_id,
+			u16 sb,
+			u8 sb_index,
 			u16 bd_max_bytes,
 			dma_addr_t bd_chain_phys_addr,
 			dma_addr_t cqe_pbl_addr,
 			u16 cqe_pbl_size, void __iomem **pp_prod);
 
 /**
- * qed_vf_pf_txq_start(): VF - start the TX queue by sending a message to the
- *                        PF.
+ * @brief VF - start the TX queue by sending a message to the
+ *        PF.
  *
- * @p_hwfn: HW device data.
- * @p_cid: CID.
- * @pbl_addr: PBL address.
- * @pbl_size: PBL Size.
- * @pp_doorbell: pointer to address to which to write the doorbell too.
+ * @param p_hwfn
+ * @param tx_queue_id           - zero based within the VF
+ * @param sb                    - status block for this queue
+ * @param sb_index              - index within the status block
+ * @param bd_chain_phys_addr    - physical address of tx chain
+ * @param pp_doorbell           - pointer to address to which to
+ *                      write the doorbell too..
  *
- * Return: Int.
+ * @return int
  */
-int
-qed_vf_pf_txq_start(struct qed_hwfn *p_hwfn,
-		    struct qed_queue_cid *p_cid,
-		    dma_addr_t pbl_addr,
-		    u16 pbl_size, void __iomem **pp_doorbell);
+int qed_vf_pf_txq_start(struct qed_hwfn *p_hwfn,
+			u16 tx_queue_id,
+			u16 sb,
+			u8 sb_index,
+			dma_addr_t pbl_addr,
+			u16 pbl_size, void __iomem **pp_doorbell);
 
 /**
- * qed_vf_pf_rxq_stop(): VF - stop the RX queue by sending a message to the PF.
+ * @brief VF - stop the RX queue by sending a message to the PF
  *
- * @p_hwfn: HW device data.
- * @p_cid: CID.
- * @cqe_completion: CQE Completion.
+ * @param p_hwfn
+ * @param rx_qid
+ * @param cqe_completion
  *
- * Return: Int.
+ * @return int
  */
 int qed_vf_pf_rxq_stop(struct qed_hwfn *p_hwfn,
-		       struct qed_queue_cid *p_cid, bool cqe_completion);
+		       u16 rx_qid, bool cqe_completion);
 
 /**
- * qed_vf_pf_txq_stop(): VF - stop the TX queue by sending a message to the PF.
+ * @brief VF - stop the TX queue by sending a message to the PF
  *
- * @p_hwfn: HW device data.
- * @p_cid: CID.
+ * @param p_hwfn
+ * @param tx_qid
  *
- * Return: Int.
+ * @return int
  */
-int qed_vf_pf_txq_stop(struct qed_hwfn *p_hwfn, struct qed_queue_cid *p_cid);
+int qed_vf_pf_txq_stop(struct qed_hwfn *p_hwfn, u16 tx_qid);
 
 /**
- * qed_vf_pf_vport_update(): VF - send a vport update command.
+ * @brief VF - send a vport update command
  *
- * @p_hwfn: HW device data.
- * @p_params: Params
+ * @param p_hwfn
+ * @param params
  *
- * Return: Int.
+ * @return int
  */
 int qed_vf_pf_vport_update(struct qed_hwfn *p_hwfn,
 			   struct qed_sp_vport_update_params *p_params);
 
 /**
- * qed_vf_pf_reset(): VF - send a close message to PF.
  *
- * @p_hwfn: HW device data.
+ * @brief VF - send a close message to PF
  *
- * Return: enum _qed_status
+ * @param p_hwfn
+ *
+ * @return enum _qed_status
  */
 int qed_vf_pf_reset(struct qed_hwfn *p_hwfn);
 
 /**
- * qed_vf_pf_release(): VF - free vf`s memories.
+ * @brief VF - free vf`s memories
  *
- * @p_hwfn: HW device data.
+ * @param p_hwfn
  *
- * Return: enum _qed_status
+ * @return enum _qed_status
  */
 int qed_vf_pf_release(struct qed_hwfn *p_hwfn);
 
 /**
- * qed_vf_get_igu_sb_id(): Get the IGU SB ID for a given
+ * @brief qed_vf_get_igu_sb_id - Get the IGU SB ID for a given
  *        sb_id. For VFs igu sbs don't have to be contiguous
  *
- * @p_hwfn: HW device data.
- * @sb_id: SB ID.
+ * @param p_hwfn
+ * @param sb_id
  *
- * Return: INLINE u16
+ * @return INLINE u16
  */
 u16 qed_vf_get_igu_sb_id(struct qed_hwfn *p_hwfn, u16 sb_id);
 
 /**
- * qed_vf_set_sb_info(): Stores [or removes] a configured sb_info.
+ * @brief qed_vf_pf_vport_start - perform vport start for VF.
  *
- * @p_hwfn: HW device data.
- * @sb_id: zero-based SB index [for fastpath]
- * @p_sb:  may be NULL [during removal].
+ * @param p_hwfn
+ * @param vport_id
+ * @param mtu
+ * @param inner_vlan_removal
+ * @param tpa_mode
+ * @param max_buffers_per_cqe,
+ * @param only_untagged - default behavior regarding vlan acceptance
  *
- * Return: Void.
- */
-void qed_vf_set_sb_info(struct qed_hwfn *p_hwfn,
-			u16 sb_id, struct qed_sb_info *p_sb);
-
-/**
- * qed_vf_pf_vport_start(): perform vport start for VF.
- *
- * @p_hwfn: HW device data.
- * @vport_id: Vport ID.
- * @mtu: MTU.
- * @inner_vlan_removal: Innter VLAN removal.
- * @tpa_mode: TPA mode
- * @max_buffers_per_cqe: Max buffer pre CQE.
- * @only_untagged: default behavior regarding vlan acceptance
- *
- * Return: enum _qed_status
+ * @return enum _qed_status
  */
 int qed_vf_pf_vport_start(struct qed_hwfn *p_hwfn,
 			  u8 vport_id,
@@ -992,11 +784,11 @@ int qed_vf_pf_vport_start(struct qed_hwfn *p_hwfn,
 			  u8 max_buffers_per_cqe, u8 only_untagged);
 
 /**
- * qed_vf_pf_vport_stop(): stop the VF's vport
+ * @brief qed_vf_pf_vport_stop - stop the VF's vport
  *
- * @p_hwfn: HW device data.
+ * @param p_hwfn
  *
- * Return: enum _qed_status
+ * @return enum _qed_status
  */
 int qed_vf_pf_vport_stop(struct qed_hwfn *p_hwfn);
 
@@ -1007,71 +799,48 @@ void qed_vf_pf_filter_mcast(struct qed_hwfn *p_hwfn,
 			    struct qed_filter_mcast *p_filter_cmd);
 
 /**
- * qed_vf_pf_int_cleanup(): clean the SB of the VF
+ * @brief qed_vf_pf_int_cleanup - clean the SB of the VF
  *
- * @p_hwfn: HW device data.
+ * @param p_hwfn
  *
- * Return: enum _qed_status
+ * @return enum _qed_status
  */
 int qed_vf_pf_int_cleanup(struct qed_hwfn *p_hwfn);
 
 /**
- * __qed_vf_get_link_params(): return the link params in a given bulletin board
+ * @brief - return the link params in a given bulletin board
  *
- * @p_hwfn: HW device data.
- * @p_params: pointer to a struct to fill with link params
- * @p_bulletin: Bulletin.
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param p_params - pointer to a struct to fill with link params
+ * @param p_bulletin
  */
 void __qed_vf_get_link_params(struct qed_hwfn *p_hwfn,
 			      struct qed_mcp_link_params *p_params,
 			      struct qed_bulletin_content *p_bulletin);
 
 /**
- * __qed_vf_get_link_state(): return the link state in a given bulletin board
+ * @brief - return the link state in a given bulletin board
  *
- * @p_hwfn: HW device data.
- * @p_link: pointer to a struct to fill with link state
- * @p_bulletin: Bulletin.
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param p_link - pointer to a struct to fill with link state
+ * @param p_bulletin
  */
 void __qed_vf_get_link_state(struct qed_hwfn *p_hwfn,
 			     struct qed_mcp_link_state *p_link,
 			     struct qed_bulletin_content *p_bulletin);
 
 /**
- * __qed_vf_get_link_caps(): return the link capabilities in a given
- *                           bulletin board
+ * @brief - return the link capabilities in a given bulletin board
  *
- * @p_hwfn: HW device data.
- * @p_link_caps: pointer to a struct to fill with link capabilities
- * @p_bulletin: Bulletin.
- *
- * Return: Void.
+ * @param p_hwfn
+ * @param p_link - pointer to a struct to fill with link capabilities
+ * @param p_bulletin
  */
 void __qed_vf_get_link_caps(struct qed_hwfn *p_hwfn,
 			    struct qed_mcp_link_capabilities *p_link_caps,
 			    struct qed_bulletin_content *p_bulletin);
 
 void qed_iov_vf_task(struct work_struct *work);
-void qed_vf_set_vf_start_tunn_update_param(struct qed_tunnel_info *p_tun);
-int qed_vf_pf_tunnel_param_update(struct qed_hwfn *p_hwfn,
-				  struct qed_tunnel_info *p_tunn);
-
-u32 qed_vf_hw_bar_size(struct qed_hwfn *p_hwfn, enum BAR_ID bar_id);
-/**
- * qed_vf_pf_bulletin_update_mac(): Ask PF to update the MAC address in
- *                                  it's bulletin board
- *
- * @p_hwfn: HW device data.
- * @p_mac: mac address to be updated in bulletin board
- *
- * Return: Int.
- */
-int qed_vf_pf_bulletin_update_mac(struct qed_hwfn *p_hwfn, const u8 *p_mac);
-
 #else
 static inline void qed_vf_get_link_params(struct qed_hwfn *p_hwfn,
 					  struct qed_mcp_link_params *params)
@@ -1093,25 +862,12 @@ static inline void qed_vf_get_num_rxqs(struct qed_hwfn *p_hwfn, u8 *num_rxqs)
 {
 }
 
-static inline void qed_vf_get_num_txqs(struct qed_hwfn *p_hwfn, u8 *num_txqs)
-{
-}
-
-static inline void qed_vf_get_num_cids(struct qed_hwfn *p_hwfn, u8 *num_cids)
-{
-}
-
 static inline void qed_vf_get_port_mac(struct qed_hwfn *p_hwfn, u8 *port_mac)
 {
 }
 
 static inline void qed_vf_get_num_vlan_filters(struct qed_hwfn *p_hwfn,
 					       u8 *num_vlan_filters)
-{
-}
-
-static inline void qed_vf_get_num_mac_filters(struct qed_hwfn *p_hwfn,
-					      u8 *num_mac_filters)
 {
 }
 
@@ -1132,7 +888,9 @@ static inline int qed_vf_hw_prepare(struct qed_hwfn *p_hwfn)
 }
 
 static inline int qed_vf_pf_rxq_start(struct qed_hwfn *p_hwfn,
-				      struct qed_queue_cid *p_cid,
+				      u8 rx_queue_id,
+				      u16 sb,
+				      u8 sb_index,
 				      u16 bd_max_bytes,
 				      dma_addr_t bd_chain_phys_adr,
 				      dma_addr_t cqe_pbl_addr,
@@ -1142,7 +900,9 @@ static inline int qed_vf_pf_rxq_start(struct qed_hwfn *p_hwfn,
 }
 
 static inline int qed_vf_pf_txq_start(struct qed_hwfn *p_hwfn,
-				      struct qed_queue_cid *p_cid,
+				      u16 tx_queue_id,
+				      u16 sb,
+				      u8 sb_index,
 				      dma_addr_t pbl_addr,
 				      u16 pbl_size, void __iomem **pp_doorbell)
 {
@@ -1150,14 +910,12 @@ static inline int qed_vf_pf_txq_start(struct qed_hwfn *p_hwfn,
 }
 
 static inline int qed_vf_pf_rxq_stop(struct qed_hwfn *p_hwfn,
-				     struct qed_queue_cid *p_cid,
-				     bool cqe_completion)
+				     u16 rx_qid, bool cqe_completion)
 {
 	return -EINVAL;
 }
 
-static inline int qed_vf_pf_txq_stop(struct qed_hwfn *p_hwfn,
-				     struct qed_queue_cid *p_cid)
+static inline int qed_vf_pf_txq_stop(struct qed_hwfn *p_hwfn, u16 tx_qid)
 {
 	return -EINVAL;
 }
@@ -1182,11 +940,6 @@ static inline int qed_vf_pf_release(struct qed_hwfn *p_hwfn)
 static inline u16 qed_vf_get_igu_sb_id(struct qed_hwfn *p_hwfn, u16 sb_id)
 {
 	return 0;
-}
-
-static inline void qed_vf_set_sb_info(struct qed_hwfn *p_hwfn, u16 sb_id,
-				      struct qed_sb_info *p_sb)
-{
 }
 
 static inline int qed_vf_pf_vport_start(struct qed_hwfn *p_hwfn,
@@ -1245,30 +998,6 @@ __qed_vf_get_link_caps(struct qed_hwfn *p_hwfn,
 
 static inline void qed_iov_vf_task(struct work_struct *work)
 {
-}
-
-static inline void
-qed_vf_set_vf_start_tunn_update_param(struct qed_tunnel_info *p_tun)
-{
-}
-
-static inline int qed_vf_pf_tunnel_param_update(struct qed_hwfn *p_hwfn,
-						struct qed_tunnel_info *p_tunn)
-{
-	return -EINVAL;
-}
-
-static inline int qed_vf_pf_bulletin_update_mac(struct qed_hwfn *p_hwfn,
-						const u8 *p_mac)
-{
-	return -EINVAL;
-}
-
-static inline u32
-qed_vf_hw_bar_size(struct qed_hwfn  *p_hwfn,
-		   enum BAR_ID bar_id)
-{
-	return 0;
 }
 #endif
 

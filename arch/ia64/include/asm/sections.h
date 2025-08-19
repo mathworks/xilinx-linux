@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_SECTIONS_H
 #define _ASM_IA64_SECTIONS_H
 
@@ -9,9 +8,6 @@
 
 #include <linux/elf.h>
 #include <linux/uaccess.h>
-
-typedef struct fdesc func_desc_t;
-
 #include <asm-generic/sections.h>
 
 extern char __phys_per_cpu_start[];
@@ -30,4 +26,17 @@ extern char __start_gate_brl_fsys_bubble_down_patchlist[], __end_gate_brl_fsys_b
 extern char __start_unwind[], __end_unwind[];
 extern char __start_ivt_text[], __end_ivt_text[];
 
+#undef dereference_function_descriptor
+static inline void *dereference_function_descriptor(void *ptr)
+{
+	struct fdesc *desc = ptr;
+	void *p;
+
+	if (!probe_kernel_address(&desc->ip, p))
+		ptr = p;
+	return ptr;
+}
+
+
 #endif /* _ASM_IA64_SECTIONS_H */
+

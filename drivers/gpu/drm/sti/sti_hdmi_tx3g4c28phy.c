@@ -1,10 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) STMicroelectronics SA 2014
  * Author: Vincent Abriou <vincent.abriou@st.com> for STMicroelectronics.
+ * License terms:  GNU General Public License (GPL), version 2
  */
-
-#include <drm/drm_print.h>
 
 #include "sti_hdmi_tx3g4c28phy.h"
 
@@ -67,7 +65,7 @@ static struct hdmi_phy_config hdmiphy_config[NB_HDMI_PHY_CONFIG] = {
 };
 
 /**
- * sti_hdmi_tx3g4c28phy_start - Start hdmi phy macro cell tx3g4c28
+ * Start hdmi phy macro cell tx3g4c28
  *
  * @hdmi: pointer on the hdmi internal structure
  *
@@ -179,7 +177,7 @@ err:
 }
 
 /**
- * sti_hdmi_tx3g4c28phy_stop - Stop hdmi phy macro cell tx3g4c28
+ * Stop hdmi phy macro cell tx3g4c28
  *
  * @hdmi: pointer on the hdmi internal structure
  */

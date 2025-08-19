@@ -1,9 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Driver for Amlogic Meson SPI flash controller (SPIFC)
-//
-// Copyright (C) 2014 Beniamino Galvani <b.galvani@gmail.com>
-//
+/*
+ * Driver for Amlogic Meson SPI flash controller (SPIFC)
+ *
+ * Copyright (C) 2014 Beniamino Galvani <b.galvani@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -70,7 +76,7 @@
  * @master:	the SPI master
  * @regmap:	regmap for device registers
  * @clk:	input clock of the built-in baud rate generator
- * @dev:	the device structure
+ * @device:	the device structure
  */
 struct meson_spifc {
 	struct spi_master *master;
@@ -286,6 +292,7 @@ static int meson_spifc_probe(struct platform_device *pdev)
 {
 	struct spi_master *master;
 	struct meson_spifc *spifc;
+	struct resource *res;
 	void __iomem *base;
 	unsigned int rate;
 	int ret = 0;
@@ -299,7 +306,8 @@ static int meson_spifc_probe(struct platform_device *pdev)
 	spifc = spi_master_get_devdata(master);
 	spifc->dev = &pdev->dev;
 
-	base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(spifc->dev, res);
 	if (IS_ERR(base)) {
 		ret = PTR_ERR(base);
 		goto out_err;
@@ -349,13 +357,12 @@ static int meson_spifc_probe(struct platform_device *pdev)
 	return 0;
 out_clk:
 	clk_disable_unprepare(spifc->clk);
-	pm_runtime_disable(spifc->dev);
 out_err:
 	spi_master_put(master);
 	return ret;
 }
 
-static void meson_spifc_remove(struct platform_device *pdev)
+static int meson_spifc_remove(struct platform_device *pdev)
 {
 	struct spi_master *master = platform_get_drvdata(pdev);
 	struct meson_spifc *spifc = spi_master_get_devdata(master);
@@ -363,6 +370,8 @@ static void meson_spifc_remove(struct platform_device *pdev)
 	pm_runtime_get_sync(&pdev->dev);
 	clk_disable_unprepare(spifc->clk);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -440,7 +449,7 @@ MODULE_DEVICE_TABLE(of, meson_spifc_dt_match);
 
 static struct platform_driver meson_spifc_driver = {
 	.probe	= meson_spifc_probe,
-	.remove_new = meson_spifc_remove,
+	.remove	= meson_spifc_remove,
 	.driver	= {
 		.name		= "meson-spifc",
 		.of_match_table	= of_match_ptr(meson_spifc_dt_match),

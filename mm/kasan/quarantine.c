@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * KASAN quarantine.
  *
@@ -6,6 +5,16 @@
  * Copyright (C) 2016 Google, Inc.
  *
  * Based on code by Dmitry Chernenkov.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
  */
 
 #include <linux/gfp.h>
@@ -16,10 +25,8 @@
 #include <linux/printk.h>
 #include <linux/shrinker.h>
 #include <linux/slab.h>
-#include <linux/srcu.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/cpuhotplug.h>
 
 #include "../slab.h"
 #include "kasan.h"
@@ -27,14 +34,13 @@
 /* Data structure and operations for quarantine queues. */
 
 /*
- * Each queue is a single-linked list, which also stores the total size of
+ * Each queue is a signle-linked list, which also stores the total size of
  * objects inside of it.
  */
 struct qlist_head {
 	struct qlist_node *head;
 	struct qlist_node *tail;
 	size_t bytes;
-	bool offline;
 };
 
 #define QLIST_INIT { NULL, NULL, 0 }
@@ -80,9 +86,24 @@ static void qlist_move_all(struct qlist_head *from, struct qlist_head *to)
 	qlist_init(from);
 }
 
-#define QUARANTINE_PERCPU_SIZE (1 << 20)
-#define QUARANTINE_BATCHES \
-	(1024 > 4 * CONFIG_NR_CPUS ? 1024 : 4 * CONFIG_NR_CPUS)
+static void qlist_move(struct qlist_head *from, struct qlist_node *last,
+		struct qlist_head *to, size_t size)
+{
+	if (unlikely(last == from->tail)) {
+		qlist_move_all(from, to);
+		return;
+	}
+	if (qlist_empty(to))
+		to->head = from->head;
+	else
+		to->tail->next = from->head;
+	to->tail = last;
+	from->head = last->next;
+	last->next = NULL;
+	from->bytes -= size;
+	to->bytes += size;
+}
+
 
 /*
  * The object quarantine consists of per-cpu queues and a global queue,
@@ -90,32 +111,11 @@ static void qlist_move_all(struct qlist_head *from, struct qlist_head *to)
  */
 static DEFINE_PER_CPU(struct qlist_head, cpu_quarantine);
 
-/* Round-robin FIFO array of batches. */
-static struct qlist_head global_quarantine[QUARANTINE_BATCHES];
-static int quarantine_head;
-static int quarantine_tail;
-/* Total size of all objects in global_quarantine across all batches. */
-static unsigned long quarantine_size;
-static DEFINE_RAW_SPINLOCK(quarantine_lock);
-DEFINE_STATIC_SRCU(remove_cache_srcu);
-
-struct cpu_shrink_qlist {
-	raw_spinlock_t lock;
-	struct qlist_head qlist;
-};
-
-static DEFINE_PER_CPU(struct cpu_shrink_qlist, shrink_qlist) = {
-	.lock = __RAW_SPIN_LOCK_UNLOCKED(shrink_qlist.lock),
-};
+static struct qlist_head global_quarantine;
+static DEFINE_SPINLOCK(quarantine_lock);
 
 /* Maximum size of the global queue. */
-static unsigned long quarantine_max_size;
-
-/*
- * Target size of a batch in global_quarantine.
- * Usually equal to QUARANTINE_PERCPU_SIZE unless we have too much RAM.
- */
-static unsigned long quarantine_batch_size;
+static unsigned long quarantine_size;
 
 /*
  * The fraction of physical memory the quarantine is allowed to occupy.
@@ -124,9 +124,12 @@ static unsigned long quarantine_batch_size;
  */
 #define QUARANTINE_FRACTION 32
 
+#define QUARANTINE_LOW_SIZE (READ_ONCE(quarantine_size) * 3 / 4)
+#define QUARANTINE_PERCPU_SIZE (1 << 20)
+
 static struct kmem_cache *qlink_to_cache(struct qlist_node *qlink)
 {
-	return virt_to_slab(qlink)->slab_cache;
+	return virt_to_head_page(qlink)->slab_cache;
 }
 
 static void *qlink_to_object(struct qlist_node *qlink, struct kmem_cache *cache)
@@ -141,27 +144,10 @@ static void *qlink_to_object(struct qlist_node *qlink, struct kmem_cache *cache)
 static void qlink_free(struct qlist_node *qlink, struct kmem_cache *cache)
 {
 	void *object = qlink_to_object(qlink, cache);
-	struct kasan_free_meta *meta = kasan_get_free_meta(cache, object);
 	unsigned long flags;
 
 	if (IS_ENABLED(CONFIG_SLAB))
 		local_irq_save(flags);
-
-	/*
-	 * If init_on_free is enabled and KASAN's free metadata is stored in
-	 * the object, zero the metadata. Otherwise, the object's memory will
-	 * not be properly zeroed, as KASAN saves the metadata after the slab
-	 * allocator zeroes the object.
-	 */
-	if (slab_want_init_on_free(cache) &&
-	    cache->kasan_info.free_meta_offset == 0)
-		memzero_explicit(meta, sizeof(*meta));
-
-	/*
-	 * As the object now gets freed from the quarantine, assume that its
-	 * free track is no longer valid.
-	 */
-	*(u8 *)kasan_mem_to_shadow(object) = KASAN_SLAB_FREE;
 
 	___cache_free(cache, object, _THIS_IP_);
 
@@ -188,109 +174,68 @@ static void qlist_free_all(struct qlist_head *q, struct kmem_cache *cache)
 	qlist_init(q);
 }
 
-bool kasan_quarantine_put(struct kmem_cache *cache, void *object)
+void quarantine_put(struct kasan_free_meta *info, struct kmem_cache *cache)
 {
 	unsigned long flags;
 	struct qlist_head *q;
 	struct qlist_head temp = QLIST_INIT;
-	struct kasan_free_meta *meta = kasan_get_free_meta(cache, object);
 
-	/*
-	 * If there's no metadata for this object, don't put it into
-	 * quarantine.
-	 */
-	if (!meta)
-		return false;
-
-	/*
-	 * Note: irq must be disabled until after we move the batch to the
-	 * global quarantine. Otherwise kasan_quarantine_remove_cache() can
-	 * miss some objects belonging to the cache if they are in our local
-	 * temp list. kasan_quarantine_remove_cache() executes on_each_cpu()
-	 * at the beginning which ensures that it either sees the objects in
-	 * per-cpu lists or in the global quarantine.
-	 */
 	local_irq_save(flags);
 
 	q = this_cpu_ptr(&cpu_quarantine);
-	if (q->offline) {
-		local_irq_restore(flags);
-		return false;
-	}
-	qlist_put(q, &meta->quarantine_link, cache->size);
-	if (unlikely(q->bytes > QUARANTINE_PERCPU_SIZE)) {
+	qlist_put(q, &info->quarantine_link, cache->size);
+	if (unlikely(q->bytes > QUARANTINE_PERCPU_SIZE))
 		qlist_move_all(q, &temp);
-
-		raw_spin_lock(&quarantine_lock);
-		WRITE_ONCE(quarantine_size, quarantine_size + temp.bytes);
-		qlist_move_all(&temp, &global_quarantine[quarantine_tail]);
-		if (global_quarantine[quarantine_tail].bytes >=
-				READ_ONCE(quarantine_batch_size)) {
-			int new_tail;
-
-			new_tail = quarantine_tail + 1;
-			if (new_tail == QUARANTINE_BATCHES)
-				new_tail = 0;
-			if (new_tail != quarantine_head)
-				quarantine_tail = new_tail;
-		}
-		raw_spin_unlock(&quarantine_lock);
-	}
 
 	local_irq_restore(flags);
 
-	return true;
+	if (unlikely(!qlist_empty(&temp))) {
+		spin_lock_irqsave(&quarantine_lock, flags);
+		qlist_move_all(&temp, &global_quarantine);
+		spin_unlock_irqrestore(&quarantine_lock, flags);
+	}
 }
 
-void kasan_quarantine_reduce(void)
+void quarantine_reduce(void)
 {
-	size_t total_size, new_quarantine_size, percpu_quarantines;
+	size_t new_quarantine_size, percpu_quarantines;
 	unsigned long flags;
-	int srcu_idx;
 	struct qlist_head to_free = QLIST_INIT;
+	size_t size_to_free = 0;
+	struct qlist_node *last;
 
-	if (likely(READ_ONCE(quarantine_size) <=
-		   READ_ONCE(quarantine_max_size)))
+	if (likely(READ_ONCE(global_quarantine.bytes) <=
+		   READ_ONCE(quarantine_size)))
 		return;
 
-	/*
-	 * srcu critical section ensures that kasan_quarantine_remove_cache()
-	 * will not miss objects belonging to the cache while they are in our
-	 * local to_free list. srcu is chosen because (1) it gives us private
-	 * grace period domain that does not interfere with anything else,
-	 * and (2) it allows synchronize_srcu() to return without waiting
-	 * if there are no pending read critical sections (which is the
-	 * expected case).
-	 */
-	srcu_idx = srcu_read_lock(&remove_cache_srcu);
-	raw_spin_lock_irqsave(&quarantine_lock, flags);
+	spin_lock_irqsave(&quarantine_lock, flags);
 
 	/*
 	 * Update quarantine size in case of hotplug. Allocate a fraction of
 	 * the installed memory to quarantine minus per-cpu queue limits.
 	 */
-	total_size = (totalram_pages() << PAGE_SHIFT) /
+	new_quarantine_size = (READ_ONCE(totalram_pages) << PAGE_SHIFT) /
 		QUARANTINE_FRACTION;
 	percpu_quarantines = QUARANTINE_PERCPU_SIZE * num_online_cpus();
-	new_quarantine_size = (total_size < percpu_quarantines) ?
-		0 : total_size - percpu_quarantines;
-	WRITE_ONCE(quarantine_max_size, new_quarantine_size);
-	/* Aim at consuming at most 1/2 of slots in quarantine. */
-	WRITE_ONCE(quarantine_batch_size, max((size_t)QUARANTINE_PERCPU_SIZE,
-		2 * total_size / QUARANTINE_BATCHES));
+	new_quarantine_size = (new_quarantine_size < percpu_quarantines) ?
+		0 : new_quarantine_size - percpu_quarantines;
+	WRITE_ONCE(quarantine_size, new_quarantine_size);
 
-	if (likely(quarantine_size > quarantine_max_size)) {
-		qlist_move_all(&global_quarantine[quarantine_head], &to_free);
-		WRITE_ONCE(quarantine_size, quarantine_size - to_free.bytes);
-		quarantine_head++;
-		if (quarantine_head == QUARANTINE_BATCHES)
-			quarantine_head = 0;
+	last = global_quarantine.head;
+	while (last) {
+		struct kmem_cache *cache = qlink_to_cache(last);
+
+		size_to_free += cache->size;
+		if (!last->next || size_to_free >
+		    global_quarantine.bytes - QUARANTINE_LOW_SIZE)
+			break;
+		last = last->next;
 	}
+	qlist_move(&global_quarantine, last, &to_free, size_to_free);
 
-	raw_spin_unlock_irqrestore(&quarantine_lock, flags);
+	spin_unlock_irqrestore(&quarantine_lock, flags);
 
 	qlist_free_all(&to_free, NULL);
-	srcu_read_unlock(&remove_cache_srcu, srcu_idx);
 }
 
 static void qlist_move_cache(struct qlist_head *from,
@@ -317,104 +262,27 @@ static void qlist_move_cache(struct qlist_head *from,
 	}
 }
 
-static void __per_cpu_remove_cache(struct qlist_head *q, void *arg)
-{
-	struct kmem_cache *cache = arg;
-	unsigned long flags;
-	struct cpu_shrink_qlist *sq;
-
-	sq = this_cpu_ptr(&shrink_qlist);
-	raw_spin_lock_irqsave(&sq->lock, flags);
-	qlist_move_cache(q, &sq->qlist, cache);
-	raw_spin_unlock_irqrestore(&sq->lock, flags);
-}
-
 static void per_cpu_remove_cache(void *arg)
 {
+	struct kmem_cache *cache = arg;
+	struct qlist_head to_free = QLIST_INIT;
 	struct qlist_head *q;
 
 	q = this_cpu_ptr(&cpu_quarantine);
-	/*
-	 * Ensure the ordering between the writing to q->offline and
-	 * per_cpu_remove_cache.  Prevent cpu_quarantine from being corrupted
-	 * by interrupt.
-	 */
-	if (READ_ONCE(q->offline))
-		return;
-	__per_cpu_remove_cache(q, arg);
+	qlist_move_cache(q, &to_free, cache);
+	qlist_free_all(&to_free, cache);
 }
 
-/* Free all quarantined objects belonging to cache. */
-void kasan_quarantine_remove_cache(struct kmem_cache *cache)
+void quarantine_remove_cache(struct kmem_cache *cache)
 {
-	unsigned long flags, i;
+	unsigned long flags;
 	struct qlist_head to_free = QLIST_INIT;
-	int cpu;
-	struct cpu_shrink_qlist *sq;
 
-	/*
-	 * Must be careful to not miss any objects that are being moved from
-	 * per-cpu list to the global quarantine in kasan_quarantine_put(),
-	 * nor objects being freed in kasan_quarantine_reduce(). on_each_cpu()
-	 * achieves the first goal, while synchronize_srcu() achieves the
-	 * second.
-	 */
 	on_each_cpu(per_cpu_remove_cache, cache, 1);
 
-	for_each_online_cpu(cpu) {
-		sq = per_cpu_ptr(&shrink_qlist, cpu);
-		raw_spin_lock_irqsave(&sq->lock, flags);
-		qlist_move_cache(&sq->qlist, &to_free, cache);
-		raw_spin_unlock_irqrestore(&sq->lock, flags);
-	}
-	qlist_free_all(&to_free, cache);
-
-	raw_spin_lock_irqsave(&quarantine_lock, flags);
-	for (i = 0; i < QUARANTINE_BATCHES; i++) {
-		if (qlist_empty(&global_quarantine[i]))
-			continue;
-		qlist_move_cache(&global_quarantine[i], &to_free, cache);
-		/* Scanning whole quarantine can take a while. */
-		raw_spin_unlock_irqrestore(&quarantine_lock, flags);
-		cond_resched();
-		raw_spin_lock_irqsave(&quarantine_lock, flags);
-	}
-	raw_spin_unlock_irqrestore(&quarantine_lock, flags);
+	spin_lock_irqsave(&quarantine_lock, flags);
+	qlist_move_cache(&global_quarantine, &to_free, cache);
+	spin_unlock_irqrestore(&quarantine_lock, flags);
 
 	qlist_free_all(&to_free, cache);
-
-	synchronize_srcu(&remove_cache_srcu);
 }
-
-static int kasan_cpu_online(unsigned int cpu)
-{
-	this_cpu_ptr(&cpu_quarantine)->offline = false;
-	return 0;
-}
-
-static int kasan_cpu_offline(unsigned int cpu)
-{
-	struct qlist_head *q;
-
-	q = this_cpu_ptr(&cpu_quarantine);
-	/* Ensure the ordering between the writing to q->offline and
-	 * qlist_free_all. Otherwise, cpu_quarantine may be corrupted
-	 * by interrupt.
-	 */
-	WRITE_ONCE(q->offline, true);
-	barrier();
-	qlist_free_all(q, NULL);
-	return 0;
-}
-
-static int __init kasan_cpu_quarantine_init(void)
-{
-	int ret = 0;
-
-	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "mm/kasan:online",
-				kasan_cpu_online, kasan_cpu_offline);
-	if (ret < 0)
-		pr_err("kasan cpu quarantine register failed [%d]\n", ret);
-	return ret;
-}
-late_initcall(kasan_cpu_quarantine_init);

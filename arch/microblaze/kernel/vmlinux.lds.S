@@ -11,9 +11,6 @@
 OUTPUT_ARCH(microblaze)
 ENTRY(microblaze_start)
 
-#define RO_EXCEPTION_TABLE_ALIGN	16
-
-#include <asm/cache.h>
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/thread_info.h>
@@ -36,6 +33,7 @@ SECTIONS {
 		EXIT_TEXT
 		EXIT_CALL
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -44,16 +42,18 @@ SECTIONS {
 		_etext = . ;
 	}
 
-	. = ALIGN (8) ;
+	. = ALIGN (4) ;
 	__fdt_blob : AT(ADDR(__fdt_blob) - LOAD_OFFSET) {
 		_fdt_start = . ;		/* place for fdt blob */
 		*(__fdt_blob) ;			/* Any link-placed DTB */
-	        . = _fdt_start + 0x10000;	/* Pad up to 64kbyte */
+	        . = _fdt_start + 0x8000;	/* Pad up to 32kbyte */
 		_fdt_end = . ;
 	}
 
 	. = ALIGN(16);
-	RO_DATA(4096)
+	RODATA
+	EXCEPTION_TABLE(16)
+	NOTES
 
 	/*
 	 * sdata2 section can go anywhere, but must be word aligned
@@ -70,7 +70,7 @@ SECTIONS {
 	}
 
 	_sdata = . ;
-	RW_DATA(32, PAGE_SIZE, THREAD_SIZE)
+	RW_DATA_SECTION(32, PAGE_SIZE, THREAD_SIZE)
 	_edata = . ;
 
 	/* Under the microblaze ABI, .sdata and .sbss must be contiguous */
@@ -88,8 +88,6 @@ SECTIONS {
 		_ssro_size = _essro - _ssro ;
 		_KERNEL_SDA_BASE_ = _ssro + (_ssro_size / 2) ;
 	}
-
-	PERCPU_SECTION(L1_CACHE_BYTES)
 
 	. = ALIGN(PAGE_SIZE);
 	__init_begin = .;
@@ -119,6 +117,14 @@ SECTIONS {
 		CON_INITCALL
 	}
 
+	SECURITY_INIT
+
+	__init_end_before_initramfs = .;
+
+	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
+		INIT_RAM_FS
+	}
+
 	__init_end = .;
 
 	.bss ALIGN (PAGE_SIZE) : AT(ADDR(.bss) - LOAD_OFFSET) {
@@ -131,15 +137,6 @@ SECTIONS {
 	}
 	. = ALIGN(PAGE_SIZE);
 	_end = .;
-	/* Add space in TLB mapping for early free pages mapping */
-	. = . + 0x100000; /* CONFIG_LOWMEM_SIZE >> PTE_SHIFT + space */
-
-	_end_tlb_mapping = . ;
-
-	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
-		INIT_RAM_FS
-	}
-	__initramfs_end = . ;
 
 	DISCARDS
 }

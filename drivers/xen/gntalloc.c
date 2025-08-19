@@ -127,21 +127,18 @@ static int add_grefs(struct ioctl_gntalloc_alloc_gref *op,
 	struct gntalloc_gref *gref, *next;
 
 	readonly = !(op->flags & GNTALLOC_FLAG_WRITABLE);
+	rc = -ENOMEM;
 	for (i = 0; i < op->count; i++) {
 		gref = kzalloc(sizeof(*gref), GFP_KERNEL);
-		if (!gref) {
-			rc = -ENOMEM;
+		if (!gref)
 			goto undo;
-		}
 		list_add_tail(&gref->next_gref, &queue_gref);
 		list_add_tail(&gref->next_file, &queue_file);
 		gref->users = 1;
 		gref->file_index = op->index + i * PAGE_SIZE;
 		gref->page = alloc_page(GFP_KERNEL|__GFP_ZERO);
-		if (!gref->page) {
-			rc = -ENOMEM;
+		if (!gref->page)
 			goto undo;
-		}
 
 		/* Grant foreign access to the page. */
 		rc = gnttab_grant_foreign_access(op->domid,
@@ -169,6 +166,14 @@ undo:
 		__del_gref(gref);
 	}
 
+	/* It's possible for the target domain to map the just-allocated grant
+	 * references by blindly guessing their IDs; if this is done, then
+	 * __del_gref will leave them in the queue_gref list. They need to be
+	 * added to the global list so that we can free them when they are no
+	 * longer referenced.
+	 */
+	if (unlikely(!list_empty(&queue_gref)))
+		list_splice_tail(&queue_gref, &gref_list);
 	mutex_unlock(&gref_mutex);
 	return rc;
 }
@@ -176,9 +181,9 @@ undo:
 static void __del_gref(struct gntalloc_gref *gref)
 {
 	if (gref->notify.flags & UNMAP_NOTIFY_CLEAR_BYTE) {
-		uint8_t *tmp = kmap_local_page(gref->page);
+		uint8_t *tmp = kmap(gref->page);
 		tmp[gref->notify.pgoff] = 0;
-		kunmap_local(tmp);
+		kunmap(gref->page);
 	}
 	if (gref->notify.flags & UNMAP_NOTIFY_SEND_EVENT) {
 		notify_remote_via_evtchn(gref->notify.event);
@@ -188,14 +193,20 @@ static void __del_gref(struct gntalloc_gref *gref)
 	gref->notify.flags = 0;
 
 	if (gref->gref_id) {
-		if (gref->page)
-			gnttab_end_foreign_access(gref->gref_id, gref->page);
-		else
-			gnttab_free_grant_reference(gref->gref_id);
+		if (gnttab_query_foreign_access(gref->gref_id))
+			return;
+
+		if (!gnttab_end_foreign_access_ref(gref->gref_id, 0))
+			return;
+
+		gnttab_free_grant_reference(gref->gref_id);
 	}
 
 	gref_size--;
 	list_del(&gref->next_gref);
+
+	if (gref->page)
+		__free_page(gref->page);
 
 	kfree(gref);
 }
@@ -280,7 +291,7 @@ static long gntalloc_ioctl_alloc(struct gntalloc_file_private_data *priv,
 		goto out;
 	}
 
-	gref_ids = kcalloc(op.count, sizeof(gref_ids[0]), GFP_KERNEL);
+	gref_ids = kcalloc(op.count, sizeof(gref_ids[0]), GFP_TEMPORARY);
 	if (!gref_ids) {
 		rc = -ENOMEM;
 		goto out;
@@ -525,7 +536,7 @@ static int gntalloc_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	vma->vm_private_data = vm_priv;
 
-	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 
 	vma->vm_ops = &gntalloc_vmops;
 

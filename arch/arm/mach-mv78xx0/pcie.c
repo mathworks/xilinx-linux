@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-mv78xx0/pcie.c
  *
  * PCIe functions for Marvell MV78xx0 SoCs
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2.  This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -26,7 +29,7 @@ struct pcie_port {
 	u8			root_bus_nr;
 	void __iomem		*base;
 	spinlock_t		conf_lock;
-	char			mem_space_name[20];
+	char			mem_space_name[16];
 	struct resource		res;
 };
 
@@ -42,7 +45,7 @@ void __init mv78xx0_pcie_id(u32 *dev, u32 *rev)
 
 u32 pcie_port_size[8] = {
 	0,
-	0x20000000,
+	0x30000000,
 	0x10000000,
 	0x10000000,
 	0x08000000,
@@ -98,7 +101,6 @@ static void __init mv78xx0_pcie_preinit(void)
 static int __init mv78xx0_pcie_setup(int nr, struct pci_sys_data *sys)
 {
 	struct pcie_port *pp;
-	struct resource realio;
 
 	if (nr >= num_pcie_ports)
 		return 0;
@@ -113,9 +115,7 @@ static int __init mv78xx0_pcie_setup(int nr, struct pci_sys_data *sys)
 	orion_pcie_set_local_bus_nr(pp->base, sys->busnr);
 	orion_pcie_setup(pp->base);
 
-	realio.start = nr * SZ_64K;
-	realio.end = realio.start + SZ_64K - 1;
-	pci_remap_iospace(&realio, MV78XX0_PCIE_IO_PHYS_BASE(nr));
+	pci_ioremap_io(nr * SZ_64K, MV78XX0_PCIE_IO_PHYS_BASE(nr));
 
 	pci_add_resource_offset(&sys->resources, &pp->res, sys->mem_offset);
 
@@ -177,44 +177,33 @@ static struct pci_ops pcie_ops = {
 	.write = pcie_wr_conf,
 };
 
-/*
- * The root complex has a hardwired class of PCI_CLASS_MEMORY_OTHER, when it
- * is operating as a root complex this needs to be switched to
- * PCI_CLASS_BRIDGE_HOST or Linux will errantly try to process the BAR's on
- * the device. Decoding setup is handled by the orion code.
- */
 static void rc_pci_fixup(struct pci_dev *dev)
 {
+	/*
+	 * Prevent enumeration of root complex.
+	 */
 	if (dev->bus->parent == NULL && dev->devfn == 0) {
-		struct resource *r;
+		int i;
 
-		dev->class &= 0xff;
-		dev->class |= PCI_CLASS_BRIDGE_HOST << 8;
-		pci_dev_for_each_resource(dev, r) {
-			r->start = 0;
-			r->end   = 0;
-			r->flags = 0;
+		for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
+			dev->resource[i].start = 0;
+			dev->resource[i].end   = 0;
+			dev->resource[i].flags = 0;
 		}
 	}
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_MARVELL, PCI_ANY_ID, rc_pci_fixup);
 
-static int __init mv78xx0_pcie_scan_bus(int nr, struct pci_host_bridge *bridge)
+static struct pci_bus __init *
+mv78xx0_pcie_scan_bus(int nr, struct pci_sys_data *sys)
 {
-	struct pci_sys_data *sys = pci_host_bridge_priv(bridge);
-
 	if (nr >= num_pcie_ports) {
 		BUG();
-		return -EINVAL;
+		return NULL;
 	}
 
-	list_splice_init(&sys->resources, &bridge->windows);
-	bridge->dev.parent = NULL;
-	bridge->sysdata = sys;
-	bridge->busnr = sys->busnr;
-	bridge->ops = &pcie_ops;
-
-	return pci_scan_root_bus_bridge(bridge);
+	return pci_scan_root_bus(NULL, sys->busnr, &pcie_ops, sys,
+				 &sys->resources);
 }
 
 static int __init mv78xx0_pcie_map_irq(const struct pci_dev *dev, u8 slot,

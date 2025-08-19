@@ -54,11 +54,12 @@
  */
 
 #include <linux/linkage.h>
-#include <linux/cfi_types.h>
 
 #define DIGEST_PTR	%rdi	/* 1st arg */
 #define DATA_PTR	%rsi	/* 2nd arg */
 #define NUM_BLKS	%rdx	/* 3rd arg */
+
+#define RSPSAVE		%rax
 
 /* gcc conversion */
 #define FRAME_SIZE	32	/* space for 2x16 bytes */
@@ -93,9 +94,9 @@
  * numBlocks: Number of blocks to process
  */
 .text
-SYM_TYPED_FUNC_START(sha1_ni_transform)
-	push		%rbp
-	mov		%rsp, %rbp
+.align 32
+ENTRY(sha1_ni_transform)
+	mov		%rsp, RSPSAVE
 	sub		$FRAME_SIZE, %rsp
 	and		$~0xF, %rsp
 
@@ -287,18 +288,15 @@ SYM_TYPED_FUNC_START(sha1_ni_transform)
 	pextrd		$3, E0, 1*16(DIGEST_PTR)
 
 .Ldone_hash:
-	mov		%rbp, %rsp
-	pop		%rbp
+	mov		RSPSAVE, %rsp
 
-	RET
-SYM_FUNC_END(sha1_ni_transform)
+	ret
+ENDPROC(sha1_ni_transform)
 
-.section	.rodata.cst16.PSHUFFLE_BYTE_FLIP_MASK, "aM", @progbits, 16
-.align 16
+.data
+
+.align 64
 PSHUFFLE_BYTE_FLIP_MASK:
 	.octa 0x000102030405060708090a0b0c0d0e0f
-
-.section	.rodata.cst16.UPPER_WORD_MASK, "aM", @progbits, 16
-.align 16
 UPPER_WORD_MASK:
 	.octa 0xFFFFFFFF000000000000000000000000

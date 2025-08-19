@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* SCTP kernel implementation
  * (C) Copyright IBM Corp. 2001, 2003
  * Copyright (c) Cisco 1999,2000
@@ -8,6 +7,22 @@
  * This file is part of the SCTP kernel implementation.
  *
  * A collection class to handle the storage of transport addresses.
+ *
+ * This SCTP implementation is free software;
+ * you can redistribute it and/or modify it under the terms of
+ * the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This SCTP implementation is distributed in the hope that it
+ * will be useful, but WITHOUT ANY WARRANTY; without even the implied
+ *                 ************************
+ * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Please send any bug reports or fixes you make to the
  * email address(es):
@@ -30,9 +45,9 @@
 #include <net/sctp/sm.h>
 
 /* Forward declarations for internal helpers. */
-static int sctp_copy_one_addr(struct net *net, struct sctp_bind_addr *dest,
-			      union sctp_addr *addr, enum sctp_scope scope,
-			      gfp_t gfp, int flags);
+static int sctp_copy_one_addr(struct net *, struct sctp_bind_addr *,
+			      union sctp_addr *, sctp_scope_t scope, gfp_t gfp,
+			      int flags);
 static void sctp_bind_addr_clean(struct sctp_bind_addr *);
 
 /* First Level Abstractions. */
@@ -42,7 +57,7 @@ static void sctp_bind_addr_clean(struct sctp_bind_addr *);
  */
 int sctp_bind_addr_copy(struct net *net, struct sctp_bind_addr *dest,
 			const struct sctp_bind_addr *src,
-			enum sctp_scope scope, gfp_t gfp,
+			sctp_scope_t scope, gfp_t gfp,
 			int flags)
 {
 	struct sctp_sockaddr_entry *addr;
@@ -72,12 +87,6 @@ int sctp_bind_addr_copy(struct net *net, struct sctp_bind_addr *dest,
 				goto out;
 		}
 	}
-
-	/* If somehow no addresses were found that can be used with this
-	 * scope, it's an error.
-	 */
-	if (list_empty(&dest->address_list))
-		error = -ENETUNREACH;
 
 out:
 	if (error)
@@ -276,31 +285,25 @@ int sctp_raw_to_bind_addrs(struct sctp_bind_addr *bp, __u8 *raw_addr_list,
 		rawaddr = (union sctp_addr_param *)raw_addr_list;
 
 		af = sctp_get_af_specific(param_type2af(param->type));
-		if (unlikely(!af) ||
-		    !af->from_addr_param(&addr, rawaddr, htons(port), 0)) {
+		if (unlikely(!af)) {
 			retval = -EINVAL;
-			goto out_err;
+			sctp_bind_addr_clean(bp);
+			break;
 		}
 
-		if (sctp_bind_addr_state(bp, &addr) != -1)
-			goto next;
+		af->from_addr_param(&addr, rawaddr, htons(port), 0);
 		retval = sctp_add_bind_addr(bp, &addr, sizeof(addr),
 					    SCTP_ADDR_SRC, gfp);
-		if (retval)
+		if (retval) {
 			/* Can't finish building the list, clean up. */
-			goto out_err;
+			sctp_bind_addr_clean(bp);
+			break;
+		}
 
-next:
 		len = ntohs(param->length);
 		addrs_len -= len;
 		raw_addr_list += len;
 	}
-
-	return retval;
-
-out_err:
-	if (retval)
-		sctp_bind_addr_clean(bp);
 
 	return retval;
 }
@@ -329,34 +332,6 @@ int sctp_bind_addr_match(struct sctp_bind_addr *bp,
 	rcu_read_unlock();
 
 	return match;
-}
-
-int sctp_bind_addrs_check(struct sctp_sock *sp,
-			  struct sctp_sock *sp2, int cnt2)
-{
-	struct sctp_bind_addr *bp2 = &sp2->ep->base.bind_addr;
-	struct sctp_bind_addr *bp = &sp->ep->base.bind_addr;
-	struct sctp_sockaddr_entry *laddr, *laddr2;
-	bool exist = false;
-	int cnt = 0;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(laddr, &bp->address_list, list) {
-		list_for_each_entry_rcu(laddr2, &bp2->address_list, list) {
-			if (sp->pf->af->cmp_addr(&laddr->a, &laddr2->a) &&
-			    laddr->valid && laddr2->valid) {
-				exist = true;
-				goto next;
-			}
-		}
-		cnt = 0;
-		break;
-next:
-		cnt++;
-	}
-	rcu_read_unlock();
-
-	return (cnt == cnt2) ? 0 : (exist ? -EEXIST : 1);
 }
 
 /* Does the address 'addr' conflict with any addresses in
@@ -402,19 +377,24 @@ int sctp_bind_addr_state(const struct sctp_bind_addr *bp,
 {
 	struct sctp_sockaddr_entry *laddr;
 	struct sctp_af *af;
+	int state = -1;
 
 	af = sctp_get_af_specific(addr->sa.sa_family);
 	if (unlikely(!af))
-		return -1;
+		return state;
 
+	rcu_read_lock();
 	list_for_each_entry_rcu(laddr, &bp->address_list, list) {
 		if (!laddr->valid)
 			continue;
-		if (af->cmp_addr(&laddr->a, addr))
-			return laddr->state;
+		if (af->cmp_addr(&laddr->a, addr)) {
+			state = laddr->state;
+			break;
+		}
 	}
+	rcu_read_unlock();
 
-	return -1;
+	return state;
 }
 
 /* Find the first address in the bind address list that is not present in
@@ -457,8 +437,9 @@ union sctp_addr *sctp_find_unmatch_addr(struct sctp_bind_addr	*bp,
 
 /* Copy out addresses from the global local address list. */
 static int sctp_copy_one_addr(struct net *net, struct sctp_bind_addr *dest,
-			      union sctp_addr *addr, enum sctp_scope scope,
-			      gfp_t gfp, int flags)
+			      union sctp_addr *addr,
+			      sctp_scope_t scope, gfp_t gfp,
+			      int flags)
 {
 	int error = 0;
 
@@ -470,7 +451,6 @@ static int sctp_copy_one_addr(struct net *net, struct sctp_bind_addr *dest,
 		 * well as the remote peer.
 		 */
 		if ((((AF_INET == addr->sa.sa_family) &&
-		      (flags & SCTP_ADDR4_ALLOWED) &&
 		      (flags & SCTP_ADDR4_PEERSUPP))) ||
 		    (((AF_INET6 == addr->sa.sa_family) &&
 		      (flags & SCTP_ADDR6_ALLOWED) &&
@@ -502,10 +482,9 @@ int sctp_is_any(struct sock *sk, const union sctp_addr *addr)
 }
 
 /* Is 'addr' valid for 'scope'?  */
-int sctp_in_scope(struct net *net, const union sctp_addr *addr,
-		  enum sctp_scope scope)
+int sctp_in_scope(struct net *net, const union sctp_addr *addr, sctp_scope_t scope)
 {
-	enum sctp_scope addr_scope = sctp_scope(addr);
+	sctp_scope_t addr_scope = sctp_scope(addr);
 
 	/* The unusable SCTP addresses will not be considered with
 	 * any defined scopes.
@@ -514,7 +493,7 @@ int sctp_in_scope(struct net *net, const union sctp_addr *addr,
 		return 0;
 	/*
 	 * For INIT and INIT-ACK address list, let L be the level of
-	 * requested destination address, sender and receiver
+	 * of requested destination address, sender and receiver
 	 * SHOULD include all of its addresses with level greater
 	 * than or equal to L.
 	 *
@@ -563,7 +542,7 @@ int sctp_is_ep_boundall(struct sock *sk)
  ********************************************************************/
 
 /* What is the scope of 'addr'?  */
-enum sctp_scope sctp_scope(const union sctp_addr *addr)
+sctp_scope_t sctp_scope(const union sctp_addr *addr)
 {
 	struct sctp_af *af;
 

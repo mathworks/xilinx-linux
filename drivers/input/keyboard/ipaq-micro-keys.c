@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * h3600 atmel micro companion support, key subdevice
  * based on previous kernel 2.4 version
  * Author : Alessandro Gardich <gremlin@gremlin.it>
  * Author : Linus Walleij <linus.walleij@linaro.org>
+ *
  */
 #include <linux/module.h>
 #include <linux/init.h>
@@ -124,7 +127,7 @@ static int micro_key_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int micro_key_suspend(struct device *dev)
+static int __maybe_unused micro_key_suspend(struct device *dev)
 {
 	struct ipaq_micro_keys *keys = dev_get_drvdata(dev);
 
@@ -133,14 +136,14 @@ static int micro_key_suspend(struct device *dev)
 	return 0;
 }
 
-static int micro_key_resume(struct device *dev)
+static int __maybe_unused micro_key_resume(struct device *dev)
 {
 	struct ipaq_micro_keys *keys = dev_get_drvdata(dev);
 	struct input_dev *input = keys->input;
 
 	mutex_lock(&input->mutex);
 
-	if (input_device_enabled(input))
+	if (input->users)
 		micro_key_start(keys);
 
 	mutex_unlock(&input->mutex);
@@ -148,13 +151,13 @@ static int micro_key_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(micro_key_dev_pm_ops,
-				micro_key_suspend, micro_key_resume);
+static SIMPLE_DEV_PM_OPS(micro_key_dev_pm_ops,
+			 micro_key_suspend, micro_key_resume);
 
 static struct platform_driver micro_key_device_driver = {
 	.driver = {
 		.name    = "ipaq-micro-keys",
-		.pm	= pm_sleep_ptr(&micro_key_dev_pm_ops),
+		.pm	= &micro_key_dev_pm_ops,
 	},
 	.probe   = micro_key_probe,
 };

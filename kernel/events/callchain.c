@@ -1,22 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Performance events callchain code, extracted from core.c:
  *
  *  Copyright (C) 2008 Thomas Gleixner <tglx@linutronix.de>
  *  Copyright (C) 2008-2011 Red Hat, Inc., Ingo Molnar
  *  Copyright (C) 2008-2011 Red Hat, Inc., Peter Zijlstra
- *  Copyright  Â©  2009 Paul Mackerras, IBM Corp. <paulus@au1.ibm.com>
+ *  Copyright  ©  2009 Paul Mackerras, IBM Corp. <paulus@au1.ibm.com>
+ *
+ * For licensing details see kernel-base/COPYING
  */
 
 #include <linux/perf_event.h>
 #include <linux/slab.h>
-#include <linux/sched/task_stack.h>
-
 #include "internal.h"
 
 struct callchain_cpus_entries {
 	struct rcu_head			rcu_head;
-	struct perf_callchain_entry	*cpu_entries[];
+	struct perf_callchain_entry	*cpu_entries[0];
 };
 
 int sysctl_perf_event_max_stack __read_mostly = PERF_MAX_STACK_DEPTH;
@@ -118,20 +117,23 @@ int get_callchain_buffers(int event_max_stack)
 		goto exit;
 	}
 
-	/*
-	 * If requesting per event more than the global cap,
-	 * return a different error to help userspace figure
-	 * this out.
-	 *
-	 * And also do it here so that we have &callchain_mutex held.
-	 */
-	if (event_max_stack > sysctl_perf_event_max_stack) {
-		err = -EOVERFLOW;
+	if (count > 1) {
+		/* If the allocation failed, give up */
+		if (!callchain_cpus_entries)
+			err = -ENOMEM;
+		/*
+		 * If requesting per event more than the global cap,
+		 * return a different error to help userspace figure
+		 * this out.
+		 *
+		 * And also do it here so that we have &callchain_mutex held.
+		 */
+		if (event_max_stack > sysctl_perf_event_max_stack)
+			err = -EOVERFLOW;
 		goto exit;
 	}
 
-	if (count == 1)
-		err = alloc_callchain_buffers();
+	err = alloc_callchain_buffers();
 exit:
 	if (err)
 		atomic_dec(&nr_callchain_events);
@@ -149,7 +151,7 @@ void put_callchain_buffers(void)
 	}
 }
 
-struct perf_callchain_entry *get_callchain_entry(int *rctx)
+static struct perf_callchain_entry *get_callchain_entry(int *rctx)
 {
 	int cpu;
 	struct callchain_cpus_entries *entries;
@@ -159,10 +161,8 @@ struct perf_callchain_entry *get_callchain_entry(int *rctx)
 		return NULL;
 
 	entries = rcu_dereference(callchain_cpus_entries);
-	if (!entries) {
-		put_recursion_context(this_cpu_ptr(callchain_recursion), *rctx);
+	if (!entries)
 		return NULL;
-	}
 
 	cpu = smp_processor_id();
 
@@ -170,10 +170,25 @@ struct perf_callchain_entry *get_callchain_entry(int *rctx)
 		(*rctx * perf_callchain_entry__sizeof()));
 }
 
-void
+static void
 put_callchain_entry(int rctx)
 {
 	put_recursion_context(this_cpu_ptr(callchain_recursion), rctx);
+}
+
+struct perf_callchain_entry *
+perf_callchain(struct perf_event *event, struct pt_regs *regs)
+{
+	bool kernel = !event->attr.exclude_callchain_kernel;
+	bool user   = !event->attr.exclude_callchain_user;
+	/* Disallow cross-task user callchains. */
+	bool crosstask = event->ctx->task && event->ctx->task != current;
+	const u32 max_stack = event->attr.sample_max_stack;
+
+	if (!kernel && !user)
+		return NULL;
+
+	return get_perf_callchain(regs, 0, kernel, user, max_stack, crosstask, true);
 }
 
 struct perf_callchain_entry *
@@ -185,8 +200,11 @@ get_perf_callchain(struct pt_regs *regs, u32 init_nr, bool kernel, bool user,
 	int rctx;
 
 	entry = get_callchain_entry(&rctx);
-	if (!entry)
+	if (rctx == -1)
 		return NULL;
+
+	if (!entry)
+		goto exit_put;
 
 	ctx.entry     = entry;
 	ctx.max_stack = max_stack;
@@ -214,7 +232,6 @@ get_perf_callchain(struct pt_regs *regs, u32 init_nr, bool kernel, bool user,
 
 			if (add_mark)
 				perf_callchain_store_context(&ctx, PERF_CONTEXT_USER);
-
 			perf_callchain_user(&ctx, regs);
 		}
 	}
@@ -230,7 +247,7 @@ exit_put:
  * sysctl_perf_event_max_contexts_per_stack.
  */
 int perf_event_max_stack_handler(struct ctl_table *table, int write,
-				 void *buffer, size_t *lenp, loff_t *ppos)
+				 void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *value = table->data;
 	int new_value = *value, ret;

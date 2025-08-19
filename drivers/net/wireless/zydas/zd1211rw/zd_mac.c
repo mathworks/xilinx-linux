@@ -1,10 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* ZD1211 USB-WLAN driver for Linux
  *
  * Copyright (C) 2005-2007 Ulrich Kunitz <kune@deine-taler.de>
  * Copyright (C) 2006-2007 Daniel Drake <dsd@gentoo.org>
  * Copyright (C) 2006-2007 Michael Wu <flamingice@sourmilk.net>
  * Copyright (C) 2007-2008 Luis R. Rodriguez <mcgrof@winlab.rutgers.edu>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/netdevice.h>
@@ -223,6 +235,7 @@ void zd_mac_clear(struct zd_mac *mac)
 {
 	flush_workqueue(zd_workqueue);
 	zd_chip_clear(&mac->chip);
+	ZD_ASSERT(!spin_is_locked(&mac->lock));
 	ZD_MEMCLEAR(mac, sizeof(struct zd_mac));
 }
 
@@ -398,7 +411,7 @@ int zd_restore_settings(struct zd_mac *mac)
 	    mac->type == NL80211_IFTYPE_ADHOC ||
 	    mac->type == NL80211_IFTYPE_AP) {
 		if (mac->vif != NULL) {
-			beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
+			beacon = ieee80211_beacon_get(mac->hw, mac->vif);
 			if (beacon)
 				zd_mac_config_beacon(mac->hw, beacon, false);
 		}
@@ -416,10 +429,11 @@ int zd_restore_settings(struct zd_mac *mac)
 
 /**
  * zd_mac_tx_status - reports tx status of a packet if required
- * @hw: a &struct ieee80211_hw pointer
- * @skb: a sk-buffer
+ * @hw - a &struct ieee80211_hw pointer
+ * @skb - a sk-buffer
+ * @flags: extra flags to set in the TX status info
  * @ackssi: ACK signal strength
- * @tx_status: success and/or retry
+ * @success - True for successful transmission of the frame
  *
  * This information calls ieee80211_tx_status_irqsafe() if required by the
  * control information. It copies the control information into the status
@@ -476,7 +490,7 @@ static void zd_mac_tx_status(struct ieee80211_hw *hw, struct sk_buff *skb,
 
 /**
  * zd_mac_tx_failed - callback for failed frames
- * @urb: pointer to the urb structure
+ * @dev: the mac80211 wireless device
  *
  * This function is called if a frame couldn't be successfully
  * transferred. The first frame from the tx queue, will be selected and
@@ -495,6 +509,7 @@ void zd_mac_tx_failed(struct urb *urb)
 	int found = 0;
 	int i, position = 0;
 
+	q = &mac->ack_wait_queue;
 	spin_lock_irqsave(&q->lock, flags);
 
 	skb_queue_walk(q, skb) {
@@ -718,8 +733,7 @@ static int zd_mac_config_beacon(struct ieee80211_hw *hw, struct sk_buff *beacon,
 
 	/* Alloc memory for full beacon write at once. */
 	num_cmds = 1 + zd_chip_is_zd1211b(&mac->chip) + full_len;
-	ioreqs = kmalloc_array(num_cmds, sizeof(struct zd_ioreq32),
-			       GFP_KERNEL);
+	ioreqs = kmalloc(num_cmds * sizeof(struct zd_ioreq32), GFP_KERNEL);
 	if (!ioreqs) {
 		r = -ENOMEM;
 		goto out_nofree;
@@ -854,7 +868,8 @@ static int fill_ctrlset(struct zd_mac *mac,
 	unsigned int frag_len = skb->len + FCS_LEN;
 	unsigned int packet_length;
 	struct ieee80211_rate *txrate;
-	struct zd_ctrlset *cs = skb_push(skb, sizeof(struct zd_ctrlset));
+	struct zd_ctrlset *cs = (struct zd_ctrlset *)
+		skb_push(skb, sizeof(struct zd_ctrlset));
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 
 	ZD_ASSERT(frag_len <= 0xffff);
@@ -912,9 +927,9 @@ static int fill_ctrlset(struct zd_mac *mac,
 /**
  * zd_op_tx - transmits a network frame to the device
  *
- * @hw: a &struct ieee80211_hw pointer
- * @control: the control structure
+ * @dev: mac80211 hardware device
  * @skb: socket buffer
+ * @control: the control structure
  *
  * This function transmit an IEEE 802.11 network frame to the device. The
  * control block of the skbuff will be initialized. If necessary the incoming
@@ -945,7 +960,7 @@ fail:
 
 /**
  * filter_ack - filters incoming packets for acknowledgements
- * @hw: a &struct ieee80211_hw pointer
+ * @dev: the mac80211 device
  * @rx_hdr: received header
  * @stats: the status for the received packet
  *
@@ -1088,7 +1103,7 @@ int zd_mac_rx(struct ieee80211_hw *hw, const u8 *buffer, unsigned int length)
 	}
 
 	/* FIXME : could we avoid this big memcpy ? */
-	skb_put_data(skb, buffer, length);
+	memcpy(skb_put(skb, length), buffer, length);
 
 	memcpy(IEEE80211_SKB_RXCB(skb), &stats, sizeof(stats));
 	ieee80211_rx_irqsafe(hw, skb);
@@ -1167,7 +1182,7 @@ static void zd_beacon_done(struct zd_mac *mac)
 	/*
 	 * Fetch next beacon so that tim_count is updated.
 	 */
-	beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
+	beacon = ieee80211_beacon_get(mac->hw, mac->vif);
 	if (beacon)
 		zd_mac_config_beacon(mac->hw, beacon, true);
 
@@ -1278,20 +1293,19 @@ static void set_rts_cts(struct zd_mac *mac, unsigned int short_preamble)
 static void zd_op_bss_info_changed(struct ieee80211_hw *hw,
 				   struct ieee80211_vif *vif,
 				   struct ieee80211_bss_conf *bss_conf,
-				   u64 changes)
+				   u32 changes)
 {
 	struct zd_mac *mac = zd_hw_mac(hw);
 	int associated;
 
-	dev_dbg_f(zd_mac_dev(mac), "changes: %llx\n", changes);
+	dev_dbg_f(zd_mac_dev(mac), "changes: %x\n", changes);
 
 	if (mac->type == NL80211_IFTYPE_MESH_POINT ||
 	    mac->type == NL80211_IFTYPE_ADHOC ||
 	    mac->type == NL80211_IFTYPE_AP) {
 		associated = true;
 		if (changes & BSS_CHANGED_BEACON) {
-			struct sk_buff *beacon = ieee80211_beacon_get(hw, vif,
-								      0);
+			struct sk_buff *beacon = ieee80211_beacon_get(hw, vif);
 
 			if (beacon) {
 				zd_chip_disable_hwint(&mac->chip);
@@ -1344,7 +1358,6 @@ static u64 zd_op_get_tsf(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 
 static const struct ieee80211_ops zd_ops = {
 	.tx			= zd_op_tx,
-	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= zd_op_start,
 	.stop			= zd_op_stop,
 	.add_interface		= zd_op_add_interface,
@@ -1394,8 +1407,6 @@ struct ieee80211_hw *zd_mac_alloc_hw(struct usb_interface *intf)
 		BIT(NL80211_IFTYPE_STATION) |
 		BIT(NL80211_IFTYPE_ADHOC) |
 		BIT(NL80211_IFTYPE_AP);
-
-	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
 
 	hw->max_signal = 100;
 	hw->queues = 1;
@@ -1449,7 +1460,7 @@ static void beacon_watchdog_handler(struct work_struct *work)
 
 		zd_chip_disable_hwint(&mac->chip);
 
-		beacon = ieee80211_beacon_get(mac->hw, mac->vif, 0);
+		beacon = ieee80211_beacon_get(mac->hw, mac->vif);
 		if (beacon) {
 			zd_mac_free_cur_beacon(mac);
 

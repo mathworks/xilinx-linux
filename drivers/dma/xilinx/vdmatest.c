@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * XILINX VDMA Engine test client driver
  *
@@ -27,25 +26,16 @@
 #include <linux/platform_device.h>
 #include <linux/random.h>
 #include <linux/slab.h>
-#include <linux/sched/task.h>
 #include <linux/wait.h>
 
 static unsigned int test_buf_size = 64;
-module_param(test_buf_size, uint, 0444);
+module_param(test_buf_size, uint, S_IRUGO);
 MODULE_PARM_DESC(test_buf_size, "Size of the memcpy test buffer");
 
 static unsigned int iterations = 1;
-module_param(iterations, uint, 0444);
+module_param(iterations, uint, S_IRUGO);
 MODULE_PARM_DESC(iterations,
 		"Iterations before stopping test (default: infinite)");
-
-static unsigned int hsize = 64;
-module_param(hsize, uint, 0444);
-MODULE_PARM_DESC(hsize, "Horizontal size in bytes");
-
-static unsigned int vsize = 32;
-module_param(vsize, uint, 0444);
-MODULE_PARM_DESC(vsize, "Vertical size in bytes");
 
 /*
  * Initialization patterns. All bytes in the source buffer has bit 7
@@ -246,6 +236,7 @@ static int xilinx_vdmatest_slave_func(void *data)
 	enum dma_status status;
 	enum dma_ctrl_flags flags;
 	int ret = -ENOMEM, i;
+	int hsize = 64, vsize = 32;
 	struct xilinx_vdma_config config;
 
 	thread_name = current->comm;
@@ -320,13 +311,14 @@ static int xilinx_vdmatest_slave_func(void *data)
 		config.park = 1;
 		xilinx_vdma_channel_set_config(tx_chan, &config);
 
+		config.park = 0;
 		xilinx_vdma_channel_set_config(rx_chan, &config);
 
 		for (i = 0; i < frm_cnt; i++) {
 			dma_dsts[i] = dma_map_single(rx_dev->dev,
 							thread->dsts[i],
 							test_buf_size,
-							DMA_FROM_DEVICE);
+							DMA_DEV_TO_MEM);
 
 			if (dma_mapping_error(rx_dev->dev, dma_dsts[i])) {
 				failed_tests++;
@@ -347,7 +339,7 @@ static int xilinx_vdmatest_slave_func(void *data)
 			u8 *buf = thread->srcs[i];
 
 			dma_srcs[i] = dma_map_single(tx_dev->dev, buf, len,
-							DMA_TO_DEVICE);
+							DMA_MEM_TO_DEV);
 
 			if (dma_mapping_error(tx_dev->dev, dma_srcs[i])) {
 				failed_tests++;
@@ -367,11 +359,11 @@ static int xilinx_vdmatest_slave_func(void *data)
 		if (!rxd || !txd) {
 			for (i = 0; i < frm_cnt; i++)
 				dma_unmap_single(tx_dev->dev, dma_srcs[i], len,
-						DMA_TO_DEVICE);
+						DMA_MEM_TO_DEV);
 			for (i = 0; i < frm_cnt; i++)
 				dma_unmap_single(rx_dev->dev, dma_dsts[i],
 						test_buf_size,
-						DMA_FROM_DEVICE);
+						DMA_DEV_TO_MEM);
 			pr_warn("%s: #%u: prep error with len=0x%x ",
 					thread_name, total_tests - 1, len);
 			msleep(100);
@@ -443,7 +435,7 @@ static int xilinx_vdmatest_slave_func(void *data)
 		/* Unmap by myself */
 		for (i = 0; i < frm_cnt; i++)
 			dma_unmap_single(rx_dev->dev, dma_dsts[i],
-					 test_buf_size, DMA_FROM_DEVICE);
+					 test_buf_size, DMA_DEV_TO_MEM);
 
 		error_count = 0;
 
@@ -596,19 +588,16 @@ static int xilinx_vdmatest_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	chan = dma_request_chan(&pdev->dev, "vdma0");
+	chan = dma_request_slave_channel(&pdev->dev, "vdma0");
 	if (IS_ERR(chan)) {
-		err = PTR_ERR(chan);
-		if (err != -EPROBE_DEFER)
-			pr_err("xilinx_vdmatest: No Tx channel\n");
-		return err;
+		pr_err("xilinx_vdmatest: No Tx channel\n");
+		return PTR_ERR(chan);
 	}
 
-	rx_chan = dma_request_chan(&pdev->dev, "vdma1");
+	rx_chan = dma_request_slave_channel(&pdev->dev, "vdma1");
 	if (IS_ERR(rx_chan)) {
 		err = PTR_ERR(rx_chan);
-		if (err != -EPROBE_DEFER)
-			pr_err("xilinx_vdmatest: No Rx channel\n");
+		pr_err("xilinx_vdmatest: No Rx channel\n");
 		goto free_tx;
 	}
 
@@ -638,7 +627,6 @@ static int xilinx_vdmatest_remove(struct platform_device *pdev)
 		xilinx_vdmatest_cleanup_channel(dtc);
 		pr_info("xilinx_vdmatest: dropped channel %s\n",
 			dma_chan_name(chan));
-		dmaengine_terminate_async(chan);
 		dma_release_channel(chan);
 	}
 	return 0;
@@ -663,4 +651,4 @@ module_platform_driver(xilinx_vdmatest_driver);
 
 MODULE_AUTHOR("Xilinx, Inc.");
 MODULE_DESCRIPTION("Xilinx AXI VDMA Test Client");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

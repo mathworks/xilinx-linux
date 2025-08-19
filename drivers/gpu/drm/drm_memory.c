@@ -1,4 +1,4 @@
-/*
+/**
  * \file drm_memory.c
  * Memory management wrappers for DRM
  *
@@ -33,14 +33,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <linux/export.h>
 #include <linux/highmem.h>
-#include <linux/pci.h>
-#include <linux/vmalloc.h>
-
-#include <drm/drm_cache.h>
-#include <drm/drm_device.h>
-
+#include <linux/export.h>
+#include <drm/drmP.h>
 #include "drm_legacy.h"
 
 #if IS_ENABLED(CONFIG_AGP)
@@ -56,7 +51,7 @@
 #endif
 
 static void *agp_remap(unsigned long offset, unsigned long size,
-		       struct drm_device *dev)
+		       struct drm_device * dev)
 {
 	unsigned long i, num_pages =
 	    PAGE_ALIGN(size) / PAGE_SIZE;
@@ -85,7 +80,7 @@ static void *agp_remap(unsigned long offset, unsigned long size,
 	 * page-table instead (that's probably faster anyhow...).
 	 */
 	/* note: use vmalloc() because num_pages could be large... */
-	page_map = vmalloc(array_size(num_pages, sizeof(struct page *)));
+	page_map = vmalloc(num_pages * sizeof(struct page *));
 	if (!page_map)
 		return NULL;
 
@@ -98,9 +93,27 @@ static void *agp_remap(unsigned long offset, unsigned long size,
 	return addr;
 }
 
+/** Wrapper around agp_free_memory() */
+void drm_free_agp(struct agp_memory * handle, int pages)
+{
+	agp_free_memory(handle);
+}
+
+/** Wrapper around agp_bind_memory() */
+int drm_bind_agp(struct agp_memory * handle, unsigned int start)
+{
+	return agp_bind_memory(handle, start);
+}
+
+/** Wrapper around agp_unbind_memory() */
+int drm_unbind_agp(struct agp_memory * handle)
+{
+	return agp_unbind_memory(handle);
+}
+
 #else /*  CONFIG_AGP  */
 static inline void *agp_remap(unsigned long offset, unsigned long size,
-			      struct drm_device *dev)
+			      struct drm_device * dev)
 {
 	return NULL;
 }

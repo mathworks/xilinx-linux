@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* pci_schizo.c: SCHIZO/TOMATILLO specific PCI controller support.
  *
  * Copyright (C) 2001, 2002, 2003, 2007, 2008 David S. Miller (davem@davemloft.net)
@@ -12,7 +11,6 @@
 #include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/of_device.h>
-#include <linux/numa.h>
 
 #include <asm/iommu.h>
 #include <asm/irq.h>
@@ -1270,7 +1268,7 @@ static void schizo_pbm_hw_init(struct pci_pbm_info *pbm)
 	    pbm->chip_version >= 0x2)
 		tmp |= 0x3UL << SCHIZO_PCICTRL_PTO_SHIFT;
 
-	if (!of_property_read_bool(pbm->op->dev.of_node, "no-bus-parking"))
+	if (!of_find_property(pbm->op->dev.of_node, "no-bus-parking", NULL))
 		tmp |= SCHIZO_PCICTRL_PARK;
 	else
 		tmp &= ~SCHIZO_PCICTRL_PARK;
@@ -1348,7 +1346,7 @@ static int schizo_pbm_init(struct pci_pbm_info *pbm,
 	pbm->next = pci_pbm_root;
 	pci_pbm_root = pbm;
 
-	pbm->numa_node = NUMA_NO_NODE;
+	pbm->numa_node = -1;
 
 	pbm->pci_ops = &sun4u_pci_ops;
 	pbm->config_space_reg_bits = 8;

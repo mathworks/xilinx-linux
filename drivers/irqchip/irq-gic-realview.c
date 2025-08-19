@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Special GIC quirks for the ARM RealView
  * Copyright (C) 2015 Linus Walleij
@@ -44,7 +43,7 @@ static const struct of_device_id syscon_pldset_of_match[] = {
 static int __init
 realview_gic_of_init(struct device_node *node, struct device_node *parent)
 {
-	struct regmap *map;
+	static struct regmap *map;
 	struct device_node *np;
 	const struct of_device_id *gic_id;
 	u32 pld1_ctrl;
@@ -57,7 +56,6 @@ realview_gic_of_init(struct device_node *node, struct device_node *parent)
 
 	/* The PB11MPCore GIC needs to be configured in the syscon */
 	map = syscon_node_to_regmap(np);
-	of_node_put(np);
 	if (!IS_ERR(map)) {
 		/* new irq mode with no DCC */
 		regmap_write(map, REALVIEW_SYS_LOCK_OFFSET,

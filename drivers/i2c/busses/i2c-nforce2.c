@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     SMBus driver for nVidia nForce2 MCP
 
@@ -9,6 +8,15 @@
     SMBus 2.0 driver for AMD-8111 IO-Hub
     Copyright (c) 2002 Vojtech Pavlik
 
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
 */
 
 /*
@@ -288,7 +296,7 @@ static u32 nforce2_func(struct i2c_adapter *adapter)
 		I2C_FUNC_SMBUS_BLOCK_DATA : 0);
 }
 
-static const struct i2c_algorithm smbus_algorithm = {
+static struct i2c_algorithm smbus_algorithm = {
 	.smbus_xfer	= nforce2_access,
 	.functionality	= nforce2_func,
 };
@@ -327,8 +335,8 @@ static int nforce2_probe_smb(struct pci_dev *dev, int bar, int alt_reg,
 		/* Older incarnations of the device used non-standard BARs */
 		u16 iobase;
 
-		error = pci_read_config_word(dev, alt_reg, &iobase);
-		if (error != PCIBIOS_SUCCESSFUL) {
+		if (pci_read_config_word(dev, alt_reg, &iobase)
+		    != PCIBIOS_SUCCESSFUL) {
 			dev_err(&dev->dev, "Error reading PCI config for %s\n",
 				name);
 			return -EIO;
@@ -373,7 +381,7 @@ static int nforce2_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	int res1, res2;
 
 	/* we support 2 SMBus adapters */
-	smbuses = kcalloc(2, sizeof(struct nforce2_smbus), GFP_KERNEL);
+	smbuses = kzalloc(2 * sizeof(struct nforce2_smbus), GFP_KERNEL);
 	if (!smbuses)
 		return -ENOMEM;
 	pci_set_drvdata(dev, smbuses);

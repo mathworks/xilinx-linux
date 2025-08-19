@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * linux/fs/jbd2/revoke.c
  *
  * Written by Stephen C. Tweedie <sct@redhat.com>, 2000
  *
  * Copyright 2000 Red Hat corp --- All Rights Reserved
+ *
+ * This file is part of the Linux kernel and is made available under
+ * the terms of the GNU General Public License, version 2, or at your
+ * option, any later version, incorporated herein by reference.
  *
  * Journal revoke routines for the generic filesystem journaling code;
  * part of the ext2fs journaling system.
@@ -178,41 +181,37 @@ static struct jbd2_revoke_record_s *find_revoke_record(journal_t *journal,
 	return NULL;
 }
 
-void jbd2_journal_destroy_revoke_record_cache(void)
+void jbd2_journal_destroy_revoke_caches(void)
 {
-	kmem_cache_destroy(jbd2_revoke_record_cache);
-	jbd2_revoke_record_cache = NULL;
+	if (jbd2_revoke_record_cache) {
+		kmem_cache_destroy(jbd2_revoke_record_cache);
+		jbd2_revoke_record_cache = NULL;
+	}
+	if (jbd2_revoke_table_cache) {
+		kmem_cache_destroy(jbd2_revoke_table_cache);
+		jbd2_revoke_table_cache = NULL;
+	}
 }
 
-void jbd2_journal_destroy_revoke_table_cache(void)
-{
-	kmem_cache_destroy(jbd2_revoke_table_cache);
-	jbd2_revoke_table_cache = NULL;
-}
-
-int __init jbd2_journal_init_revoke_record_cache(void)
+int __init jbd2_journal_init_revoke_caches(void)
 {
 	J_ASSERT(!jbd2_revoke_record_cache);
+	J_ASSERT(!jbd2_revoke_table_cache);
+
 	jbd2_revoke_record_cache = KMEM_CACHE(jbd2_revoke_record_s,
 					SLAB_HWCACHE_ALIGN|SLAB_TEMPORARY);
+	if (!jbd2_revoke_record_cache)
+		goto record_cache_failure;
 
-	if (!jbd2_revoke_record_cache) {
-		pr_emerg("JBD2: failed to create revoke_record cache\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-
-int __init jbd2_journal_init_revoke_table_cache(void)
-{
-	J_ASSERT(!jbd2_revoke_table_cache);
 	jbd2_revoke_table_cache = KMEM_CACHE(jbd2_revoke_table_s,
 					     SLAB_TEMPORARY);
-	if (!jbd2_revoke_table_cache) {
-		pr_emerg("JBD2: failed to create revoke_table cache\n");
-		return -ENOMEM;
-	}
+	if (!jbd2_revoke_table_cache)
+		goto table_cache_failure;
 	return 0;
+table_cache_failure:
+	jbd2_journal_destroy_revoke_caches();
+record_cache_failure:
+		return -ENOMEM;
 }
 
 static struct jbd2_revoke_table_s *jbd2_journal_init_revoke_table(int hash_size)
@@ -231,7 +230,7 @@ static struct jbd2_revoke_table_s *jbd2_journal_init_revoke_table(int hash_size)
 	table->hash_size = hash_size;
 	table->hash_shift = shift;
 	table->hash_table =
-		kmalloc_array(hash_size, sizeof(struct list_head), GFP_KERNEL);
+		kmalloc(hash_size * sizeof(struct list_head), GFP_KERNEL);
 	if (!table->hash_table) {
 		kmem_cache_free(jbd2_revoke_table_cache, table);
 		table = NULL;
@@ -281,7 +280,6 @@ int jbd2_journal_init_revoke(journal_t *journal, int hash_size)
 
 fail1:
 	jbd2_journal_destroy_revoke_table(journal->j_revoke_table[0]);
-	journal->j_revoke_table[0] = NULL;
 fail0:
 	return -ENOMEM;
 }
@@ -371,11 +369,6 @@ int jbd2_journal_revoke(handle_t *handle, unsigned long long blocknr,
 	}
 #endif
 
-	if (WARN_ON_ONCE(handle->h_revoke_credits <= 0)) {
-		if (!bh_in)
-			brelse(bh);
-		return -EIO;
-	}
 	/* We really ought not ever to revoke twice in a row without
            first having the revoke cancelled: it's illegal to free a
            block twice without allocating it in between! */
@@ -396,9 +389,8 @@ int jbd2_journal_revoke(handle_t *handle, unsigned long long blocknr,
 			__brelse(bh);
 		}
 	}
-	handle->h_revoke_credits--;
 
-	jbd2_debug(2, "insert revoke for block %llu, bh_in=%p\n",blocknr, bh_in);
+	jbd_debug(2, "insert revoke for block %llu, bh_in=%p\n",blocknr, bh_in);
 	err = insert_revoke_hash(journal, blocknr,
 				handle->h_transaction->t_tid);
 	BUFFER_TRACE(bh_in, "exit");
@@ -428,7 +420,7 @@ int jbd2_journal_cancel_revoke(handle_t *handle, struct journal_head *jh)
 	int did_revoke = 0;	/* akpm: debug */
 	struct buffer_head *bh = jh2bh(jh);
 
-	jbd2_debug(4, "journal_head %p, cancelling revoke\n", jh);
+	jbd_debug(4, "journal_head %p, cancelling revoke\n", jh);
 
 	/* Is the existing Revoke bit valid?  If so, we trust it, and
 	 * only perform the full cancel if the revoke bit is set.  If
@@ -444,7 +436,7 @@ int jbd2_journal_cancel_revoke(handle_t *handle, struct journal_head *jh)
 	if (need_cancel) {
 		record = find_revoke_record(journal, bh->b_blocknr);
 		if (record) {
-			jbd2_debug(4, "cancelled existing revoke on "
+			jbd_debug(4, "cancelled existing revoke on "
 				  "blocknr %llu\n", (unsigned long long)bh->b_blocknr);
 			spin_lock(&journal->j_revoke_lock);
 			list_del(&record->hash);
@@ -560,7 +552,7 @@ void jbd2_journal_write_revoke_records(transaction_t *transaction,
 	}
 	if (descriptor)
 		flush_descriptor(journal, descriptor, offset);
-	jbd2_debug(1, "Wrote %d revoke records\n", count);
+	jbd_debug(1, "Wrote %d revoke records\n", count);
 }
 
 /*
@@ -644,8 +636,10 @@ static void flush_descriptor(journal_t *journal,
 {
 	jbd2_journal_revoke_header_t *header;
 
-	if (is_journal_aborted(journal))
+	if (is_journal_aborted(journal)) {
+		put_bh(descriptor);
 		return;
+	}
 
 	header = (jbd2_journal_revoke_header_t *)descriptor->b_data;
 	header->r_count = cpu_to_be32(offset);
@@ -654,7 +648,7 @@ static void flush_descriptor(journal_t *journal,
 	set_buffer_jwrite(descriptor);
 	BUFFER_TRACE(descriptor, "write");
 	set_buffer_dirty(descriptor);
-	write_dirty_buffer(descriptor, REQ_SYNC);
+	write_dirty_buffer(descriptor, WRITE_SYNC);
 }
 #endif
 

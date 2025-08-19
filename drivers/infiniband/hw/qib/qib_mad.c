@@ -105,7 +105,7 @@ static void qib_send_trap(struct qib_ibport *ibp, void *data, unsigned len)
 		if (ibp->rvp.sm_lid != be16_to_cpu(IB_LID_PERMISSIVE)) {
 			struct ib_ah *ah;
 
-			ah = qib_create_qp0_ah(ibp, (u16)ibp->rvp.sm_lid);
+			ah = qib_create_qp0_ah(ibp, ibp->rvp.sm_lid);
 			if (IS_ERR(ah))
 				ret = PTR_ERR(ah);
 			else {
@@ -134,21 +134,24 @@ static void qib_send_trap(struct qib_ibport *ibp, void *data, unsigned len)
 }
 
 /*
- * Send a bad P_Key trap (ch. 14.3.8).
+ * Send a bad [PQ]_Key trap (ch. 14.3.8).
  */
-void qib_bad_pkey(struct qib_ibport *ibp, u32 key, u32 sl,
-		  u32 qp1, u32 qp2, __be16 lid1, __be16 lid2)
+void qib_bad_pqkey(struct qib_ibport *ibp, __be16 trap_num, u32 key, u32 sl,
+		   u32 qp1, u32 qp2, __be16 lid1, __be16 lid2)
 {
 	struct ib_mad_notice_attr data;
 
+	if (trap_num == IB_NOTICE_TRAP_BAD_PKEY)
+		ibp->rvp.pkey_violations++;
+	else
+		ibp->rvp.qkey_violations++;
 	ibp->rvp.n_pkt_drops++;
-	ibp->rvp.pkey_violations++;
 
 	/* Send violation trap */
 	data.generic_type = IB_NOTICE_TYPE_SECURITY;
 	data.prod_type_msb = 0;
 	data.prod_type_lsb = IB_NOTICE_PROD_CA;
-	data.trap_num = IB_NOTICE_TRAP_BAD_PKEY;
+	data.trap_num = trap_num;
 	data.issuer_lid = cpu_to_be16(ppd_from_ibp(ibp)->lid);
 	data.toggle_count = 0;
 	memset(&data.details, 0, sizeof(data.details));
@@ -203,7 +206,7 @@ static void qib_bad_mkey(struct qib_ibport *ibp, struct ib_smp *smp)
 /*
  * Send a Port Capability Mask Changed trap (ch. 14.3.11).
  */
-void qib_cap_mask_chg(struct rvt_dev_info *rdi, u32 port_num)
+void qib_cap_mask_chg(struct rvt_dev_info *rdi, u8 port_num)
 {
 	struct qib_ibdev *ibdev = container_of(rdi, struct qib_ibdev, rdi);
 	struct qib_devdata *dd = dd_from_dev(ibdev);
@@ -280,7 +283,7 @@ static int subn_get_nodeinfo(struct ib_smp *smp, struct ib_device *ibdev,
 {
 	struct ib_node_info *nip = (struct ib_node_info *)&smp->data;
 	struct qib_devdata *dd = dd_from_ibdev(ibdev);
-	u32 majrev, minrev;
+	u32 vendor, majrev, minrev;
 	unsigned pidx = port - 1; /* IB number port from 1, hdw from 0 */
 
 	/* GUID 0 is illegal */
@@ -303,6 +306,7 @@ static int subn_get_nodeinfo(struct ib_smp *smp, struct ib_device *ibdev,
 	minrev = dd->minrev;
 	nip->revision = cpu_to_be32((majrev << 16) | minrev);
 	nip->local_port_num = port;
+	vendor = dd->vendorid;
 	nip->vendor_id[0] = QIB_SRC_OUI_1;
 	nip->vendor_id[1] = QIB_SRC_OUI_2;
 	nip->vendor_id[2] = QIB_SRC_OUI_3;
@@ -433,7 +437,6 @@ static int check_mkey(struct qib_ibport *ibp, struct ib_smp *smp, int mad_flags)
 			/* Bad mkey not a violation below level 2 */
 			if (ibp->rvp.mkeyprot < 2)
 				break;
-			fallthrough;
 		case IB_MGMT_METHOD_SET:
 		case IB_MGMT_METHOD_TRAP_REPRESS:
 			if (ibp->rvp.mkey_violations != 0xFFFF)
@@ -496,7 +499,7 @@ static int subn_get_portinfo(struct ib_smp *smp, struct ib_device *ibdev,
 		pip->mkey = ibp->rvp.mkey;
 	pip->gid_prefix = ibp->rvp.gid_prefix;
 	pip->lid = cpu_to_be16(ppd->lid);
-	pip->sm_lid = cpu_to_be16((u16)ibp->rvp.sm_lid);
+	pip->sm_lid = cpu_to_be16(ibp->rvp.sm_lid);
 	pip->cap_mask = cpu_to_be32(ibp->rvp.port_cap_flags);
 	/* pip->diag_code; */
 	pip->mkey_lease_period = cpu_to_be16(ibp->rvp.mkey_lease_period);
@@ -714,10 +717,9 @@ static int subn_set_portinfo(struct ib_smp *smp, struct ib_device *ibdev,
 		spin_lock_irqsave(&ibp->rvp.lock, flags);
 		if (ibp->rvp.sm_ah) {
 			if (smlid != ibp->rvp.sm_lid)
-				rdma_ah_set_dlid(&ibp->rvp.sm_ah->attr,
-						 smlid);
+				ibp->rvp.sm_ah->attr.dlid = smlid;
 			if (msl != ibp->rvp.sm_sl)
-				rdma_ah_set_sl(&ibp->rvp.sm_ah->attr, msl);
+				ibp->rvp.sm_ah->attr.sl = msl;
 		}
 		spin_unlock_irqrestore(&ibp->rvp.lock, flags);
 		if (smlid != ibp->rvp.sm_lid)
@@ -828,7 +830,7 @@ static int subn_set_portinfo(struct ib_smp *smp, struct ib_device *ibdev,
 	case IB_PORT_NOP:
 		if (lstate == 0)
 			break;
-		fallthrough;
+		/* FALLTHROUGH */
 	case IB_PORT_DOWN:
 		if (lstate == 0)
 			lstate = QIB_IB_LINKDOWN_ONLY;
@@ -871,6 +873,8 @@ static int subn_set_portinfo(struct ib_smp *smp, struct ib_device *ibdev,
 		ib_dispatch_event(&event);
 	}
 
+	ret = subn_get_portinfo(smp, ibdev, port);
+
 	/* restore re-reg bit per o14-12.2.1 */
 	pip->clientrereg_resv_subnetto |= clientrereg;
 
@@ -886,7 +890,7 @@ done:
 
 /**
  * rm_pkey - decrecment the reference count for the given PKEY
- * @ppd: the qlogic_ib device
+ * @dd: the qlogic_ib device
  * @key: the PKEY index
  *
  * Return true if this was the last reference and the hardware table entry
@@ -916,7 +920,7 @@ bail:
 
 /**
  * add_pkey - add the given PKEY to the hardware table
- * @ppd: the qlogic_ib device
+ * @dd: the qlogic_ib device
  * @key: the PKEY
  *
  * Return an error code if unable to add the entry, zero if no change,
@@ -1573,8 +1577,8 @@ static int pma_get_portcounters_cong(struct ib_pma_mad *pmp,
 	cntrs.port_xmit_packets -= ibp->z_port_xmit_packets;
 	cntrs.port_rcv_packets -= ibp->z_port_rcv_packets;
 
-	memset(pmp->reserved, 0, sizeof(pmp->reserved));
-	memset(pmp->data, 0, sizeof(pmp->data));
+	memset(pmp->reserved, 0, sizeof(pmp->reserved) +
+	       sizeof(pmp->data));
 
 	/*
 	 * Set top 3 bits to indicate interval in picoseconds in
@@ -1928,7 +1932,7 @@ static int process_subn(struct ib_device *ibdev, int mad_flags,
 				ret = IB_MAD_RESULT_SUCCESS;
 				goto bail;
 			}
-			fallthrough;
+			/* FALLTHROUGH */
 		default:
 			smp->status |= IB_SMP_UNSUP_METH_ATTR;
 			ret = reply(smp);
@@ -1962,7 +1966,7 @@ static int process_subn(struct ib_device *ibdev, int mad_flags,
 				ret = IB_MAD_RESULT_SUCCESS;
 				goto bail;
 			}
-			fallthrough;
+			/* FALLTHROUGH */
 		default:
 			smp->status |= IB_SMP_UNSUP_METH_ATTR;
 			ret = reply(smp);
@@ -2098,6 +2102,8 @@ static int cc_get_classportinfo(struct ib_cc_mad *ccp,
 	struct ib_cc_classportinfo_attr *p =
 		(struct ib_cc_classportinfo_attr *)ccp->mgmt_data;
 
+	memset(ccp->mgmt_data, 0, sizeof(ccp->mgmt_data));
+
 	p->base_version = 1;
 	p->class_version = 1;
 	p->cap_mask = 0;
@@ -2118,6 +2124,8 @@ static int cc_get_congestion_info(struct ib_cc_mad *ccp,
 	struct qib_ibport *ibp = to_iport(ibdev, port);
 	struct qib_pportdata *ppd = ppd_from_ibp(ibp);
 
+	memset(ccp->mgmt_data, 0, sizeof(ccp->mgmt_data));
+
 	p->congestion_info = 0;
 	p->control_table_cap = ppd->cc_max_table_entries;
 
@@ -2133,6 +2141,8 @@ static int cc_get_congestion_setting(struct ib_cc_mad *ccp,
 	struct qib_ibport *ibp = to_iport(ibdev, port);
 	struct qib_pportdata *ppd = ppd_from_ibp(ibp);
 	struct ib_cc_congestion_entry_shadow *entries;
+
+	memset(ccp->mgmt_data, 0, sizeof(ccp->mgmt_data));
 
 	spin_lock(&ppd->cc_shadow_lock);
 
@@ -2169,6 +2179,8 @@ static int cc_get_congestion_control_table(struct ib_cc_mad *ccp,
 	/* Is the table index more than what is supported? */
 	if (cct_block_index > IB_CC_TABLE_CAP_DEFAULT - 1)
 		goto bail;
+
+	memset(ccp->mgmt_data, 0, sizeof(ccp->mgmt_data));
 
 	spin_lock(&ppd->cc_shadow_lock);
 
@@ -2288,55 +2300,92 @@ bail:
 	return reply_failure((struct ib_smp *) ccp);
 }
 
+static int check_cc_key(struct qib_ibport *ibp,
+			struct ib_cc_mad *ccp, int mad_flags)
+{
+	return 0;
+}
+
 static int process_cc(struct ib_device *ibdev, int mad_flags,
 			u8 port, const struct ib_mad *in_mad,
 			struct ib_mad *out_mad)
 {
 	struct ib_cc_mad *ccp = (struct ib_cc_mad *)out_mad;
+	struct qib_ibport *ibp = to_iport(ibdev, port);
+	int ret;
+
 	*out_mad = *in_mad;
 
 	if (ccp->class_version != 2) {
 		ccp->status |= IB_SMP_UNSUP_VERSION;
-		return reply((struct ib_smp *)ccp);
+		ret = reply((struct ib_smp *)ccp);
+		goto bail;
 	}
+
+	ret = check_cc_key(ibp, ccp, mad_flags);
+	if (ret)
+		goto bail;
 
 	switch (ccp->method) {
 	case IB_MGMT_METHOD_GET:
 		switch (ccp->attr_id) {
 		case IB_CC_ATTR_CLASSPORTINFO:
-			return cc_get_classportinfo(ccp, ibdev);
+			ret = cc_get_classportinfo(ccp, ibdev);
+			goto bail;
+
 		case IB_CC_ATTR_CONGESTION_INFO:
-			return cc_get_congestion_info(ccp, ibdev, port);
+			ret = cc_get_congestion_info(ccp, ibdev, port);
+			goto bail;
+
 		case IB_CC_ATTR_CA_CONGESTION_SETTING:
-			return cc_get_congestion_setting(ccp, ibdev, port);
+			ret = cc_get_congestion_setting(ccp, ibdev, port);
+			goto bail;
+
 		case IB_CC_ATTR_CONGESTION_CONTROL_TABLE:
-			return cc_get_congestion_control_table(ccp, ibdev, port);
+			ret = cc_get_congestion_control_table(ccp, ibdev, port);
+			goto bail;
+
+			/* FALLTHROUGH */
 		default:
 			ccp->status |= IB_SMP_UNSUP_METH_ATTR;
-			return reply((struct ib_smp *) ccp);
+			ret = reply((struct ib_smp *) ccp);
+			goto bail;
 		}
+
 	case IB_MGMT_METHOD_SET:
 		switch (ccp->attr_id) {
 		case IB_CC_ATTR_CA_CONGESTION_SETTING:
-			return cc_set_congestion_setting(ccp, ibdev, port);
+			ret = cc_set_congestion_setting(ccp, ibdev, port);
+			goto bail;
+
 		case IB_CC_ATTR_CONGESTION_CONTROL_TABLE:
-			return cc_set_congestion_control_table(ccp, ibdev, port);
+			ret = cc_set_congestion_control_table(ccp, ibdev, port);
+			goto bail;
+
+			/* FALLTHROUGH */
 		default:
 			ccp->status |= IB_SMP_UNSUP_METH_ATTR;
-			return reply((struct ib_smp *) ccp);
+			ret = reply((struct ib_smp *) ccp);
+			goto bail;
 		}
+
 	case IB_MGMT_METHOD_GET_RESP:
 		/*
 		 * The ib_mad module will call us to process responses
 		 * before checking for other consumers.
 		 * Just tell the caller to process it normally.
 		 */
-		return IB_MAD_RESULT_SUCCESS;
+		ret = IB_MAD_RESULT_SUCCESS;
+		goto bail;
+
+	case IB_MGMT_METHOD_TRAP:
+	default:
+		ccp->status |= IB_SMP_UNSUP_METHOD;
+		ret = reply((struct ib_smp *) ccp);
 	}
 
-	/* method is unsupported */
-	ccp->status |= IB_SMP_UNSUP_METHOD;
-	return reply((struct ib_smp *) ccp);
+bail:
+	return ret;
 }
 
 /**
@@ -2346,10 +2395,8 @@ static int process_cc(struct ib_device *ibdev, int mad_flags,
  * @port: the port number this packet came in on
  * @in_wc: the work completion entry for this packet
  * @in_grh: the global route header for this packet
- * @in: the incoming MAD
- * @out: any outgoing MAD reply
- * @out_mad_size: size of the outgoing MAD reply
- * @out_mad_pkey_index: unused
+ * @in_mad: the incoming MAD
+ * @out_mad: any outgoing MAD reply
  *
  * Returns IB_MAD_RESULT_SUCCESS if this is a MAD that we are not
  * interested in processing.
@@ -2360,23 +2407,30 @@ static int process_cc(struct ib_device *ibdev, int mad_flags,
  *
  * This is called by the ib_mad module.
  */
-int qib_process_mad(struct ib_device *ibdev, int mad_flags, u32 port,
+int qib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port,
 		    const struct ib_wc *in_wc, const struct ib_grh *in_grh,
-		    const struct ib_mad *in, struct ib_mad *out,
-		    size_t *out_mad_size, u16 *out_mad_pkey_index)
+		    const struct ib_mad_hdr *in, size_t in_mad_size,
+		    struct ib_mad_hdr *out, size_t *out_mad_size,
+		    u16 *out_mad_pkey_index)
 {
 	int ret;
 	struct qib_ibport *ibp = to_iport(ibdev, port);
 	struct qib_pportdata *ppd = ppd_from_ibp(ibp);
+	const struct ib_mad *in_mad = (const struct ib_mad *)in;
+	struct ib_mad *out_mad = (struct ib_mad *)out;
 
-	switch (in->mad_hdr.mgmt_class) {
+	if (WARN_ON_ONCE(in_mad_size != sizeof(*in_mad) ||
+			 *out_mad_size != sizeof(*out_mad)))
+		return IB_MAD_RESULT_FAILURE;
+
+	switch (in_mad->mad_hdr.mgmt_class) {
 	case IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE:
 	case IB_MGMT_CLASS_SUBN_LID_ROUTED:
-		ret = process_subn(ibdev, mad_flags, port, in, out);
+		ret = process_subn(ibdev, mad_flags, port, in_mad, out_mad);
 		goto bail;
 
 	case IB_MGMT_CLASS_PERF_MGMT:
-		ret = process_perf(ibdev, port, in, out);
+		ret = process_perf(ibdev, port, in_mad, out_mad);
 		goto bail;
 
 	case IB_MGMT_CLASS_CONG_MGMT:
@@ -2385,7 +2439,7 @@ int qib_process_mad(struct ib_device *ibdev, int mad_flags, u32 port,
 			ret = IB_MAD_RESULT_SUCCESS;
 			goto bail;
 		}
-		ret = process_cc(ibdev, mad_flags, port, in, out);
+		ret = process_cc(ibdev, mad_flags, port, in_mad, out_mad);
 		goto bail;
 
 	default:
@@ -2396,9 +2450,9 @@ bail:
 	return ret;
 }
 
-static void xmit_wait_timer_func(struct timer_list *t)
+static void xmit_wait_timer_func(unsigned long opaque)
 {
-	struct qib_pportdata *ppd = from_timer(ppd, t, cong_stats.timer);
+	struct qib_pportdata *ppd = (struct qib_pportdata *)opaque;
 	struct qib_devdata *dd = dd_from_ppd(ppd);
 	unsigned long flags;
 	u8 status;
@@ -2428,8 +2482,10 @@ void qib_notify_create_mad_agent(struct rvt_dev_info *rdi, int port_idx)
 
 	/* Initialize xmit_wait structure */
 	dd->pport[port_idx].cong_stats.counter = 0;
-	timer_setup(&dd->pport[port_idx].cong_stats.timer,
-		    xmit_wait_timer_func, 0);
+	init_timer(&dd->pport[port_idx].cong_stats.timer);
+	dd->pport[port_idx].cong_stats.timer.function = xmit_wait_timer_func;
+	dd->pport[port_idx].cong_stats.timer.data =
+		(unsigned long)(&dd->pport[port_idx]);
 	dd->pport[port_idx].cong_stats.timer.expires = 0;
 	add_timer(&dd->pport[port_idx].cong_stats.timer);
 }
@@ -2440,10 +2496,9 @@ void qib_notify_free_mad_agent(struct rvt_dev_info *rdi, int port_idx)
 	struct qib_devdata *dd = container_of(ibdev,
 					      struct qib_devdata, verbs_dev);
 
-	if (dd->pport[port_idx].cong_stats.timer.function)
+	if (dd->pport[port_idx].cong_stats.timer.data)
 		del_timer_sync(&dd->pport[port_idx].cong_stats.timer);
 
 	if (dd->pport[port_idx].ibport_data.smi_ah)
-		rdma_destroy_ah(&dd->pport[port_idx].ibport_data.smi_ah->ibah,
-				RDMA_DESTROY_AH_SLEEPABLE);
+		ib_destroy_ah(&dd->pport[port_idx].ibport_data.smi_ah->ibah);
 }

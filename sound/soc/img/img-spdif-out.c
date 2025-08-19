@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * IMG SPDIF output controller driver
  *
  * Copyright (C) 2015 Imagination Technologies Ltd.
  *
  * Author: Damien Horsley <Damien.Horsley@imgtec.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -44,36 +47,25 @@ struct img_spdif_out {
 	struct snd_dmaengine_dai_dma_data dma_data;
 	struct device *dev;
 	struct reset_control *rst;
-	u32 suspend_ctl;
-	u32 suspend_csl;
-	u32 suspend_csh;
 };
 
-static int img_spdif_out_runtime_suspend(struct device *dev)
+static int img_spdif_out_suspend(struct device *dev)
 {
 	struct img_spdif_out *spdif = dev_get_drvdata(dev);
 
 	clk_disable_unprepare(spdif->clk_ref);
-	clk_disable_unprepare(spdif->clk_sys);
 
 	return 0;
 }
 
-static int img_spdif_out_runtime_resume(struct device *dev)
+static int img_spdif_out_resume(struct device *dev)
 {
 	struct img_spdif_out *spdif = dev_get_drvdata(dev);
 	int ret;
 
-	ret = clk_prepare_enable(spdif->clk_sys);
-	if (ret) {
-		dev_err(dev, "clk_enable failed: %d\n", ret);
-		return ret;
-	}
-
 	ret = clk_prepare_enable(spdif->clk_ref);
 	if (ret) {
 		dev_err(dev, "clk_enable failed: %d\n", ret);
-		clk_disable_unprepare(spdif->clk_sys);
 		return ret;
 	}
 
@@ -287,6 +279,11 @@ static int img_spdif_out_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static const struct snd_soc_dai_ops img_spdif_out_dai_ops = {
+	.trigger = img_spdif_out_trigger,
+	.hw_params = img_spdif_out_hw_params
+};
+
 static int img_spdif_out_dai_probe(struct snd_soc_dai *dai)
 {
 	struct img_spdif_out *spdif = snd_soc_dai_get_drvdata(dai);
@@ -299,13 +296,8 @@ static int img_spdif_out_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
-static const struct snd_soc_dai_ops img_spdif_out_dai_ops = {
-	.probe		= img_spdif_out_dai_probe,
-	.trigger	= img_spdif_out_trigger,
-	.hw_params	= img_spdif_out_hw_params
-};
-
 static struct snd_soc_dai_driver img_spdif_out_dai = {
+	.probe = img_spdif_out_dai_probe,
 	.playback = {
 		.channels_min = 2,
 		.channels_max = 2,
@@ -316,8 +308,7 @@ static struct snd_soc_dai_driver img_spdif_out_dai = {
 };
 
 static const struct snd_soc_component_driver img_spdif_out_component = {
-	.name = "img-spdif-out",
-	.legacy_dai_naming = 1,
+	.name = "img-spdif-out"
 };
 
 static int img_spdif_out_probe(struct platform_device *pdev)
@@ -336,42 +327,49 @@ static int img_spdif_out_probe(struct platform_device *pdev)
 
 	spdif->dev = &pdev->dev;
 
-	base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
 	spdif->base = base;
 
-	spdif->rst = devm_reset_control_get_exclusive(&pdev->dev, "rst");
-	if (IS_ERR(spdif->rst))
-		return dev_err_probe(&pdev->dev, PTR_ERR(spdif->rst),
-				     "No top level reset found\n");
+	spdif->rst = devm_reset_control_get(&pdev->dev, "rst");
+	if (IS_ERR(spdif->rst)) {
+		if (PTR_ERR(spdif->rst) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "No top level reset found\n");
+		return PTR_ERR(spdif->rst);
+	}
 
 	spdif->clk_sys = devm_clk_get(&pdev->dev, "sys");
-	if (IS_ERR(spdif->clk_sys))
-		return dev_err_probe(dev, PTR_ERR(spdif->clk_sys),
-				     "Failed to acquire clock 'sys'\n");
+	if (IS_ERR(spdif->clk_sys)) {
+		if (PTR_ERR(spdif->clk_sys) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'sys'\n");
+		return PTR_ERR(spdif->clk_sys);
+	}
 
 	spdif->clk_ref = devm_clk_get(&pdev->dev, "ref");
-	if (IS_ERR(spdif->clk_ref))
-		return dev_err_probe(dev, PTR_ERR(spdif->clk_ref),
-				     "Failed to acquire clock 'ref'\n");
+	if (IS_ERR(spdif->clk_ref)) {
+		if (PTR_ERR(spdif->clk_ref) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'ref'\n");
+		return PTR_ERR(spdif->clk_ref);
+	}
+
+	ret = clk_prepare_enable(spdif->clk_sys);
+	if (ret)
+		return ret;
+
+	img_spdif_out_writel(spdif, IMG_SPDIF_OUT_CTL_FS_MASK,
+				IMG_SPDIF_OUT_CTL);
+
+	img_spdif_out_reset(spdif);
 
 	pm_runtime_enable(&pdev->dev);
 	if (!pm_runtime_enabled(&pdev->dev)) {
-		ret = img_spdif_out_runtime_resume(&pdev->dev);
+		ret = img_spdif_out_resume(&pdev->dev);
 		if (ret)
 			goto err_pm_disable;
 	}
-	ret = pm_runtime_resume_and_get(&pdev->dev);
-	if (ret < 0)
-		goto err_suspend;
-
-	img_spdif_out_writel(spdif, IMG_SPDIF_OUT_CTL_FS_MASK,
-			     IMG_SPDIF_OUT_CTL);
-
-	img_spdif_out_reset(spdif);
-	pm_runtime_put(&pdev->dev);
 
 	spin_lock_init(&spdif->lock);
 
@@ -395,60 +393,27 @@ static int img_spdif_out_probe(struct platform_device *pdev)
 
 err_suspend:
 	if (!pm_runtime_status_suspended(&pdev->dev))
-		img_spdif_out_runtime_suspend(&pdev->dev);
+		img_spdif_out_suspend(&pdev->dev);
 err_pm_disable:
 	pm_runtime_disable(&pdev->dev);
+	clk_disable_unprepare(spdif->clk_sys);
 
 	return ret;
 }
 
-static void img_spdif_out_dev_remove(struct platform_device *pdev)
+static int img_spdif_out_dev_remove(struct platform_device *pdev)
 {
+	struct img_spdif_out *spdif = platform_get_drvdata(pdev);
+
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
-		img_spdif_out_runtime_suspend(&pdev->dev);
-}
+		img_spdif_out_suspend(&pdev->dev);
 
-#ifdef CONFIG_PM_SLEEP
-static int img_spdif_out_suspend(struct device *dev)
-{
-	struct img_spdif_out *spdif = dev_get_drvdata(dev);
-	int ret;
-
-	if (pm_runtime_status_suspended(dev)) {
-		ret = img_spdif_out_runtime_resume(dev);
-		if (ret)
-			return ret;
-	}
-
-	spdif->suspend_ctl = img_spdif_out_readl(spdif, IMG_SPDIF_OUT_CTL);
-	spdif->suspend_csl = img_spdif_out_readl(spdif, IMG_SPDIF_OUT_CSL);
-	spdif->suspend_csh = img_spdif_out_readl(spdif, IMG_SPDIF_OUT_CSH_UV);
-
-	img_spdif_out_runtime_suspend(dev);
+	clk_disable_unprepare(spdif->clk_sys);
 
 	return 0;
 }
 
-static int img_spdif_out_resume(struct device *dev)
-{
-	struct img_spdif_out *spdif = dev_get_drvdata(dev);
-	int ret;
-
-	ret = img_spdif_out_runtime_resume(dev);
-	if (ret)
-		return ret;
-
-	img_spdif_out_writel(spdif, spdif->suspend_ctl, IMG_SPDIF_OUT_CTL);
-	img_spdif_out_writel(spdif, spdif->suspend_csl, IMG_SPDIF_OUT_CSL);
-	img_spdif_out_writel(spdif, spdif->suspend_csh, IMG_SPDIF_OUT_CSH_UV);
-
-	if (pm_runtime_status_suspended(dev))
-		img_spdif_out_runtime_suspend(dev);
-
-	return 0;
-}
-#endif
 static const struct of_device_id img_spdif_out_of_match[] = {
 	{ .compatible = "img,spdif-out" },
 	{}
@@ -456,9 +421,8 @@ static const struct of_device_id img_spdif_out_of_match[] = {
 MODULE_DEVICE_TABLE(of, img_spdif_out_of_match);
 
 static const struct dev_pm_ops img_spdif_out_pm_ops = {
-	SET_RUNTIME_PM_OPS(img_spdif_out_runtime_suspend,
-			   img_spdif_out_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(img_spdif_out_suspend, img_spdif_out_resume)
+	SET_RUNTIME_PM_OPS(img_spdif_out_suspend,
+			   img_spdif_out_resume, NULL)
 };
 
 static struct platform_driver img_spdif_out_driver = {
@@ -468,7 +432,7 @@ static struct platform_driver img_spdif_out_driver = {
 		.pm = &img_spdif_out_pm_ops
 	},
 	.probe = img_spdif_out_probe,
-	.remove_new = img_spdif_out_dev_remove
+	.remove = img_spdif_out_dev_remove
 };
 module_platform_driver(img_spdif_out_driver);
 

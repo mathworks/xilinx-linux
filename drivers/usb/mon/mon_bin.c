@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * The USB Monitor, inspired by Dave Harding's USBMon.
  *
@@ -9,7 +8,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/sched/signal.h>
 #include <linux/types.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
@@ -22,7 +20,7 @@
 #include <linux/slab.h>
 #include <linux/time64.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #include "usb_mon.h"
 
@@ -95,8 +93,8 @@ struct mon_bin_hdr {
 	unsigned short busnum;	/* Bus number */
 	char flag_setup;
 	char flag_data;
-	s64 ts_sec;		/* ktime_get_real_ts64 */
-	s32 ts_usec;		/* ktime_get_real_ts64 */
+	s64 ts_sec;		/* getnstimeofday64 */
+	s32 ts_usec;		/* getnstimeofday64 */
 	int status;
 	unsigned int len_urb;	/* Length of data (submitted or actual) */
 	unsigned int len_cap;	/* Delivered length */
@@ -213,10 +211,7 @@ static unsigned char xfer_to_pipe[4] = {
 	PIPE_CONTROL, PIPE_ISOCHRONOUS, PIPE_BULK, PIPE_INTERRUPT
 };
 
-static const struct class mon_bin_class = {
-	.name = "usbmon",
-};
-
+static struct class *mon_bin_class;
 static dev_t mon_bin_dev0;
 static struct cdev mon_bin_cdev;
 
@@ -500,7 +495,7 @@ static void mon_bin_event(struct mon_reader_bin *rp, struct urb *urb,
 	struct mon_bin_hdr *ep;
 	char data_tag = 0;
 
-	ktime_get_real_ts64(&ts);
+	getnstimeofday64(&ts);
 
 	spin_lock_irqsave(&rp->b_lock, flags);
 
@@ -640,7 +635,7 @@ static void mon_bin_error(void *data, struct urb *urb, int error)
 	unsigned int offset;
 	struct mon_bin_hdr *ep;
 
-	ktime_get_real_ts64(&ts);
+	getnstimeofday64(&ts);
 
 	spin_lock_irqsave(&rp->b_lock, flags);
 
@@ -1007,9 +1002,7 @@ static long mon_bin_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		break;
 
 	case MON_IOCQ_RING_SIZE:
-		mutex_lock(&rp->fetch_lock);
 		ret = rp->b_size;
-		mutex_unlock(&rp->fetch_lock);
 		break;
 
 	case MON_IOCT_RING_SIZE:
@@ -1027,8 +1020,7 @@ static long mon_bin_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 			return -EINVAL;
 
 		size = CHUNK_ALIGN(arg);
-		vec = kcalloc(size / CHUNK_SIZE, sizeof(struct mon_pgmap),
-			      GFP_KERNEL);
+		vec = kzalloc(sizeof(struct mon_pgmap) * (size / CHUNK_SIZE), GFP_KERNEL);
 		if (vec == NULL) {
 			ret = -ENOMEM;
 			break;
@@ -1042,18 +1034,12 @@ static long mon_bin_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 
 		mutex_lock(&rp->fetch_lock);
 		spin_lock_irqsave(&rp->b_lock, flags);
-		if (rp->mmap_active) {
-			mon_free_buff(vec, size/CHUNK_SIZE);
-			kfree(vec);
-			ret = -EBUSY;
-		} else {
-			mon_free_buff(rp->b_vec, rp->b_size/CHUNK_SIZE);
-			kfree(rp->b_vec);
-			rp->b_vec  = vec;
-			rp->b_size = size;
-			rp->b_read = rp->b_in = rp->b_out = rp->b_cnt = 0;
-			rp->cnt_lost = 0;
-		}
+		mon_free_buff(rp->b_vec, rp->b_size/CHUNK_SIZE);
+		kfree(rp->b_vec);
+		rp->b_vec  = vec;
+		rp->b_size = size;
+		rp->b_read = rp->b_in = rp->b_out = rp->b_cnt = 0;
+		rp->cnt_lost = 0;
 		spin_unlock_irqrestore(&rp->b_lock, flags);
 		mutex_unlock(&rp->fetch_lock);
 		}
@@ -1201,11 +1187,11 @@ static long mon_bin_compat_ioctl(struct file *file,
 }
 #endif /* CONFIG_COMPAT */
 
-static __poll_t
+static unsigned int
 mon_bin_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct mon_reader_bin *rp = file->private_data;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 	unsigned long flags;
 
 	if (file->f_mode & FMODE_READ)
@@ -1213,7 +1199,7 @@ mon_bin_poll(struct file *file, struct poll_table_struct *wait)
 
 	spin_lock_irqsave(&rp->b_lock, flags);
 	if (!MON_RING_EMPTY(rp))
-		mask |= EPOLLIN | EPOLLRDNORM;    /* readable */
+		mask |= POLLIN | POLLRDNORM;    /* readable */
 	spin_unlock_irqrestore(&rp->b_lock, flags);
 	return mask;
 }
@@ -1225,29 +1211,21 @@ mon_bin_poll(struct file *file, struct poll_table_struct *wait)
 static void mon_bin_vma_open(struct vm_area_struct *vma)
 {
 	struct mon_reader_bin *rp = vma->vm_private_data;
-	unsigned long flags;
-
-	spin_lock_irqsave(&rp->b_lock, flags);
 	rp->mmap_active++;
-	spin_unlock_irqrestore(&rp->b_lock, flags);
 }
 
 static void mon_bin_vma_close(struct vm_area_struct *vma)
 {
-	unsigned long flags;
-
 	struct mon_reader_bin *rp = vma->vm_private_data;
-	spin_lock_irqsave(&rp->b_lock, flags);
 	rp->mmap_active--;
-	spin_unlock_irqrestore(&rp->b_lock, flags);
 }
 
 /*
  * Map ring pages to user space.
  */
-static vm_fault_t mon_bin_vma_fault(struct vm_fault *vmf)
+static int mon_bin_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	struct mon_reader_bin *rp = vmf->vma->vm_private_data;
+	struct mon_reader_bin *rp = vma->vm_private_data;
 	unsigned long offset, chunk_idx;
 	struct page *pageptr;
 
@@ -1271,11 +1249,7 @@ static int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	/* don't do anything here: "fault" will set up page table entries */
 	vma->vm_ops = &mon_bin_vm_ops;
-
-	if (vma->vm_flags & VM_WRITE)
-		return -EPERM;
-
-	vm_flags_mod(vma, VM_DONTEXPAND | VM_DONTDUMP, VM_MAYWRITE);
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_private_data = filp->private_data;
 	mon_bin_vma_open(vma);
 	return 0;
@@ -1363,7 +1337,7 @@ int mon_bin_add(struct mon_bus *mbus, const struct usb_bus *ubus)
 	if (minor >= MON_BIN_MAX_MINOR)
 		return 0;
 
-	dev = device_create(&mon_bin_class, ubus ? ubus->controller : NULL,
+	dev = device_create(mon_bin_class, ubus ? ubus->controller : NULL,
 			    MKDEV(MAJOR(mon_bin_dev0), minor), NULL,
 			    "usbmon%d", minor);
 	if (IS_ERR(dev))
@@ -1375,16 +1349,18 @@ int mon_bin_add(struct mon_bus *mbus, const struct usb_bus *ubus)
 
 void mon_bin_del(struct mon_bus *mbus)
 {
-	device_destroy(&mon_bin_class, mbus->classdev->devt);
+	device_destroy(mon_bin_class, mbus->classdev->devt);
 }
 
 int __init mon_bin_init(void)
 {
 	int rc;
 
-	rc = class_register(&mon_bin_class);
-	if (rc)
+	mon_bin_class = class_create(THIS_MODULE, "usbmon");
+	if (IS_ERR(mon_bin_class)) {
+		rc = PTR_ERR(mon_bin_class);
 		goto err_class;
+	}
 
 	rc = alloc_chrdev_region(&mon_bin_dev0, 0, MON_BIN_MAX_MINOR, "usbmon");
 	if (rc < 0)
@@ -1402,7 +1378,7 @@ int __init mon_bin_init(void)
 err_add:
 	unregister_chrdev_region(mon_bin_dev0, MON_BIN_MAX_MINOR);
 err_dev:
-	class_unregister(&mon_bin_class);
+	class_destroy(mon_bin_class);
 err_class:
 	return rc;
 }
@@ -1411,5 +1387,5 @@ void mon_bin_exit(void)
 {
 	cdev_del(&mon_bin_cdev);
 	unregister_chrdev_region(mon_bin_dev0, MON_BIN_MAX_MINOR);
-	class_unregister(&mon_bin_class);
+	class_destroy(mon_bin_class);
 }

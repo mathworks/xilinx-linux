@@ -1,10 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * I2C access for DA9052 PMICs.
  *
  * Copyright(c) 2011 Dialog Semiconductor Ltd.
  *
  * Author: David Dajun Chen <dchen@diasemi.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
  */
 
 #include <linux/device.h>
@@ -13,11 +18,14 @@
 #include <linux/mfd/core.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
-#include <linux/of.h>
 
 #include <linux/mfd/da9052/da9052.h>
 #include <linux/mfd/da9052/reg.h>
 
+#ifdef CONFIG_OF
+#include <linux/of.h>
+#include <linux/of_device.h>
+#endif
 
 /* I2C safe register check */
 static inline bool i2c_safe_reg(unsigned char reg)
@@ -110,7 +118,6 @@ static const struct i2c_device_id da9052_i2c_id[] = {
 	{"da9053-bc", DA9053_BC},
 	{}
 };
-MODULE_DEVICE_TABLE(i2c, da9052_i2c_id);
 
 #ifdef CONFIG_OF
 static const struct of_device_id dialog_dt_ids[] = {
@@ -123,9 +130,9 @@ static const struct of_device_id dialog_dt_ids[] = {
 };
 #endif
 
-static int da9052_i2c_probe(struct i2c_client *client)
+static int da9052_i2c_probe(struct i2c_client *client,
+				       const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct da9052 *da9052;
 	int ret;
 
@@ -152,8 +159,13 @@ static int da9052_i2c_probe(struct i2c_client *client)
 		return ret;
 
 #ifdef CONFIG_OF
-	if (!id)
-		id = of_device_get_match_data(&client->dev);
+	if (!id) {
+		struct device_node *np = client->dev.of_node;
+		const struct of_device_id *deviceid;
+
+		deviceid = of_match_node(dialog_dt_ids, np);
+		id = deviceid->data;
+	}
 #endif
 
 	if (!id) {
@@ -165,11 +177,12 @@ static int da9052_i2c_probe(struct i2c_client *client)
 	return da9052_device_init(da9052, id->driver_data);
 }
 
-static void da9052_i2c_remove(struct i2c_client *client)
+static int da9052_i2c_remove(struct i2c_client *client)
 {
 	struct da9052 *da9052 = i2c_get_clientdata(client);
 
 	da9052_device_exit(da9052);
+	return 0;
 }
 
 static struct i2c_driver da9052_i2c_driver = {
@@ -206,3 +219,4 @@ module_exit(da9052_i2c_exit);
 
 MODULE_AUTHOR("David Dajun Chen <dchen@diasemi.com>");
 MODULE_DESCRIPTION("I2C driver for Dialog DA9052 PMIC");
+MODULE_LICENSE("GPL");

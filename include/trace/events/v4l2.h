@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM v4l2
 
@@ -30,7 +29,6 @@
 	EM( V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,  "VIDEO_OUTPUT_MPLANE" )	\
 	EM( V4L2_BUF_TYPE_SDR_CAPTURE,          "SDR_CAPTURE" )		\
 	EM( V4L2_BUF_TYPE_SDR_OUTPUT,           "SDR_OUTPUT" )		\
-	EM( V4L2_BUF_TYPE_META_CAPTURE,		"META_CAPTURE" )	\
 	EMe(V4L2_BUF_TYPE_PRIVATE,		"PRIVATE" )
 
 SHOW_TYPE
@@ -130,7 +128,7 @@ DECLARE_EVENT_CLASS(v4l2_event_class,
 		__entry->bytesused = buf->bytesused;
 		__entry->flags = buf->flags;
 		__entry->field = buf->field;
-		__entry->timestamp = v4l2_buffer_get_timestamp(buf);
+		__entry->timestamp = timeval_to_ns(&buf->timestamp);
 		__entry->timecode_type = buf->timecode.type;
 		__entry->timecode_flags = buf->timecode.flags;
 		__entry->timecode_frames = buf->timecode.frames;

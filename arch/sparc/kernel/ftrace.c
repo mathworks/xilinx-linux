@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/spinlock.h>
 #include <linux/hardirq.h>
 #include <linux/ftrace.h>
@@ -82,6 +81,11 @@ int ftrace_update_ftrace_func(ftrace_func_t func)
 	new = ftrace_call_replace(ip, (unsigned long)func);
 	return ftrace_modify_code(ip, old, new);
 }
+
+int __init ftrace_dyn_arch_init(void)
+{
+	return 0;
+}
 #endif
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
@@ -121,12 +125,22 @@ unsigned long prepare_ftrace_return(unsigned long parent,
 				    unsigned long frame_pointer)
 {
 	unsigned long return_hooker = (unsigned long) &return_to_handler;
+	struct ftrace_graph_ent trace;
 
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
 		return parent + 8UL;
 
-	if (function_graph_enter(parent, self_addr, frame_pointer, NULL))
+	if (ftrace_push_return_trace(parent, self_addr, &trace.depth,
+				     frame_pointer, NULL) == -EBUSY)
 		return parent + 8UL;
+
+	trace.func = self_addr;
+
+	/* Only trace if the calling function expects to */
+	if (!ftrace_graph_entry(&trace)) {
+		current->curr_ret_stack--;
+		return parent + 8UL;
+	}
 
 	return return_hooker;
 }

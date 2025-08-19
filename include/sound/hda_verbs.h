@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * HD-audio codec verbs
  */
@@ -66,7 +65,6 @@ enum {
 #define AC_VERB_GET_CONFIG_DEFAULT		0x0f1c
 /* f20: AFG/MFG */
 #define AC_VERB_GET_SUBSYSTEM_ID		0x0f20
-#define AC_VERB_GET_STRIPE_CONTROL		0x0f24
 #define AC_VERB_GET_CVT_CHAN_COUNT		0x0f2d
 #define AC_VERB_GET_HDMI_DIP_SIZE		0x0f2e
 #define AC_VERB_GET_HDMI_ELDD			0x0f2f
@@ -97,7 +95,6 @@ enum {
 #define AC_VERB_SET_EAPD_BTLENABLE		0x70c
 #define AC_VERB_SET_DIGI_CONVERT_1		0x70d
 #define AC_VERB_SET_DIGI_CONVERT_2		0x70e
-#define AC_VERB_SET_DIGI_CONVERT_3		0x73e
 #define AC_VERB_SET_VOLUME_KNOB_CONTROL		0x70f
 #define AC_VERB_SET_GPIO_DATA			0x715
 #define AC_VERB_SET_GPIO_MASK			0x716
@@ -111,7 +108,6 @@ enum {
 #define AC_VERB_SET_CONFIG_DEFAULT_BYTES_3	0x71f
 #define AC_VERB_SET_EAPD				0x788
 #define AC_VERB_SET_CODEC_RESET			0x7ff
-#define AC_VERB_SET_STRIPE_CONTROL		0x724
 #define AC_VERB_SET_CVT_CHAN_COUNT		0x72d
 #define AC_VERB_SET_HDMI_DIP_INDEX		0x730
 #define AC_VERB_SET_HDMI_DIP_DATA		0x731
@@ -461,7 +457,7 @@ enum {
 #define AC_DE_ELDV			(1<<1)
 #define AC_DE_IA			(1<<2)
 
-/* device types (0x0-0xf) */
+/* device device types (0x0-0xf) */
 enum {
 	AC_JACK_LINE_OUT,
 	AC_JACK_SPEAKER,

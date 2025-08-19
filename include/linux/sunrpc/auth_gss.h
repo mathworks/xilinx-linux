@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/include/linux/sunrpc/auth_gss.h
  *
@@ -13,7 +12,7 @@
 #ifndef _LINUX_SUNRPC_AUTH_GSS_H
 #define _LINUX_SUNRPC_AUTH_GSS_H
 
-#include <linux/refcount.h>
+#ifdef __KERNEL__
 #include <linux/sunrpc/auth.h>
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/gss_api.h>
@@ -66,10 +65,9 @@ struct rpc_gss_init_res {
  * the wire when communicating with a server. */
 
 struct gss_cl_ctx {
-	refcount_t		count;
+	atomic_t		count;
 	enum rpc_gss_proc	gc_proc;
 	u32			gc_seq;
-	u32			gc_seq_xmit;
 	spinlock_t		gc_seq_lock;
 	struct gss_ctx		*gc_gss_ctx;
 	struct xdr_netobj	gc_wire_ctx;
@@ -89,5 +87,6 @@ struct gss_cred {
 	unsigned long		gc_upcall_timestamp;
 };
 
+#endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_AUTH_GSS_H */
 

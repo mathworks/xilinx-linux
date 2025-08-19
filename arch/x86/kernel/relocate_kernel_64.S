@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * relocate_kernel.S - put the kernel image in place to boot
  * Copyright (C) 2002-2005 Eric Biederman  <ebiederm@xmission.com>
+ *
+ * This source code is licensed under the GNU General Public License,
+ * Version 2.  See the file COPYING for more details.
  */
 
 #include <linux/linkage.h>
@@ -9,12 +11,9 @@
 #include <asm/kexec.h>
 #include <asm/processor-flags.h>
 #include <asm/pgtable_types.h>
-#include <asm/nospec-branch.h>
-#include <asm/unwind_hints.h>
 
 /*
- * Must be relocatable PIC code callable as a C function, in particular
- * there must be a plain RET and not jump to return thunk.
+ * Must be relocatable PIC code callable as a C function
  */
 
 #define PTR(x) (x << 3)
@@ -41,16 +40,13 @@
 	.text
 	.align PAGE_SIZE
 	.code64
-SYM_CODE_START_NOALIGN(relocate_range)
-SYM_CODE_START_NOALIGN(relocate_kernel)
-	UNWIND_HINT_END_OF_STACK
-	ANNOTATE_NOENDBR
+	.globl relocate_kernel
+relocate_kernel:
 	/*
 	 * %rdi indirection_page
 	 * %rsi page_list
 	 * %rdx start address
 	 * %rcx preserve_context
-	 * %r8  host_mem_enc_active
 	 */
 
 	/* Save the CPU context, used for jumping back */
@@ -71,15 +67,9 @@ SYM_CODE_START_NOALIGN(relocate_kernel)
 	movq	%cr4, %rax
 	movq	%rax, CR4(%r11)
 
-	/* Save CR4. Required to enable the right paging mode later. */
-	movq	%rax, %r13
-
 	/* zero out flags, and disable interrupts */
 	pushq $0
 	popfq
-
-	/* Save SME active flag */
-	movq	%r8, %r12
 
 	/*
 	 * get physical address of control page now
@@ -107,25 +97,13 @@ SYM_CODE_START_NOALIGN(relocate_kernel)
 	/* jump to identity mapped page */
 	addq	$(identity_mapped - relocate_kernel), %r8
 	pushq	%r8
-	ANNOTATE_UNRET_SAFE
 	ret
-	int3
-SYM_CODE_END(relocate_kernel)
 
-SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
-	UNWIND_HINT_END_OF_STACK
+identity_mapped:
 	/* set return address to 0 if not preserving context */
 	pushq	$0
 	/* store the start address on the stack */
 	pushq   %rdx
-
-	/*
-	 * Clear X86_CR4_CET (if it was set) such that we can clear CR0_WP
-	 * below.
-	 */
-	movq	%cr4, %rax
-	andq	$~(X86_CR4_CET), %rax
-	movq	%rax, %cr4
 
 	/*
 	 * Set cr0 to a known state:
@@ -134,7 +112,7 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	 *  - Write protect disabled
 	 *  - No task switch
 	 *  - Don't do FP software emulation.
-	 *  - Protected mode enabled
+	 *  - Proctected mode enabled
 	 */
 	movq	%cr0, %rax
 	andq	$~(X86_CR0_AM | X86_CR0_WP | X86_CR0_TS | X86_CR0_EM), %rax
@@ -144,13 +122,8 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	/*
 	 * Set cr4 to a known state:
 	 *  - physical address extension enabled
-	 *  - 5-level paging, if it was enabled before
 	 */
 	movl	$X86_CR4_PAE, %eax
-	testq	$X86_CR4_LA57, %r13
-	jz	1f
-	orl	$X86_CR4_LA57, %eax
-1:
 	movq	%rax, %cr4
 
 	jmp 1f
@@ -158,16 +131,6 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 
 	/* Flush the TLB (needed?) */
 	movq	%r9, %cr3
-
-	/*
-	 * If SME is active, there could be old encrypted cache line
-	 * entries that will conflict with the now unencrypted memory
-	 * used by kexec. Flush the caches before copying the kernel.
-	 */
-	testq	%r12, %r12
-	jz 1f
-	wbinvd
-1:
 
 	movq	%rcx, %r11
 	call	swap_pages
@@ -204,19 +167,19 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	xorl	%r14d, %r14d
 	xorl	%r15d, %r15d
 
-	ANNOTATE_UNRET_SAFE
 	ret
-	int3
 
 1:
 	popq	%rdx
 	leaq	PAGE_SIZE(%r10), %rsp
-	ANNOTATE_RETPOLINE_SAFE
 	call	*%rdx
 
 	/* get the re-entry point of the peer system */
 	movq	0(%rsp), %rbp
-	leaq	relocate_kernel(%rip), %r8
+	call	1f
+1:
+	popq	%r8
+	subq	$(1b - relocate_kernel), %r8
 	movq	CP_PA_SWAP_PAGE(%r8), %r10
 	movq	CP_PA_BACKUP_PAGES_MAP(%r8), %rdi
 	movq	CP_PA_TABLE_PAGE(%r8), %rax
@@ -225,14 +188,9 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	call	swap_pages
 	movq	$virtual_mapped, %rax
 	pushq	%rax
-	ANNOTATE_UNRET_SAFE
 	ret
-	int3
-SYM_CODE_END(identity_mapped)
 
-SYM_CODE_START_LOCAL_NOALIGN(virtual_mapped)
-	UNWIND_HINT_END_OF_STACK
-	ANNOTATE_NOENDBR // RET target, above
+virtual_mapped:
 	movq	RSP(%r8), %rsp
 	movq	CR4(%r8), %rax
 	movq	%rax, %cr4
@@ -249,15 +207,11 @@ SYM_CODE_START_LOCAL_NOALIGN(virtual_mapped)
 	popq	%r12
 	popq	%rbp
 	popq	%rbx
-	ANNOTATE_UNRET_SAFE
 	ret
-	int3
-SYM_CODE_END(virtual_mapped)
 
 	/* Do the copies */
-SYM_CODE_START_LOCAL_NOALIGN(swap_pages)
-	UNWIND_HINT_END_OF_STACK
-	movq	%rdi, %rcx	/* Put the page_list in %rcx */
+swap_pages:
+	movq	%rdi, %rcx 	/* Put the page_list in %rcx */
 	xorl	%edi, %edi
 	xorl	%esi, %esi
 	jmp	1f
@@ -308,10 +262,7 @@ SYM_CODE_START_LOCAL_NOALIGN(swap_pages)
 	lea	PAGE_SIZE(%rax), %rsi
 	jmp	0b
 3:
-	ANNOTATE_UNRET_SAFE
 	ret
-	int3
-SYM_CODE_END(swap_pages)
 
-	.skip KEXEC_CONTROL_CODE_MAX_SIZE - (. - relocate_kernel), 0xcc
-SYM_CODE_END(relocate_range);
+	.globl kexec_control_code_size
+.set kexec_control_code_size, . - relocate_kernel

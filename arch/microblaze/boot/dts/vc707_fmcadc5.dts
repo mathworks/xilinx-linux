@@ -1,29 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Analog Devices AD-FMCADC5-EBZ
- * https://wiki.analog.com/resources/eval/user-guides/ad-fmcadc5-ebz
- *
- * hdl_project: <fmcadc5/vc707>
- * board_revision: <>
- *
- * Copyright (C) 2014-2021 Analog Devices Inc.
- */
-/dts-v1/;
 
-#include "vc707.dtsi"
-#include <dt-bindings/jesd204/adxcvr.h>
+/dts-v1/;
+/include/ "vc707.dtsi"
 
 #define fmc_i2c fmc1_hpc_iic
 #define fmc_spi axi_spi
-
-/ {
-	model = "Analog Devices AD-FMCADC5-EBZ @Xilinx/vc707";
-};
-
-/* fmcadc5_vc707: updated 2019_R2 */
-&axi_intc {
-	xlnx,kind-of-intr = <0xffff85d0>;
-};
 
 / {
 	clocks {
@@ -94,8 +74,9 @@
 		#clock-cells = <1>;
 		clock-output-names = "ad50_gt_clk", "rx_out0_clk";
 
-		adi,sys-clk-select = <XCVR_CPLL>;
-		adi,out-clk-select = <XCVR_OUTCLK_PMA>;
+		adi,sys-clk-select = <0>;
+		adi,out-clk-select = <2>;
+		adi,use-cpll-enable;
 		adi,use-lpm-enable;
 	};
 	axi_ad9625_1_core: axi-ad9625-1@44b10000 {
@@ -127,8 +108,9 @@
 		#clock-cells = <1>;
 		clock-output-names = "adc1_gt_clk", "rx_out1_clk";
 
-		adi,sys-clk-select = <XCVR_CPLL>;
-		adi,out-clk-select = <XCVR_OUTCLK_PMA>;
+		adi,sys-clk-select = <0>;
+		adi,out-clk-select = <2>;
+		adi,use-cpll-enable;
 		adi,use-lpm-enable;
 	};
 	axi_ad9625_dma: axi_dmac@7c420000 {
@@ -158,7 +140,7 @@
 	adc0_ad9625: ad9625@0 {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		compatible = "adi,ad9625";
+		compatible = "ad9625";
 		reg = <0>;
 		spi-max-frequency = <1000000>;
 		clocks = <&axi_ad9625_0_jesd>, <&ad9625_clkin>;
@@ -170,7 +152,7 @@
 	adc1_ad9625: ad9625@1 {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		compatible = "adi,ad9625";
+		compatible = "ad9625";
 		reg = <1>;
 		spi-max-frequency = <1000000>;
 		clocks = <&axi_ad9625_1_jesd>, <&ad9625_clkin>;
@@ -182,7 +164,7 @@
 	dac0_ad5662: ad5662-vt-a@2 {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		compatible = "adi,ad5662";
+		compatible = "ad5662";
 		reg = <2>;
 		spi-cpha;
 		spi-max-frequency = <1000000>;
@@ -192,7 +174,7 @@
 	dac1_ad5662: ad5662-vt-b@3 {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		compatible = "adi,ad5662";
+		compatible = "ad5662";
 		reg = <3>;
 		spi-cpha;
 		spi-max-frequency = <1000000>;

@@ -124,6 +124,7 @@ static int midi_service_irq(struct echoaudio *chip)
 		return 0;
 
 	/* Get the MIDI data from the comm page */
+	i = 1;
 	received = 0;
 	for (i = 1; i <= count; i++) {
 		/* Get the MIDI byte */
@@ -198,16 +199,16 @@ static int snd_echo_midi_output_open(struct snd_rawmidi_substream *substream)
 
 
 
-static void snd_echo_midi_output_write(struct timer_list *t)
+static void snd_echo_midi_output_write(unsigned long data)
 {
-	struct echoaudio *chip = from_timer(chip, t, timer);
+	struct echoaudio *chip = (struct echoaudio *)data;
 	unsigned long flags;
 	int bytes, sent, time;
 	unsigned char buf[MIDI_OUT_BUFFER_SIZE - 1];
 
 	/* No interrupts are involved: we have to check at regular intervals
 	if the card's output buffer has room for new data. */
-	sent = 0;
+	sent = bytes = 0;
 	spin_lock_irqsave(&chip->lock, flags);
 	chip->midi_full = 0;
 	if (!snd_rawmidi_transmit_empty(chip->midi_out)) {
@@ -256,8 +257,8 @@ static void snd_echo_midi_output_trigger(struct snd_rawmidi_substream *substream
 	spin_lock_irq(&chip->lock);
 	if (up) {
 		if (!chip->tinuse) {
-			timer_setup(&chip->timer, snd_echo_midi_output_write,
-				    0);
+			setup_timer(&chip->timer, snd_echo_midi_output_write,
+				    (unsigned long)chip);
 			chip->tinuse = 1;
 		}
 	} else {
@@ -272,7 +273,7 @@ static void snd_echo_midi_output_trigger(struct snd_rawmidi_substream *substream
 	spin_unlock_irq(&chip->lock);
 
 	if (up && !chip->midi_full)
-		snd_echo_midi_output_write(&chip->timer);
+		snd_echo_midi_output_write((unsigned long)chip);
 }
 
 
@@ -287,13 +288,13 @@ static int snd_echo_midi_output_close(struct snd_rawmidi_substream *substream)
 
 
 
-static const struct snd_rawmidi_ops snd_echo_midi_input = {
+static struct snd_rawmidi_ops snd_echo_midi_input = {
 	.open = snd_echo_midi_input_open,
 	.close = snd_echo_midi_input_close,
 	.trigger = snd_echo_midi_input_trigger,
 };
 
-static const struct snd_rawmidi_ops snd_echo_midi_output = {
+static struct snd_rawmidi_ops snd_echo_midi_output = {
 	.open = snd_echo_midi_output_open,
 	.close = snd_echo_midi_output_close,
 	.trigger = snd_echo_midi_output_trigger,
@@ -307,8 +308,8 @@ static int snd_echo_midi_create(struct snd_card *card,
 {
 	int err;
 
-	err = snd_rawmidi_new(card, card->shortname, 0, 1, 1, &chip->rmidi);
-	if (err < 0)
+	if ((err = snd_rawmidi_new(card, card->shortname, 0, 1, 1,
+				   &chip->rmidi)) < 0)
 		return err;
 
 	strcpy(chip->rmidi->name, card->shortname);

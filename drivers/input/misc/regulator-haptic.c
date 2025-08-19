@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Regulator haptic driver
  *
  * Copyright (c) 2014 Samsung Electronics Co., Ltd.
  * Author: Jaewon Kim <jaewon02.kim@samsung.com>
  * Author: Hyunhee Kim <hyunhee.kim@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/input.h>
@@ -201,7 +204,7 @@ static int regulator_haptic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int regulator_haptic_suspend(struct device *dev)
+static int __maybe_unused regulator_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
@@ -220,7 +223,7 @@ static int regulator_haptic_suspend(struct device *dev)
 	return 0;
 }
 
-static int regulator_haptic_resume(struct device *dev)
+static int __maybe_unused regulator_haptic_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
@@ -230,7 +233,7 @@ static int regulator_haptic_resume(struct device *dev)
 
 	haptic->suspended = false;
 
-	magnitude = READ_ONCE(haptic->magnitude);
+	magnitude = ACCESS_ONCE(haptic->magnitude);
 	if (magnitude)
 		regulator_haptic_set_voltage(haptic, magnitude);
 
@@ -239,7 +242,7 @@ static int regulator_haptic_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(regulator_haptic_pm_ops,
+static SIMPLE_DEV_PM_OPS(regulator_haptic_pm_ops,
 		regulator_haptic_suspend, regulator_haptic_resume);
 
 static const struct of_device_id regulator_haptic_dt_match[] = {
@@ -253,7 +256,7 @@ static struct platform_driver regulator_haptic_driver = {
 	.driver		= {
 		.name		= "regulator-haptic",
 		.of_match_table = regulator_haptic_dt_match,
-		.pm		= pm_sleep_ptr(&regulator_haptic_pm_ops),
+		.pm		= &regulator_haptic_pm_ops,
 	},
 };
 module_platform_driver(regulator_haptic_driver);

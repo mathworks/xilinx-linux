@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *
  * Optimized version of the standard strlen() function
@@ -17,8 +16,8 @@
  * 09/24/99 S.Eranian add speculation recovery code
  */
 
-#include <linux/export.h>
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 //
 //

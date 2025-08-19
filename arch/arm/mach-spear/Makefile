@@ -1,7 +1,8 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # SPEAr Platform specific Makefile
 #
+
+ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include
 
 # Common support
 obj-y	:= restart.o time.o

@@ -1,17 +1,8 @@
 
 /dts-v1/;
-#include "kc705.dtsi"
+/include/ "kc705.dtsi"
 
 #define fmc_i2c fmc_lpc_iic
-
-/ {
-	model = "Analog Devices AD-FMCOMMS1-EBZ @Xilinx/kc705";
-};
-
-/* fmcomms2_vc707: updated 2019_R2 */
-&axi_intc {
-	xlnx,kind-of-intr = <0xffffc5d0>;
-};
 
 &amba_pl {
 	axi_ad9122: cf-ad9122-core-lpc@74204000 {
@@ -39,6 +30,7 @@
 				adi,source-bus-type = <0>;
 				adi,destination-bus-width = <64>;
 				adi,destination-bus-type = <2>;
+				adi,cyclic;
 			};
 		};
 	};

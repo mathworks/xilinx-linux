@@ -1,5 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2013 Broadcom Corporation
+/*
+ * Copyright (C) 2013 Broadcom Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+#include <stdarg.h>
 #include <linux/smp.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
@@ -21,7 +33,7 @@ struct bcm_kona_smc_data {
 	unsigned result;
 };
 
-static const struct of_device_id bcm_kona_smc_ids[] __initconst = {
+static const struct of_device_id const bcm_kona_smc_ids[] __initconst = {
 	{.compatible = "brcm,kona-smc"},
 	{.compatible = "bcm,kona-smc"}, /* deprecated name */
 	{},
@@ -31,23 +43,33 @@ static const struct of_device_id bcm_kona_smc_ids[] __initconst = {
 int __init bcm_kona_smc_init(void)
 {
 	struct device_node *node;
-	struct resource res;
-	int ret;
+	const __be32 *prop_val;
+	u64 prop_size = 0;
+	unsigned long buffer_size;
+	u32 buffer_phys;
 
 	/* Read buffer addr and size from the device tree node */
 	node = of_find_matching_node(NULL, bcm_kona_smc_ids);
 	if (!node)
 		return -ENODEV;
 
-	ret = of_address_to_resource(node, 0, &res);
-	of_node_put(node);
-	if (ret)
+	prop_val = of_get_address(node, 0, &prop_size, NULL);
+	if (!prop_val)
 		return -EINVAL;
 
-	bcm_smc_buffer = ioremap(res.start, resource_size(&res));
+	/* We assume space for four 32-bit arguments */
+	if (prop_size < 4 * sizeof(u32) || prop_size > (u64)ULONG_MAX)
+		return -EINVAL;
+	buffer_size = (unsigned long)prop_size;
+
+	buffer_phys = be32_to_cpup(prop_val);
+	if (!buffer_phys)
+		return -EINVAL;
+
+	bcm_smc_buffer = ioremap(buffer_phys, buffer_size);
 	if (!bcm_smc_buffer)
 		return -ENOMEM;
-	bcm_smc_buffer_phys = res.start;
+	bcm_smc_buffer_phys = buffer_phys;
 
 	pr_info("Kona Secure API initialized\n");
 
@@ -103,7 +125,9 @@ static int bcm_kona_do_smc(u32 service_id, u32 buffer_phys)
 		__asmeq("%2", "r4")
 		__asmeq("%3", "r5")
 		__asmeq("%4", "r6")
+#ifdef REQUIRES_SEC
 		".arch_extension sec\n"
+#endif
 		"	smc    #0\n"
 		: "=r" (ip), "=r" (r0)
 		: "r" (r4), "r" (r5), "r" (r6)
@@ -118,7 +142,7 @@ static int bcm_kona_do_smc(u32 service_id, u32 buffer_phys)
 static void __bcm_kona_smc(void *info)
 {
 	struct bcm_kona_smc_data *data = info;
-	u32 __iomem *args = bcm_smc_buffer;
+	u32 *args = bcm_smc_buffer;
 
 	BUG_ON(smp_processor_id() != 0);
 	BUG_ON(!args);

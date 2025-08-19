@@ -1,10 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * ioctl interface for the scsi media changer driver
  */
-
-#ifndef _UAPI_LINUX_CHIO_H
-#define _UAPI_LINUX_CHIO_H
 
 /* changer element types */
 #define CHET_MT   0	/* media transport element (robot) */
@@ -163,4 +159,10 @@ struct changer_set_voltag {
 #define CHIOSVOLTAG    _IOW('c',18,struct changer_set_voltag)
 #define CHIOGVPARAMS   _IOR('c',19,struct changer_vendor_params)
 
-#endif /* _UAPI_LINUX_CHIO_H */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Local variables:
+ * c-basic-offset: 8
+ * End:
+ */

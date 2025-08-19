@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Driver for Aeroflex Gaisler GRLIB GRUSBHC EHCI host controller
  *
@@ -10,6 +9,20 @@
  * (c) Valentine Barshak <vbarshak@ru.mvista.com>
  * and in turn based on "ehci-ppc-soc.c" by Stefan Roese <sr@denx.de>
  * and "ohci-ppc-of.c" by Sylvain Munaut <tnt@246tNt.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/err.h>
@@ -30,7 +43,7 @@ static const struct hc_driver ehci_grlib_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq			= ehci_irq,
-	.flags			= HCD_MEMORY | HCD_DMA | HCD_USB2 | HCD_BH,
+	.flags			= HCD_MEMORY | HCD_USB2 | HCD_BH,
 
 	/*
 	 * basic lifecycle operations
@@ -99,7 +112,7 @@ static int ehci_hcd_grlib_probe(struct platform_device *op)
 	hcd->rsrc_len = resource_size(&res);
 
 	irq = irq_of_parse_and_map(dn, 0);
-	if (!irq) {
+	if (irq == NO_IRQ) {
 		dev_err(&op->dev, "%s: irq_of_parse_and_map failed\n",
 			__FILE__);
 		rv = -EBUSY;
@@ -140,7 +153,7 @@ err_irq:
 }
 
 
-static void ehci_hcd_grlib_remove(struct platform_device *op)
+static int ehci_hcd_grlib_remove(struct platform_device *op)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(op);
 
@@ -151,6 +164,8 @@ static void ehci_hcd_grlib_remove(struct platform_device *op)
 	irq_dispose_mapping(hcd->irq);
 
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 
@@ -168,7 +183,7 @@ MODULE_DEVICE_TABLE(of, ehci_hcd_grlib_of_match);
 
 static struct platform_driver ehci_grlib_driver = {
 	.probe		= ehci_hcd_grlib_probe,
-	.remove_new	= ehci_hcd_grlib_remove,
+	.remove		= ehci_hcd_grlib_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver = {
 		.name = "grlib-ehci",

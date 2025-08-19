@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the Linux AX.25 and HFMODEM device drivers.
 #
@@ -11,6 +10,7 @@
 #		Christoph Hellwig <hch@infradead.org>
 #
 
+obj-$(CONFIG_DMASCC)		+= dmascc.o
 obj-$(CONFIG_SCC)		+= scc.o
 obj-$(CONFIG_MKISS)		+= mkiss.o
 obj-$(CONFIG_6PACK)		+= 6pack.o

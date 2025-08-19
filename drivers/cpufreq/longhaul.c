@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  (C) 2001-2004  Dave Jones.
  *  (C) 2002  Padraig Brady. <padraig@antefacto.com>
  *
+ *  Licensed under the terms of the GNU GPL License version 2.
  *  Based upon datasheets & sample CPUs kindly provided by VIA.
  *
  *  VIA have currently 3 different versions of Longhaul.
@@ -407,10 +407,10 @@ static int guess_fsb(int mult)
 {
 	int speed = cpu_khz / 1000;
 	int i;
-	static const int speeds[] = { 666, 1000, 1333, 2000 };
+	int speeds[] = { 666, 1000, 1333, 2000 };
 	int f_max, f_min;
 
-	for (i = 0; i < ARRAY_SIZE(speeds); i++) {
+	for (i = 0; i < 4; i++) {
 		f_max = ((speeds[i] * mult) + 50) / 100;
 		f_max += (ROUNDING / 2);
 		f_min = f_max - ROUNDING;
@@ -474,8 +474,8 @@ static int longhaul_get_ranges(void)
 		return -EINVAL;
 	}
 
-	longhaul_table = kcalloc(numscales + 1, sizeof(*longhaul_table),
-				 GFP_KERNEL);
+	longhaul_table = kzalloc((numscales + 1) * sizeof(*longhaul_table),
+			GFP_KERNEL);
 	if (!longhaul_table)
 		return -ENOMEM;
 
@@ -593,13 +593,14 @@ static void longhaul_setup_voltagescaling(void)
 		break;
 	default:
 		return;
+		break;
 	}
 	if (min_vid_speed >= highest_speed)
 		return;
 	/* Calculate kHz for one voltage step */
 	kHz_step = (highest_speed - min_vid_speed) / numvscales;
 
-	cpufreq_for_each_entry_idx(freq_pos, longhaul_table, j) {
+	cpufreq_for_each_entry(freq_pos, longhaul_table) {
 		speed = freq_pos->frequency;
 		if (speed > min_vid_speed)
 			pos = (speed - min_vid_speed) / kHz_step + minvid.pos;
@@ -608,7 +609,7 @@ static void longhaul_setup_voltagescaling(void)
 		freq_pos->driver_data |= mV_vrm_table[pos] << 8;
 		vid = vrm_mV_table[mV_vrm_table[pos]];
 		pr_info("f: %d kHz, index: %d, vid: %d mV\n",
-			speed, j, vid.mV);
+			speed, (int)(freq_pos - longhaul_table), vid.mV);
 	}
 
 	can_scale_voltage = 1;
@@ -668,9 +669,9 @@ static acpi_status longhaul_walk_callback(acpi_handle obj_handle,
 					  u32 nesting_level,
 					  void *context, void **return_value)
 {
-	struct acpi_device *d = acpi_fetch_acpi_dev(obj_handle);
+	struct acpi_device *d;
 
-	if (!d)
+	if (acpi_bus_get_device(obj_handle, &d))
 		return 0;
 
 	*return_value = acpi_driver_data(d);
@@ -774,7 +775,7 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 		break;
 
 	case 7:
-		switch (c->x86_stepping) {
+		switch (c->x86_mask) {
 		case 0:
 			longhaul_version = TYPE_LONGHAUL_V1;
 			cpu_model = CPU_SAMUEL2;
@@ -786,7 +787,7 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 			break;
 		case 1 ... 15:
 			longhaul_version = TYPE_LONGHAUL_V2;
-			if (c->x86_stepping < 8) {
+			if (c->x86_mask < 8) {
 				cpu_model = CPU_SAMUEL2;
 				cpuname = "C3 'Samuel 2' [C5B]";
 			} else {
@@ -813,7 +814,7 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 		numscales = 32;
 		memcpy(mults, nehemiah_mults, sizeof(nehemiah_mults));
 		memcpy(eblcr, nehemiah_eblcr, sizeof(nehemiah_eblcr));
-		switch (c->x86_stepping) {
+		switch (c->x86_mask) {
 		case 0 ... 1:
 			cpu_model = CPU_NEHEMIAH;
 			cpuname = "C3 'Nehemiah A' [C5XLOE]";
@@ -850,7 +851,7 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 	case TYPE_POWERSAVER:
 		pr_cont("Powersaver supported\n");
 		break;
-	}
+	};
 
 	/* Doesn't hurt */
 	longhaul_setup_southbridge();
@@ -893,10 +894,9 @@ static int longhaul_cpu_init(struct cpufreq_policy *policy)
 	if ((longhaul_version != TYPE_LONGHAUL_V1) && (scale_voltage != 0))
 		longhaul_setup_voltagescaling();
 
-	policy->transition_delay_us = 200000;	/* usec */
-	policy->freq_table = longhaul_table;
+	policy->cpuinfo.transition_latency = 200000;	/* nsec */
 
-	return 0;
+	return cpufreq_table_validate_and_show(policy, longhaul_table);
 }
 
 static struct cpufreq_driver longhaul_driver = {
@@ -909,7 +909,7 @@ static struct cpufreq_driver longhaul_driver = {
 };
 
 static const struct x86_cpu_id longhaul_id[] = {
-	X86_MATCH_VENDOR_FAM(CENTAUR, 6, NULL),
+	{ X86_VENDOR_CENTAUR, 6 },
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, longhaul_id);
@@ -942,6 +942,8 @@ static int __init longhaul_init(void)
 		return cpufreq_register_driver(&longhaul_driver);
 	case 10:
 		pr_err("Use acpi-cpufreq driver for VIA C7\n");
+	default:
+		;
 	}
 
 	return -ENODEV;

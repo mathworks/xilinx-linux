@@ -1,22 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  1997-2003  All rights reserved.
 **  Copyright (C) 2004-2011 Red Hat, Inc.  All rights reserved.
 **
+**  This copyrighted material is made available to anyone wishing to use,
+**  modify, copy, or redistribute it subject to the terms and conditions
+**  of the GNU General Public License v.2.
 **
 *******************************************************************************
 ******************************************************************************/
-
-#include <linux/module.h>
 
 #include "dlm_internal.h"
 #include "lockspace.h"
 #include "member.h"
 #include "recoverd.h"
 #include "dir.h"
-#include "midcomms.h"
+#include "lowcomms.h"
 #include "config.h"
 #include "memory.h"
 #include "lock.h"
@@ -158,7 +158,6 @@ static struct attribute *dlm_attrs[] = {
 	&dlm_attr_recover_nodeid.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(dlm);
 
 static ssize_t dlm_attr_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf)
@@ -188,7 +187,7 @@ static const struct sysfs_ops dlm_attr_ops = {
 };
 
 static struct kobj_type dlm_ktype = {
-	.default_groups = dlm_groups,
+	.default_attrs = dlm_attrs,
 	.sysfs_ops     = &dlm_attr_ops,
 	.release       = lockspace_kobj_release,
 };
@@ -197,6 +196,8 @@ static struct kset *dlm_kset;
 
 static int do_uevent(struct dlm_ls *ls, int in)
 {
+	int error;
+
 	if (in)
 		kobject_uevent(&ls->ls_kobj, KOBJ_ONLINE);
 	else
@@ -207,23 +208,32 @@ static int do_uevent(struct dlm_ls *ls, int in)
 	/* dlm_controld will see the uevent, do the necessary group management
 	   and then write to sysfs to wake us */
 
-	wait_event(ls->ls_uevent_wait,
-		   test_and_clear_bit(LSFL_UEVENT_WAIT, &ls->ls_flags));
+	error = wait_event_interruptible(ls->ls_uevent_wait,
+			test_and_clear_bit(LSFL_UEVENT_WAIT, &ls->ls_flags));
 
-	log_rinfo(ls, "group event done %d", ls->ls_uevent_result);
+	log_rinfo(ls, "group event done %d %d", error, ls->ls_uevent_result);
 
-	return ls->ls_uevent_result;
+	if (error)
+		goto out;
+
+	error = ls->ls_uevent_result;
+ out:
+	if (error)
+		log_error(ls, "group %s failed %d %d", in ? "join" : "leave",
+			  error, ls->ls_uevent_result);
+	return error;
 }
 
-static int dlm_uevent(const struct kobject *kobj, struct kobj_uevent_env *env)
+static int dlm_uevent(struct kset *kset, struct kobject *kobj,
+		      struct kobj_uevent_env *env)
 {
-	const struct dlm_ls *ls = container_of(kobj, struct dlm_ls, ls_kobj);
+	struct dlm_ls *ls = container_of(kobj, struct dlm_ls, ls_kobj);
 
 	add_uevent_var(env, "LOCKSPACE=%s", ls->ls_name);
 	return 0;
 }
 
-static const struct kset_uevent_ops dlm_uevent_ops = {
+static struct kset_uevent_ops dlm_uevent_ops = {
 	.uevent = dlm_uevent,
 };
 
@@ -273,6 +283,8 @@ static int dlm_scand(void *data)
 			if (dlm_lock_recovery_try(ls)) {
 				ls->ls_scan_time = jiffies;
 				dlm_scan_rsbs(ls);
+				dlm_scan_timeout(ls);
+				dlm_scan_waiters(ls);
 				dlm_unlock_recovery(ls);
 			} else {
 				ls->ls_scan_time += HZ;
@@ -310,7 +322,7 @@ struct dlm_ls *dlm_find_lockspace_global(uint32_t id)
 
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (ls->ls_global_id == id) {
-			atomic_inc(&ls->ls_count);
+			ls->ls_count++;
 			goto out;
 		}
 	}
@@ -327,7 +339,7 @@ struct dlm_ls *dlm_find_lockspace_local(dlm_lockspace_t *lockspace)
 	spin_lock(&lslist_lock);
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (ls->ls_local_handle == lockspace) {
-			atomic_inc(&ls->ls_count);
+			ls->ls_count++;
 			goto out;
 		}
 	}
@@ -344,7 +356,7 @@ struct dlm_ls *dlm_find_lockspace_device(int minor)
 	spin_lock(&lslist_lock);
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (ls->ls_device.minor == minor) {
-			atomic_inc(&ls->ls_count);
+			ls->ls_count++;
 			goto out;
 		}
 	}
@@ -356,49 +368,55 @@ struct dlm_ls *dlm_find_lockspace_device(int minor)
 
 void dlm_put_lockspace(struct dlm_ls *ls)
 {
-	if (atomic_dec_and_test(&ls->ls_count))
-		wake_up(&ls->ls_count_wait);
+	spin_lock(&lslist_lock);
+	ls->ls_count--;
+	spin_unlock(&lslist_lock);
 }
 
 static void remove_lockspace(struct dlm_ls *ls)
 {
-retry:
-	wait_event(ls->ls_count_wait, atomic_read(&ls->ls_count) == 0);
-
-	spin_lock(&lslist_lock);
-	if (atomic_read(&ls->ls_count) != 0) {
+	for (;;) {
+		spin_lock(&lslist_lock);
+		if (ls->ls_count == 0) {
+			WARN_ON(ls->ls_create_count != 0);
+			list_del(&ls->ls_list);
+			spin_unlock(&lslist_lock);
+			return;
+		}
 		spin_unlock(&lslist_lock);
-		goto retry;
+		ssleep(1);
 	}
-
-	WARN_ON(ls->ls_create_count != 0);
-	list_del(&ls->ls_list);
-	spin_unlock(&lslist_lock);
 }
 
 static int threads_start(void)
 {
 	int error;
 
-	/* Thread for sending/receiving messages for all lockspace's */
-	error = dlm_midcomms_start();
-	if (error) {
-		log_print("cannot start dlm midcomms %d", error);
-		goto fail;
-	}
-
 	error = dlm_scand_start();
 	if (error) {
 		log_print("cannot start dlm_scand thread %d", error);
-		goto midcomms_fail;
+		goto fail;
+	}
+
+	/* Thread for sending/receiving messages for all lockspace's */
+	error = dlm_lowcomms_start();
+	if (error) {
+		log_print("cannot start dlm lowcomms %d", error);
+		goto scand_fail;
 	}
 
 	return 0;
 
- midcomms_fail:
-	dlm_midcomms_stop();
+ scand_fail:
+	dlm_scand_stop();
  fail:
 	return error;
+}
+
+static void threads_stop(void)
+{
+	dlm_scand_stop();
+	dlm_lowcomms_stop();
 }
 
 static int new_lockspace(const char *name, const char *cluster,
@@ -411,10 +429,10 @@ static int new_lockspace(const char *name, const char *cluster,
 	int do_unreg = 0;
 	int namelen = strlen(name);
 
-	if (namelen > DLM_LOCKSPACE_LEN || namelen == 0)
+	if (namelen > DLM_LOCKSPACE_LEN)
 		return -EINVAL;
 
-	if (lvblen % 8)
+	if (!lvblen || (lvblen % 8))
 		return -EINVAL;
 
 	if (!try_module_get(THIS_MODULE))
@@ -433,14 +451,9 @@ static int new_lockspace(const char *name, const char *cluster,
 			*ops_result = 0;
 	}
 
-	if (!cluster)
-		log_print("dlm cluster name '%s' is being used without an application provided cluster name",
-			  dlm_config.ci_cluster_name);
-
 	if (dlm_config.ci_recover_callbacks && cluster &&
 	    strncmp(cluster, dlm_config.ci_cluster_name, DLM_LOCKSPACE_LEN)) {
-		log_print("dlm cluster name '%s' does not match "
-			  "the application cluster name '%s'",
+		log_print("dlm cluster name %s mismatch %s",
 			  dlm_config.ci_cluster_name, cluster);
 		error = -EBADR;
 		goto out;
@@ -471,14 +484,13 @@ static int new_lockspace(const char *name, const char *cluster,
 
 	error = -ENOMEM;
 
-	ls = kzalloc(sizeof(*ls), GFP_NOFS);
+	ls = kzalloc(sizeof(struct dlm_ls) + namelen, GFP_NOFS);
 	if (!ls)
 		goto out;
 	memcpy(ls->ls_name, name, namelen);
 	ls->ls_namelen = namelen;
 	ls->ls_lvblen = lvblen;
-	atomic_set(&ls->ls_count, 0);
-	init_waitqueue_head(&ls->ls_count_wait);
+	ls->ls_count = 0;
 	ls->ls_flags = 0;
 	ls->ls_scan_time = jiffies;
 
@@ -487,15 +499,18 @@ static int new_lockspace(const char *name, const char *cluster,
 		ls->ls_ops_arg = ops_arg;
 	}
 
-	/* ls_exflags are forced to match among nodes, and we don't
-	 * need to require all nodes to have some flags set
-	 */
-	ls->ls_exflags = (flags & ~(DLM_LSFL_FS | DLM_LSFL_NEWEXCL));
+	if (flags & DLM_LSFL_TIMEWARN)
+		set_bit(LSFL_TIMEWARN, &ls->ls_flags);
 
-	size = READ_ONCE(dlm_config.ci_rsbtbl_size);
+	/* ls_exflags are forced to match among nodes, and we don't
+	   need to require all nodes to have some flags set */
+	ls->ls_exflags = (flags & ~(DLM_LSFL_TIMEWARN | DLM_LSFL_FS |
+				    DLM_LSFL_NEWEXCL));
+
+	size = dlm_config.ci_rsbtbl_size;
 	ls->ls_rsbtbl_size = size;
 
-	ls->ls_rsbtbl = vmalloc(array_size(size, sizeof(struct dlm_rsbtable)));
+	ls->ls_rsbtbl = vmalloc(sizeof(struct dlm_rsbtable) * size);
 	if (!ls->ls_rsbtbl)
 		goto out_lsfree;
 	for (i = 0; i < size; i++) {
@@ -503,6 +518,8 @@ static int new_lockspace(const char *name, const char *cluster,
 		ls->ls_rsbtbl[i].toss.rb_node = NULL;
 		spin_lock_init(&ls->ls_rsbtbl[i].lock);
 	}
+
+	spin_lock_init(&ls->ls_remove_spin);
 
 	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++) {
 		ls->ls_remove_names[i] = kzalloc(DLM_RESNAME_MAXLEN+1,
@@ -518,6 +535,8 @@ static int new_lockspace(const char *name, const char *cluster,
 	mutex_init(&ls->ls_waiters_mutex);
 	INIT_LIST_HEAD(&ls->ls_orphans);
 	mutex_init(&ls->ls_orphans_mutex);
+	INIT_LIST_HEAD(&ls->ls_timeout);
+	mutex_init(&ls->ls_timeout_mutex);
 
 	INIT_LIST_HEAD(&ls->ls_new_rsb);
 	spin_lock_init(&ls->ls_new_rsb_spin);
@@ -529,18 +548,18 @@ static int new_lockspace(const char *name, const char *cluster,
 	ls->ls_total_weight = 0;
 	ls->ls_node_array = NULL;
 
-	memset(&ls->ls_local_rsb, 0, sizeof(struct dlm_rsb));
-	ls->ls_local_rsb.res_ls = ls;
+	memset(&ls->ls_stub_rsb, 0, sizeof(struct dlm_rsb));
+	ls->ls_stub_rsb.res_ls = ls;
 
 	ls->ls_debug_rsb_dentry = NULL;
 	ls->ls_debug_waiters_dentry = NULL;
 
 	init_waitqueue_head(&ls->ls_uevent_wait);
 	ls->ls_uevent_result = 0;
-	init_completion(&ls->ls_recovery_done);
-	ls->ls_recovery_result = -1;
+	init_completion(&ls->ls_members_done);
+	ls->ls_members_result = -1;
 
-	spin_lock_init(&ls->ls_cb_lock);
+	mutex_init(&ls->ls_cb_mutex);
 	INIT_LIST_HEAD(&ls->ls_cb_delay);
 
 	ls->ls_recoverd_task = NULL;
@@ -549,22 +568,15 @@ static int new_lockspace(const char *name, const char *cluster,
 	spin_lock_init(&ls->ls_rcom_spin);
 	get_random_bytes(&ls->ls_rcom_seq, sizeof(uint64_t));
 	ls->ls_recover_status = 0;
-	ls->ls_recover_seq = get_random_u64();
+	ls->ls_recover_seq = 0;
 	ls->ls_recover_args = NULL;
 	init_rwsem(&ls->ls_in_recovery);
 	init_rwsem(&ls->ls_recv_active);
 	INIT_LIST_HEAD(&ls->ls_requestqueue);
-	atomic_set(&ls->ls_requestqueue_cnt, 0);
-	init_waitqueue_head(&ls->ls_requestqueue_wait);
 	mutex_init(&ls->ls_requestqueue_mutex);
-	spin_lock_init(&ls->ls_clear_proc_locks);
+	mutex_init(&ls->ls_clear_proc_locks);
 
-	/* Due backwards compatibility with 3.1 we need to use maximum
-	 * possible dlm message size to be sure the message will fit and
-	 * not having out of bounds issues. However on sending side 3.2
-	 * might send less.
-	 */
-	ls->ls_recover_buf = kmalloc(DLM_MAX_SOCKET_BUFSIZE, GFP_NOFS);
+	ls->ls_recover_buf = kmalloc(dlm_config.ci_buffer_size, GFP_NOFS);
 	if (!ls->ls_recover_buf)
 		goto out_lkbidr;
 
@@ -614,15 +626,15 @@ static int new_lockspace(const char *name, const char *cluster,
 	wait_event(ls->ls_recover_lock_wait,
 		   test_bit(LSFL_RECOVER_LOCK, &ls->ls_flags));
 
-	/* let kobject handle freeing of ls if there's an error */
-	do_unreg = 1;
-
 	ls->ls_kobj.kset = dlm_kset;
 	error = kobject_init_and_add(&ls->ls_kobj, &dlm_ktype, NULL,
 				     "%s", ls->ls_name);
 	if (error)
 		goto out_recoverd;
 	kobject_uevent(&ls->ls_kobj, KOBJ_ADD);
+
+	/* let kobject handle freeing of ls if there's an error */
+	do_unreg = 1;
 
 	/* This uevent triggers dlm_controld in userspace to add us to the
 	   group of nodes that are members of this lockspace (managed by the
@@ -634,9 +646,8 @@ static int new_lockspace(const char *name, const char *cluster,
 	if (error)
 		goto out_recoverd;
 
-	/* wait until recovery is successful or failed */
-	wait_for_completion(&ls->ls_recovery_done);
-	error = ls->ls_recovery_result;
+	wait_for_completion(&ls->ls_members_done);
+	error = ls->ls_members_result;
 	if (error)
 		goto out_members;
 
@@ -662,9 +673,11 @@ static int new_lockspace(const char *name, const char *cluster,
 	kfree(ls->ls_recover_buf);
  out_lkbidr:
 	idr_destroy(&ls->ls_lkbidr);
+	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++) {
+		if (ls->ls_remove_names[i])
+			kfree(ls->ls_remove_names[i]);
+	}
  out_rsbtbl:
-	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++)
-		kfree(ls->ls_remove_names[i]);
 	vfree(ls->ls_rsbtbl);
  out_lsfree:
 	if (do_unreg)
@@ -676,11 +689,10 @@ static int new_lockspace(const char *name, const char *cluster,
 	return error;
 }
 
-static int __dlm_new_lockspace(const char *name, const char *cluster,
-			       uint32_t flags, int lvblen,
-			       const struct dlm_lockspace_ops *ops,
-			       void *ops_arg, int *ops_result,
-			       dlm_lockspace_t **lockspace)
+int dlm_new_lockspace(const char *name, const char *cluster,
+		      uint32_t flags, int lvblen,
+		      const struct dlm_lockspace_ops *ops, void *ops_arg,
+		      int *ops_result, dlm_lockspace_t **lockspace)
 {
 	int error = 0;
 
@@ -696,33 +708,11 @@ static int __dlm_new_lockspace(const char *name, const char *cluster,
 		ls_count++;
 	if (error > 0)
 		error = 0;
-	if (!ls_count) {
-		dlm_scand_stop();
-		dlm_midcomms_shutdown();
-		dlm_midcomms_stop();
-	}
+	if (!ls_count)
+		threads_stop();
  out:
 	mutex_unlock(&ls_lock);
 	return error;
-}
-
-int dlm_new_lockspace(const char *name, const char *cluster, uint32_t flags,
-		      int lvblen, const struct dlm_lockspace_ops *ops,
-		      void *ops_arg, int *ops_result,
-		      dlm_lockspace_t **lockspace)
-{
-	return __dlm_new_lockspace(name, cluster, flags | DLM_LSFL_FS, lvblen,
-				   ops, ops_arg, ops_result, lockspace);
-}
-
-int dlm_new_user_lockspace(const char *name, const char *cluster,
-			   uint32_t flags, int lvblen,
-			   const struct dlm_lockspace_ops *ops,
-			   void *ops_arg, int *ops_result,
-			   dlm_lockspace_t **lockspace)
-{
-	return __dlm_new_lockspace(name, cluster, flags, lvblen, ops,
-				   ops_arg, ops_result, lockspace);
 }
 
 static int lkb_idr_is_local(int id, void *p, void *data)
@@ -741,7 +731,7 @@ static int lkb_idr_free(int id, void *p, void *data)
 {
 	struct dlm_lkb *lkb = p;
 
-	if (lkb->lkb_lvbptr && test_bit(DLM_IFL_MSTCPY_BIT, &lkb->lkb_iflags))
+	if (lkb->lkb_lvbptr && lkb->lkb_flags & DLM_IFL_MSTCPY)
 		dlm_free_lvb(lkb->lkb_lvbptr);
 
 	dlm_free_lkb(lkb);
@@ -797,9 +787,6 @@ static int release_lockspace(struct dlm_ls *ls, int force)
 		return rv;
 	}
 
-	if (ls_count == 1)
-		dlm_midcomms_version_wait();
-
 	dlm_device_deregister(ls);
 
 	if (force < 3 && dlm_user_daemon_available())
@@ -807,19 +794,12 @@ static int release_lockspace(struct dlm_ls *ls, int force)
 
 	dlm_recoverd_stop(ls);
 
-	if (ls_count == 1) {
-		dlm_scand_stop();
-		dlm_clear_members(ls);
-		dlm_midcomms_shutdown();
-	}
-
 	dlm_callback_stop(ls);
 
 	remove_lockspace(ls);
 
 	dlm_delete_debug_file(ls);
 
-	idr_destroy(&ls->ls_recover_idr);
 	kfree(ls->ls_recover_buf);
 
 	/*
@@ -884,7 +864,7 @@ static int release_lockspace(struct dlm_ls *ls, int force)
  * until this returns.
  *
  * Force has 4 possible values:
- * 0 - don't destroy lockspace if it has any LKBs
+ * 0 - don't destroy locksapce if it has any LKBs
  * 1 - destroy lockspace if it has remote LKBs but not if it has local LKBs
  * 2 - destroy lockspace regardless of LKBs
  * 3 - destroy lockspace as part of a forced shutdown
@@ -905,7 +885,7 @@ int dlm_release_lockspace(void *lockspace, int force)
 	if (!error)
 		ls_count--;
 	if (!ls_count)
-		dlm_midcomms_stop();
+		threads_stop();
 	mutex_unlock(&ls_lock);
 
 	return error;

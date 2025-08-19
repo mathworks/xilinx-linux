@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -9,6 +8,11 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -19,7 +23,7 @@
 #include <linux/io.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <soc/fsl/qe/qe.h>
 #include "fhci.h"
 
@@ -38,12 +42,13 @@ static u8 root_hub_des[] = {
 
 static void fhci_gpio_set_value(struct fhci_hcd *fhci, int gpio_nr, bool on)
 {
-	struct gpio_desc *gpiod = fhci->gpiods[gpio_nr];
+	int gpio = fhci->gpios[gpio_nr];
+	bool alow = fhci->alow_gpios[gpio_nr];
 
-	if (!gpiod)
+	if (!gpio_is_valid(gpio))
 		return;
 
-	gpiod_set_value(gpiod, on);
+	gpio_set_value(gpio, on ^ alow);
 	mdelay(5);
 }
 
@@ -128,9 +133,9 @@ void fhci_io_port_generate_reset(struct fhci_hcd *fhci)
 {
 	fhci_dbg(fhci, "-> %s\n", __func__);
 
-	gpiod_direction_output(fhci->gpiods[GPIO_USBOE], 0);
-	gpiod_direction_output(fhci->gpiods[GPIO_USBTP], 0);
-	gpiod_direction_output(fhci->gpiods[GPIO_USBTN], 0);
+	gpio_direction_output(fhci->gpios[GPIO_USBOE], 0);
+	gpio_direction_output(fhci->gpios[GPIO_USBTP], 0);
+	gpio_direction_output(fhci->gpios[GPIO_USBTN], 0);
 
 	mdelay(5);
 

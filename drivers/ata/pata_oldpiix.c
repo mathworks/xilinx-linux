@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_oldpiix.c - Intel PATA/SATA controllers
  *
@@ -204,7 +203,7 @@ static unsigned int oldpiix_qc_issue(struct ata_queued_cmd *qc)
 }
 
 
-static const struct scsi_host_template oldpiix_sht = {
+static struct scsi_host_template oldpiix_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 

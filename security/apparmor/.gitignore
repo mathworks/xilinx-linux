@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-2.0-only
-net_names.h
+#
+# Generated include files
+#
 capability_names.h
 rlim_names.h

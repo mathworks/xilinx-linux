@@ -1,6 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * net/core/netclassid_cgroup.c	Classid Cgroupfs Handling
+ *
+ *		This program is free software; you can redistribute it and/or
+ *		modify it under the terms of the GNU General Public License
+ *		as published by the Free Software Foundation; either version
+ *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Thomas Graf <tgraf@suug.ch>
  */
@@ -8,8 +12,6 @@
 #include <linux/slab.h>
 #include <linux/cgroup.h>
 #include <linux/fdtable.h>
-#include <linux/sched/task.h>
-
 #include <net/cls_cgroup.h>
 #include <net/sock.h>
 
@@ -53,57 +55,41 @@ static void cgrp_css_free(struct cgroup_subsys_state *css)
 	kfree(css_cls_state(css));
 }
 
-/*
- * To avoid freezing of sockets creation for tasks with big number of threads
- * and opened sockets lets release file_lock every 1000 iterated descriptors.
- * New sockets will already have been created with new classid.
- */
-
-struct update_classid_context {
-	u32 classid;
-	unsigned int batch;
-};
-
-#define UPDATE_CLASSID_BATCH 1000
-
-static int update_classid_sock(const void *v, struct file *file, unsigned int n)
+static int update_classid_sock(const void *v, struct file *file, unsigned n)
 {
-	struct update_classid_context *ctx = (void *)v;
-	struct socket *sock = sock_from_file(file);
+	int err;
+	struct socket *sock = sock_from_file(file, &err);
 
-	if (sock)
-		sock_cgroup_set_classid(&sock->sk->sk_cgrp_data, ctx->classid);
-	if (--ctx->batch == 0) {
-		ctx->batch = UPDATE_CLASSID_BATCH;
-		return n + 1;
+	if (sock) {
+		spin_lock(&cgroup_sk_update_lock);
+		sock_cgroup_set_classid(&sock->sk->sk_cgrp_data,
+					(unsigned long)v);
+		spin_unlock(&cgroup_sk_update_lock);
 	}
 	return 0;
 }
 
-static void update_classid_task(struct task_struct *p, u32 classid)
+static void update_classid(struct cgroup_subsys_state *css, void *v)
 {
-	struct update_classid_context ctx = {
-		.classid = classid,
-		.batch = UPDATE_CLASSID_BATCH
-	};
-	unsigned int fd = 0;
+	struct css_task_iter it;
+	struct task_struct *p;
 
-	do {
+	css_task_iter_start(css, &it);
+	while ((p = css_task_iter_next(&it))) {
 		task_lock(p);
-		fd = iterate_fd(p->files, fd, update_classid_sock, &ctx);
+		iterate_fd(p->files, 0, update_classid_sock, v);
 		task_unlock(p);
-		cond_resched();
-	} while (fd);
+	}
+	css_task_iter_end(&it);
 }
 
 static void cgrp_attach(struct cgroup_taskset *tset)
 {
 	struct cgroup_subsys_state *css;
-	struct task_struct *p;
 
-	cgroup_taskset_for_each(p, css, tset) {
-		update_classid_task(p, css_cls_state(css)->classid);
-	}
+	cgroup_taskset_first(tset, &css);
+	update_classid(css,
+		       (void *)(unsigned long)css_cls_state(css)->classid);
 }
 
 static u64 read_classid(struct cgroup_subsys_state *css, struct cftype *cft)
@@ -115,16 +101,12 @@ static int write_classid(struct cgroup_subsys_state *css, struct cftype *cft,
 			 u64 value)
 {
 	struct cgroup_cls_state *cs = css_cls_state(css);
-	struct css_task_iter it;
-	struct task_struct *p;
+
+	cgroup_sk_alloc_disable();
 
 	cs->classid = (u32)value;
 
-	css_task_iter_start(css, 0, &it);
-	while ((p = css_task_iter_next(&it)))
-		update_classid_task(p, cs->classid);
-	css_task_iter_end(&it);
-
+	update_classid(css, (void *)(unsigned long)cs->classid);
 	return 0;
 }
 

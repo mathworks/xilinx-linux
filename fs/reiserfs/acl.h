@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/init.h>
 #include <linux/posix_acl.h>
 
@@ -48,10 +47,9 @@ static inline int reiserfs_acl_count(size_t size)
 }
 
 #ifdef CONFIG_REISERFS_FS_POSIX_ACL
-struct posix_acl *reiserfs_get_acl(struct inode *inode, int type, bool rcu);
-int reiserfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
-		     struct posix_acl *acl, int type);
-int reiserfs_acl_chmod(struct dentry *dentry);
+struct posix_acl *reiserfs_get_acl(struct inode *inode, int type);
+int reiserfs_set_acl(struct inode *inode, struct posix_acl *acl, int type);
+int reiserfs_acl_chmod(struct inode *inode);
 int reiserfs_inherit_default_acl(struct reiserfs_transaction_handle *th,
 				 struct inode *dir, struct dentry *dentry,
 				 struct inode *inode);
@@ -63,7 +61,7 @@ int reiserfs_cache_default_acl(struct inode *dir);
 #define reiserfs_get_acl NULL
 #define reiserfs_set_acl NULL
 
-static inline int reiserfs_acl_chmod(struct dentry *dentry)
+static inline int reiserfs_acl_chmod(struct inode *inode)
 {
 	return 0;
 }

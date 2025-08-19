@@ -1,10 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * ADIS16460 IMU driver
  *
- * Copyright 2019 Analog Devices Inc.
+ * Copyright 2017 Analog Devices Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  */
 
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
 
@@ -46,8 +51,8 @@
 #define ADIS16460_REG_X_ACCL_OFF	0x46
 #define ADIS16460_REG_Y_ACCL_OFF	0x48
 #define ADIS16460_REG_Z_ACCL_OFF	0x4A
-#define ADIS16460_REG_LOT_ID1		0x52
-#define ADIS16460_REG_LOT_ID2		0x54
+#define ADIS16460_REG_LOT_ID1 R		0x52
+#define ADIS16460_REG_LOT_ID2 R		0x54
 #define ADIS16460_REG_PROD_ID		0x56
 #define ADIS16460_REG_SERIAL_NUM	0x58
 #define ADIS16460_REG_CAL_SGNTR		0x60
@@ -79,15 +84,15 @@ static int adis16460_show_serial_number(void *arg, u64 *val)
 
 	ret = adis_read_reg_16(&adis16460->adis, ADIS16460_REG_SERIAL_NUM,
 		&serial);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	*val = serial;
 
 	return 0;
 }
-DEFINE_DEBUGFS_ATTRIBUTE(adis16460_serial_number_fops,
-		adis16460_show_serial_number, NULL, "0x%.4llx\n");
+DEFINE_SIMPLE_ATTRIBUTE(adis16460_serial_number_fops,
+	adis16460_show_serial_number, NULL, "0x%.4llx\n");
 
 static int adis16460_show_product_id(void *arg, u64 *val)
 {
@@ -97,15 +102,15 @@ static int adis16460_show_product_id(void *arg, u64 *val)
 
 	ret = adis_read_reg_16(&adis16460->adis, ADIS16460_REG_PROD_ID,
 		&prod_id);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	*val = prod_id;
 
 	return 0;
 }
-DEFINE_DEBUGFS_ATTRIBUTE(adis16460_product_id_fops,
-		adis16460_show_product_id, NULL, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(adis16460_product_id_fops,
+	adis16460_show_product_id, NULL, "%llu\n");
 
 static int adis16460_show_flash_count(void *arg, u64 *val)
 {
@@ -115,27 +120,26 @@ static int adis16460_show_flash_count(void *arg, u64 *val)
 
 	ret = adis_read_reg_32(&adis16460->adis, ADIS16460_REG_FLASH_CNT,
 		&flash_count);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	*val = flash_count;
 
 	return 0;
 }
-DEFINE_DEBUGFS_ATTRIBUTE(adis16460_flash_count_fops,
-		adis16460_show_flash_count, NULL, "%lld\n");
+DEFINE_SIMPLE_ATTRIBUTE(adis16460_flash_count_fops,
+	adis16460_show_flash_count, NULL, "%lld\n");
 
 static int adis16460_debugfs_init(struct iio_dev *indio_dev)
 {
 	struct adis16460 *adis16460 = iio_priv(indio_dev);
-	struct dentry *d = iio_get_debugfs_dentry(indio_dev);
 
-	debugfs_create_file_unsafe("serial_number", 0400,
-			d, adis16460, &adis16460_serial_number_fops);
-	debugfs_create_file_unsafe("product_id", 0400,
-			d, adis16460, &adis16460_product_id_fops);
-	debugfs_create_file_unsafe("flash_count", 0400,
-			d, adis16460, &adis16460_flash_count_fops);
+	debugfs_create_file("serial_number", 0400, indio_dev->debugfs_dentry,
+		adis16460, &adis16460_serial_number_fops);
+	debugfs_create_file("product_id", 0400, indio_dev->debugfs_dentry,
+		adis16460, &adis16460_product_id_fops);
+	debugfs_create_file("flash_count", 0400, indio_dev->debugfs_dentry,
+		adis16460, &adis16460_flash_count_fops);
 
 	return 0;
 }
@@ -152,7 +156,7 @@ static int adis16460_debugfs_init(struct iio_dev *indio_dev)
 static int adis16460_set_freq(struct iio_dev *indio_dev, int val, int val2)
 {
 	struct adis16460 *st = iio_priv(indio_dev);
-	int t;
+	unsigned int t;
 
 	t =  val * 1000 + val2 / 1000;
 	if (t <= 0)
@@ -173,10 +177,10 @@ static int adis16460_get_freq(struct iio_dev *indio_dev, int *val, int *val2)
 	struct adis16460 *st = iio_priv(indio_dev);
 	uint16_t t;
 	int ret;
-	unsigned int freq;
+	unsigned freq;
 
 	ret = adis_read_reg_16(&st->adis, ADIS16460_REG_DEC_RATE, &t);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	freq = 2048000 / (t + 1);
@@ -317,7 +321,56 @@ static const struct iio_info adis16460_info = {
 	.write_raw = &adis16460_write_raw,
 	.update_scan_mode = adis_update_scan_mode,
 	.debugfs_reg_access = adis_debugfs_reg_access,
+	.driver_module = THIS_MODULE,
 };
+
+static int adis16460_enable_irq(struct adis *adis, bool enable)
+{
+	/*
+	 * There is no way to gate the data-ready signal internally inside the
+	 * ADIS16460 :(
+	 */
+	if (enable)
+		enable_irq(adis->spi->irq);
+	else
+		disable_irq(adis->spi->irq);
+
+	return 0;
+}
+
+static int adis16460_initial_setup(struct iio_dev *indio_dev)
+{
+	struct adis16460 *st = iio_priv(indio_dev);
+	uint16_t prod_id;
+	unsigned int device_id;
+	int ret;
+
+	adis_reset(&st->adis);
+	msleep(222);
+
+	ret = adis_write_reg_16(&st->adis, ADIS16460_REG_GLOB_CMD, BIT(1));
+	if (ret)
+		return ret;
+	msleep(75);
+
+	ret = adis_check_status(&st->adis);
+	if (ret)
+		return ret;
+
+	ret = adis_read_reg_16(&st->adis, ADIS16460_REG_PROD_ID, &prod_id);
+	if (ret)
+		return ret;
+
+	ret = sscanf(indio_dev->name, "adis%u\n", &device_id);
+	if (ret != 1)
+		return -EINVAL;
+
+	if (prod_id != device_id)
+		dev_warn(&indio_dev->dev, "Device ID(%u) and product ID(%u) do not match.",
+				device_id, prod_id);
+
+	return 0;
+}
 
 #define ADIS16460_DIAG_STAT_IN_CLK_OOS	7
 #define ADIS16460_DIAG_STAT_FLASH_MEM	6
@@ -335,23 +388,13 @@ static const char * const adis16460_status_error_msgs[] = {
 	[ADIS16460_DIAG_STAT_FLASH_UPT] = "Flash update failure",
 };
 
-static const struct adis_timeout adis16460_timeouts = {
-	.reset_ms = 225,
-	.sw_reset_ms = 225,
-	.self_test_ms = 10,
-};
-
 static const struct adis_data adis16460_data = {
 	.diag_stat_reg = ADIS16460_REG_DIAG_STAT,
 	.glob_cmd_reg = ADIS16460_REG_GLOB_CMD,
-	.prod_id_reg = ADIS16460_REG_PROD_ID,
-	.prod_id = 16460,
-	.self_test_mask = BIT(2),
-	.self_test_reg = ADIS16460_REG_GLOB_CMD,
 	.has_paging = false,
 	.read_delay = 5,
 	.write_delay = 5,
-	.cs_change_delay = 16,
+	.stall_delay = 17,
 	.status_error_msgs = adis16460_status_error_msgs,
 	.status_error_mask = BIT(ADIS16460_DIAG_STAT_IN_CLK_OOS) |
 		BIT(ADIS16460_DIAG_STAT_FLASH_MEM) |
@@ -359,8 +402,7 @@ static const struct adis_data adis16460_data = {
 		BIT(ADIS16460_DIAG_STAT_OVERRANGE) |
 		BIT(ADIS16460_DIAG_STAT_SPI_COMM) |
 		BIT(ADIS16460_DIAG_STAT_FLASH_UPT),
-	.unmasked_drdy = true,
-	.timeouts = &adis16460_timeouts,
+	.enable_irq = adis16460_enable_irq,
 };
 
 static int adis16460_probe(struct spi_device *spi)
@@ -373,9 +415,12 @@ static int adis16460_probe(struct spi_device *spi)
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
+	spi_set_drvdata(spi, indio_dev);
+
 	st = iio_priv(indio_dev);
 
 	st->chip_info = &adis16460_chip_info;
+	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->channels = st->chip_info->channels;
 	indio_dev->num_channels = st->chip_info->num_channels;
@@ -386,46 +431,57 @@ static int adis16460_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	ret = devm_adis_setup_buffer_and_trigger(&st->adis, indio_dev, NULL);
+	ret = adis_setup_buffer_and_trigger(&st->adis, indio_dev, NULL);
 	if (ret)
 		return ret;
 
-	ret = __adis_initial_startup(&st->adis);
-	if (ret)
-		return ret;
+	adis16460_enable_irq(&st->adis, 0);
 
-	ret = devm_iio_device_register(&spi->dev, indio_dev);
+	ret = adis16460_initial_setup(indio_dev);
 	if (ret)
-		return ret;
+		goto error_cleanup_buffer;
+
+	ret = iio_device_register(indio_dev);
+	if (ret)
+		goto error_cleanup_buffer;
 
 	adis16460_debugfs_init(indio_dev);
 
 	return 0;
+
+error_cleanup_buffer:
+	adis_cleanup_buffer_and_trigger(&st->adis, indio_dev);
+	return ret;
 }
 
-static const struct spi_device_id adis16460_ids[] = {
+static int adis16460_remove(struct spi_device *spi)
+{
+	struct iio_dev *indio_dev = spi_get_drvdata(spi);
+	struct adis16460 *st = iio_priv(indio_dev);
+
+	iio_device_unregister(indio_dev);
+
+	adis_cleanup_buffer_and_trigger(&st->adis, indio_dev);
+
+	return 0;
+}
+
+static const struct spi_device_id adis16460_id[] = {
 	{ "adis16460", 0 },
 	{}
 };
-MODULE_DEVICE_TABLE(spi, adis16460_ids);
-
-static const struct of_device_id adis16460_of_match[] = {
-	{ .compatible = "adi,adis16460" },
-	{}
-};
-MODULE_DEVICE_TABLE(of, adis16460_of_match);
+MODULE_DEVICE_TABLE(spi, adis16460_id);
 
 static struct spi_driver adis16460_driver = {
 	.driver = {
-		.name = "adis16460",
-		.of_match_table = adis16460_of_match,
+		.name = KBUILD_MODNAME,
 	},
-	.id_table = adis16460_ids,
+	.id_table = adis16460_id,
 	.probe = adis16460_probe,
+	.remove = adis16460_remove,
 };
 module_spi_driver(adis16460_driver);
 
 MODULE_AUTHOR("Dragos Bogdan <dragos.bogdan@analog.com>");
 MODULE_DESCRIPTION("Analog Devices ADIS16460 IMU driver");
-MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_ADISLIB);
+MODULE_LICENSE("GPL v2");

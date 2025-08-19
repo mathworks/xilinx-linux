@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * (C) 2002 - 2003  Dominik Brodowski <linux@brodo.de>
+ *
+ *  Licensed under the terms of the GNU GPL License version 2.
  *
  *  BIG FAT DISCLAIMER: Work in progress code. Possibly *dangerous*
  */
@@ -122,13 +123,17 @@ static int longrun_set_policy(struct cpufreq_policy *policy)
  * Validates a new CPUFreq policy. This function has to be called with
  * cpufreq_driver locked.
  */
-static int longrun_verify_policy(struct cpufreq_policy_data *policy)
+static int longrun_verify_policy(struct cpufreq_policy *policy)
 {
 	if (!policy)
 		return -EINVAL;
 
 	policy->cpu = 0;
 	cpufreq_verify_within_cpu_limits(policy);
+
+	if ((policy->policy != CPUFREQ_POLICY_POWERSAVE) &&
+	    (policy->policy != CPUFREQ_POLICY_PERFORMANCE))
+		return -EINVAL;
 
 	return 0;
 }
@@ -265,6 +270,7 @@ static int longrun_cpu_init(struct cpufreq_policy *policy)
 	/* cpuinfo and default policy values */
 	policy->cpuinfo.min_freq = longrun_low_freq;
 	policy->cpuinfo.max_freq = longrun_high_freq;
+	policy->cpuinfo.transition_latency = CPUFREQ_ETERNAL;
 	longrun_get_policy(policy);
 
 	return 0;
@@ -281,7 +287,8 @@ static struct cpufreq_driver longrun_driver = {
 };
 
 static const struct x86_cpu_id longrun_ids[] = {
-	X86_MATCH_VENDOR_FEATURE(TRANSMETA, X86_FEATURE_LONGRUN, NULL),
+	{ X86_VENDOR_TRANSMETA, X86_FAMILY_ANY, X86_MODEL_ANY,
+	  X86_FEATURE_LONGRUN },
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, longrun_ids);

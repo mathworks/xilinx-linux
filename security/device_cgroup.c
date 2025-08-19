@@ -1,11 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * device_cgroup.c - device cgroup subsystem
  *
  * Copyright 2007 IBM Corp
  */
 
-#include <linux/bpf-cgroup.h>
 #include <linux/device_cgroup.h>
 #include <linux/cgroup.h>
 #include <linux/ctype.h>
@@ -16,7 +14,14 @@
 #include <linux/rcupdate.h>
 #include <linux/mutex.h>
 
-#ifdef CONFIG_CGROUP_DEVICE
+#define ACC_MKNOD 1
+#define ACC_READ  2
+#define ACC_WRITE 4
+#define ACC_MASK (ACC_MKNOD | ACC_READ | ACC_WRITE)
+
+#define DEV_BLOCK 1
+#define DEV_CHAR  2
+#define DEV_ALL   4  /* this represents all devices */
 
 static DEFINE_MUTEX(devcgroup_mutex);
 
@@ -80,17 +85,6 @@ free_and_exit:
 		kfree(ex);
 	}
 	return -ENOMEM;
-}
-
-static void dev_exceptions_move(struct list_head *dest, struct list_head *orig)
-{
-	struct dev_exception_item *ex, *tmp;
-
-	lockdep_assert_held(&devcgroup_mutex);
-
-	list_for_each_entry_safe(ex, tmp, orig, list) {
-		list_move_tail(&ex->list, dest);
-	}
 }
 
 /*
@@ -216,7 +210,7 @@ static void devcgroup_offline(struct cgroup_subsys_state *css)
 }
 
 /*
- * called from kernel/cgroup/cgroup.c with cgroup_lock() held.
+ * called from kernel/cgroup.c with cgroup_lock() held.
  */
 static struct cgroup_subsys_state *
 devcgroup_css_alloc(struct cgroup_subsys_state *parent_css)
@@ -251,21 +245,21 @@ static void set_access(char *acc, short access)
 {
 	int idx = 0;
 	memset(acc, 0, ACCLEN);
-	if (access & DEVCG_ACC_READ)
+	if (access & ACC_READ)
 		acc[idx++] = 'r';
-	if (access & DEVCG_ACC_WRITE)
+	if (access & ACC_WRITE)
 		acc[idx++] = 'w';
-	if (access & DEVCG_ACC_MKNOD)
+	if (access & ACC_MKNOD)
 		acc[idx++] = 'm';
 }
 
 static char type_to_char(short type)
 {
-	if (type == DEVCG_DEV_ALL)
+	if (type == DEV_ALL)
 		return 'a';
-	if (type == DEVCG_DEV_CHAR)
+	if (type == DEV_CHAR)
 		return 'c';
-	if (type == DEVCG_DEV_BLOCK)
+	if (type == DEV_BLOCK)
 		return 'b';
 	return 'X';
 }
@@ -292,10 +286,10 @@ static int devcgroup_seq_show(struct seq_file *m, void *v)
 	 * This way, the file remains as a "whitelist of devices"
 	 */
 	if (devcgroup->behavior == DEVCG_DEFAULT_ALLOW) {
-		set_access(acc, DEVCG_ACC_MASK);
+		set_access(acc, ACC_MASK);
 		set_majmin(maj, ~0);
 		set_majmin(min, ~0);
-		seq_printf(m, "%c %s:%s %s\n", type_to_char(DEVCG_DEV_ALL),
+		seq_printf(m, "%c %s:%s %s\n", type_to_char(DEV_ALL),
 			   maj, min, acc);
 	} else {
 		list_for_each_entry_rcu(ex, &devcgroup->exceptions, list) {
@@ -314,10 +308,10 @@ static int devcgroup_seq_show(struct seq_file *m, void *v)
 /**
  * match_exception	- iterates the exception list trying to find a complete match
  * @exceptions: list of exceptions
- * @type: device type (DEVCG_DEV_BLOCK or DEVCG_DEV_CHAR)
+ * @type: device type (DEV_BLOCK or DEV_CHAR)
  * @major: device file major number, ~0 to match all
  * @minor: device file minor number, ~0 to match all
- * @access: permission mask (DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_ACC_MKNOD)
+ * @access: permission mask (ACC_READ, ACC_WRITE, ACC_MKNOD)
  *
  * It is considered a complete match if an exception is found that will
  * contain the entire range of provided parameters.
@@ -330,9 +324,9 @@ static bool match_exception(struct list_head *exceptions, short type,
 	struct dev_exception_item *ex;
 
 	list_for_each_entry_rcu(ex, exceptions, list) {
-		if ((type & DEVCG_DEV_BLOCK) && !(ex->type & DEVCG_DEV_BLOCK))
+		if ((type & DEV_BLOCK) && !(ex->type & DEV_BLOCK))
 			continue;
-		if ((type & DEVCG_DEV_CHAR) && !(ex->type & DEVCG_DEV_CHAR))
+		if ((type & DEV_CHAR) && !(ex->type & DEV_CHAR))
 			continue;
 		if (ex->major != ~0 && ex->major != major)
 			continue;
@@ -349,10 +343,10 @@ static bool match_exception(struct list_head *exceptions, short type,
 /**
  * match_exception_partial - iterates the exception list trying to find a partial match
  * @exceptions: list of exceptions
- * @type: device type (DEVCG_DEV_BLOCK or DEVCG_DEV_CHAR)
+ * @type: device type (DEV_BLOCK or DEV_CHAR)
  * @major: device file major number, ~0 to match all
  * @minor: device file minor number, ~0 to match all
- * @access: permission mask (DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_ACC_MKNOD)
+ * @access: permission mask (ACC_READ, ACC_WRITE, ACC_MKNOD)
  *
  * It is considered a partial match if an exception's range is found to
  * contain *any* of the devices specified by provided parameters. This is
@@ -366,11 +360,10 @@ static bool match_exception_partial(struct list_head *exceptions, short type,
 {
 	struct dev_exception_item *ex;
 
-	list_for_each_entry_rcu(ex, exceptions, list,
-				lockdep_is_held(&devcgroup_mutex)) {
-		if ((type & DEVCG_DEV_BLOCK) && !(ex->type & DEVCG_DEV_BLOCK))
+	list_for_each_entry_rcu(ex, exceptions, list) {
+		if ((type & DEV_BLOCK) && !(ex->type & DEV_BLOCK))
 			continue;
-		if ((type & DEVCG_DEV_CHAR) && !(ex->type & DEVCG_DEV_CHAR))
+		if ((type & DEV_CHAR) && !(ex->type & DEV_CHAR))
 			continue;
 		/*
 		 * We must be sure that both the exception and the provided
@@ -421,7 +414,7 @@ static bool verify_new_ex(struct dev_cgroup *dev_cgroup,
 		} else {
 			/*
 			 * new exception in the child will add more devices
-			 * that can be accessed, so it can't match any of
+			 * that can be acessed, so it can't match any of
 			 * parent's exceptions, even slightly
 			 */ 
 			match = match_exception_partial(&dev_cgroup->exceptions,
@@ -524,7 +517,7 @@ static inline int may_allow_all(struct dev_cgroup *parent)
  * This is one of the three key functions for hierarchy implementation.
  * This function is responsible for re-evaluating all the cgroup's active
  * exceptions due to a parent's exception change.
- * Refer to Documentation/admin-guide/cgroup-v1/devices.rst for more details.
+ * Refer to Documentation/cgroups/devices.txt for more details.
  */
 static void revalidate_active_exceptions(struct dev_cgroup *devcg)
 {
@@ -575,7 +568,7 @@ static int propagate_exception(struct dev_cgroup *devcg_root,
 		    devcg->behavior == DEVCG_DEFAULT_ALLOW) {
 			rc = dev_exception_add(devcg, ex);
 			if (rc)
-				return rc;
+				break;
 		} else {
 			/*
 			 * in the other possible cases:
@@ -615,13 +608,11 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 	int count, rc = 0;
 	struct dev_exception_item ex;
 	struct dev_cgroup *parent = css_to_devcgroup(devcgroup->css.parent);
-	struct dev_cgroup tmp_devcgrp;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	memset(&ex, 0, sizeof(ex));
-	memset(&tmp_devcgrp, 0, sizeof(tmp_devcgrp));
 	b = buffer;
 
 	switch (*b) {
@@ -633,27 +624,15 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 
 			if (!may_allow_all(parent))
 				return -EPERM;
-			if (!parent) {
-				devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
-				dev_exception_clean(devcgroup);
-				break;
-			}
-
-			INIT_LIST_HEAD(&tmp_devcgrp.exceptions);
-			rc = dev_exceptions_copy(&tmp_devcgrp.exceptions,
-						 &devcgroup->exceptions);
-			if (rc)
-				return rc;
 			dev_exception_clean(devcgroup);
+			devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
+			if (!parent)
+				break;
+
 			rc = dev_exceptions_copy(&devcgroup->exceptions,
 						 &parent->exceptions);
-			if (rc) {
-				dev_exceptions_move(&devcgroup->exceptions,
-						    &tmp_devcgrp.exceptions);
+			if (rc)
 				return rc;
-			}
-			devcgroup->behavior = DEVCG_DEFAULT_ALLOW;
-			dev_exception_clean(&tmp_devcgrp);
 			break;
 		case DEVCG_DENY:
 			if (css_has_online_children(&devcgroup->css))
@@ -667,10 +646,10 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 		}
 		return 0;
 	case 'b':
-		ex.type = DEVCG_DEV_BLOCK;
+		ex.type = DEV_BLOCK;
 		break;
 	case 'c':
-		ex.type = DEVCG_DEV_CHAR;
+		ex.type = DEV_CHAR;
 		break;
 	default:
 		return -EINVAL;
@@ -723,13 +702,13 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 	for (b++, count = 0; count < 3; count++, b++) {
 		switch (*b) {
 		case 'r':
-			ex.access |= DEVCG_ACC_READ;
+			ex.access |= ACC_READ;
 			break;
 		case 'w':
-			ex.access |= DEVCG_ACC_WRITE;
+			ex.access |= ACC_WRITE;
 			break;
 		case 'm':
-			ex.access |= DEVCG_ACC_MKNOD;
+			ex.access |= ACC_MKNOD;
 			break;
 		case '\n':
 		case '\0':
@@ -821,16 +800,17 @@ struct cgroup_subsys devices_cgrp_subsys = {
 };
 
 /**
- * devcgroup_legacy_check_permission - checks if an inode operation is permitted
+ * __devcgroup_check_permission - checks if an inode operation is permitted
+ * @dev_cgroup: the dev cgroup to be tested against
  * @type: device type
  * @major: device major number
  * @minor: device minor number
- * @access: combination of DEVCG_ACC_WRITE, DEVCG_ACC_READ and DEVCG_ACC_MKNOD
+ * @access: combination of ACC_WRITE, ACC_READ and ACC_MKNOD
  *
  * returns 0 on success, -EPERM case the operation is not permitted
  */
-static int devcgroup_legacy_check_permission(short type, u32 major, u32 minor,
-					short access)
+static int __devcgroup_check_permission(short type, u32 major, u32 minor,
+				        short access)
 {
 	struct dev_cgroup *dev_cgroup;
 	bool rc;
@@ -853,24 +833,36 @@ static int devcgroup_legacy_check_permission(short type, u32 major, u32 minor,
 	return 0;
 }
 
-#endif /* CONFIG_CGROUP_DEVICE */
-
-#if defined(CONFIG_CGROUP_DEVICE) || defined(CONFIG_CGROUP_BPF)
-
-int devcgroup_check_permission(short type, u32 major, u32 minor, short access)
+int __devcgroup_inode_permission(struct inode *inode, int mask)
 {
-	int rc = BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type, major, minor, access);
+	short type, access = 0;
 
-	if (rc)
-		return rc;
+	if (S_ISBLK(inode->i_mode))
+		type = DEV_BLOCK;
+	if (S_ISCHR(inode->i_mode))
+		type = DEV_CHAR;
+	if (mask & MAY_WRITE)
+		access |= ACC_WRITE;
+	if (mask & MAY_READ)
+		access |= ACC_READ;
 
-	#ifdef CONFIG_CGROUP_DEVICE
-	return devcgroup_legacy_check_permission(type, major, minor, access);
-
-	#else /* CONFIG_CGROUP_DEVICE */
-	return 0;
-
-	#endif /* CONFIG_CGROUP_DEVICE */
+	return __devcgroup_check_permission(type, imajor(inode), iminor(inode),
+			access);
 }
-EXPORT_SYMBOL(devcgroup_check_permission);
-#endif /* defined(CONFIG_CGROUP_DEVICE) || defined(CONFIG_CGROUP_BPF) */
+
+int devcgroup_inode_mknod(int mode, dev_t dev)
+{
+	short type;
+
+	if (!S_ISBLK(mode) && !S_ISCHR(mode))
+		return 0;
+
+	if (S_ISBLK(mode))
+		type = DEV_BLOCK;
+	else
+		type = DEV_CHAR;
+
+	return __devcgroup_check_permission(type, MAJOR(dev), MINOR(dev),
+			ACC_MKNOD);
+
+}

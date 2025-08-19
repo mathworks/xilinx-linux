@@ -1,7 +1,22 @@
-# SPDX-License-Identifier: GPL-2.0-only
-/conf
-/[gmnq]conf
-/[gmnq]conf-bin
-/[gmnq]conf-cflags
-/[gmnq]conf-libs
-/qconf-moc.cc
+#
+# Generated files
+#
+config*
+*.lex.c
+*.tab.c
+*.tab.h
+zconf.hash.c
+*.moc
+gconf.glade.h
+*.pot
+*.mo
+
+#
+# configuration programs
+#
+conf
+mconf
+nconf
+qconf
+gconf
+kxgettext

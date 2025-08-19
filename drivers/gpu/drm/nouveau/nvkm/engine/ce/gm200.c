@@ -35,8 +35,8 @@ gm200_ce = {
 };
 
 int
-gm200_ce_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+gm200_ce_new(struct nvkm_device *device, int index,
 	     struct nvkm_engine **pengine)
 {
-	return nvkm_engine_new_(&gm200_ce, device, type, inst, true, pengine);
+	return nvkm_engine_new_(&gm200_ce, device, index, true, pengine);
 }

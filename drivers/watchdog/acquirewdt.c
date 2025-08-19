@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	Acquire Single Board Computer Watchdog Timer driver
  *
@@ -6,6 +5,11 @@
  *
  *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *						All Rights Reserved.
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
  *
  *	Neither Alan Cox nor CymruNet Ltd. admit liability nor provide
  *	warranty for any of this software. This material is provided
@@ -196,7 +200,7 @@ static int acq_open(struct inode *inode, struct file *file)
 
 	/* Activate */
 	acq_keepalive();
-	return stream_open(inode, file);
+	return nonseekable_open(inode, file);
 }
 
 static int acq_close(struct inode *inode, struct file *file)
@@ -221,7 +225,6 @@ static const struct file_operations acq_fops = {
 	.llseek		= no_llseek,
 	.write		= acq_write,
 	.unlocked_ioctl	= acq_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= acq_open,
 	.release	= acq_close,
 };
@@ -271,12 +274,14 @@ out:
 	return ret;
 }
 
-static void acq_remove(struct platform_device *dev)
+static int acq_remove(struct platform_device *dev)
 {
 	misc_deregister(&acq_miscdev);
 	release_region(wdt_start, 1);
 	if (wdt_stop != wdt_start)
 		release_region(wdt_stop, 1);
+
+	return 0;
 }
 
 static void acq_shutdown(struct platform_device *dev)
@@ -286,7 +291,7 @@ static void acq_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver acquirewdt_driver = {
-	.remove_new	= acq_remove,
+	.remove		= acq_remove,
 	.shutdown	= acq_shutdown,
 	.driver		= {
 		.name	= DRV_NAME,

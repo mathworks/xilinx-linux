@@ -1,96 +1,110 @@
-// SPDX-License-Identifier: GPL-2.0
 #include "evlist.h"
 #include "evsel.h"
 #include "parse-events.h"
 #include "tests.h"
 #include "debug.h"
-#include <linux/kernel.h>
 
 static int perf_evsel__roundtrip_cache_name_test(void)
 {
-	int ret = TEST_OK;
+	char name[128];
+	int type, op, err = 0, ret = 0, i, idx;
+	struct perf_evsel *evsel;
+	struct perf_evlist *evlist = perf_evlist__new();
 
-	for (int type = 0; type < PERF_COUNT_HW_CACHE_MAX; type++) {
-		for (int op = 0; op < PERF_COUNT_HW_CACHE_OP_MAX; op++) {
+        if (evlist == NULL)
+                return -ENOMEM;
+
+	for (type = 0; type < PERF_COUNT_HW_CACHE_MAX; type++) {
+		for (op = 0; op < PERF_COUNT_HW_CACHE_OP_MAX; op++) {
 			/* skip invalid cache type */
-			if (!evsel__is_cache_op_valid(type, op))
+			if (!perf_evsel__is_cache_op_valid(type, op))
 				continue;
 
-			for (int res = 0; res < PERF_COUNT_HW_CACHE_RESULT_MAX; res++) {
-				char name[128];
-				struct evlist *evlist = evlist__new();
-				struct evsel *evsel;
-				int err;
-
-				if (evlist == NULL) {
-					pr_debug("Failed to alloc evlist");
-					return TEST_FAIL;
-				}
-				__evsel__hw_cache_type_op_res_name(type, op, res,
-								name, sizeof(name));
-
-				err = parse_event(evlist, name);
-				if (err) {
-					pr_debug("Failure to parse cache event '%s' possibly as PMUs don't support it",
-						name);
-					evlist__delete(evlist);
-					continue;
-				}
-				evlist__for_each_entry(evlist, evsel) {
-					if (strcmp(evsel__name(evsel), name)) {
-						pr_debug("%s != %s\n", evsel__name(evsel), name);
-						ret = TEST_FAIL;
-					}
-				}
-				evlist__delete(evlist);
+			for (i = 0; i < PERF_COUNT_HW_CACHE_RESULT_MAX; i++) {
+				__perf_evsel__hw_cache_type_op_res_name(type, op, i,
+									name, sizeof(name));
+				err = parse_events(evlist, name, NULL);
+				if (err)
+					ret = err;
 			}
 		}
 	}
+
+	idx = 0;
+	evsel = perf_evlist__first(evlist);
+
+	for (type = 0; type < PERF_COUNT_HW_CACHE_MAX; type++) {
+		for (op = 0; op < PERF_COUNT_HW_CACHE_OP_MAX; op++) {
+			/* skip invalid cache type */
+			if (!perf_evsel__is_cache_op_valid(type, op))
+				continue;
+
+			for (i = 0; i < PERF_COUNT_HW_CACHE_RESULT_MAX; i++) {
+				__perf_evsel__hw_cache_type_op_res_name(type, op, i,
+									name, sizeof(name));
+				if (evsel->idx != idx)
+					continue;
+
+				++idx;
+
+				if (strcmp(perf_evsel__name(evsel), name)) {
+					pr_debug("%s != %s\n", perf_evsel__name(evsel), name);
+					ret = -1;
+				}
+
+				evsel = perf_evsel__next(evsel);
+			}
+		}
+	}
+
+	perf_evlist__delete(evlist);
 	return ret;
 }
 
-static int perf_evsel__name_array_test(const char *const names[], int nr_names)
+static int __perf_evsel__name_array_test(const char *names[], int nr_names)
 {
-	int ret = TEST_OK;
+	int i, err;
+	struct perf_evsel *evsel;
+	struct perf_evlist *evlist = perf_evlist__new();
 
-	for (int i = 0; i < nr_names; ++i) {
-		struct evlist *evlist = evlist__new();
-		struct evsel *evsel;
-		int err;
+        if (evlist == NULL)
+                return -ENOMEM;
 
-		if (evlist == NULL) {
-			pr_debug("Failed to alloc evlist");
-			return TEST_FAIL;
-		}
-		err = parse_event(evlist, names[i]);
+	for (i = 0; i < nr_names; ++i) {
+		err = parse_events(evlist, names[i], NULL);
 		if (err) {
 			pr_debug("failed to parse event '%s', err %d\n",
 				 names[i], err);
-			evlist__delete(evlist);
-			ret = TEST_FAIL;
-			continue;
+			goto out_delete_evlist;
 		}
-		evlist__for_each_entry(evlist, evsel) {
-			if (strcmp(evsel__name(evsel), names[i])) {
-				pr_debug("%s != %s\n", evsel__name(evsel), names[i]);
-				ret = TEST_FAIL;
-			}
-		}
-		evlist__delete(evlist);
 	}
-	return ret;
+
+	err = 0;
+	evlist__for_each_entry(evlist, evsel) {
+		if (strcmp(perf_evsel__name(evsel), names[evsel->idx])) {
+			--err;
+			pr_debug("%s != %s\n", perf_evsel__name(evsel), names[evsel->idx]);
+		}
+	}
+
+out_delete_evlist:
+	perf_evlist__delete(evlist);
+	return err;
 }
 
-static int test__perf_evsel__roundtrip_name_test(struct test_suite *test __maybe_unused,
-						 int subtest __maybe_unused)
-{
-	int err = 0, ret = TEST_OK;
+#define perf_evsel__name_array_test(names) \
+	__perf_evsel__name_array_test(names, ARRAY_SIZE(names))
 
-	err = perf_evsel__name_array_test(evsel__hw_names, PERF_COUNT_HW_MAX);
+int test__perf_evsel__roundtrip_name_test(int subtest __maybe_unused)
+{
+	int err = 0, ret = 0;
+
+	err = perf_evsel__name_array_test(perf_evsel__hw_names);
 	if (err)
 		ret = err;
 
-	err = perf_evsel__name_array_test(evsel__sw_names, PERF_COUNT_SW_DUMMY + 1);
+	err = __perf_evsel__name_array_test(perf_evsel__sw_names,
+					    PERF_COUNT_SW_DUMMY + 1);
 	if (err)
 		ret = err;
 
@@ -100,5 +114,3 @@ static int test__perf_evsel__roundtrip_name_test(struct test_suite *test __maybe
 
 	return ret;
 }
-
-DEFINE_SUITE("Roundtrip evsel->name", perf_evsel__roundtrip_name_test);

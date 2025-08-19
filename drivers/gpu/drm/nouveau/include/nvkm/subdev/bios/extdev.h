@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: MIT */
 #ifndef __NVBIOS_EXTDEV_H__
 #define __NVBIOS_EXTDEV_H__
 enum nvbios_extdev_type {
@@ -26,6 +25,4 @@ nvbios_extdev_parse(struct nvkm_bios *, int, struct nvbios_extdev_func *);
 int
 nvbios_extdev_find(struct nvkm_bios *, enum nvbios_extdev_type,
 		   struct nvbios_extdev_func *);
-
-bool nvbios_extdev_skip_probe(struct nvkm_bios *);
 #endif

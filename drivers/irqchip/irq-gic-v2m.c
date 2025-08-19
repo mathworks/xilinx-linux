@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ARM GIC v2m MSI(-X) support
  * Support for Message Signaled Interrupts for systems that
@@ -8,23 +7,25 @@
  * Authors: Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
  *	    Harish Kasiviswanathan <harish.kasiviswanathan@amd.com>
  *	    Brandon Anderson <brandon.anderson@amd.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published
+ * by the Free Software Foundation.
  */
 
 #define pr_fmt(fmt) "GICv2m: " fmt
 
 #include <linux/acpi.h>
-#include <linux/iommu.h>
+#include <linux/dma-iommu.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
-#include <linux/pci.h>
 #include <linux/msi.h>
 #include <linux/of_address.h>
 #include <linux/of_pci.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/irqchip/arm-gic.h>
-#include <linux/irqchip/arm-gic-common.h>
 
 /*
 * MSI_TYPER:
@@ -55,7 +56,6 @@
 
 /* List of flags for specific v2m implementation */
 #define GICV2M_NEEDS_SPI_OFFSET		0x00000001
-#define GICV2M_GRAVITON_ADDRESS_ONLY	0x00000002
 
 static LIST_HEAD(v2m_nodes);
 static DEFINE_SPINLOCK(v2m_lock);
@@ -89,38 +89,28 @@ static struct irq_chip gicv2m_msi_irq_chip = {
 	.irq_mask		= gicv2m_mask_msi_irq,
 	.irq_unmask		= gicv2m_unmask_msi_irq,
 	.irq_eoi		= irq_chip_eoi_parent,
+	.irq_write_msi_msg	= pci_msi_domain_write_msg,
 };
 
 static struct msi_domain_info gicv2m_msi_domain_info = {
 	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-		   MSI_FLAG_PCI_MSIX | MSI_FLAG_MULTI_PCI_MSI),
+		   MSI_FLAG_PCI_MSIX),
 	.chip	= &gicv2m_msi_irq_chip,
 };
-
-static phys_addr_t gicv2m_get_msi_addr(struct v2m_data *v2m, int hwirq)
-{
-	if (v2m->flags & GICV2M_GRAVITON_ADDRESS_ONLY)
-		return v2m->res.start | ((hwirq - 32) << 3);
-	else
-		return v2m->res.start + V2M_MSI_SETSPI_NS;
-}
 
 static void gicv2m_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 {
 	struct v2m_data *v2m = irq_data_get_irq_chip_data(data);
-	phys_addr_t addr = gicv2m_get_msi_addr(v2m, data->hwirq);
+	phys_addr_t addr = v2m->res.start + V2M_MSI_SETSPI_NS;
 
 	msg->address_hi = upper_32_bits(addr);
 	msg->address_lo = lower_32_bits(addr);
+	msg->data = data->hwirq;
 
-	if (v2m->flags & GICV2M_GRAVITON_ADDRESS_ONLY)
-		msg->data = 0;
-	else
-		msg->data = data->hwirq;
 	if (v2m->flags & GICV2M_NEEDS_SPI_OFFSET)
 		msg->data -= v2m->spi_offset;
 
-	iommu_dma_compose_msi_msg(irq_data_get_msi_desc(data), msg);
+	iommu_dma_map_msi_msg(data->irq, msg);
 }
 
 static struct irq_chip gicv2m_irq_chip = {
@@ -165,27 +155,32 @@ static int gicv2m_irq_gic_domain_alloc(struct irq_domain *domain,
 	return 0;
 }
 
-static void gicv2m_unalloc_msi(struct v2m_data *v2m, unsigned int hwirq,
-			       int nr_irqs)
+static void gicv2m_unalloc_msi(struct v2m_data *v2m, unsigned int hwirq)
 {
+	int pos;
+
+	pos = hwirq - v2m->spi_start;
+	if (pos < 0 || pos >= v2m->nr_spis) {
+		pr_err("Failed to teardown msi. Invalid hwirq %d\n", hwirq);
+		return;
+	}
+
 	spin_lock(&v2m_lock);
-	bitmap_release_region(v2m->bm, hwirq - v2m->spi_start,
-			      get_count_order(nr_irqs));
+	__clear_bit(pos, v2m->bm);
 	spin_unlock(&v2m_lock);
 }
 
 static int gicv2m_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 				   unsigned int nr_irqs, void *args)
 {
-	msi_alloc_info_t *info = args;
 	struct v2m_data *v2m = NULL, *tmp;
-	int hwirq, offset, i, err = 0;
+	int hwirq, offset, err = 0;
 
 	spin_lock(&v2m_lock);
 	list_for_each_entry(tmp, &v2m_nodes, entry) {
-		offset = bitmap_find_free_region(tmp->bm, tmp->nr_spis,
-						 get_count_order(nr_irqs));
-		if (offset >= 0) {
+		offset = find_first_zero_bit(tmp->bm, tmp->nr_spis);
+		if (offset < tmp->nr_spis) {
+			__set_bit(offset, tmp->bm);
 			v2m = tmp;
 			break;
 		}
@@ -197,26 +192,16 @@ static int gicv2m_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 
 	hwirq = v2m->spi_start + offset;
 
-	err = iommu_dma_prepare_msi(info->desc,
-				    gicv2m_get_msi_addr(v2m, hwirq));
-	if (err)
+	err = gicv2m_irq_gic_domain_alloc(domain, virq, hwirq);
+	if (err) {
+		gicv2m_unalloc_msi(v2m, hwirq);
 		return err;
-
-	for (i = 0; i < nr_irqs; i++) {
-		err = gicv2m_irq_gic_domain_alloc(domain, virq + i, hwirq + i);
-		if (err)
-			goto fail;
-
-		irq_domain_set_hwirq_and_chip(domain, virq + i, hwirq + i,
-					      &gicv2m_irq_chip, v2m);
 	}
 
-	return 0;
+	irq_domain_set_hwirq_and_chip(domain, virq, hwirq,
+				      &gicv2m_irq_chip, v2m);
 
-fail:
-	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
-	gicv2m_unalloc_msi(v2m, hwirq, nr_irqs);
-	return err;
+	return 0;
 }
 
 static void gicv2m_irq_domain_free(struct irq_domain *domain,
@@ -225,7 +210,8 @@ static void gicv2m_irq_domain_free(struct irq_domain *domain,
 	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
 	struct v2m_data *v2m = irq_data_get_irq_chip_data(d);
 
-	gicv2m_unalloc_msi(v2m, d->hwirq, nr_irqs);
+	BUG_ON(nr_irqs != 1);
+	gicv2m_unalloc_msi(v2m, d->hwirq);
 	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
 }
 
@@ -263,13 +249,13 @@ static struct msi_domain_info gicv2m_pmsi_domain_info = {
 	.chip	= &gicv2m_pmsi_irq_chip,
 };
 
-static void __init gicv2m_teardown(void)
+static void gicv2m_teardown(void)
 {
 	struct v2m_data *v2m, *tmp;
 
 	list_for_each_entry_safe(v2m, tmp, &v2m_nodes, entry) {
 		list_del(&v2m->entry);
-		bitmap_free(v2m->bm);
+		kfree(v2m->bm);
 		iounmap(v2m->base);
 		of_node_put(to_of_node(v2m->fwnode));
 		if (is_fwnode_irqchip(v2m->fwnode))
@@ -278,7 +264,7 @@ static void __init gicv2m_teardown(void)
 	}
 }
 
-static __init int gicv2m_allocate_domains(struct irq_domain *parent)
+static int gicv2m_allocate_domains(struct irq_domain *parent)
 {
 	struct irq_domain *inner_domain, *pci_domain, *plat_domain;
 	struct v2m_data *v2m;
@@ -287,14 +273,15 @@ static __init int gicv2m_allocate_domains(struct irq_domain *parent)
 	if (!v2m)
 		return 0;
 
-	inner_domain = irq_domain_create_hierarchy(parent, 0, 0, v2m->fwnode,
-						   &gicv2m_domain_ops, v2m);
+	inner_domain = irq_domain_create_tree(v2m->fwnode,
+					      &gicv2m_domain_ops, v2m);
 	if (!inner_domain) {
 		pr_err("Failed to create GICv2m domain\n");
 		return -ENOMEM;
 	}
 
-	irq_domain_update_bus_token(inner_domain, DOMAIN_BUS_NEXUS);
+	inner_domain->bus_token = DOMAIN_BUS_NEXUS;
+	inner_domain->parent = parent;
 	pci_domain = pci_msi_create_irq_domain(v2m->fwnode,
 					       &gicv2m_msi_domain_info,
 					       inner_domain);
@@ -316,18 +303,19 @@ static __init int gicv2m_allocate_domains(struct irq_domain *parent)
 
 static int __init gicv2m_init_one(struct fwnode_handle *fwnode,
 				  u32 spi_start, u32 nr_spis,
-				  struct resource *res, u32 flags)
+				  struct resource *res)
 {
 	int ret;
 	struct v2m_data *v2m;
 
 	v2m = kzalloc(sizeof(struct v2m_data), GFP_KERNEL);
-	if (!v2m)
+	if (!v2m) {
+		pr_err("Failed to allocate struct v2m_data.\n");
 		return -ENOMEM;
+	}
 
 	INIT_LIST_HEAD(&v2m->entry);
 	v2m->fwnode = fwnode;
-	v2m->flags = flags;
 
 	memcpy(&v2m->res, res, sizeof(struct resource));
 
@@ -342,14 +330,7 @@ static int __init gicv2m_init_one(struct fwnode_handle *fwnode,
 		v2m->spi_start = spi_start;
 		v2m->nr_spis = nr_spis;
 	} else {
-		u32 typer;
-
-		/* Graviton should always have explicit spi_start/nr_spis */
-		if (v2m->flags & GICV2M_GRAVITON_ADDRESS_ONLY) {
-			ret = -EINVAL;
-			goto err_iounmap;
-		}
-		typer = readl_relaxed(v2m->base + V2M_MSI_TYPER);
+		u32 typer = readl_relaxed(v2m->base + V2M_MSI_TYPER);
 
 		v2m->spi_start = V2M_MSI_TYPER_BASE_SPI(typer);
 		v2m->nr_spis = V2M_MSI_TYPER_NUM_SPI(typer);
@@ -368,24 +349,22 @@ static int __init gicv2m_init_one(struct fwnode_handle *fwnode,
 	 * the MSI data is the absolute value within the range from
 	 * spi_start to (spi_start + num_spis).
 	 *
-	 * Broadcom NS2 GICv2m implementation has an erratum where the MSI data
+	 * Broadom NS2 GICv2m implementation has an erratum where the MSI data
 	 * is 'spi_number - 32'
-	 *
-	 * Reading that register fails on the Graviton implementation
 	 */
-	if (!(v2m->flags & GICV2M_GRAVITON_ADDRESS_ONLY)) {
-		switch (readl_relaxed(v2m->base + V2M_MSI_IIDR)) {
-		case XGENE_GICV2M_MSI_IIDR:
-			v2m->flags |= GICV2M_NEEDS_SPI_OFFSET;
-			v2m->spi_offset = v2m->spi_start;
-			break;
-		case BCM_NS2_GICV2M_MSI_IIDR:
-			v2m->flags |= GICV2M_NEEDS_SPI_OFFSET;
-			v2m->spi_offset = 32;
-			break;
-		}
+	switch (readl_relaxed(v2m->base + V2M_MSI_IIDR)) {
+	case XGENE_GICV2M_MSI_IIDR:
+		v2m->flags |= GICV2M_NEEDS_SPI_OFFSET;
+		v2m->spi_offset = v2m->spi_start;
+		break;
+	case BCM_NS2_GICV2M_MSI_IIDR:
+		v2m->flags |= GICV2M_NEEDS_SPI_OFFSET;
+		v2m->spi_offset = 32;
+		break;
 	}
-	v2m->bm = bitmap_zalloc(v2m->nr_spis, GFP_KERNEL);
+
+	v2m->bm = kzalloc(sizeof(long) * BITS_TO_LONGS(v2m->nr_spis),
+			  GFP_KERNEL);
 	if (!v2m->bm) {
 		ret = -ENOMEM;
 		goto err_iounmap;
@@ -404,7 +383,7 @@ err_free_v2m:
 	return ret;
 }
 
-static __initconst struct of_device_id gicv2m_device_id[] = {
+static struct of_device_id gicv2m_device_id[] = {
 	{	.compatible	= "arm,gic-v2m-frame",	},
 	{},
 };
@@ -421,7 +400,7 @@ static int __init gicv2m_of_init(struct fwnode_handle *parent_handle,
 		u32 spi_start = 0, nr_spis = 0;
 		struct resource res;
 
-		if (!of_property_read_bool(child, "msi-controller"))
+		if (!of_find_property(child, "msi-controller", NULL))
 			continue;
 
 		ret = of_address_to_resource(child, 0, &res);
@@ -436,8 +415,7 @@ static int __init gicv2m_of_init(struct fwnode_handle *parent_handle,
 			pr_info("DT overriding V2M MSI_TYPER (base:%u, num:%u)\n",
 				spi_start, nr_spis);
 
-		ret = gicv2m_init_one(&child->fwnode, spi_start, nr_spis,
-				      &res, 0);
+		ret = gicv2m_init_one(&child->fwnode, spi_start, nr_spis, &res);
 		if (ret) {
 			of_node_put(child);
 			break;
@@ -454,7 +432,7 @@ static int __init gicv2m_of_init(struct fwnode_handle *parent_handle,
 #ifdef CONFIG_ACPI
 static int acpi_num_msi;
 
-static __init struct fwnode_handle *gicv2m_get_fwnode(struct device *dev)
+static struct fwnode_handle *gicv2m_get_fwnode(struct device *dev)
 {
 	struct v2m_data *data;
 
@@ -469,27 +447,8 @@ static __init struct fwnode_handle *gicv2m_get_fwnode(struct device *dev)
 	return data->fwnode;
 }
 
-static __init bool acpi_check_amazon_graviton_quirks(void)
-{
-	static struct acpi_table_madt *madt;
-	acpi_status status;
-	bool rc = false;
-
-#define ACPI_AMZN_OEM_ID		"AMAZON"
-
-	status = acpi_get_table(ACPI_SIG_MADT, 0,
-				(struct acpi_table_header **)&madt);
-
-	if (ACPI_FAILURE(status) || !madt)
-		return rc;
-	rc = !memcmp(madt->header.oem_id, ACPI_AMZN_OEM_ID, ACPI_OEM_ID_SIZE);
-	acpi_put_table((struct acpi_table_header *)madt);
-
-	return rc;
-}
-
 static int __init
-acpi_parse_madt_msi(union acpi_subtable_headers *header,
+acpi_parse_madt_msi(struct acpi_subtable_header *header,
 		    const unsigned long end)
 {
 	int ret;
@@ -497,7 +456,6 @@ acpi_parse_madt_msi(union acpi_subtable_headers *header,
 	u32 spi_start = 0, nr_spis = 0;
 	struct acpi_madt_generic_msi_frame *m;
 	struct fwnode_handle *fwnode;
-	u32 flags = 0;
 
 	m = (struct acpi_madt_generic_msi_frame *)header;
 	if (BAD_MADT_ENTRY(m, end))
@@ -507,13 +465,6 @@ acpi_parse_madt_msi(union acpi_subtable_headers *header,
 	res.end = m->base_address + SZ_4K - 1;
 	res.flags = IORESOURCE_MEM;
 
-	if (acpi_check_amazon_graviton_quirks()) {
-		pr_info("applying Amazon Graviton quirk\n");
-		res.end = res.start + SZ_8K - 1;
-		flags |= GICV2M_GRAVITON_ADDRESS_ONLY;
-		gicv2m_msi_domain_info.flags &= ~MSI_FLAG_MULTI_PCI_MSI;
-	}
-
 	if (m->flags & ACPI_MADT_OVERRIDE_SPI_VALUES) {
 		spi_start = m->spi_base;
 		nr_spis = m->spi_count;
@@ -522,13 +473,13 @@ acpi_parse_madt_msi(union acpi_subtable_headers *header,
 			spi_start, nr_spis);
 	}
 
-	fwnode = irq_domain_alloc_fwnode(&res.start);
+	fwnode = irq_domain_alloc_fwnode((void *)m->base_address);
 	if (!fwnode) {
 		pr_err("Unable to allocate GICv2m domain token\n");
 		return -EINVAL;
 	}
 
-	ret = gicv2m_init_one(fwnode, spi_start, nr_spis, &res, flags);
+	ret = gicv2m_init_one(fwnode, spi_start, nr_spis, &res);
 	if (ret)
 		irq_domain_free_fwnode(fwnode);
 

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM regulator
 
@@ -63,38 +62,6 @@ DEFINE_EVENT(regulator_basic, regulator_disable,
 );
 
 DEFINE_EVENT(regulator_basic, regulator_disable_complete,
-
-	TP_PROTO(const char *name),
-
-	TP_ARGS(name)
-
-);
-
-DEFINE_EVENT(regulator_basic, regulator_bypass_enable,
-
-	TP_PROTO(const char *name),
-
-	TP_ARGS(name)
-
-);
-
-DEFINE_EVENT(regulator_basic, regulator_bypass_enable_complete,
-
-	TP_PROTO(const char *name),
-
-	TP_ARGS(name)
-
-);
-
-DEFINE_EVENT(regulator_basic, regulator_bypass_disable,
-
-	TP_PROTO(const char *name),
-
-	TP_ARGS(name)
-
-);
-
-DEFINE_EVENT(regulator_basic, regulator_bypass_disable_complete,
 
 	TP_PROTO(const char *name),
 

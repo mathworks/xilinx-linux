@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/arm/mm/iomap.c
  *
@@ -9,8 +8,6 @@
 #include <linux/pci.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
-
-#include <asm/vga.h>
 
 unsigned long vga_base;
 EXPORT_SYMBOL(vga_base);

@@ -1,20 +1,25 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * AD7091RX Analog to Digital converter driver
+ * AD7091Rx Analog -> Digital converters driver
  *
- * Copyright 2014-2019 Analog Devices Inc.
+ * Copyright 2014 Analog Devices Inc.
+ * Author: Paul Cercueil <paul.cercueil@analog.com>
+ *
+ * Licensed under the GPL-2.
  */
 
-#ifndef __DRIVERS_IIO_ADC_AD7091R_BASE_H__
-#define __DRIVERS_IIO_ADC_AD7091R_BASE_H__
+#ifndef __DRIVERS_IIO_DAC_AD7091R_BASE_H__
+#define __DRIVERS_IIO_DAC_AD7091R_BASE_H__
+
+#include <linux/types.h>
+#include <linux/regmap.h>
 
 struct device;
 struct ad7091r_state;
 
 struct ad7091r_chip_info {
-	unsigned int num_channels;
+	unsigned num_channels;
 	const struct iio_chan_spec *channels;
-	unsigned int vref_mV;
+	unsigned vref_mV;
 };
 
 extern const struct regmap_config ad7091r_regmap_config;
@@ -22,5 +27,6 @@ extern const struct regmap_config ad7091r_regmap_config;
 int ad7091r_probe(struct device *dev, const char *name,
 		const struct ad7091r_chip_info *chip_info,
 		struct regmap *map, int irq);
+int ad7091r_remove(struct device *dev);
 
-#endif /* __DRIVERS_IIO_ADC_AD7091R_BASE_H__ */
+#endif /* __DRIVERS_IIO_DAC_AD7091R5_BASE_H__ */

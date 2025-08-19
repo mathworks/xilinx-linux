@@ -9,7 +9,6 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/buffer.h>
-#include <linux/iio/buffer_impl.h>
 #include <linux/iio/buffer-dma.h>
 #include <linux/iio/buffer-dmaengine.h>
 #include <linux/idr.h>
@@ -36,7 +35,7 @@ static DEFINE_IDA(mw_stream_iio_channel_ida);
 }
 
 struct mw_stream_iio_channel_info {
-	enum iio_buffer_direction 		iio_direction;
+	enum iio_device_direction 		iio_direction;
 };
 
 enum mw_stream_iio_tlast_mode {
@@ -59,7 +58,7 @@ enum mw_stream_iio_reset_ip_mode {
 struct mw_stream_iio_chandev {
 	struct mathworks_ipcore_dev 			*mwdev;
 	struct device							dev;
-	enum iio_buffer_direction 				iio_direction;
+	enum iio_device_direction 				iio_direction;
 	const char								*dmaname;
 	enum mw_stream_iio_tlast_mode			tlast_mode;
 	enum mw_stream_iio_reset_tlast_mode		reset_tlast_mode;
@@ -72,6 +71,22 @@ static void mw_stream_iio_chan_ida_remove(void *opaque){
 	struct mw_stream_iio_chandev* mwchan = opaque;
 	ida_simple_remove(&mw_stream_iio_channel_ida, mwchan->dev.id);
 }
+
+static int mw_stream_iio_buffer_submit_block(struct iio_dma_buffer_queue *queue, struct iio_dma_buffer_block *block)
+{
+	struct iio_dev *indio_dev = queue->driver_data;
+	struct mw_stream_iio_chandev *mwchan = iio_priv(indio_dev);
+	int direction;
+
+	if(mwchan->iio_direction == IIO_DEVICE_DIRECTION_IN) {
+		direction = DMA_FROM_DEVICE;
+	} else {
+		direction = DMA_TO_DEVICE;
+	}
+
+	return iio_dmaengine_buffer_submit_block(queue, block, direction);
+}
+
 
 static int mw_stream_iio_buffer_preenable(struct iio_dev *indio_dev)
 {
@@ -139,12 +154,18 @@ static int mw_stream_iio_buffer_postdisable(struct iio_dev *indio_dev)
 	return 0;
 }
 
+
 static const struct iio_buffer_setup_ops mw_stream_iio_buffer_setup_ops = {
 
 	.preenable = &mw_stream_iio_buffer_preenable,
 	.postenable = &mw_stream_iio_buffer_postenable,
 	.predisable = &mw_stream_iio_buffer_predisable,
 	.postdisable = &mw_stream_iio_buffer_postdisable,
+};
+
+static const struct iio_dma_buffer_ops mw_stream_iio_buffer_dma_buffer_ops = {
+	.submit = mw_stream_iio_buffer_submit_block,
+	.abort = iio_dmaengine_buffer_abort,
 };
 
 /*************
@@ -277,25 +298,36 @@ static int mw_stream_iio_channel_reg_access(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info mw_stream_iio_dev_info = {
+	.driver_module = THIS_MODULE,
 	.debugfs_reg_access = &mw_stream_iio_channel_reg_access,
 };
 
-static int devm_mw_stream_configure_buffer(struct iio_dev *indio_dev, enum iio_buffer_direction direction)
+static int devm_mw_stream_configure_buffer(struct iio_dev *indio_dev)
 {
 	struct mw_stream_iio_chandev *mwchan = iio_priv(indio_dev);
-	int ret;
+	struct iio_buffer *buffer;
+	int status;
 
-	ret = devm_iio_dmaengine_buffer_setup(indio_dev->dev.parent, indio_dev,
-					      mwchan->dmaname, direction);
-	if (ret) {
-		if (ret == -EPROBE_DEFER)
+	buffer = iio_dmaengine_buffer_alloc(indio_dev->dev.parent, mwchan->dmaname,
+			&mw_stream_iio_buffer_dma_buffer_ops, indio_dev);
+	if (IS_ERR(buffer)) {
+		if(PTR_ERR(buffer) == -EPROBE_DEFER)
 			dev_info(&indio_dev->dev, "Deferring probe for DMA engine driver load\n");
 		else
-			dev_err(&indio_dev->dev, "Failed to allocate IIO DMA buffer: %d\n", ret);
-		return ret;
+			dev_err(&indio_dev->dev, "Failed to allocate IIO DMA buffer: %ld\n", PTR_ERR(buffer));
+		return PTR_ERR(buffer);
 	}
 
+	status = devm_add_action(indio_dev->dev.parent,(devm_action_fn)iio_dmaengine_buffer_free, buffer);
+	if(status){
+		iio_dmaengine_buffer_free(buffer);
+		return status;
+	}
+
+	iio_device_attach_buffer(indio_dev, buffer);
+
 	indio_dev->modes = INDIO_BUFFER_HARDWARE;
+	indio_dev->direction = mwchan->iio_direction;
 	indio_dev->setup_ops = &mw_stream_iio_buffer_setup_ops;
 
 	return 0;
@@ -395,7 +427,7 @@ static int mw_stream_setup_data_channels(struct iio_dev *indio_dev){
 		}
 		channel->indexed = 1;
 		channel->type = IIO_GENERIC_DATA;
-		if (mwchan->iio_direction == IIO_BUFFER_DIRECTION_OUT)
+		if (mwchan->iio_direction == IIO_DEVICE_DIRECTION_OUT)
 			channel->output = 1;
 		channel->channel = scan_index;
 		channel->scan_index = scan_index;
@@ -462,7 +494,7 @@ static int devm_mw_stream_iio_register(struct iio_dev *indio_dev) {
 			return status;
 	}
 
-	status = devm_mw_stream_configure_buffer(indio_dev, mwchan->iio_direction);
+	status = devm_mw_stream_configure_buffer(indio_dev);
 	if (status){
 		return status;
 	}
@@ -518,7 +550,7 @@ static struct iio_dev *devm_mw_stream_iio_alloc(
 		dev_err(IP2DEVP(mwdev), "Missing dma-names property for node: %s\n",node->name);
 		return ERR_PTR(status);
 	}
-	if (mwchan->iio_direction == IIO_BUFFER_DIRECTION_IN) {
+	if (mwchan->iio_direction == IIO_DEVICE_DIRECTION_IN) {
 		status = of_property_read_u32(node, "mathworks,sample-cnt-reg", &mwchan->tlast_cntr_addr);
 		if(status)
 			mwchan->tlast_cntr_addr = -EINVAL;
@@ -544,7 +576,7 @@ static struct iio_dev *devm_mw_stream_iio_alloc(
 	memcpy(&mwchan->dev.archdata, &IP2DEVP(mwdev)->archdata, sizeof(struct dev_archdata));
 	mwchan->dev.coherent_dma_mask = IP2DEVP(mwdev)->coherent_dma_mask;
 	mwchan->dev.dma_mask = IP2DEVP(mwdev)->dma_mask;
-	mwchan->dev.dma_range_map = IP2DEVP(mwdev)->dma_range_map;
+	mwchan->dev.dma_pfn_offset = IP2DEVP(mwdev)->dma_pfn_offset;
 
 
 	status = of_property_read_string(node, "mathworks,dev-name", &devname);
@@ -593,11 +625,11 @@ static int mw_stream_iio_channel_probe(
 }
 
 static struct mw_stream_iio_channel_info mw_stream_iio_mm2s_info = {
-	.iio_direction = IIO_BUFFER_DIRECTION_OUT,
+	.iio_direction = IIO_DEVICE_DIRECTION_OUT,
 };
 
 static struct mw_stream_iio_channel_info mw_stream_iio_s2mm_info = {
-	.iio_direction = IIO_BUFFER_DIRECTION_IN,
+	.iio_direction = IIO_DEVICE_DIRECTION_IN,
 };
 
 static const struct of_device_id mw_stream_iio_channel_of_match[] = {
@@ -645,4 +677,3 @@ MODULE_AUTHOR("MathWorks, Inc");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MathWorks Streaming IIO Channel");
 MODULE_ALIAS(DRIVER_NAME);
-MODULE_IMPORT_NS(IIO_DMAENGINE_BUFFER);

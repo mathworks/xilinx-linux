@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *    ebcdic keycode functions for s390 console drivers
  *
@@ -13,17 +12,6 @@
 #define NR_FN_HANDLER	20
 
 struct kbd_data;
-
-extern int ebc_funcbufsize, ebc_funcbufleft;
-extern char *ebc_func_table[MAX_NR_FUNC];
-extern char ebc_func_buf[];
-extern char *ebc_funcbufptr;
-extern unsigned int ebc_keymap_count;
-
-extern struct kbdiacruc ebc_accent_table[];
-extern unsigned int ebc_accent_table_size;
-extern unsigned short *ebc_key_maps[MAX_NR_KEYMAPS];
-extern unsigned short ebc_plain_map[NR_KEYS];
 
 typedef void (fn_handler_fn)(struct kbd_data *);
 
@@ -56,7 +44,7 @@ static inline void
 kbd_put_queue(struct tty_port *port, int ch)
 {
 	tty_insert_flip_char(port, ch, 0);
-	tty_flip_buffer_push(port);
+	tty_schedule_flip(port);
 }
 
 static inline void
@@ -64,5 +52,5 @@ kbd_puts_queue(struct tty_port *port, char *cp)
 {
 	while (*cp)
 		tty_insert_flip_char(port, *cp++, 0);
-	tty_flip_buffer_push(port);
+	tty_schedule_flip(port);
 }

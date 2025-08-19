@@ -15,11 +15,13 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/highmem.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
@@ -30,6 +32,7 @@
 
 struct spear_sdhci {
 	struct clk *clk;
+	int card_int_gpio;
 };
 
 /* sdhci ops */
@@ -40,9 +43,22 @@ static const struct sdhci_ops sdhci_pltfm_ops = {
 	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
+static void sdhci_probe_config_dt(struct device_node *np,
+				struct spear_sdhci *host)
+{
+	int cd_gpio;
+
+	cd_gpio = of_get_named_gpio(np, "cd-gpios", 0);
+	if (!gpio_is_valid(cd_gpio))
+		cd_gpio = -1;
+
+	host->card_int_gpio = cd_gpio;
+}
+
 static int sdhci_probe(struct platform_device *pdev)
 {
 	struct sdhci_host *host;
+	struct resource *iomem;
 	struct spear_sdhci *sdhci;
 	struct device *dev;
 	int ret;
@@ -55,7 +71,8 @@ static int sdhci_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	host->ioaddr = devm_platform_ioremap_resource(pdev, 0);
+	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	host->ioaddr = devm_ioremap_resource(&pdev->dev, iomem);
 	if (IS_ERR(host->ioaddr)) {
 		ret = PTR_ERR(host->ioaddr);
 		dev_dbg(&pdev->dev, "unable to map iomem: %d\n", ret);
@@ -65,10 +82,6 @@ static int sdhci_probe(struct platform_device *pdev)
 	host->hw_name = "sdhci";
 	host->ops = &sdhci_pltfm_ops;
 	host->irq = platform_get_irq(pdev, 0);
-	if (host->irq < 0) {
-		ret = host->irq;
-		goto err_host;
-	}
 	host->quirks = SDHCI_QUIRK_BROKEN_ADMA;
 
 	sdhci = sdhci_priv(host);
@@ -92,17 +105,27 @@ static int sdhci_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "Error setting desired clk, clk=%lu\n",
 				clk_get_rate(sdhci->clk));
 
+	sdhci_probe_config_dt(pdev->dev.of_node, sdhci);
 	/*
-	 * It is optional to use GPIOs for sdhci card detection. If we
-	 * find a descriptor using slot GPIO, we use it.
+	 * It is optional to use GPIOs for sdhci card detection. If
+	 * sdhci->card_int_gpio < 0, then use original sdhci lines otherwise
+	 * GPIO lines. We use the built-in GPIO support for this.
 	 */
-	ret = mmc_gpiod_request_cd(host->mmc, "cd", 0, false, 0);
-	if (ret == -EPROBE_DEFER)
-		goto disable_clk;
+	if (sdhci->card_int_gpio >= 0) {
+		ret = mmc_gpio_request_cd(host->mmc, sdhci->card_int_gpio, 0);
+		if (ret < 0) {
+			dev_dbg(&pdev->dev,
+				"failed to request card-detect gpio%d\n",
+				sdhci->card_int_gpio);
+			goto disable_clk;
+		}
+	}
 
 	ret = sdhci_add_host(host);
-	if (ret)
+	if (ret) {
+		dev_dbg(&pdev->dev, "error adding host\n");
 		goto disable_clk;
+	}
 
 	platform_set_drvdata(pdev, host);
 
@@ -117,7 +140,7 @@ err:
 	return ret;
 }
 
-static void sdhci_remove(struct platform_device *pdev)
+static int sdhci_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct spear_sdhci *sdhci = sdhci_priv(host);
@@ -131,6 +154,8 @@ static void sdhci_remove(struct platform_device *pdev)
 	sdhci_remove_host(host, dead);
 	clk_disable_unprepare(sdhci->clk);
 	sdhci_free_host(host);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -139,9 +164,6 @@ static int sdhci_suspend(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct spear_sdhci *sdhci = sdhci_priv(host);
 	int ret;
-
-	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
-		mmc_retune_needed(host->mmc);
 
 	ret = sdhci_suspend_host(host);
 	if (!ret)
@@ -168,21 +190,22 @@ static int sdhci_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(sdhci_pm_ops, sdhci_suspend, sdhci_resume);
 
+#ifdef CONFIG_OF
 static const struct of_device_id sdhci_spear_id_table[] = {
 	{ .compatible = "st,spear300-sdhci" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, sdhci_spear_id_table);
+#endif
 
 static struct platform_driver sdhci_driver = {
 	.driver = {
 		.name	= "sdhci",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.pm	= &sdhci_pm_ops,
-		.of_match_table = sdhci_spear_id_table,
+		.of_match_table = of_match_ptr(sdhci_spear_id_table),
 	},
 	.probe		= sdhci_probe,
-	.remove_new	= sdhci_remove,
+	.remove		= sdhci_remove,
 };
 
 module_platform_driver(sdhci_driver);

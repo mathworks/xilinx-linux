@@ -1,6 +1,4 @@
-#include "zynq.dtsi"
-
-#include <dt-bindings/interrupt-controller/irq.h>
+/include/ "zynq.dtsi"
 
 / {
 	model = "Xilinx Zynq ZED";
@@ -12,7 +10,7 @@
 	chosen {
 //		bootargs = "console=ttyPS0,115200 root=/dev/ram rw initrd=0x1100000,33M ip=:::::eth0:dhcp earlyprintk";
 		bootargs = "console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait";
-		stdout-path = "/amba@0/uart@E0001000";
+		linux,stdout-path = "/amba@0/uart@E0001000";
 	};
 };
 

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/prefetch.h>
 
 /**
@@ -14,13 +13,13 @@
 static inline unsigned int
 iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents, 
 		unsigned long hint,
-		void (*iommu_io_pdir_entry)(__le64 *, space_t, unsigned long,
+		void (*iommu_io_pdir_entry)(u64 *, space_t, unsigned long,
 					    unsigned long))
 {
 	struct scatterlist *dma_sg = startsg;	/* pointer to current DMA */
 	unsigned int n_mappings = 0;
 	unsigned long dma_offset = 0, dma_len = 0;
-	__le64 *pdirp = NULL;
+	u64 *pdirp = NULL;
 
 	/* Horrible hack.  For efficiency's sake, dma_sg starts one 
 	 * entry below the true start (it is immediately incremented
@@ -31,8 +30,8 @@ iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents,
 		unsigned long vaddr;
 		long size;
 
-		DBG_RUN_SG(" %d : %08lx %p/%05x\n", nents,
-			   (unsigned long)sg_dma_address(startsg),
+		DBG_RUN_SG(" %d : %08lx/%05x %p/%05x\n", nents,
+			   (unsigned long)sg_dma_address(startsg), cnt,
 			   sg_virt(startsg), startsg->length
 		);
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2006-2007 PA Semi, Inc
  *
@@ -7,6 +6,19 @@
  * Maintained by: Olof Johansson <olof@lixom.net>
  *
  * Based on drivers/net/fs_enet/mii-bitbang.c.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/io.h>
@@ -20,7 +32,7 @@
 #include <linux/phy.h>
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 
 #define DELAY 1
 
@@ -244,7 +256,7 @@ static int gpio_mdio_probe(struct platform_device *ofdev)
 	err = of_mdiobus_register(new_bus, np);
 
 	if (err != 0) {
-		pr_err("%s: Cannot register as MDIO bus, err %d\n",
+		printk(KERN_ERR "%s: Cannot register as MDIO bus, err %d\n",
 				new_bus->name, err);
 		goto out_free_irq;
 	}
@@ -294,7 +306,7 @@ static struct platform_driver gpio_mdio_driver =
 	},
 };
 
-static int __init gpio_mdio_init(void)
+static int gpio_mdio_init(void)
 {
 	struct device_node *np;
 
@@ -314,7 +326,7 @@ static int __init gpio_mdio_init(void)
 }
 module_init(gpio_mdio_init);
 
-static void __exit gpio_mdio_exit(void)
+static void gpio_mdio_exit(void)
 {
 	platform_driver_unregister(&gpio_mdio_driver);
 	if (gpio_regs)

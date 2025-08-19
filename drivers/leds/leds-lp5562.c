@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * LP5562 LED driver
  *
  * Copyright (C) 2013 Texas Instruments
  *
  * Author: Milo(Woogyom) Kim <milo.kim@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
@@ -113,7 +116,7 @@ static inline void lp5562_wait_enable_done(void)
 
 static void lp5562_set_led_current(struct lp55xx_led *led, u8 led_current)
 {
-	static const u8 addr[] = {
+	u8 addr[] = {
 		LP5562_REG_R_CURRENT,
 		LP5562_REG_G_CURRENT,
 		LP5562_REG_B_CURRENT,
@@ -127,13 +130,13 @@ static void lp5562_set_led_current(struct lp55xx_led *led, u8 led_current)
 static void lp5562_load_engine(struct lp55xx_chip *chip)
 {
 	enum lp55xx_engine_index idx = chip->engine_idx;
-	static const u8 mask[] = {
+	u8 mask[] = {
 		[LP55XX_ENGINE_1] = LP5562_MODE_ENG1_M,
 		[LP55XX_ENGINE_2] = LP5562_MODE_ENG2_M,
 		[LP55XX_ENGINE_3] = LP5562_MODE_ENG3_M,
 	};
 
-	static const u8 val[] = {
+	u8 val[] = {
 		[LP55XX_ENGINE_1] = LP5562_LOAD_ENG1,
 		[LP55XX_ENGINE_2] = LP5562_LOAD_ENG2,
 		[LP55XX_ENGINE_3] = LP5562_LOAD_ENG3,
@@ -208,7 +211,7 @@ static int lp5562_update_firmware(struct lp55xx_chip *chip,
 {
 	enum lp55xx_engine_index idx = chip->engine_idx;
 	u8 pattern[LP5562_PROGRAM_LENGTH] = {0};
-	static const u8 addr[] = {
+	u8 addr[] = {
 		[LP55XX_ENGINE_1] = LP5562_REG_PROG_MEM_ENG1,
 		[LP55XX_ENGINE_2] = LP5562_REG_PROG_MEM_ENG2,
 		[LP55XX_ENGINE_3] = LP5562_REG_PROG_MEM_ENG3,
@@ -260,18 +263,14 @@ static void lp5562_firmware_loaded(struct lp55xx_chip *chip)
 {
 	const struct firmware *fw = chip->fw;
 
-	/*
-	 * the firmware is encoded in ascii hex character, with 2 chars
-	 * per byte
-	 */
-	if (fw->size > (LP5562_PROGRAM_LENGTH * 2)) {
+	if (fw->size > LP5562_PROGRAM_LENGTH) {
 		dev_err(&chip->cl->dev, "firmware data size overflow: %zu\n",
 			fw->size);
 		return;
 	}
 
 	/*
-	 * Program memory sequence
+	 * Program momery sequence
 	 *  1) set engine mode to "LOAD"
 	 *  2) write firmware data into program memory
 	 */
@@ -315,7 +314,7 @@ static int lp5562_post_init_device(struct lp55xx_chip *chip)
 static int lp5562_led_brightness(struct lp55xx_led *led)
 {
 	struct lp55xx_chip *chip = led->chip;
-	static const u8 addr[] = {
+	u8 addr[] = {
 		LP5562_REG_R_PWM,
 		LP5562_REG_G_PWM,
 		LP5562_REG_B_PWM,
@@ -511,24 +510,18 @@ static struct lp55xx_device_config lp5562_cfg = {
 	.dev_attr_group     = &lp5562_group,
 };
 
-static int lp5562_probe(struct i2c_client *client)
+static int lp5562_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	int ret;
 	struct lp55xx_chip *chip;
 	struct lp55xx_led *led;
 	struct lp55xx_platform_data *pdata = dev_get_platdata(&client->dev);
-	struct device_node *np = dev_of_node(&client->dev);
-
-	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
-	if (!chip)
-		return -ENOMEM;
-
-	chip->cfg = &lp5562_cfg;
+	struct device_node *np = client->dev.of_node;
 
 	if (!pdata) {
 		if (np) {
-			pdata = lp55xx_of_populate_pdata(&client->dev, np,
-							 chip);
+			pdata = lp55xx_of_populate_pdata(&client->dev, np);
 			if (IS_ERR(pdata))
 				return PTR_ERR(pdata);
 		} else {
@@ -537,14 +530,18 @@ static int lp5562_probe(struct i2c_client *client)
 		}
 	}
 
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
+	if (!chip)
+		return -ENOMEM;
 
-	led = devm_kcalloc(&client->dev,
-			pdata->num_channels, sizeof(*led), GFP_KERNEL);
+	led = devm_kzalloc(&client->dev,
+			sizeof(*led) * pdata->num_channels, GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 
 	chip->cl = client;
 	chip->pdata = pdata;
+	chip->cfg = &lp5562_cfg;
 
 	mutex_init(&chip->lock);
 
@@ -556,23 +553,25 @@ static int lp5562_probe(struct i2c_client *client)
 
 	ret = lp55xx_register_leds(led, chip);
 	if (ret)
-		goto err_out;
+		goto err_register_leds;
 
 	ret = lp55xx_register_sysfs(chip);
 	if (ret) {
 		dev_err(&client->dev, "registering sysfs failed\n");
-		goto err_out;
+		goto err_register_sysfs;
 	}
 
 	return 0;
 
-err_out:
+err_register_sysfs:
+	lp55xx_unregister_leds(led, chip);
+err_register_leds:
 	lp55xx_deinit_device(chip);
 err_init:
 	return ret;
 }
 
-static void lp5562_remove(struct i2c_client *client)
+static int lp5562_remove(struct i2c_client *client)
 {
 	struct lp55xx_led *led = i2c_get_clientdata(client);
 	struct lp55xx_chip *chip = led->chip;
@@ -580,7 +579,10 @@ static void lp5562_remove(struct i2c_client *client)
 	lp5562_stop_engine(chip);
 
 	lp55xx_unregister_sysfs(chip);
+	lp55xx_unregister_leds(led, chip);
 	lp55xx_deinit_device(chip);
+
+	return 0;
 }
 
 static const struct i2c_device_id lp5562_id[] = {
@@ -589,17 +591,19 @@ static const struct i2c_device_id lp5562_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, lp5562_id);
 
+#ifdef CONFIG_OF
 static const struct of_device_id of_lp5562_leds_match[] = {
 	{ .compatible = "ti,lp5562", },
 	{},
 };
 
 MODULE_DEVICE_TABLE(of, of_lp5562_leds_match);
+#endif
 
 static struct i2c_driver lp5562_driver = {
 	.driver = {
 		.name	= "lp5562",
-		.of_match_table = of_lp5562_leds_match,
+		.of_match_table = of_match_ptr(of_lp5562_leds_match),
 	},
 	.probe		= lp5562_probe,
 	.remove		= lp5562_remove,

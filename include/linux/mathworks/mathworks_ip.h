@@ -1,9 +1,9 @@
 /*
  * MathWorks IP Common Functionality
  *
- * Copyright 2013-2022 The MathWorks, Inc
+ * Copyright 2013-2016 The MathWorks, Inc
  *
- * Licensed under the GPL-v2.
+ * Licensed under the GPL-2.
  */
 
 #ifndef _MATHWORKS_IP_H_
@@ -27,10 +27,8 @@
 
 #define MATHWORKS_IP_MAX_DEVTYPE 32
 #define	MATHWORKS_IP_DEVNAME_LEN 32
-
-#define MAX_INTERRUPT_NODES_PER_DUT 1
-#define SYSFS_FILENAME_MAX_LENGTH 12
-
+#define MAX_INTERRUPT_NODES_PER_DUT  1 
+#define SYSFS_FILENAME_MAX_LENGTH 12 
 /*********************************************************
 * Devm Helpers
 *********************************************************/
@@ -68,32 +66,39 @@ struct mathworks_ip_ops {
 
 /* Struct types */
 struct mathworks_ip_info {
-	const char 			*name;
-	struct resource 		*mem;
-	void __iomem 		    	*regs;
-	struct device               	*dev;
-	struct device			*char_device;
-	struct cdev 		        cdev;
-	dev_t 			        dev_id;
-	int 			        irq;
-	int				nirq;
-	struct fasync_struct 	    	*asyncq;
-	struct module 			*module;
+    const char 			        	*name;
+    struct resource 		    	*mem;
+    void __iomem 		    		*regs;
+    struct device               	*dev;
+    struct device					*char_device;
+	struct cdev 		        	cdev;
+    dev_t 			            	dev_id;
+    int 			            	irq;
+    int								nirq;
+    struct fasync_struct 	    	*asyncq;
+    struct module 					*module;
 	/*
-	* Bus Specific Ops
-	*/
-	struct mathworks_ip_ops		*ops;
+	 * Bus Specific Ops
+	 */
+	struct mathworks_ip_ops			*ops;
+
 	struct mathworks_ip_dev_info	*dev_info;
-	void				*private;
+
+	void 							*private;
+
 	/*
 	 * DMA Virtual and physical address
 	 */
-	struct mw_dma_info	       	dma_info;
-	/*
-	 * I2C Controller and EEPROM
-	 */
-	struct i2c_client           	*i2c;
-	struct kernfs_node 		*irq_kn[MAX_INTERRUPT_NODES_PER_DUT];
+    struct mw_dma_info	        	dma_info;
+
+/*
+ * I2C Controller and EEPROM
+ */
+    struct i2c_client           *i2c;
+    struct kernfs_node	        *irq_kn[MAX_INTERRUPT_NODES_PER_DUT];
+
+    
+    
 };
 
 

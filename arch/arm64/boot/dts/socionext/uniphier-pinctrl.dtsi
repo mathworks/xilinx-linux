@@ -1,1 +1,1 @@
-#include <arm/socionext/uniphier-pinctrl.dtsi>
+../../../../arm/boot/dts/uniphier-pinctrl.dtsi

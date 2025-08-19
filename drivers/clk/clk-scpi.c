@@ -1,8 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * System Control and Power Interface (SCPI) Protocol based clock driver
  *
  * Copyright (C) 2015 ARM Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/clk-provider.h>
@@ -10,6 +21,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/module.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/scpi_protocol.h>
 
@@ -59,15 +71,15 @@ static const struct clk_ops scpi_clk_ops = {
 };
 
 /* find closest match to given frequency in OPP table */
-static long __scpi_dvfs_round_rate(struct scpi_clk *clk, unsigned long rate)
+static int __scpi_dvfs_round_rate(struct scpi_clk *clk, unsigned long rate)
 {
 	int idx;
-	unsigned long fmin = 0, fmax = ~0, ftmp;
+	u32 fmin = 0, fmax = ~0, ftmp;
 	const struct scpi_opp *opp = clk->info->opps;
 
 	for (idx = 0; idx < clk->info->count; idx++, opp++) {
 		ftmp = opp->freq;
-		if (ftmp >= rate) {
+		if (ftmp >= (u32)rate) {
 			if (ftmp <= fmax)
 				fmax = ftmp;
 			break;
@@ -128,7 +140,7 @@ static const struct clk_ops scpi_dvfs_ops = {
 	.set_rate = scpi_dvfs_set_rate,
 };
 
-static const struct of_device_id scpi_clk_match[] __maybe_unused = {
+static const struct of_device_id scpi_clk_match[] = {
 	{ .compatible = "arm,scpi-dvfs-clocks", .data = &scpi_dvfs_ops, },
 	{ .compatible = "arm,scpi-variable-clocks", .data = &scpi_clk_ops, },
 	{}
@@ -195,7 +207,7 @@ static int scpi_clk_add(struct device *dev, struct device_node *np,
 
 	count = of_property_count_strings(np, "clock-output-names");
 	if (count < 0) {
-		dev_err(dev, "%pOFn: invalid clock output count\n", np);
+		dev_err(dev, "%s: invalid clock output count\n", np->name);
 		return -EINVAL;
 	}
 
@@ -220,32 +232,30 @@ static int scpi_clk_add(struct device *dev, struct device_node *np,
 
 		if (of_property_read_string_index(np, "clock-output-names",
 						  idx, &name)) {
-			dev_err(dev, "invalid clock name @ %pOFn\n", np);
+			dev_err(dev, "invalid clock name @ %s\n", np->name);
 			return -EINVAL;
 		}
 
 		if (of_property_read_u32_index(np, "clock-indices",
 					       idx, &val)) {
-			dev_err(dev, "invalid clock index @ %pOFn\n", np);
+			dev_err(dev, "invalid clock index @ %s\n", np->name);
 			return -EINVAL;
 		}
 
 		sclk->id = val;
 
 		err = scpi_clk_ops_init(dev, match, sclk, name);
-		if (err) {
+		if (err)
 			dev_err(dev, "failed to register clock '%s'\n", name);
-			return err;
-		}
-
-		dev_dbg(dev, "Registered clock '%s'\n", name);
+		else
+			dev_dbg(dev, "Registered clock '%s'\n", name);
 		clk_data->clk[idx] = sclk;
 	}
 
 	return of_clk_add_hw_provider(np, scpi_of_clk_src_get, clk_data);
 }
 
-static void scpi_clocks_remove(struct platform_device *pdev)
+static int scpi_clocks_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *child, *np = dev->of_node;
@@ -257,6 +267,7 @@ static void scpi_clocks_remove(struct platform_device *pdev)
 
 	for_each_available_child_of_node(np, child)
 		of_clk_del_provider(np);
+	return 0;
 }
 
 static int scpi_clocks_probe(struct platform_device *pdev)
@@ -279,15 +290,13 @@ static int scpi_clocks_probe(struct platform_device *pdev)
 			of_node_put(child);
 			return ret;
 		}
-
-		if (match->data != &scpi_dvfs_ops)
-			continue;
-		/* Add the virtual cpufreq device if it's DVFS clock provider */
-		cpufreq_dev = platform_device_register_simple("scpi-cpufreq",
-							      -1, NULL, 0);
-		if (IS_ERR(cpufreq_dev))
-			pr_warn("unable to register cpufreq device");
 	}
+	/* Add the virtual cpufreq device */
+	cpufreq_dev = platform_device_register_simple("scpi-cpufreq",
+						      -1, NULL, 0);
+	if (IS_ERR(cpufreq_dev))
+		pr_warn("unable to register cpufreq device");
+
 	return 0;
 }
 
@@ -303,7 +312,7 @@ static struct platform_driver scpi_clocks_driver = {
 		.of_match_table = scpi_clocks_ids,
 	},
 	.probe = scpi_clocks_probe,
-	.remove_new = scpi_clocks_remove,
+	.remove = scpi_clocks_remove,
 };
 module_platform_driver(scpi_clocks_driver);
 

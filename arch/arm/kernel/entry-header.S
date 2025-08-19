@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/init.h>
 #include <linux/linkage.h>
 
@@ -6,7 +5,6 @@
 #include <asm/asm-offsets.h>
 #include <asm/errno.h>
 #include <asm/thread_info.h>
-#include <asm/uaccess-asm.h>
 #include <asm/v7m.h>
 
 @ Bad Abort numbers
@@ -48,7 +46,8 @@
 	.macro	alignment_trap, rtmp1, rtmp2, label
 #ifdef CONFIG_ALIGNMENT_TRAP
 	mrc	p15, 0, \rtmp2, c1, c0, 0
-	ldr_va	\rtmp1, \label
+	ldr	\rtmp1, \label
+	ldr	\rtmp1, [\rtmp1]
 	teq	\rtmp1, \rtmp2
 	mcrne	p15, 0, \rtmp1, c1, c0, 0
 #endif
@@ -127,8 +126,7 @@
          */
 	.macro	v7m_exception_slow_exit ret_r0
 	cpsid	i
-	ldr	lr, =exc_ret
-	ldr	lr, [lr]
+	ldr	lr, =EXC_RET_THREADMODE_PROCESSSTACK
 
 	@ read original r12, sp, lr, pc and xPSR
 	add	r12, sp, #S_IP
@@ -217,7 +215,9 @@
 	blne	trace_hardirqs_off
 #endif
 	.endif
-	uaccess_exit tsk, r0, r1
+	ldr	r1, [sp, #SVC_ADDR_LIMIT]
+	uaccess_restore
+	str	r1, [tsk, #TI_ADDR_LIMIT]
 
 #ifndef CONFIG_THUMB2_KERNEL
 	@ ARM mode SVC restore
@@ -261,7 +261,9 @@
 	@ on the stack remains correct).
 	@
 	.macro  svc_exit_via_fiq
-	uaccess_exit tsk, r0, r1
+	ldr	r1, [sp, #SVC_ADDR_LIMIT]
+	uaccess_restore
+	str	r1, [tsk, #TI_ADDR_LIMIT]
 #ifndef CONFIG_THUMB2_KERNEL
 	@ ARM mode restore
 	mov	r0, sp
@@ -291,28 +293,12 @@
 
 
 	.macro	restore_user_regs, fast = 0, offset = 0
-#if defined(CONFIG_CPU_32v6K) && \
-    (!defined(CONFIG_CPU_V6) || defined(CONFIG_SMP))
-#ifdef CONFIG_CPU_V6
-ALT_SMP(nop)
-ALT_UP_B(.L1_\@)
-#endif
-	@ The TLS register update is deferred until return to user space so we
-	@ can use it for other things while running in the kernel
-	mrc	p15, 0, r1, c13, c0, 3		@ get current_thread_info pointer
-	ldr	r1, [r1, #TI_TP_VALUE]
-	mcr	p15, 0, r1, c13, c0, 3		@ set TLS register
-.L1_\@:
-#endif
-
 	uaccess_enable r1, isb=0
 #ifndef CONFIG_THUMB2_KERNEL
 	@ ARM mode restore
 	mov	r2, sp
 	ldr	r1, [r2, #\offset + S_PSR]	@ get calling cpsr
 	ldr	lr, [r2, #\offset + S_PC]!	@ get pc
-	tst	r1, #PSR_I_BIT | 0x0f
-	bne	1f
 	msr	spsr_cxsf, r1			@ save in spsr_svc
 #if defined(CONFIG_CPU_V6) || defined(CONFIG_CPU_32v6K)
 	@ We must avoid clrex due to Cortex-A15 erratum #830321
@@ -327,7 +313,6 @@ ALT_UP_B(.L1_\@)
 						@ after ldm {}^
 	add	sp, sp, #\offset + PT_REGS_SIZE
 	movs	pc, lr				@ return & move spsr_svc into cpsr
-1:	bug	"Returning to usermode but unexpected PSR bits set?", \@
 #elif defined(CONFIG_CPU_V7M)
 	@ V7M restore.
 	@ Note that we don't need to do clrex here as clearing the local
@@ -343,8 +328,6 @@ ALT_UP_B(.L1_\@)
 	ldr	r1, [sp, #\offset + S_PSR]	@ get calling cpsr
 	ldr	lr, [sp, #\offset + S_PC]	@ get pc
 	add	sp, sp, #\offset + S_SP
-	tst	r1, #PSR_I_BIT | 0x0f
-	bne	1f
 	msr	spsr_cxsf, r1			@ save in spsr_svc
 
 	@ We must avoid clrex due to Cortex-A15 erratum #830321
@@ -357,7 +340,6 @@ ALT_UP_B(.L1_\@)
 	.endif
 	add	sp, sp, #PT_REGS_SIZE - S_SP
 	movs	pc, lr				@ return & move spsr_svc into cpsr
-1:	bug	"Returning to usermode but unexpected PSR bits set?", \@
 #endif	/* !CONFIG_THUMB2_KERNEL */
 	.endm
 
@@ -366,51 +348,26 @@ ALT_UP_B(.L1_\@)
  * between user and kernel mode.
  */
 	.macro ct_user_exit, save = 1
-#ifdef CONFIG_CONTEXT_TRACKING_USER
+#ifdef CONFIG_CONTEXT_TRACKING
 	.if	\save
 	stmdb   sp!, {r0-r3, ip, lr}
-	bl	user_exit_callable
+	bl	context_tracking_user_exit
 	ldmia	sp!, {r0-r3, ip, lr}
 	.else
-	bl	user_exit_callable
+	bl	context_tracking_user_exit
 	.endif
 #endif
 	.endm
 
 	.macro ct_user_enter, save = 1
-#ifdef CONFIG_CONTEXT_TRACKING_USER
+#ifdef CONFIG_CONTEXT_TRACKING
 	.if	\save
 	stmdb   sp!, {r0-r3, ip, lr}
-	bl	user_enter_callable
+	bl	context_tracking_user_enter
 	ldmia	sp!, {r0-r3, ip, lr}
 	.else
-	bl	user_enter_callable
+	bl	context_tracking_user_enter
 	.endif
-#endif
-	.endm
-
-	.macro	invoke_syscall, table, nr, tmp, ret, reload=0
-#ifdef CONFIG_CPU_SPECTRE
-	mov	\tmp, \nr
-	cmp	\tmp, #NR_syscalls		@ check upper syscall limit
-	movcs	\tmp, #0
-	csdb
-	badr	lr, \ret			@ return address
-	.if	\reload
-	add	r1, sp, #S_R0 + S_OFF		@ pointer to regs
-	ldmiacc	r1, {r0 - r6}			@ reload r0-r6
-	stmiacc	sp, {r4, r5}			@ update stack arguments
-	.endif
-	ldrcc	pc, [\table, \tmp, lsl #2]	@ call sys_* routine
-#else
-	cmp	\nr, #NR_syscalls		@ check upper syscall limit
-	badr	lr, \ret			@ return address
-	.if	\reload
-	add	r1, sp, #S_R0 + S_OFF		@ pointer to regs
-	ldmiacc	r1, {r0 - r6}			@ reload r0-r6
-	stmiacc	sp, {r4, r5}			@ update stack arguments
-	.endif
-	ldrcc	pc, [\table, \nr, lsl #2]	@ call sys_* routine
 #endif
 	.endm
 
@@ -428,40 +385,3 @@ scno	.req	r7		@ syscall number
 tbl	.req	r8		@ syscall table pointer
 why	.req	r8		@ Linux syscall (!= 0)
 tsk	.req	r9		@ current thread_info
-
-	.macro	do_overflow_check, frame_size:req
-#ifdef CONFIG_VMAP_STACK
-	@
-	@ Test whether the SP has overflowed. Task and IRQ stacks are aligned
-	@ so that SP & BIT(THREAD_SIZE_ORDER + PAGE_SHIFT) should always be
-	@ zero.
-	@
-ARM(	tst	sp, #1 << (THREAD_SIZE_ORDER + PAGE_SHIFT)	)
-THUMB(	tst	r1, #1 << (THREAD_SIZE_ORDER + PAGE_SHIFT)	)
-THUMB(	it	ne						)
-	bne	.Lstack_overflow_check\@
-
-	.pushsection	.text
-.Lstack_overflow_check\@:
-	@
-	@ The stack pointer is not pointing to a valid vmap'ed stack, but it
-	@ may be pointing into the linear map instead, which may happen if we
-	@ are already running from the overflow stack. We cannot detect overflow
-	@ in such cases so just carry on.
-	@
-	str	ip, [r0, #12]			@ Stash IP on the mode stack
-	ldr_va	ip, high_memory			@ Start of VMALLOC space
-ARM(	cmp	sp, ip			)	@ SP in vmalloc space?
-THUMB(	cmp	r1, ip			)
-THUMB(	itt	lo			)
-	ldrlo	ip, [r0, #12]			@ Restore IP
-	blo	.Lout\@				@ Carry on
-
-THUMB(	sub	r1, sp, r1		)	@ Restore original R1
-THUMB(	sub	sp, r1			)	@ Restore original SP
-	add	sp, sp, #\frame_size		@ Undo svc_entry's SP change
-	b	__bad_stack			@ Handle VMAP stack overflow
-	.popsection
-.Lout\@:
-#endif
-	.endm

@@ -1,10 +1,24 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl1271
  *
  * Copyright (C) 2008-2009 Nokia Corporation
  *
  * Contact: Luciano Coelho <luciano.coelho@nokia.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA
+ *
  */
 
 #include <linux/interrupt.h>
@@ -14,6 +28,7 @@
 #include <linux/swab.h>
 #include <linux/crc7.h>
 #include <linux/spi/spi.h>
+#include <linux/wl12xx.h>
 #include <linux/platform_device.h>
 #include <linux/of_irq.h>
 #include <linux/regulator/consumer.h>
@@ -55,10 +70,10 @@
 #define WSPI_MAX_CHUNK_SIZE    4092
 
 /*
- * wl18xx driver aggregation buffer size is (13 * 4K) compared to
- * (4 * 4K) for wl12xx, so use the larger buffer needed for wl18xx
+ * wl18xx driver aggregation buffer size is (13 * PAGE_SIZE) compared to
+ * (4 * PAGE_SIZE) for wl12xx, so use the larger buffer needed for wl18xx
  */
-#define SPI_AGGR_BUFFER_SIZE (13 * SZ_4K)
+#define SPI_AGGR_BUFFER_SIZE (13 * PAGE_SIZE)
 
 /* Maximum number of SPI write chunks */
 #define WSPI_MAX_NUM_OF_CHUNKS \
@@ -77,7 +92,6 @@ static const struct wilink_family_data wl128x_data = {
 static const struct wilink_family_data wl18xx_data = {
 	.name = "wl18xx",
 	.cfg_name = "ti-connectivity/wl18xx-conf.bin",
-	.nvs_name = "ti-connectivity/wl1271-nvs.bin",
 };
 
 struct wl12xx_spi_glue {
@@ -185,7 +199,7 @@ static void wl12xx_spi_init(struct device *child)
 
 	spi_sync(to_spi_device(glue->dev), &m);
 
-	/* Restore chip select configuration to normal */
+	/* Restore chip select configration to normal */
 	spi->mode ^= SPI_CS_HIGH;
 	kfree(cmd);
 }
@@ -352,14 +366,17 @@ static int __wl12xx_spi_raw_write(struct device *child, int addr,
 static int __must_check wl12xx_spi_raw_write(struct device *child, int addr,
 					     void *buf, size_t len, bool fixed)
 {
+	int ret;
+
 	/* The ELP wakeup write may fail the first time due to internal
 	 * hardware latency. It is safer to send the wakeup command twice to
 	 * avoid unexpected failures.
 	 */
 	if (addr == HW_ACCESS_ELP_CTRL_REG)
-		__wl12xx_spi_raw_write(child, addr, buf, len, fixed);
+		ret = __wl12xx_spi_raw_write(child, addr, buf, len, fixed);
+	ret = __wl12xx_spi_raw_write(child, addr, buf, len, fixed);
 
-	return __wl12xx_spi_raw_write(child, addr, buf, len, fixed);
+	return ret;
 }
 
 /**
@@ -390,7 +407,7 @@ static int wl12xx_spi_set_power(struct device *child, bool enable)
 	return ret;
 }
 
-/*
+/**
  * wl12xx_spi_set_block_size
  *
  * This function is not needed for spi mode, but need to be present.
@@ -416,7 +433,6 @@ static const struct of_device_id wlcore_spi_of_match_table[] = {
 	{ .compatible = "ti,wl1273", .data = &wl127x_data},
 	{ .compatible = "ti,wl1281", .data = &wl128x_data},
 	{ .compatible = "ti,wl1283", .data = &wl128x_data},
-	{ .compatible = "ti,wl1285", .data = &wl128x_data},
 	{ .compatible = "ti,wl1801", .data = &wl18xx_data},
 	{ .compatible = "ti,wl1805", .data = &wl18xx_data},
 	{ .compatible = "ti,wl1807", .data = &wl18xx_data},
@@ -430,6 +446,7 @@ MODULE_DEVICE_TABLE(of, wlcore_spi_of_match_table);
 /**
  * wlcore_probe_of - DT node parsing.
  * @spi: SPI slave device parameters.
+ * @res: resource parameters.
  * @glue: wl12xx SPI bus to slave device glue parameters.
  * @pdev_data: wlcore device parameters
  */
@@ -447,7 +464,8 @@ static int wlcore_probe_of(struct spi_device *spi, struct wl12xx_spi_glue *glue,
 	dev_info(&spi->dev, "selected chip family is %s\n",
 		 pdev_data->family->name);
 
-	pdev_data->ref_clock_xtal = of_property_read_bool(dt_node, "clock-xtal");
+	if (of_find_property(dt_node, "clock-xtal", NULL))
+		pdev_data->ref_clock_xtal = true;
 
 	/* optional clock frequency params */
 	of_property_read_u32(dt_node, "ref-clock-frequency",
@@ -486,9 +504,12 @@ static int wl1271_probe(struct spi_device *spi)
 	spi->bits_per_word = 32;
 
 	glue->reg = devm_regulator_get(&spi->dev, "vwlan");
-	if (IS_ERR(glue->reg))
-		return dev_err_probe(glue->dev, PTR_ERR(glue->reg),
-				     "can't get regulator\n");
+	if (PTR_ERR(glue->reg) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (IS_ERR(glue->reg)) {
+		dev_err(glue->dev, "can't get regulator\n");
+		return PTR_ERR(glue->reg);
+	}
 
 	ret = wlcore_probe_of(spi, glue, pdev_data);
 	if (ret) {
@@ -544,17 +565,19 @@ out_dev_put:
 	return ret;
 }
 
-static void wl1271_remove(struct spi_device *spi)
+static int wl1271_remove(struct spi_device *spi)
 {
 	struct wl12xx_spi_glue *glue = spi_get_drvdata(spi);
 
 	platform_device_unregister(glue->core);
+
+	return 0;
 }
 
 static struct spi_driver wl1271_spi_driver = {
 	.driver = {
 		.name		= "wl1271_spi",
-		.of_match_table = wlcore_spi_of_match_table,
+		.of_match_table = of_match_ptr(wlcore_spi_of_match_table),
 	},
 
 	.probe		= wl1271_probe,

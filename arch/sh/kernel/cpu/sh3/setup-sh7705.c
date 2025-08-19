@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * SH7705 Setup
  *
  *  Copyright (C) 2006 - 2009  Paul Mundt
  *  Copyright (C) 2007  Nobuhiro Iwamatsu
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -14,7 +17,6 @@
 #include <linux/sh_intc.h>
 #include <asm/rtc.h>
 #include <cpu/serial.h>
-#include <asm/platform_early.h>
 
 enum {
 	UNUSED = 0,
@@ -68,7 +70,9 @@ static DECLARE_INTC_DESC(intc_desc, "sh7705", vectors, NULL,
 			 NULL, prio_registers, NULL);
 
 static struct plat_sci_port scif0_platform_data = {
-	.scscr		= SCSCR_CKE1,
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TIE | SCSCR_RIE  | SCSCR_TE |
+			  SCSCR_RE  | SCSCR_CKE1 | SCSCR_CKE0,
 	.type		= PORT_SCIF,
 	.ops		= &sh770x_sci_port_ops,
 	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
@@ -90,6 +94,8 @@ static struct platform_device scif0_device = {
 };
 
 static struct plat_sci_port scif1_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TIE | SCSCR_RIE | SCSCR_TE | SCSCR_RE,
 	.type		= PORT_SCIF,
 	.ops		= &sh770x_sci_port_ops,
 	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
@@ -179,7 +185,7 @@ static struct platform_device *sh7705_early_devices[] __initdata = {
 
 void __init plat_early_device_setup(void)
 {
-	sh_early_platform_add_devices(sh7705_early_devices,
+	early_platform_add_devices(sh7705_early_devices,
 				   ARRAY_SIZE(sh7705_early_devices));
 }
 

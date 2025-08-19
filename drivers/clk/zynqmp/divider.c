@@ -1,17 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Zynq UltraScale+ MPSoC Divider support
  *
- * Copyright (C), 2016 - 2019 Xilinx
- * Copyright (C), 2023 - 2024 Advanced Micro Devices, Inc.
+ *  Copyright (C) 2016 Xilinx
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Adjustable divider clock implementation
  */
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/clk/zynqmp.h>
+#include <linux/module.h>
 #include <linux/slab.h>
-#include "clk-zynqmp.h"
+#include <linux/io.h>
+#include <linux/err.h>
+#include <linux/string.h>
+#include <linux/log2.h>
 
 /*
  * DOC: basic adjustable divider clock that cannot gate
@@ -23,179 +29,107 @@
  * parent - fixed parent.  No clk_set_parent support
  */
 
-#define to_zynqmp_clk_divider(_hw)		\
-	container_of(_hw, struct zynqmp_clk_divider, hw)
+#define to_clk_divider(_hw) container_of(_hw, struct clk_divider, hw)
 
-#define CLK_FRAC		BIT(13) /* has a fractional parent */
-#define CUSTOM_FLAG_CLK_FRAC	BIT(0) /* has a fractional parent in custom type flag */
+#define div_mask(width)	((1 << (width)) - 1)
 
-/**
- * struct zynqmp_clk_divider - adjustable divider clock
- * @hw:		handle between common and hardware-specific interfaces
- * @flags:	Hardware specific flags
- * @is_frac:	The divider is a fractional divider
- * @clk_id:	Id of clock
- * @div_type:	divisor type (TYPE_DIV1 or TYPE_DIV2)
- * @max_div:	maximum supported divisor (fetched from firmware)
- */
-struct zynqmp_clk_divider {
-	struct clk_hw hw;
-	u8 flags;
-	bool is_frac;
-	u32 clk_id;
-	u32 div_type;
-	u16 max_div;
-};
-
-static inline int zynqmp_divider_get_val(unsigned long parent_rate,
-					 unsigned long rate, u16 flags)
+static unsigned int _get_table_div(const struct clk_div_table *table,
+							unsigned int val)
 {
-	int up, down;
-	unsigned long up_rate, down_rate;
+	const struct clk_div_table *clkt;
 
-	if (flags & CLK_DIVIDER_POWER_OF_TWO) {
-		up = DIV_ROUND_UP_ULL((u64)parent_rate, rate);
-		down = DIV_ROUND_DOWN_ULL((u64)parent_rate, rate);
-
-		up = __roundup_pow_of_two(up);
-		down = __rounddown_pow_of_two(down);
-
-		up_rate = DIV_ROUND_UP_ULL((u64)parent_rate, up);
-		down_rate = DIV_ROUND_UP_ULL((u64)parent_rate, down);
-
-		return (rate - up_rate) <= (down_rate - rate) ? up : down;
-
-	} else {
-		return DIV_ROUND_CLOSEST(parent_rate, rate);
-	}
+	for (clkt = table; clkt->div; clkt++)
+		if (clkt->val == val)
+			return clkt->div;
+	return 0;
 }
 
-/**
- * zynqmp_clk_divider_recalc_rate() - Recalc rate of divider clock
- * @hw:			handle between common and hardware-specific interfaces
- * @parent_rate:	rate of parent clock
- *
- * Return: 0 on success else error+reason
- */
+static unsigned int _get_div(const struct clk_div_table *table,
+			     unsigned int val, unsigned long flags, u8 width)
+{
+	if (flags & CLK_DIVIDER_ONE_BASED)
+		return val;
+	if (flags & CLK_DIVIDER_POWER_OF_TWO)
+		return 1 << val;
+	if (flags & CLK_DIVIDER_MAX_AT_ZERO)
+		return val ? val : div_mask(width) + 1;
+	if (table)
+		return _get_table_div(table, val);
+	return val + 1;
+}
+
 static unsigned long zynqmp_clk_divider_recalc_rate(struct clk_hw *hw,
-						    unsigned long parent_rate)
+		unsigned long parent_rate)
 {
-	struct zynqmp_clk_divider *divider = to_zynqmp_clk_divider(hw);
-	const char *clk_name = clk_hw_get_name(hw);
-	u32 clk_id = divider->clk_id;
-	u32 div_type = divider->div_type;
-	u32 div, value;
+	struct clk_divider *divider = to_clk_divider(hw);
+	unsigned int val;
 	int ret;
 
-	ret = zynqmp_pm_clock_getdivider(clk_id, &div);
-
+	ret = zynqmp_pm_mmio_read((u32)(ulong)divider->reg, &val);
 	if (ret)
-		pr_debug("%s() get divider failed for %s, ret = %d\n",
-			 __func__, clk_name, ret);
+		pr_warn_once("Read fail divider address: %x\n",
+				(u32)(ulong)divider->reg);
 
-	if (div_type == TYPE_DIV1)
-		value = div & 0xFFFF;
-	else
-		value = div >> 16;
+	val = val >> divider->shift;
+	val &= div_mask(divider->width);
 
-	if (divider->flags & CLK_DIVIDER_POWER_OF_TWO)
-		value = 1 << value;
-
-	if (!value) {
-		WARN(!(divider->flags & CLK_DIVIDER_ALLOW_ZERO),
-		     "%s: Zero divisor and CLK_DIVIDER_ALLOW_ZERO not set\n",
-		     clk_name);
-		return parent_rate;
-	}
-
-	return DIV_ROUND_UP_ULL(parent_rate, value);
+	return divider_recalc_rate(hw, parent_rate, val, divider->table,
+				   divider->flags);
 }
 
-/**
- * zynqmp_clk_divider_round_rate() - Round rate of divider clock
- * @hw:			handle between common and hardware-specific interfaces
- * @rate:		rate of clock to be set
- * @prate:		rate of parent clock
- *
- * Return: 0 on success else error+reason
- */
 static long zynqmp_clk_divider_round_rate(struct clk_hw *hw,
-					  unsigned long rate,
-					  unsigned long *prate)
+				unsigned long rate, unsigned long *prate)
 {
-	struct zynqmp_clk_divider *divider = to_zynqmp_clk_divider(hw);
-	const char *clk_name = clk_hw_get_name(hw);
-	u32 clk_id = divider->clk_id;
-	u32 div_type = divider->div_type;
-	u32 bestdiv;
-	int ret;
-	u8 width;
+	struct clk_divider *divider = to_clk_divider(hw);
+	int bestdiv;
 
 	/* if read only, just return current value */
 	if (divider->flags & CLK_DIVIDER_READ_ONLY) {
-		ret = zynqmp_pm_clock_getdivider(clk_id, &bestdiv);
-
-		if (ret)
-			pr_debug("%s() get divider failed for %s, ret = %d\n",
-				 __func__, clk_name, ret);
-		if (div_type == TYPE_DIV1)
-			bestdiv = bestdiv & 0xFFFF;
-		else
-			bestdiv  = bestdiv >> 16;
-
-		if (divider->flags & CLK_DIVIDER_POWER_OF_TWO)
-			bestdiv = 1 << bestdiv;
-
+		bestdiv = readl(divider->reg) >> divider->shift;
+		bestdiv &= div_mask(divider->width);
+		bestdiv = _get_div(divider->table, bestdiv, divider->flags,
+			divider->width);
 		return DIV_ROUND_UP_ULL((u64)*prate, bestdiv);
 	}
 
-	width = fls(divider->max_div);
+	bestdiv = divider_get_val(rate, *prate, divider->table, divider->width,
+			divider->flags);
 
-	rate = divider_round_rate(hw, rate, prate, NULL, width, divider->flags);
-
-	if (divider->is_frac && (clk_hw_get_flags(hw) & CLK_SET_RATE_PARENT) && (rate % *prate))
-		*prate = rate;
+	if ((clk_hw_get_flags(hw) & CLK_SET_RATE_PARENT) &&
+	    ((clk_hw_get_flags(hw) & CLK_FRAC)))
+		bestdiv = rate % *prate ? 1 : bestdiv;
+	*prate = rate * bestdiv;
 
 	return rate;
 }
 
-/**
- * zynqmp_clk_divider_set_rate() - Set rate of divider clock
- * @hw:			handle between common and hardware-specific interfaces
- * @rate:		rate of clock to be set
- * @parent_rate:	rate of parent clock
- *
- * Return: 0 on success else error+reason
- */
 static int zynqmp_clk_divider_set_rate(struct clk_hw *hw, unsigned long rate,
-				       unsigned long parent_rate)
+				unsigned long parent_rate)
 {
-	struct zynqmp_clk_divider *divider = to_zynqmp_clk_divider(hw);
-	const char *clk_name = clk_hw_get_name(hw);
-	u32 clk_id = divider->clk_id;
-	u32 div_type = divider->div_type;
-	u32 value, div;
+	struct clk_divider *divider = to_clk_divider(hw);
+	unsigned int value;
+	u32 val;
 	int ret;
 
-	value = zynqmp_divider_get_val(parent_rate, rate, divider->flags);
-	if (div_type == TYPE_DIV1) {
-		div = value & 0xFFFF;
-		div |= 0xffff << 16;
+	value = divider_get_val(rate, parent_rate, divider->table,
+				divider->width, divider->flags);
+
+	if (divider->flags & CLK_DIVIDER_HIWORD_MASK) {
+		val = div_mask(divider->width) << (divider->shift + 16);
 	} else {
-		div = 0xffff;
-		div |= value << 16;
+		ret = zynqmp_pm_mmio_read((u32)(ulong)divider->reg, &val);
+		if (ret)
+			pr_warn_once("Read fail divider address: %x\n",
+					(u32)(ulong)divider->reg);
+		val &= ~(div_mask(divider->width) << divider->shift);
 	}
-
-	if (divider->flags & CLK_DIVIDER_POWER_OF_TWO)
-		div = __ffs(div);
-
-	ret = zynqmp_pm_clock_setdivider(clk_id, div);
-
+	val |= value << divider->shift;
+	ret = zynqmp_pm_mmio_writel(val, divider->reg);
 	if (ret)
-		pr_debug("%s() set divider failed for %s, ret = %d\n",
-			 __func__, clk_name, ret);
+		pr_warn_once("Write failed to divider address:%x\n",
+				(u32)(ulong)divider->reg);
 
-	return ret;
+	return 0;
 }
 
 static const struct clk_ops zynqmp_clk_divider_ops = {
@@ -204,82 +138,21 @@ static const struct clk_ops zynqmp_clk_divider_ops = {
 	.set_rate = zynqmp_clk_divider_set_rate,
 };
 
-static const struct clk_ops zynqmp_clk_divider_ro_ops = {
-	.recalc_rate = zynqmp_clk_divider_recalc_rate,
-	.round_rate = zynqmp_clk_divider_round_rate,
-};
-
-/**
- * zynqmp_clk_get_max_divisor() - Get maximum supported divisor from firmware.
- * @clk_id:		Id of clock
- * @type:		Divider type
- *
- * Return: Maximum divisor of a clock if query data is successful
- *	   U16_MAX in case of query data is not success
- */
-static u32 zynqmp_clk_get_max_divisor(u32 clk_id, u32 type)
+static struct clk *_register_divider(struct device *dev, const char *name,
+		const char *parent_name, unsigned long flags,
+		void __iomem *reg, u8 shift, u8 width,
+		u8 clk_divider_flags, const struct clk_div_table *table)
 {
-	struct zynqmp_pm_query_data qdata = {0};
-	u32 ret_payload[PAYLOAD_ARG_CNT];
-	int ret;
-
-	qdata.qid = PM_QID_CLOCK_GET_MAX_DIVISOR;
-	qdata.arg1 = clk_id;
-	qdata.arg2 = type;
-	ret = zynqmp_pm_query_data(qdata, ret_payload);
-	/*
-	 * To maintain backward compatibility return maximum possible value
-	 * (0xFFFF) if query for max divisor is not successful.
-	 */
-	if (ret)
-		return U16_MAX;
-
-	return ret_payload[1];
-}
-
-static inline unsigned long zynqmp_clk_map_divider_ccf_flags(
-					       const u32 zynqmp_type_flag)
-{
-	unsigned long ccf_flag = 0;
-
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_ONE_BASED)
-		ccf_flag |= CLK_DIVIDER_ONE_BASED;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_POWER_OF_TWO)
-		ccf_flag |= CLK_DIVIDER_POWER_OF_TWO;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_ALLOW_ZERO)
-		ccf_flag |= CLK_DIVIDER_ALLOW_ZERO;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_POWER_OF_TWO)
-		ccf_flag |= CLK_DIVIDER_HIWORD_MASK;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_ROUND_CLOSEST)
-		ccf_flag |= CLK_DIVIDER_ROUND_CLOSEST;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_READ_ONLY)
-		ccf_flag |= CLK_DIVIDER_READ_ONLY;
-	if (zynqmp_type_flag & ZYNQMP_CLK_DIVIDER_MAX_AT_ZERO)
-		ccf_flag |= CLK_DIVIDER_MAX_AT_ZERO;
-
-	return ccf_flag;
-}
-
-/**
- * zynqmp_clk_register_divider() - Register a divider clock
- * @name:		Name of this clock
- * @clk_id:		Id of clock
- * @parents:		Name of this clock's parents
- * @num_parents:	Number of parents
- * @nodes:		Clock topology node
- *
- * Return: clock hardware to registered clock divider
- */
-struct clk_hw *zynqmp_clk_register_divider(const char *name,
-					   u32 clk_id,
-					   const char * const *parents,
-					   u8 num_parents,
-					   const struct clock_topology *nodes)
-{
-	struct zynqmp_clk_divider *div;
-	struct clk_hw *hw;
+	struct clk_divider *div;
+	struct clk *clk;
 	struct clk_init_data init;
-	int ret;
+
+	if (clk_divider_flags & CLK_DIVIDER_HIWORD_MASK) {
+		if (width + shift > 16) {
+			pr_warn("divider value exceeds LOWORD field\n");
+			return ERR_PTR(-EINVAL);
+		}
+	}
 
 	/* allocate the divider */
 	div = kzalloc(sizeof(*div), GFP_KERNEL);
@@ -287,36 +160,48 @@ struct clk_hw *zynqmp_clk_register_divider(const char *name,
 		return ERR_PTR(-ENOMEM);
 
 	init.name = name;
-	if (nodes->type_flag & CLK_DIVIDER_READ_ONLY)
-		init.ops = &zynqmp_clk_divider_ro_ops;
-	else
-		init.ops = &zynqmp_clk_divider_ops;
-
-	init.flags = zynqmp_clk_map_common_ccf_flags(nodes->flag);
-
-	init.parent_names = parents;
-	init.num_parents = 1;
+	init.ops = &zynqmp_clk_divider_ops;
+	init.flags = flags | CLK_IS_BASIC;
+	init.parent_names = (parent_name ? &parent_name : NULL);
+	init.num_parents = (parent_name ? 1 : 0);
 
 	/* struct clk_divider assignments */
-	div->is_frac = !!((nodes->flag & CLK_FRAC) |
-			  (nodes->custom_type_flag & CUSTOM_FLAG_CLK_FRAC));
-	div->flags = zynqmp_clk_map_divider_ccf_flags(nodes->type_flag);
+	div->reg = reg;
+	div->shift = shift;
+	div->width = width;
+	div->flags = clk_divider_flags;
 	div->hw.init = &init;
-	div->clk_id = clk_id;
-	div->div_type = nodes->type;
+	div->table = table;
 
-	/*
-	 * To achieve best possible rate, maximum limit of divider is required
-	 * while computation.
-	 */
-	div->max_div = zynqmp_clk_get_max_divisor(clk_id, nodes->type);
+	/* register the clock */
+	clk = clk_register(dev, &div->hw);
 
-	hw = &div->hw;
-	ret = clk_hw_register(NULL, hw);
-	if (ret) {
+	if (IS_ERR(clk))
 		kfree(div);
-		hw = ERR_PTR(ret);
-	}
 
-	return hw;
+	return clk;
 }
+
+/**
+ * zynqmp_clk_register_divider - register a divider clock
+ * @dev: device registering this clock
+ * @name: name of this clock
+ * @parent_name: name of clock's parent
+ * @flags: framework-specific flags
+ * @reg: register address to adjust divider
+ * @shift: number of bits to shift the bitfield
+ * @width: width of the bitfield
+ * @clk_divider_flags: divider-specific flags for this clock
+ *
+ * Return: handle to registered clock divider
+ */
+struct clk *zynqmp_clk_register_divider(struct device *dev, const char *name,
+		const char *parent_name, unsigned long flags,
+		resource_size_t *reg, u8 shift, u8 width,
+		u8 clk_divider_flags)
+{
+	return _register_divider(dev, name, parent_name, flags,
+			(void __iomem *)reg, shift,
+			width, clk_divider_flags, NULL);
+}
+EXPORT_SYMBOL_GPL(zynqmp_clk_register_divider);

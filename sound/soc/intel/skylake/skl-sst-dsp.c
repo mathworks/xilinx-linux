@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * skl-sst-dsp.c - SKL SST library generic function
  *
@@ -6,13 +5,22 @@
  * Author:Rafal Redzimski <rafal.f.redzimski@intel.com>
  *	Jeeja KP <jeeja.kp@intel.com>
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as version 2, as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  */
 #include <sound/pcm.h>
 
 #include "../common/sst-dsp.h"
 #include "../common/sst-ipc.h"
 #include "../common/sst-dsp-priv.h"
-#include "skl.h"
+#include "skl-sst-ipc.h"
 
 /* various timeout values */
 #define SKL_DSP_PU_TO		50
@@ -33,13 +41,13 @@ void skl_dsp_set_state_locked(struct sst_dsp *ctx, int state)
  */
 void skl_dsp_init_core_state(struct sst_dsp *ctx)
 {
-	struct skl_dev *skl = ctx->thread_context;
+	struct skl_sst *skl = ctx->thread_context;
 	int i;
 
 	skl->cores.state[SKL_DSP_CORE0_ID] = SKL_DSP_RUNNING;
 	skl->cores.usage_count[SKL_DSP_CORE0_ID] = 1;
 
-	for (i = SKL_DSP_CORE0_ID + 1; i < skl->cores.count; i++) {
+	for (i = SKL_DSP_CORE0_ID + 1; i < SKL_DSP_CORES_MAX; i++) {
 		skl->cores.state[i] = SKL_DSP_RESET;
 		skl->cores.usage_count[i] = 0;
 	}
@@ -48,7 +56,7 @@ void skl_dsp_init_core_state(struct sst_dsp *ctx)
 /* Get the mask for all enabled cores */
 unsigned int skl_dsp_get_enabled_cores(struct sst_dsp *ctx)
 {
-	struct skl_dev *skl = ctx->thread_context;
+	struct skl_sst *skl = ctx->thread_context;
 	unsigned int core_mask, en_cores_mask;
 	u32 val;
 
@@ -335,7 +343,7 @@ irqreturn_t skl_dsp_sst_interrupt(int irq, void *dev_id)
  */
 int skl_dsp_get_core(struct sst_dsp *ctx, unsigned int core_id)
 {
-	struct skl_dev *skl = ctx->thread_context;
+	struct skl_sst *skl = ctx->thread_context;
 	int ret = 0;
 
 	if (core_id >= skl->cores.count) {
@@ -343,17 +351,16 @@ int skl_dsp_get_core(struct sst_dsp *ctx, unsigned int core_id)
 		return -EINVAL;
 	}
 
-	skl->cores.usage_count[core_id]++;
-
 	if (skl->cores.state[core_id] == SKL_DSP_RESET) {
 		ret = ctx->fw_ops.set_state_D0(ctx, core_id);
 		if (ret < 0) {
 			dev_err(ctx->dev, "unable to get core%d\n", core_id);
-			goto out;
+			return ret;
 		}
 	}
 
-out:
+	skl->cores.usage_count[core_id]++;
+
 	dev_dbg(ctx->dev, "core id %d state %d usage_count %d\n",
 			core_id, skl->cores.state[core_id],
 			skl->cores.usage_count[core_id]);
@@ -364,7 +371,7 @@ EXPORT_SYMBOL_GPL(skl_dsp_get_core);
 
 int skl_dsp_put_core(struct sst_dsp *ctx, unsigned int core_id)
 {
-	struct skl_dev *skl = ctx->thread_context;
+	struct skl_sst *skl = ctx->thread_context;
 	int ret = 0;
 
 	if (core_id >= skl->cores.count) {
@@ -372,8 +379,7 @@ int skl_dsp_put_core(struct sst_dsp *ctx, unsigned int core_id)
 		return -EINVAL;
 	}
 
-	if ((--skl->cores.usage_count[core_id] == 0) &&
-		(skl->cores.state[core_id] != SKL_DSP_RESET)) {
+	if (--skl->cores.usage_count[core_id] == 0) {
 		ret = ctx->fw_ops.set_state_D3(ctx, core_id);
 		if (ret < 0) {
 			dev_err(ctx->dev, "unable to put core %d: %d\n",
@@ -422,27 +428,21 @@ struct sst_dsp *skl_dsp_ctx_init(struct device *dev,
 
 	/* Initialise SST Audio DSP */
 	if (sst->ops->init) {
-		ret = sst->ops->init(sst);
+		ret = sst->ops->init(sst, NULL);
 		if (ret < 0)
 			return NULL;
 	}
 
-	return sst;
-}
-
-int skl_dsp_acquire_irq(struct sst_dsp *sst)
-{
-	struct sst_dsp_device *sst_dev = sst->sst_dev;
-	int ret;
-
 	/* Register the ISR */
 	ret = request_threaded_irq(sst->irq, sst->ops->irq_handler,
 		sst_dev->thread, IRQF_SHARED, "AudioDSP", sst);
-	if (ret)
+	if (ret) {
 		dev_err(sst->dev, "unable to grab threaded IRQ %d, disabling device\n",
 			       sst->irq);
+		return NULL;
+	}
 
-	return ret;
+	return sst;
 }
 
 void skl_dsp_free(struct sst_dsp *dsp)

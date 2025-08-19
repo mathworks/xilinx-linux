@@ -1,9 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __UM_TIMEX_H
 #define __UM_TIMEX_H
 
-#define CLOCK_TICK_RATE (HZ)
+typedef unsigned long cycles_t;
 
-#include <asm-generic/timex.h>
+static inline cycles_t get_cycles (void)
+{
+	return 0;
+}
+
+#define CLOCK_TICK_RATE (HZ)
 
 #endif

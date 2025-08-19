@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
+/**
  * emac-rockchip.c - Rockchip EMAC specific glue layer
  *
  * Copyright (C) 2014 Romain Perier <romain.perier@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/etherdevice.h>
@@ -16,6 +25,7 @@
 #include "emac.h"
 
 #define DRV_NAME        "rockchip_emac"
+#define DRV_VERSION     "1.1"
 
 struct emac_rockchip_soc_data {
 	unsigned int grf_offset;
@@ -96,9 +106,8 @@ static int emac_rockchip_probe(struct platform_device *pdev)
 	struct net_device *ndev;
 	struct rockchip_priv_data *priv;
 	const struct of_device_id *match;
-	phy_interface_t interface;
 	u32 data;
-	int err;
+	int err, interface;
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
@@ -111,11 +120,10 @@ static int emac_rockchip_probe(struct platform_device *pdev)
 
 	priv = netdev_priv(ndev);
 	priv->emac.drv_name = DRV_NAME;
+	priv->emac.drv_version = DRV_VERSION;
 	priv->emac.set_mac_speed = emac_rockchip_set_mac_speed;
 
-	err = of_get_phy_mode(dev->of_node, &interface);
-	if (err)
-		goto out_netdev;
+	interface = of_get_phy_mode(dev->of_node);
 
 	/* RK3036/RK3066/RK3188 SoCs only support RMII */
 	if (interface != PHY_INTERFACE_MODE_RMII) {
@@ -161,10 +169,8 @@ static int emac_rockchip_probe(struct platform_device *pdev)
 	/* Optional regulator for PHY */
 	priv->regulator = devm_regulator_get_optional(dev, "phy");
 	if (IS_ERR(priv->regulator)) {
-		if (PTR_ERR(priv->regulator) == -EPROBE_DEFER) {
-			err = -EPROBE_DEFER;
-			goto out_clk_disable;
-		}
+		if (PTR_ERR(priv->regulator) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		dev_err(dev, "no regulator found\n");
 		priv->regulator = NULL;
 	}
@@ -193,11 +199,9 @@ static int emac_rockchip_probe(struct platform_device *pdev)
 
 	/* RMII interface needs always a rate of 50MHz */
 	err = clk_set_rate(priv->refclk, 50000000);
-	if (err) {
+	if (err)
 		dev_err(dev,
 			"failed to change reference clock rate (%d)\n", err);
-		goto out_regulator_disable;
-	}
 
 	if (priv->soc_data->need_div_macclk) {
 		priv->macclk = devm_clk_get(dev, "macclk");
@@ -216,24 +220,19 @@ static int emac_rockchip_probe(struct platform_device *pdev)
 
 		/* RMII TX/RX needs always a rate of 25MHz */
 		err = clk_set_rate(priv->macclk, 25000000);
-		if (err) {
+		if (err)
 			dev_err(dev,
 				"failed to change mac clock rate (%d)\n", err);
-			goto out_clk_disable_macclk;
-		}
 	}
 
 	err = arc_emac_probe(ndev, interface);
 	if (err) {
 		dev_err(dev, "failed to probe arc emac (%d)\n", err);
-		goto out_clk_disable_macclk;
+		goto out_regulator_disable;
 	}
 
 	return 0;
 
-out_clk_disable_macclk:
-	if (priv->soc_data->need_div_macclk)
-		clk_disable_unprepare(priv->macclk);
 out_regulator_disable:
 	if (priv->regulator)
 		regulator_disable(priv->regulator);
@@ -248,19 +247,17 @@ static int emac_rockchip_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct rockchip_priv_data *priv = netdev_priv(ndev);
+	int err;
 
-	arc_emac_remove(ndev);
+	err = arc_emac_remove(ndev);
 
 	clk_disable_unprepare(priv->refclk);
 
 	if (priv->regulator)
 		regulator_disable(priv->regulator);
 
-	if (priv->soc_data->need_div_macclk)
-		clk_disable_unprepare(priv->macclk);
-
 	free_netdev(ndev);
-	return 0;
+	return err;
 }
 
 static struct platform_driver emac_rockchip_driver = {

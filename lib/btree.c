@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lib/btree.c	- Simple In-memory B+Tree
  *
- * Copyright (c) 2007-2008 Joern Engel <joern@purestorage.com>
+ * As should be obvious for Linux kernel code, license is GPLv2
+ *
+ * Copyright (c) 2007-2008 Joern Engel <joern@logfs.org>
  * Bits and pieces stolen from Peter Zijlstra's code, which is
  * Copyright 2007, Red Hat Inc. Peter Zijlstra
+ * GPLv2
  *
  * see http://programming.kicks-ass.net/kernel-patches/vma_lookup/btree.patch
  *
@@ -73,8 +75,6 @@ struct btree_geo btree_geo128 = {
 	.no_longs = 2 * LONG_PER_U64 * (NODESIZE / sizeof(long) / (1 + 2 * LONG_PER_U64)),
 };
 EXPORT_SYMBOL_GPL(btree_geo128);
-
-#define MAX_KEYLEN	(2 * LONG_PER_U64)
 
 static struct kmem_cache *btree_cachep;
 
@@ -238,7 +238,7 @@ static int keyzero(struct btree_geo *geo, unsigned long *key)
 	return 1;
 }
 
-static void *btree_lookup_node(struct btree_head *head, struct btree_geo *geo,
+void *btree_lookup(struct btree_head *head, struct btree_geo *geo,
 		unsigned long *key)
 {
 	int i, height = head->height;
@@ -257,16 +257,7 @@ static void *btree_lookup_node(struct btree_head *head, struct btree_geo *geo,
 		if (!node)
 			return NULL;
 	}
-	return node;
-}
 
-void *btree_lookup(struct btree_head *head, struct btree_geo *geo,
-		unsigned long *key)
-{
-	int i;
-	unsigned long *node;
-
-	node = btree_lookup_node(head, geo, key);
 	if (!node)
 		return NULL;
 
@@ -280,10 +271,23 @@ EXPORT_SYMBOL_GPL(btree_lookup);
 int btree_update(struct btree_head *head, struct btree_geo *geo,
 		 unsigned long *key, void *val)
 {
-	int i;
-	unsigned long *node;
+	int i, height = head->height;
+	unsigned long *node = head->node;
 
-	node = btree_lookup_node(head, geo, key);
+	if (height == 0)
+		return -ENOENT;
+
+	for ( ; height > 1; height--) {
+		for (i = 0; i < geo->no_pairs; i++)
+			if (keycmp(geo, node, i, key) <= 0)
+				break;
+		if (i == geo->no_pairs)
+			return -ENOENT;
+		node = bval(geo, node, i);
+		if (!node)
+			return -ENOENT;
+	}
+
 	if (!node)
 		return -ENOENT;
 
@@ -309,7 +313,7 @@ void *btree_get_prev(struct btree_head *head, struct btree_geo *geo,
 {
 	int i, height;
 	unsigned long *node, *oldnode;
-	unsigned long *retry_key = NULL, key[MAX_KEYLEN];
+	unsigned long *retry_key = NULL, key[geo->keylen];
 
 	if (keyzero(geo, __key))
 		return NULL;
@@ -635,8 +639,8 @@ EXPORT_SYMBOL_GPL(btree_remove);
 int btree_merge(struct btree_head *target, struct btree_head *victim,
 		struct btree_geo *geo, gfp_t gfp)
 {
-	unsigned long key[MAX_KEYLEN];
-	unsigned long dup[MAX_KEYLEN];
+	unsigned long key[geo->keylen];
+	unsigned long dup[geo->keylen];
 	void *val;
 	int err;
 
@@ -794,3 +798,4 @@ module_exit(btree_module_exit);
 
 MODULE_AUTHOR("Joern Engel <joern@logfs.org>");
 MODULE_AUTHOR("Johannes Berg <johannes@sipsolutions.net>");
+MODULE_LICENSE("GPL");

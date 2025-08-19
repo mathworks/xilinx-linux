@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  linux/drivers/net/netconsole.c
  *
@@ -19,6 +18,19 @@
  */
 
 /****************************************************************
+ *      This program is free software; you can redistribute it and/or modify
+ *      it under the terms of the GNU General Public License as published by
+ *      the Free Software Foundation; either version 2, or (at your option)
+ *      any later version.
+ *
+ *      This program is distributed in the hope that it will be useful,
+ *      but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *      GNU General Public License for more details.
+ *
+ *      You should have received a copy of the GNU General Public License
+ *      along with this program; if not, write to the Free Software
+ *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  ****************************************************************/
 
@@ -36,7 +48,6 @@
 #include <linux/inet.h>
 #include <linux/configfs.h>
 #include <linux/etherdevice.h>
-#include <linux/utsname.h>
 
 MODULE_AUTHOR("Maintainer: Matt Mackall <mpm@selenic.com>");
 MODULE_DESCRIPTION("Console driver for network interfaces");
@@ -56,7 +67,7 @@ MODULE_PARM_DESC(oops_only, "Only log oops messages");
 #ifndef	MODULE
 static int __init option_setup(char *opt)
 {
-	strscpy(config, opt, MAX_PARAM_LENGTH);
+	strlcpy(config, opt, MAX_PARAM_LENGTH);
 	return 1;
 }
 __setup("netconsole=", option_setup);
@@ -84,9 +95,6 @@ static struct console netconsole_ext;
  *		whether the corresponding netpoll is active or inactive.
  *		Also, other parameters of a target may be modified at
  *		runtime only when it is disabled (enabled == 0).
- * @extended:	Denotes whether console is extended or not.
- * @release:	Denotes whether kernel release version should be prepended
- *		to the message. Depends on extended console.
  * @np:		The netpoll structure for this target.
  *		Contains the other userspace visible parameters:
  *		dev_name	(read-write)
@@ -104,7 +112,6 @@ struct netconsole_target {
 #endif
 	bool			enabled;
 	bool			extended;
-	bool			release;
 	struct netpoll		np;
 };
 
@@ -167,55 +174,28 @@ static void netconsole_target_put(struct netconsole_target *nt)
 
 #endif	/* CONFIG_NETCONSOLE_DYNAMIC */
 
-/* Allocate and initialize with defaults.
- * Note that these targets get their config_item fields zeroed-out.
- */
-static struct netconsole_target *alloc_and_init(void)
+/* Allocate new target (from boot/module param) and setup netpoll for it */
+static struct netconsole_target *alloc_param_target(char *target_config)
 {
+	int err = -ENOMEM;
 	struct netconsole_target *nt;
 
+	/*
+	 * Allocate and initialize with defaults.
+	 * Note that these targets get their config_item fields zeroed-out.
+	 */
 	nt = kzalloc(sizeof(*nt), GFP_KERNEL);
 	if (!nt)
-		return nt;
-
-	if (IS_ENABLED(CONFIG_NETCONSOLE_EXTENDED_LOG))
-		nt->extended = true;
-	if (IS_ENABLED(CONFIG_NETCONSOLE_PREPEND_RELEASE))
-		nt->release = true;
+		goto fail;
 
 	nt->np.name = "netconsole";
-	strscpy(nt->np.dev_name, "eth0", IFNAMSIZ);
+	strlcpy(nt->np.dev_name, "eth0", IFNAMSIZ);
 	nt->np.local_port = 6665;
 	nt->np.remote_port = 6666;
 	eth_broadcast_addr(nt->np.remote_mac);
 
-	return nt;
-}
-
-/* Allocate new target (from boot/module param) and setup netpoll for it */
-static struct netconsole_target *alloc_param_target(char *target_config)
-{
-	struct netconsole_target *nt;
-	int err;
-
-	nt = alloc_and_init();
-	if (!nt) {
-		err = -ENOMEM;
-		goto fail;
-	}
-
 	if (*target_config == '+') {
 		nt->extended = true;
-		target_config++;
-	}
-
-	if (*target_config == 'r') {
-		if (!nt->extended) {
-			pr_err("Netconsole configuration error. Release feature requires extended log message");
-			err = -EINVAL;
-			goto fail;
-		}
-		nt->release = true;
 		target_config++;
 	}
 
@@ -253,7 +233,6 @@ static void free_param_target(struct netconsole_target *nt)
  *				|
  *				<target>/
  *				|	enabled
- *				|	release
  *				|	dev_name
  *				|	local_port
  *				|	remote_port
@@ -278,32 +257,27 @@ static struct netconsole_target *to_target(struct config_item *item)
 
 static ssize_t enabled_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", to_target(item)->enabled);
+	return snprintf(buf, PAGE_SIZE, "%d\n", to_target(item)->enabled);
 }
 
 static ssize_t extended_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", to_target(item)->extended);
-}
-
-static ssize_t release_show(struct config_item *item, char *buf)
-{
-	return sysfs_emit(buf, "%d\n", to_target(item)->release);
+	return snprintf(buf, PAGE_SIZE, "%d\n", to_target(item)->extended);
 }
 
 static ssize_t dev_name_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%s\n", to_target(item)->np.dev_name);
+	return snprintf(buf, PAGE_SIZE, "%s\n", to_target(item)->np.dev_name);
 }
 
 static ssize_t local_port_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", to_target(item)->np.local_port);
+	return snprintf(buf, PAGE_SIZE, "%d\n", to_target(item)->np.local_port);
 }
 
 static ssize_t remote_port_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", to_target(item)->np.remote_port);
+	return snprintf(buf, PAGE_SIZE, "%d\n", to_target(item)->np.remote_port);
 }
 
 static ssize_t local_ip_show(struct config_item *item, char *buf)
@@ -311,9 +285,9 @@ static ssize_t local_ip_show(struct config_item *item, char *buf)
 	struct netconsole_target *nt = to_target(item);
 
 	if (nt->np.ipv6)
-		return sysfs_emit(buf, "%pI6c\n", &nt->np.local_ip.in6);
+		return snprintf(buf, PAGE_SIZE, "%pI6c\n", &nt->np.local_ip.in6);
 	else
-		return sysfs_emit(buf, "%pI4\n", &nt->np.local_ip);
+		return snprintf(buf, PAGE_SIZE, "%pI4\n", &nt->np.local_ip);
 }
 
 static ssize_t remote_ip_show(struct config_item *item, char *buf)
@@ -321,9 +295,9 @@ static ssize_t remote_ip_show(struct config_item *item, char *buf)
 	struct netconsole_target *nt = to_target(item);
 
 	if (nt->np.ipv6)
-		return sysfs_emit(buf, "%pI6c\n", &nt->np.remote_ip.in6);
+		return snprintf(buf, PAGE_SIZE, "%pI6c\n", &nt->np.remote_ip.in6);
 	else
-		return sysfs_emit(buf, "%pI4\n", &nt->np.remote_ip);
+		return snprintf(buf, PAGE_SIZE, "%pI4\n", &nt->np.remote_ip);
 }
 
 static ssize_t local_mac_show(struct config_item *item, char *buf)
@@ -331,12 +305,12 @@ static ssize_t local_mac_show(struct config_item *item, char *buf)
 	struct net_device *dev = to_target(item)->np.dev;
 	static const u8 bcast[ETH_ALEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
-	return sysfs_emit(buf, "%pM\n", dev ? dev->dev_addr : bcast);
+	return snprintf(buf, PAGE_SIZE, "%pM\n", dev ? dev->dev_addr : bcast);
 }
 
 static ssize_t remote_mac_show(struct config_item *item, char *buf)
 {
-	return sysfs_emit(buf, "%pM\n", to_target(item)->np.remote_mac);
+	return snprintf(buf, PAGE_SIZE, "%pM\n", to_target(item)->np.remote_mac);
 }
 
 /*
@@ -351,15 +325,17 @@ static ssize_t enabled_store(struct config_item *item,
 {
 	struct netconsole_target *nt = to_target(item);
 	unsigned long flags;
-	bool enabled;
+	int enabled;
 	int err;
 
 	mutex_lock(&dynamic_netconsole_mutex);
-	err = kstrtobool(buf, &enabled);
-	if (err)
+	err = kstrtoint(buf, 10, &enabled);
+	if (err < 0)
 		goto out_unlock;
 
 	err = -EINVAL;
+	if (enabled < 0 || enabled > 1)
+		goto out_unlock;
 	if ((bool)enabled == nt->enabled) {
 		pr_info("network logging has already %s\n",
 			nt->enabled ? "started" : "stopped");
@@ -367,13 +343,10 @@ static ssize_t enabled_store(struct config_item *item,
 	}
 
 	if (enabled) {	/* true */
-		if (nt->release && !nt->extended) {
-			pr_err("Not enabling netconsole. Release feature requires extended log message");
-			goto out_unlock;
-		}
-
-		if (nt->extended && !console_is_registered(&netconsole_ext))
+		if (nt->extended && !(netconsole_ext.flags & CON_ENABLED)) {
+			netconsole_ext.flags |= CON_ENABLED;
 			register_console(&netconsole_ext);
+		}
 
 		/*
 		 * Skip netpoll_parse_options() -- all the attributes are
@@ -385,7 +358,7 @@ static ssize_t enabled_store(struct config_item *item,
 		if (err)
 			goto out_unlock;
 
-		pr_info("network logging started\n");
+		pr_info("netconsole: network logging started\n");
 	} else {	/* false */
 		/* We need to disable the netconsole before cleaning it up
 		 * otherwise we might end up in write_msg() with
@@ -406,39 +379,11 @@ out_unlock:
 	return err;
 }
 
-static ssize_t release_store(struct config_item *item, const char *buf,
-			     size_t count)
-{
-	struct netconsole_target *nt = to_target(item);
-	bool release;
-	int err;
-
-	mutex_lock(&dynamic_netconsole_mutex);
-	if (nt->enabled) {
-		pr_err("target (%s) is enabled, disable to update parameters\n",
-		       config_item_name(&nt->item));
-		err = -EINVAL;
-		goto out_unlock;
-	}
-
-	err = kstrtobool(buf, &release);
-	if (err)
-		goto out_unlock;
-
-	nt->release = release;
-
-	mutex_unlock(&dynamic_netconsole_mutex);
-	return strnlen(buf, count);
-out_unlock:
-	mutex_unlock(&dynamic_netconsole_mutex);
-	return err;
-}
-
 static ssize_t extended_store(struct config_item *item, const char *buf,
 		size_t count)
 {
 	struct netconsole_target *nt = to_target(item);
-	bool extended;
+	int extended;
 	int err;
 
 	mutex_lock(&dynamic_netconsole_mutex);
@@ -449,9 +394,13 @@ static ssize_t extended_store(struct config_item *item, const char *buf,
 		goto out_unlock;
 	}
 
-	err = kstrtobool(buf, &extended);
-	if (err)
+	err = kstrtoint(buf, 10, &extended);
+	if (err < 0)
 		goto out_unlock;
+	if (extended < 0 || extended > 1) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
 
 	nt->extended = extended;
 
@@ -476,7 +425,7 @@ static ssize_t dev_name_store(struct config_item *item, const char *buf,
 		return -EINVAL;
 	}
 
-	strscpy(nt->np.dev_name, buf, IFNAMSIZ);
+	strlcpy(nt->np.dev_name, buf, IFNAMSIZ);
 
 	/* Get rid of possible trailing newline from echo(1) */
 	len = strnlen(nt->np.dev_name, IFNAMSIZ);
@@ -640,12 +589,10 @@ CONFIGFS_ATTR(, local_ip);
 CONFIGFS_ATTR(, remote_ip);
 CONFIGFS_ATTR_RO(, local_mac);
 CONFIGFS_ATTR(, remote_mac);
-CONFIGFS_ATTR(, release);
 
 static struct configfs_attribute *netconsole_target_attrs[] = {
 	&attr_enabled,
 	&attr_extended,
-	&attr_release,
 	&attr_dev_name,
 	&attr_local_port,
 	&attr_remote_port,
@@ -669,7 +616,7 @@ static struct configfs_item_operations netconsole_target_item_ops = {
 	.release		= netconsole_target_release,
 };
 
-static const struct config_item_type netconsole_target_type = {
+static struct config_item_type netconsole_target_type = {
 	.ct_attrs		= netconsole_target_attrs,
 	.ct_item_ops		= &netconsole_target_item_ops,
 	.ct_owner		= THIS_MODULE,
@@ -682,12 +629,22 @@ static const struct config_item_type netconsole_target_type = {
 static struct config_item *make_netconsole_target(struct config_group *group,
 						  const char *name)
 {
-	struct netconsole_target *nt;
 	unsigned long flags;
+	struct netconsole_target *nt;
 
-	nt = alloc_and_init();
+	/*
+	 * Allocate and initialize with defaults.
+	 * Target is disabled at creation (!enabled).
+	 */
+	nt = kzalloc(sizeof(*nt), GFP_KERNEL);
 	if (!nt)
 		return ERR_PTR(-ENOMEM);
+
+	nt->np.name = "netconsole";
+	strlcpy(nt->np.dev_name, "eth0", IFNAMSIZ);
+	nt->np.local_port = 6665;
+	nt->np.remote_port = 6666;
+	eth_broadcast_addr(nt->np.remote_mac);
 
 	/* Initialize the config_item member */
 	config_item_init_type_name(&nt->item, name, &netconsole_target_type);
@@ -725,7 +682,7 @@ static struct configfs_group_operations netconsole_subsys_group_ops = {
 	.drop_item	= drop_netconsole_target,
 };
 
-static const struct config_item_type netconsole_subsys_type = {
+static struct config_item_type netconsole_subsys_type = {
 	.ct_group_ops	= &netconsole_subsys_group_ops,
 	.ct_owner	= THIS_MODULE,
 };
@@ -762,7 +719,7 @@ restart:
 		if (nt->np.dev == dev) {
 			switch (event) {
 			case NETDEV_CHANGENAME:
-				strscpy(nt->np.dev_name, dev->name, IFNAMSIZ);
+				strlcpy(nt->np.dev_name, dev->name, IFNAMSIZ);
 				break;
 			case NETDEV_RELEASE:
 			case NETDEV_JOIN:
@@ -775,7 +732,7 @@ restart:
 				__netpoll_cleanup(&nt->np);
 
 				spin_lock_irqsave(&target_list_lock, flags);
-				netdev_put(nt->np.dev, &nt->np.dev_tracker);
+				dev_put(nt->np.dev);
 				nt->np.dev = NULL;
 				nt->enabled = false;
 				stopped = true;
@@ -828,23 +785,9 @@ static void send_ext_msg_udp(struct netconsole_target *nt, const char *msg,
 	const char *header, *body;
 	int offset = 0;
 	int header_len, body_len;
-	const char *msg_ready = msg;
-	const char *release;
-	int release_len = 0;
 
-	if (nt->release) {
-		release = init_utsname()->release;
-		release_len = strlen(release) + 1;
-	}
-
-	if (msg_len + release_len <= MAX_PRINT_CHUNK) {
-		/* No fragmentation needed */
-		if (nt->release) {
-			scnprintf(buf, MAX_PRINT_CHUNK, "%s,%s", release, msg);
-			msg_len += release_len;
-			msg_ready = buf;
-		}
-		netpoll_send_udp(&nt->np, msg_ready, msg_len);
+	if (msg_len <= MAX_PRINT_CHUNK) {
+		netpoll_send_udp(&nt->np, msg, msg_len);
 		return;
 	}
 
@@ -862,10 +805,7 @@ static void send_ext_msg_udp(struct netconsole_target *nt, const char *msg,
 	 * Transfer multiple chunks with the following extra header.
 	 * "ncfrag=<byte-offset>/<total-bytes>"
 	 */
-	if (nt->release)
-		scnprintf(buf, MAX_PRINT_CHUNK, "%s,", release);
-	memcpy(buf + release_len, header, header_len);
-	header_len += release_len;
+	memcpy(buf, header, header_len);
 
 	while (offset < body_len) {
 		int this_header = header_len;
@@ -940,7 +880,7 @@ static void write_msg(struct console *con, const char *msg, unsigned int len)
 
 static struct console netconsole_ext = {
 	.name	= "netcon_ext",
-	.flags	= CON_ENABLED | CON_EXTENDED,
+	.flags	= CON_EXTENDED,	/* starts disabled, registered on first use */
 	.write	= write_ext_msg,
 };
 
@@ -954,7 +894,6 @@ static int __init init_netconsole(void)
 {
 	int err;
 	struct netconsole_target *nt, *tmp;
-	bool extended = false;
 	unsigned long flags;
 	char *target_config;
 	char *input = config;
@@ -967,12 +906,11 @@ static int __init init_netconsole(void)
 				goto fail;
 			}
 			/* Dump existing printks when we register */
-			if (nt->extended) {
-				extended = true;
-				netconsole_ext.flags |= CON_PRINTBUFFER;
-			} else {
+			if (nt->extended)
+				netconsole_ext.flags |= CON_PRINTBUFFER |
+							CON_ENABLED;
+			else
 				netconsole.flags |= CON_PRINTBUFFER;
-			}
 
 			spin_lock_irqsave(&target_list_lock, flags);
 			list_add(&nt->list, &target_list);
@@ -988,7 +926,7 @@ static int __init init_netconsole(void)
 	if (err)
 		goto undonotifier;
 
-	if (extended)
+	if (netconsole_ext.flags & CON_ENABLED)
 		register_console(&netconsole_ext);
 	register_console(&netconsole);
 	pr_info("network logging started\n");
@@ -1018,8 +956,7 @@ static void __exit cleanup_netconsole(void)
 {
 	struct netconsole_target *nt, *tmp;
 
-	if (console_is_registered(&netconsole_ext))
-		unregister_console(&netconsole_ext);
+	unregister_console(&netconsole_ext);
 	unregister_console(&netconsole);
 	dynamic_netconsole_exit();
 	unregister_netdevice_notifier(&netconsole_netdev_notifier);

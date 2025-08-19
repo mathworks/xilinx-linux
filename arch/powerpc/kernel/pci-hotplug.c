@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Derived from "arch/powerpc/platforms/pseries/pci_dlpar.c"
  *
@@ -8,11 +7,15 @@
  * Updates, 2005, John Rose <johnrose@austin.ibm.com>
  * Updates, 2005, Linas Vepstas <linas@austin.ibm.com>
  * Updates, 2013, Gavin Shan <shangw@linux.vnet.ibm.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <linux/pci.h>
 #include <linux/export.h>
-#include <linux/of.h>
 #include <asm/pci-bridge.h>
 #include <asm/ppc-pci.h>
 #include <asm/firmware.h>
@@ -56,16 +59,11 @@ EXPORT_SYMBOL_GPL(pci_find_bus_by_node);
 void pcibios_release_device(struct pci_dev *dev)
 {
 	struct pci_controller *phb = pci_bus_to_host(dev->bus);
-	struct pci_dn *pdn = pci_get_pdn(dev);
+
+	eeh_remove_device(dev);
 
 	if (phb->controller_ops.release_device)
 		phb->controller_ops.release_device(dev);
-
-	/* free()ing the pci_dn has been deferred to us, do it now */
-	if (pdn && (pdn->flags & PCI_DN_FLAG_DEAD)) {
-		pci_dbg(dev, "freeing dead pdn\n");
-		kfree(pdn);
-	}
 }
 
 /**
@@ -106,10 +104,12 @@ EXPORT_SYMBOL_GPL(pci_hp_remove_devices);
  */
 void pci_hp_add_devices(struct pci_bus *bus)
 {
-	int slotno, mode, max;
+	int slotno, mode, pass, max;
 	struct pci_dev *dev;
 	struct pci_controller *phb;
 	struct device_node *dn = pci_bus_to_OF_node(bus);
+
+	eeh_add_device_tree_early(PCI_DN(dn));
 
 	phb = pci_bus_to_host(bus);
 
@@ -131,18 +131,15 @@ void pci_hp_add_devices(struct pci_bus *bus)
 		 */
 		slotno = PCI_SLOT(PCI_DN(dn->child)->devfn);
 		pci_scan_slot(bus, PCI_DEVFN(slotno, 0));
+		pcibios_setup_bus_devices(bus);
 		max = bus->busn_res.start;
-		/*
-		 * Scan bridges that are already configured. We don't touch
-		 * them unless they are misconfigured (which will be done in
-		 * the second scan below).
-		 */
-		for_each_pci_bridge(dev, bus)
-			max = pci_scan_bridge(bus, dev, max, 0);
-
-		/* Scan bridges that need to be reconfigured */
-		for_each_pci_bridge(dev, bus)
-			max = pci_scan_bridge(bus, dev, max, 1);
+		for (pass = 0; pass < 2; pass++) {
+			list_for_each_entry(dev, &bus->devices, bus_list) {
+				if (pci_is_bridge(dev))
+					max = pci_scan_bridge(bus, dev,
+							      max, pass);
+			}
+		}
 	}
 	pcibios_finish_adding_to_bus(bus);
 }

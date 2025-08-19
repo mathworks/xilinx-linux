@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* head.S: Initial boot code for the Sparc64 port of Linux.
  *
  * Copyright (C) 1996, 1997, 2007 David S. Miller (davem@davemloft.net)
@@ -9,17 +8,16 @@
 
 #include <linux/version.h>
 #include <linux/errno.h>
-#include <linux/export.h>
 #include <linux/threads.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
-#include <linux/pgtable.h>
 #include <asm/thread_info.h>
 #include <asm/asi.h>
 #include <asm/pstate.h>
 #include <asm/ptrace.h>
 #include <asm/spitfire.h>
 #include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/errno.h>
 #include <asm/signal.h>
 #include <asm/processor.h>
@@ -34,6 +32,7 @@
 #include <asm/estate.h>
 #include <asm/sfafsr.h>
 #include <asm/unistd.h>
+#include <asm/export.h>
 
 /* This section from from _start to sparc64_boot_end should fit into
  * 0x0000000000404000 to 0x0000000000408000.
@@ -97,7 +96,6 @@ sparc64_boot:
 	andn	%g1, PSTATE_AM, %g1
 	wrpr	%g1, 0x0, %pstate
 	ba,a,pt	%xcc, 1f
-	 nop
 
 	.globl	prom_finddev_name, prom_chosen_path, prom_root_node
 	.globl	prom_getprop_name, prom_mmu_name, prom_peer_name
@@ -425,25 +423,22 @@ EXPORT_SYMBOL(sun4v_chip_type)
 	 nop
 
 70:	ldub	[%g1 + 7], %g2
-	cmp	%g2, CPU_ID_NIAGARA3
+	cmp	%g2, '3'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_NIAGARA3, %g4
-	cmp	%g2, CPU_ID_NIAGARA4
+	cmp	%g2, '4'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_NIAGARA4, %g4
-	cmp	%g2, CPU_ID_NIAGARA5
+	cmp	%g2, '5'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_NIAGARA5, %g4
-	cmp	%g2, CPU_ID_M6
+	cmp	%g2, '6'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_SPARC_M6, %g4
-	cmp	%g2, CPU_ID_M7
+	cmp	%g2, '7'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_SPARC_M7, %g4
-	cmp	%g2, CPU_ID_M8
-	be,pt	%xcc, 5f
-	 mov	SUN4V_CHIP_SPARC_M8, %g4
-	cmp	%g2, CPU_ID_SONOMA1
+	cmp	%g2, 'N'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_SPARC_SN, %g4
 	ba,pt	%xcc, 49f
@@ -452,10 +447,10 @@ EXPORT_SYMBOL(sun4v_chip_type)
 91:	sethi	%hi(prom_cpu_compatible), %g1
 	or	%g1, %lo(prom_cpu_compatible), %g1
 	ldub	[%g1 + 17], %g2
-	cmp	%g2, CPU_ID_NIAGARA1
+	cmp	%g2, '1'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_NIAGARA1, %g4
-	cmp	%g2, CPU_ID_NIAGARA2
+	cmp	%g2, '2'
 	be,pt	%xcc, 5f
 	 mov	SUN4V_CHIP_NIAGARA2, %g4
 	
@@ -604,10 +599,7 @@ niagara_tlb_fixup:
 	be,pt	%xcc, niagara4_patch
 	 nop
 	cmp	%g1, SUN4V_CHIP_SPARC_M7
-	be,pt	%xcc, sparc_m7_patch
-	 nop
-	cmp	%g1, SUN4V_CHIP_SPARC_M8
-	be,pt	%xcc, sparc_m7_patch
+	be,pt	%xcc, niagara4_patch
 	 nop
 	cmp	%g1, SUN4V_CHIP_SPARC_SN
 	be,pt	%xcc, niagara4_patch
@@ -621,19 +613,6 @@ niagara_tlb_fixup:
 	 nop
 
 	ba,a,pt	%xcc, 80f
-	 nop
-
-sparc_m7_patch:
-	call	m7_patch_copyops
-	 nop
-	call	m7_patch_bzero
-	 nop
-	call	m7_patch_pageops
-	 nop
-
-	ba,a,pt	%xcc, 80f
-	 nop
-
 niagara4_patch:
 	call	niagara4_patch_copyops
 	 nop
@@ -641,11 +620,8 @@ niagara4_patch:
 	 nop
 	call	niagara4_patch_pageops
 	 nop
-	call	niagara4_patch_fls
-	 nop
 
 	ba,a,pt	%xcc, 80f
-	 nop
 
 niagara2_patch:
 	call	niagara2_patch_copyops
@@ -656,7 +632,6 @@ niagara2_patch:
 	 nop
 
 	ba,a,pt	%xcc, 80f
-	 nop
 
 niagara_patch:
 	call	niagara_patch_copyops
@@ -706,7 +681,7 @@ tlb_fixup_done:
 	wr	%g0, ASI_P, %asi
 	mov	1, %g1
 	sllx	%g1, THREAD_SHIFT, %g1
-	sub	%g1, (STACKFRAME_SZ + STACK_BIAS + TRACEREG_SZ), %g1
+	sub	%g1, (STACKFRAME_SZ + STACK_BIAS), %g1
 	add	%g6, %g1, %sp
 
 	/* Set per-cpu pointer initially to zero, this makes
@@ -896,8 +871,8 @@ sparc64_boot_end:
 #include "misctrap.S"
 #include "syscalls.S"
 #include "helpers.S"
+#include "hvcalls.S"
 #include "sun4v_tlb_miss.S"
-#include "sun4v_mcd.S"
 #include "sun4v_ivec.S"
 #include "ktlb.S"
 #include "tsb.S"
@@ -941,7 +916,6 @@ swapper_4m_tsb:
 
 ! 0x0000000000428000
 
-#include "hvcalls.S"
 #include "systbls_64.S"
 
 	.data
@@ -961,9 +935,3 @@ ENTRY(__retl_o1)
 	retl
 	 mov	%o1, %o0
 ENDPROC(__retl_o1)
-
-ENTRY(__retl_o1_asi)
-	wr      %o5, 0x0, %asi
-	retl
-	 mov    %o1, %o0
-ENDPROC(__retl_o1_asi)

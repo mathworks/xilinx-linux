@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Backlight code for ATI Radeon based graphic cards
  *
  * Copyright (c) 2000 Ani Joshi <ajoshi@kernel.crashing.org>
  * Copyright (c) 2003 Benjamin Herrenschmidt <benh@kernel.crashing.org>
  * Copyright (c) 2006 Michael Hanselmann <linux-kernel@hansmi.ch>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include "radeonfb.h"
@@ -57,7 +60,11 @@ static int radeon_bl_update_status(struct backlight_device *bd)
 	 * backlight. This provides some greater power saving and the display
 	 * is useless without backlight anyway.
 	 */
-	level = backlight_get_brightness(bd);
+        if (bd->props.power != FB_BLANK_UNBLANK ||
+	    bd->props.fb_blank != FB_BLANK_UNBLANK)
+		level = 0;
+	else
+		level = bd->props.brightness;
 
 	del_timer_sync(&rinfo->lvds_timer);
 	radeon_engine_idle();
@@ -147,7 +154,7 @@ void radeonfb_bl_init(struct radeonfb_info *rinfo)
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = FB_BACKLIGHT_LEVELS - 1;
-	bd = backlight_device_register(name, rinfo->info->device, pdata,
+	bd = backlight_device_register(name, rinfo->info->dev, pdata,
 				       &radeon_bl_data, &props);
 	if (IS_ERR(bd)) {
 		rinfo->info->bl_dev = NULL;

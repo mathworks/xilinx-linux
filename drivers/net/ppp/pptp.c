@@ -1,8 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Point-to-Point Tunneling Protocol for Linux
  *
  *	Authors: Dmitry Kozlov <xeb@mail.ru>
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
+ *
  */
 
 #include <linux/string.h>
@@ -24,7 +29,6 @@
 #include <linux/in.h>
 #include <linux/ip.h>
 #include <linux/rcupdate.h>
-#include <linux/security.h>
 #include <linux/spinlock.h>
 
 #include <net/sock.h>
@@ -127,28 +131,12 @@ static void del_chan(struct pppox_sock *sock)
 	clear_bit(sock->proto.pptp.src_addr.call_id, callid_bitmap);
 	RCU_INIT_POINTER(callid_sock[sock->proto.pptp.src_addr.call_id], NULL);
 	spin_unlock(&chan_lock);
-}
-
-static struct rtable *pptp_route_output(const struct pppox_sock *po,
-					struct flowi4 *fl4)
-{
-	const struct sock *sk = &po->sk;
-	struct net *net;
-
-	net = sock_net(sk);
-	flowi4_init_output(fl4, sk->sk_bound_dev_if, sk->sk_mark, 0,
-			   RT_SCOPE_UNIVERSE, IPPROTO_GRE, 0,
-			   po->proto.pptp.dst_addr.sin_addr.s_addr,
-			   po->proto.pptp.src_addr.sin_addr.s_addr,
-			   0, 0, sock_net_uid(net, sk));
-	security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
-
-	return ip_route_output_flow(net, fl4, sk);
+	synchronize_rcu();
 }
 
 static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 {
-	struct sock *sk = chan->private;
+	struct sock *sk = (struct sock *) chan->private;
 	struct pppox_sock *po = pppox_sk(sk);
 	struct net *net = sock_net(sk);
 	struct pptp_opt *opt = &po->proto.pptp;
@@ -169,7 +157,11 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	if (sk_pppox(po)->sk_state & PPPOX_DEAD)
 		goto tx_error;
 
-	rt = pptp_route_output(po, &fl4);
+	rt = ip_route_output_ports(net, &fl4, NULL,
+				   opt->dst_addr.sin_addr.s_addr,
+				   opt->src_addr.sin_addr.s_addr,
+				   0, 0, IPPROTO_GRE,
+				   RT_TOS(0), 0);
 	if (IS_ERR(rt))
 		goto tx_error;
 
@@ -252,7 +244,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
 
-	nf_reset_ct(skb);
+	nf_reset(skb);
 
 	skb->ip_summed = CHECKSUM_NONE;
 	ip_select_ident(net, skb, NULL);
@@ -292,8 +284,10 @@ static int pptp_rcv_core(struct sock *sk, struct sk_buff *skb)
 		header = (struct pptp_gre_header *)(skb->data);
 
 		/* ack in different place if S = 0 */
-		ack = GRE_IS_SEQ(header->gre_hd.flags) ? ntohl(header->ack) :
-							 ntohl(header->seq);
+		ack = GRE_IS_SEQ(header->gre_hd.flags) ? header->ack : header->seq;
+
+		ack = ntohl(ack);
+
 		if (ack > opt->ack_recv)
 			opt->ack_recv = ack;
 		/* also handle sequence number wrap-around  */
@@ -332,6 +326,11 @@ allow_packet:
 			skb_pull(skb, 2);
 		}
 
+		if ((*skb->data) & 1) {
+			/* protocol is compressed */
+			skb_push(skb, 1)[0] = 0;
+		}
+
 		skb->ip_summed = CHECKSUM_NONE;
 		skb_set_network_header(skb, skb->head-skb->data);
 		ppp_input(&po->chan, skb);
@@ -367,10 +366,10 @@ static int pptp_rcv(struct sk_buff *skb)
 		/* if invalid, discard this packet */
 		goto drop;
 
-	po = lookup_chan(ntohs(header->call_id), iph->saddr);
+	po = lookup_chan(htons(header->call_id), iph->saddr);
 	if (po) {
 		skb_dst_drop(skb);
-		nf_reset_ct(skb);
+		nf_reset(skb);
 		return sk_receive_skb(sk_pppox(po), skb, 0);
 	}
 drop:
@@ -452,7 +451,11 @@ static int pptp_connect(struct socket *sock, struct sockaddr *uservaddr,
 	po->chan.private = sk;
 	po->chan.ops = &pptp_chan_ops;
 
-	rt = pptp_route_output(po, &fl4);
+	rt = ip_route_output_ports(sock_net(sk), &fl4, sk,
+				   opt->dst_addr.sin_addr.s_addr,
+				   opt->src_addr.sin_addr.s_addr,
+				   0, 0,
+				   IPPROTO_GRE, RT_CONN_FLAGS(sk), 0);
 	if (IS_ERR(rt)) {
 		error = -EHOSTUNREACH;
 		goto end;
@@ -462,6 +465,7 @@ static int pptp_connect(struct socket *sock, struct sockaddr *uservaddr,
 	po->chan.mtu = dst_mtu(&rt->dst);
 	if (!po->chan.mtu)
 		po->chan.mtu = PPP_MRU;
+	ip_rt_put(rt);
 	po->chan.mtu -= PPTP_HEADER_OVERHEAD;
 
 	po->chan.hdrlen = 2 + sizeof(struct pptp_gre_header);
@@ -480,7 +484,7 @@ static int pptp_connect(struct socket *sock, struct sockaddr *uservaddr,
 }
 
 static int pptp_getname(struct socket *sock, struct sockaddr *uaddr,
-	int peer)
+	int *usockaddr_len, int peer)
 {
 	int len = sizeof(struct sockaddr_pppox);
 	struct sockaddr_pppox sp;
@@ -493,13 +497,16 @@ static int pptp_getname(struct socket *sock, struct sockaddr *uaddr,
 
 	memcpy(uaddr, &sp, len);
 
-	return len;
+	*usockaddr_len = len;
+
+	return 0;
 }
 
 static int pptp_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	struct pppox_sock *po;
+	struct pptp_opt *opt;
 	int error = 0;
 
 	if (!sk)
@@ -513,8 +520,8 @@ static int pptp_release(struct socket *sock)
 	}
 
 	po = pppox_sk(sk);
+	opt = &po->proto.pptp;
 	del_chan(po);
-	synchronize_rcu();
 
 	pppox_unbind_sock(sk);
 	sk->sk_state = PPPOX_DEAD;
@@ -535,7 +542,6 @@ static void pptp_sock_destruct(struct sock *sk)
 		pppox_unbind_sock(sk);
 	}
 	skb_queue_purge(&sk->sk_receive_queue);
-	dst_release(rcu_dereference_protected(sk->sk_dst_cache, 1));
 }
 
 static int pptp_create(struct net *net, struct socket *sock, int kern)
@@ -575,7 +581,7 @@ out:
 static int pptp_ppp_ioctl(struct ppp_channel *chan, unsigned int cmd,
 	unsigned long arg)
 {
-	struct sock *sk = chan->private;
+	struct sock *sk = (struct sock *) chan->private;
 	struct pppox_sock *po = pppox_sk(sk);
 	struct pptp_opt *opt = &po->proto.pptp;
 	void __user *argp = (void __user *)arg;
@@ -623,15 +629,15 @@ static const struct proto_ops pptp_ops = {
 	.socketpair = sock_no_socketpair,
 	.accept     = sock_no_accept,
 	.getname    = pptp_getname,
+	.poll       = sock_no_poll,
 	.listen     = sock_no_listen,
 	.shutdown   = sock_no_shutdown,
+	.setsockopt = sock_no_setsockopt,
+	.getsockopt = sock_no_getsockopt,
 	.sendmsg    = sock_no_sendmsg,
 	.recvmsg    = sock_no_recvmsg,
 	.mmap       = sock_no_mmap,
 	.ioctl      = pppox_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = pppox_compat_ioctl,
-#endif
 };
 
 static const struct pppox_proto pppox_pptp_proto = {
@@ -648,7 +654,7 @@ static int __init pptp_init_module(void)
 	int err = 0;
 	pr_info("PPTP driver version " PPTP_DRIVER_VERSION "\n");
 
-	callid_sock = vzalloc(array_size(sizeof(void *), (MAX_CALLID + 1)));
+	callid_sock = vzalloc((MAX_CALLID + 1) * sizeof(void *));
 	if (!callid_sock)
 		return -ENOMEM;
 

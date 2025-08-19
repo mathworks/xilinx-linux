@@ -1,13 +1,28 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Generic Syscon LEDs Driver
  *
  * Copyright (c) 2014, Linaro Limited
  * Author: Linus Walleij <linus.walleij@linaro.org>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation; either version 2 of
+ * the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+ * MA 02111-1307 USA
  */
 #include <linux/io.h>
 #include <linux/init.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/stat.h>
 #include <linux/slab.h>
@@ -54,14 +69,12 @@ static void syscon_led_set(struct led_classdev *led_cdev,
 
 static int syscon_led_probe(struct platform_device *pdev)
 {
-	struct led_init_data init_data = {};
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev_of_node(dev);
+	struct device_node *np = dev->of_node;
 	struct device *parent;
 	struct regmap *map;
 	struct syscon_led *sled;
-	enum led_default_state state;
-	u32 value;
+	const char *state;
 	int ret;
 
 	parent = dev->parent;
@@ -69,7 +82,7 @@ static int syscon_led_probe(struct platform_device *pdev)
 		dev_err(dev, "no parent for syscon LED\n");
 		return -ENODEV;
 	}
-	map = syscon_node_to_regmap(dev_of_node(parent));
+	map = syscon_node_to_regmap(parent->of_node);
 	if (IS_ERR(map)) {
 		dev_err(dev, "no regmap for syscon LED parent\n");
 		return PTR_ERR(map);
@@ -85,32 +98,38 @@ static int syscon_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	if (of_property_read_u32(np, "mask", &sled->mask))
 		return -EINVAL;
+	sled->cdev.name =
+		of_get_property(np, "label", NULL) ? : np->name;
+	sled->cdev.default_trigger =
+		of_get_property(np, "linux,default-trigger", NULL);
 
-	init_data.fwnode = of_fwnode_handle(np);
+	state = of_get_property(np, "default-state", NULL);
+	if (state) {
+		if (!strcmp(state, "keep")) {
+			u32 val;
 
-	state = led_init_default_state_get(init_data.fwnode);
-	switch (state) {
-	case LEDS_DEFSTATE_ON:
-		ret = regmap_update_bits(map, sled->offset, sled->mask, sled->mask);
-		if (ret < 0)
-			return ret;
-		sled->state = true;
-		break;
-	case LEDS_DEFSTATE_KEEP:
-		ret = regmap_read(map, sled->offset, &value);
-		if (ret < 0)
-			return ret;
-		sled->state = !!(value & sled->mask);
-		break;
-	default:
-		ret = regmap_update_bits(map, sled->offset, sled->mask, 0);
-		if (ret < 0)
-			return ret;
-		sled->state = false;
+			ret = regmap_read(map, sled->offset, &val);
+			if (ret < 0)
+				return ret;
+			sled->state = !!(val & sled->mask);
+		} else if (!strcmp(state, "on")) {
+			sled->state = true;
+			ret = regmap_update_bits(map, sled->offset,
+						 sled->mask,
+						 sled->mask);
+			if (ret < 0)
+				return ret;
+		} else {
+			sled->state = false;
+			ret = regmap_update_bits(map, sled->offset,
+						 sled->mask, 0);
+			if (ret < 0)
+				return ret;
+		}
 	}
 	sled->cdev.brightness_set = syscon_led_set;
 
-	ret = devm_led_classdev_register_ext(dev, &sled->cdev, &init_data);
+	ret = led_classdev_register(dev, &sled->cdev);
 	if (ret < 0)
 		return ret;
 

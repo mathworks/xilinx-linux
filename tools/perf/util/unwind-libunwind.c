@@ -1,51 +1,44 @@
-// SPDX-License-Identifier: GPL-2.0
 #include "unwind.h"
-#include "dso.h"
-#include "map.h"
 #include "thread.h"
 #include "session.h"
 #include "debug.h"
-#include "env.h"
-#include "callchain.h"
+#include "arch/common.h"
 
 struct unwind_libunwind_ops __weak *local_unwind_libunwind_ops;
 struct unwind_libunwind_ops __weak *x86_32_unwind_libunwind_ops;
 struct unwind_libunwind_ops __weak *arm64_unwind_libunwind_ops;
 
-static void unwind__register_ops(struct maps *maps, struct unwind_libunwind_ops *ops)
+static void unwind__register_ops(struct thread *thread,
+			  struct unwind_libunwind_ops *ops)
 {
-	RC_CHK_ACCESS(maps)->unwind_libunwind_ops = ops;
+	thread->unwind_libunwind_ops = ops;
 }
 
-int unwind__prepare_access(struct maps *maps, struct map *map, bool *initialized)
+int unwind__prepare_access(struct thread *thread, struct map *map,
+			   bool *initialized)
 {
 	const char *arch;
 	enum dso_type dso_type;
 	struct unwind_libunwind_ops *ops = local_unwind_libunwind_ops;
-	struct dso *dso = map__dso(map);
-	struct machine *machine;
 	int err;
 
-	if (!dwarf_callchain_users)
-		return 0;
-
-	if (maps__addr_space(maps)) {
-		pr_debug("unwind: thread map already set, dso=%s\n", dso->name);
+	if (thread->addr_space) {
+		pr_debug("unwind: thread map already set, dso=%s\n",
+			 map->dso->name);
 		if (initialized)
 			*initialized = true;
 		return 0;
 	}
 
-	machine = maps__machine(maps);
 	/* env->arch is NULL for live-mode (i.e. perf top) */
-	if (!machine->env || !machine->env->arch)
+	if (!thread->mg->machine->env || !thread->mg->machine->env->arch)
 		goto out_register;
 
-	dso_type = dso__type(dso, machine);
+	dso_type = dso__type(map->dso, thread->mg->machine);
 	if (dso_type == DSO__TYPE_UNKNOWN)
 		return 0;
 
-	arch = perf_env__arch(machine->env);
+	arch = normalize_arch(thread->mg->machine->env->arch);
 
 	if (!strcmp(arch, "x86")) {
 		if (dso_type != DSO__TYPE_64BIT)
@@ -56,42 +49,35 @@ int unwind__prepare_access(struct maps *maps, struct map *map, bool *initialized
 	}
 
 	if (!ops) {
-		pr_warning_once("unwind: target platform=%s is not supported\n", arch);
-		return 0;
+		pr_err("unwind: target platform=%s is not supported\n", arch);
+		return -1;
 	}
 out_register:
-	unwind__register_ops(maps, ops);
+	unwind__register_ops(thread, ops);
 
-	err = maps__unwind_libunwind_ops(maps)->prepare_access(maps);
+	err = thread->unwind_libunwind_ops->prepare_access(thread);
 	if (initialized)
 		*initialized = err ? false : true;
 	return err;
 }
 
-void unwind__flush_access(struct maps *maps)
+void unwind__flush_access(struct thread *thread)
 {
-	const struct unwind_libunwind_ops *ops = maps__unwind_libunwind_ops(maps);
-
-	if (ops)
-		ops->flush_access(maps);
+	if (thread->unwind_libunwind_ops)
+		thread->unwind_libunwind_ops->flush_access(thread);
 }
 
-void unwind__finish_access(struct maps *maps)
+void unwind__finish_access(struct thread *thread)
 {
-	const struct unwind_libunwind_ops *ops = maps__unwind_libunwind_ops(maps);
-
-	if (ops)
-		ops->finish_access(maps);
+	if (thread->unwind_libunwind_ops)
+		thread->unwind_libunwind_ops->finish_access(thread);
 }
 
 int unwind__get_entries(unwind_entry_cb_t cb, void *arg,
 			 struct thread *thread,
-			 struct perf_sample *data, int max_stack,
-			 bool best_effort)
+			 struct perf_sample *data, int max_stack)
 {
-	const struct unwind_libunwind_ops *ops = maps__unwind_libunwind_ops(thread__maps(thread));
-
-	if (ops)
-		return ops->get_entries(cb, arg, thread, data, max_stack, best_effort);
+	if (thread->unwind_libunwind_ops)
+		return thread->unwind_libunwind_ops->get_entries(cb, arg, thread, data, max_stack);
 	return 0;
 }

@@ -1,6 +1,6 @@
 /* Key type used to cache DNS lookups made by the kernel
  *
- * See Documentation/networking/dns_resolver.rst
+ * See Documentation/networking/dns_resolver.txt
  *
  *   Copyright (c) 2007 Igor Mammedov
  *   Author(s): Igor Mammedov (niallain@gmail.com)
@@ -29,7 +29,6 @@
 #include <linux/keyctl.h>
 #include <linux/err.h>
 #include <linux/seq_file.h>
-#include <linux/dns_resolver.h>
 #include <keys/dns_resolver-type.h>
 #include <keys/user-type.h>
 #include "internal.h"
@@ -39,7 +38,7 @@ MODULE_AUTHOR("Wang Lei");
 MODULE_LICENSE("GPL");
 
 unsigned int dns_resolver_debug;
-module_param_named(debug, dns_resolver_debug, uint, 0644);
+module_param_named(debug, dns_resolver_debug, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(debug, "DNS Resolver debugging mask");
 
 const struct cred *dns_resolver_cache;
@@ -49,86 +48,27 @@ const struct cred *dns_resolver_cache;
 /*
  * Preparse instantiation data for a dns_resolver key.
  *
- * For normal hostname lookups, the data must be a NUL-terminated string, with
- * the NUL char accounted in datalen.
+ * The data must be a NUL-terminated string, with the NUL char accounted in
+ * datalen.
  *
  * If the data contains a '#' characters, then we take the clause after each
  * one to be an option of the form 'key=value'.  The actual data of interest is
  * the string leading up to the first '#'.  For instance:
  *
  *        "ip1,ip2,...#foo=bar"
- *
- * For server list requests, the data must begin with a NUL char and be
- * followed by a byte indicating the version of the data format.  Version 1
- * looks something like (note this is packed):
- *
- *	u8      Non-string marker (ie. 0)
- *	u8	Content (DNS_PAYLOAD_IS_*)
- *	u8	Version (e.g. 1)
- *	u8	Source of server list
- *	u8	Lookup status of server list
- *	u8	Number of servers
- *	foreach-server {
- *		__le16	Name length
- *		__le16	Priority (as per SRV record, low first)
- *		__le16	Weight (as per SRV record, higher first)
- *		__le16	Port
- *		u8	Source of address list
- *		u8	Lookup status of address list
- *		u8	Protocol (DNS_SERVER_PROTOCOL_*)
- *		u8	Number of addresses
- *		char[]	Name (not NUL-terminated)
- *		foreach-address {
- *			u8		Family (DNS_ADDRESS_IS_*)
- *			union {
- *				u8[4]	ipv4_addr
- *				u8[16]	ipv6_addr
- *			}
- *		}
- *	}
- *
  */
 static int
 dns_resolver_preparse(struct key_preparsed_payload *prep)
 {
-	const struct dns_payload_header *bin;
 	struct user_key_payload *upayload;
 	unsigned long derrno;
 	int ret;
 	int datalen = prep->datalen, result_len = 0;
 	const char *data = prep->data, *end, *opt;
 
-	if (datalen <= 1 || !data)
-		return -EINVAL;
-
-	if (data[0] == 0) {
-		/* It may be a server list. */
-		if (datalen <= sizeof(*bin))
-			return -EINVAL;
-
-		bin = (const struct dns_payload_header *)data;
-		kenter("[%u,%u],%u", bin->content, bin->version, datalen);
-		if (bin->content != DNS_PAYLOAD_IS_SERVER_LIST) {
-			pr_warn_ratelimited(
-				"dns_resolver: Unsupported content type (%u)\n",
-				bin->content);
-			return -EINVAL;
-		}
-
-		if (bin->version != 1) {
-			pr_warn_ratelimited(
-				"dns_resolver: Unsupported server list version (%u)\n",
-				bin->version);
-			return -EINVAL;
-		}
-
-		result_len = datalen;
-		goto store_result;
-	}
-
 	kenter("'%*.*s',%u", datalen, datalen, data, datalen);
 
-	if (!data || data[datalen - 1] != '\0')
+	if (datalen <= 1 || !data || data[datalen - 1] != '\0')
 		return -EINVAL;
 	datalen--;
 
@@ -146,39 +86,35 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 		opt++;
 		kdebug("options: '%s'", opt);
 		do {
-			int opt_len, opt_nlen;
 			const char *eq;
-			char optval[128];
+			int opt_len, opt_nlen, opt_vlen, tmp;
 
 			next_opt = memchr(opt, '#', end - opt) ?: end;
 			opt_len = next_opt - opt;
-			if (opt_len <= 0 || opt_len > sizeof(optval)) {
-				pr_warn_ratelimited("Invalid option length (%d) for dns_resolver key\n",
-						    opt_len);
+			if (!opt_len) {
+				printk(KERN_WARNING
+				       "Empty option to dns_resolver key\n");
 				return -EINVAL;
 			}
 
-			eq = memchr(opt, '=', opt_len);
-			if (eq) {
-				opt_nlen = eq - opt;
-				eq++;
-				memcpy(optval, eq, next_opt - eq);
-				optval[next_opt - eq] = '\0';
-			} else {
-				opt_nlen = opt_len;
-				optval[0] = '\0';
-			}
+			eq = memchr(opt, '=', opt_len) ?: end;
+			opt_nlen = eq - opt;
+			eq++;
+			opt_vlen = next_opt - eq; /* will be -1 if no value */
 
-			kdebug("option '%*.*s' val '%s'",
-			       opt_nlen, opt_nlen, opt, optval);
+			tmp = opt_vlen >= 0 ? opt_vlen : 0;
+			kdebug("option '%*.*s' val '%*.*s'",
+			       opt_nlen, opt_nlen, opt, tmp, tmp, eq);
 
 			/* see if it's an error number representing a DNS error
 			 * that's to be recorded as the result in this key */
 			if (opt_nlen == sizeof(DNS_ERRORNO_OPTION) - 1 &&
 			    memcmp(opt, DNS_ERRORNO_OPTION, opt_nlen) == 0) {
 				kdebug("dns error number option");
+				if (opt_vlen <= 0)
+					goto bad_option_value;
 
-				ret = kstrtoul(optval, 10, &derrno);
+				ret = kstrtoul(eq, 10, &derrno);
 				if (ret < 0)
 					goto bad_option_value;
 
@@ -191,8 +127,10 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 			}
 
 		bad_option_value:
-			pr_warn_ratelimited("Option '%*.*s' to dns_resolver key: bad/missing value\n",
-					    opt_nlen, opt_nlen, opt);
+			printk(KERN_WARNING
+			       "Option '%*.*s' to dns_resolver key:"
+			       " bad/missing value\n",
+			       opt_nlen, opt_nlen, opt);
 			return -EINVAL;
 		} while (opt = next_opt + 1, opt < end);
 	}
@@ -204,7 +142,6 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 		return 0;
 	}
 
-store_result:
 	kdebug("store result");
 	prep->quotalen = result_len;
 
@@ -287,7 +224,7 @@ static int dns_resolver_match_preparse(struct key_match_data *match_data)
 static void dns_resolver_describe(const struct key *key, struct seq_file *m)
 {
 	seq_puts(m, key->description);
-	if (key_is_positive(key)) {
+	if (key_is_instantiated(key)) {
 		int err = PTR_ERR(key->payload.data[dns_key_error]);
 
 		if (err)
@@ -302,7 +239,7 @@ static void dns_resolver_describe(const struct key *key, struct seq_file *m)
  * - the key's semaphore is read-locked
  */
 static long dns_resolver_read(const struct key *key,
-			      char *buffer, size_t buflen)
+			      char __user *buffer, size_t buflen)
 {
 	int err = PTR_ERR(key->payload.data[dns_key_error]);
 
@@ -314,7 +251,6 @@ static long dns_resolver_read(const struct key *key,
 
 struct key_type key_type_dns_resolver = {
 	.name		= "dns_resolver",
-	.flags		= KEY_TYPE_NET_DOMAIN,
 	.preparse	= dns_resolver_preparse,
 	.free_preparse	= dns_resolver_free_preparse,
 	.instantiate	= generic_key_instantiate,
@@ -337,7 +273,7 @@ static int __init init_dns_resolver(void)
 	 * this is used to prevent malicious redirections from being installed
 	 * with add_key().
 	 */
-	cred = prepare_kernel_cred(&init_task);
+	cred = prepare_kernel_cred(NULL);
 	if (!cred)
 		return -ENOMEM;
 
@@ -382,3 +318,4 @@ static void __exit exit_dns_resolver(void)
 module_init(init_dns_resolver)
 module_exit(exit_dns_resolver)
 MODULE_LICENSE("GPL");
+

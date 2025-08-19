@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * timbuart.c timberdale FPGA UART driver
  * Copyright (c) 2009 Intel Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* Supports:
@@ -87,7 +99,9 @@ static void timbuart_rx_chars(struct uart_port *port)
 		tty_insert_flip_char(tport, ch, TTY_NORMAL);
 	}
 
+	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
+	spin_lock(&port->lock);
 
 	dev_dbg(port->dev, "%s - total read %d bytes\n",
 		__func__, port->icount.rx);
@@ -101,7 +115,8 @@ static void timbuart_tx_chars(struct uart_port *port)
 		!uart_circ_empty(xmit)) {
 		iowrite8(xmit->buf[xmit->tail],
 			port->membase + TIMBUART_TXFIFO);
-		uart_xmit_advance(port, 1);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		port->icount.tx++;
 	}
 
 	dev_dbg(port->dev,
@@ -169,9 +184,9 @@ static void timbuart_handle_rx_port(struct uart_port *port, u32 isr, u32 *ier)
 	dev_dbg(port->dev, "%s - leaving\n", __func__);
 }
 
-static void timbuart_tasklet(struct tasklet_struct *t)
+static void timbuart_tasklet(unsigned long arg)
 {
-	struct timbuart_port *uart = from_tasklet(uart, t, tasklet);
+	struct timbuart_port *uart = (struct timbuart_port *)arg;
 	u32 isr, ier = 0;
 
 	spin_lock(&uart->port.lock);
@@ -274,8 +289,8 @@ static int get_bindex(int baud)
 }
 
 static void timbuart_set_termios(struct uart_port *port,
-				 struct ktermios *termios,
-				 const struct ktermios *old)
+	struct ktermios *termios,
+	struct ktermios *old)
 {
 	unsigned int baud;
 	short bindex;
@@ -448,7 +463,7 @@ static int timbuart_probe(struct platform_device *dev)
 	}
 	uart->port.irq = irq;
 
-	tasklet_setup(&uart->tasklet, timbuart_tasklet);
+	tasklet_init(&uart->tasklet, timbuart_tasklet, (unsigned long)uart);
 
 	err = uart_register_driver(&timbuart_driver);
 	if (err)

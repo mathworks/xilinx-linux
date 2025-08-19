@@ -36,6 +36,7 @@
 #include <linux/io.h>
 #include <linux/rbtree.h>
 #include <asm/setup.h>
+#include <asm/pgalloc.h>
 #include <asm/hypervisor.h>
 #include <xen/grant_table.h>
 #include <xen/page.h>
@@ -74,8 +75,9 @@ extern unsigned int xenblk_max_queues;
 struct blkif_common_request {
 	char dummy;
 };
-
-/* i386 protocol version */
+struct blkif_common_response {
+	char dummy;
+};
 
 struct blkif_x86_32_request_rw {
 	uint8_t        nr_segments;  /* number of segments                   */
@@ -127,6 +129,14 @@ struct blkif_x86_32_request {
 	} u;
 } __attribute__((__packed__));
 
+/* i386 protocol version */
+#pragma pack(push, 4)
+struct blkif_x86_32_response {
+	uint64_t        id;              /* copied from request */
+	uint8_t         operation;       /* copied from request */
+	int16_t         status;          /* BLKIF_RSP_???       */
+};
+#pragma pack(pop)
 /* x86_64 protocol version */
 
 struct blkif_x86_64_request_rw {
@@ -183,12 +193,18 @@ struct blkif_x86_64_request {
 	} u;
 } __attribute__((__packed__));
 
+struct blkif_x86_64_response {
+	uint64_t       __attribute__((__aligned__(8))) id;
+	uint8_t         operation;       /* copied from request */
+	int16_t         status;          /* BLKIF_RSP_???       */
+};
+
 DEFINE_RING_TYPES(blkif_common, struct blkif_common_request,
-		  struct blkif_response);
+		  struct blkif_common_response);
 DEFINE_RING_TYPES(blkif_x86_32, struct blkif_x86_32_request,
-		  struct blkif_response __packed);
+		  struct blkif_x86_32_response);
 DEFINE_RING_TYPES(blkif_x86_64, struct blkif_x86_64_request,
-		  struct blkif_response);
+		  struct blkif_x86_64_response);
 
 union blkif_back_rings {
 	struct blkif_back_ring        native;
@@ -226,14 +242,21 @@ struct xen_vbd {
 	sector_t		size;
 	unsigned int		flush_support:1;
 	unsigned int		discard_secure:1;
-	/* Connect-time cached feature_persistent parameter value */
-	unsigned int		feature_gnt_persistent_parm:1;
-	/* Persistent grants feature negotiation result */
 	unsigned int		feature_gnt_persistent:1;
 	unsigned int		overflow_max_grants:1;
 };
 
 struct backend_info;
+
+/* Number of available flags */
+#define PERSISTENT_GNT_FLAGS_SIZE	2
+/* This persistent grant is currently in use */
+#define PERSISTENT_GNT_ACTIVE		0
+/*
+ * This persistent grant has been used, this flag is set when we remove the
+ * PERSISTENT_GNT_ACTIVE, to know that this grant has been used recently.
+ */
+#define PERSISTENT_GNT_WAS_ACTIVE	1
 
 /* Number of requests that we can fit in a ring */
 #define XEN_BLKIF_REQS_PER_PAGE		32
@@ -242,8 +265,7 @@ struct persistent_gnt {
 	struct page *page;
 	grant_ref_t gnt;
 	grant_handle_t handle;
-	unsigned long last_used;
-	bool active;
+	DECLARE_BITMAP(flags, PERSISTENT_GNT_FLAGS_SIZE);
 	struct rb_node node;
 	struct list_head remove_node;
 };
@@ -259,7 +281,6 @@ struct xen_blkif_ring {
 
 	wait_queue_head_t	wq;
 	atomic_t		inflight;
-	bool			active;
 	/* One thread per blkif ring. */
 	struct task_struct	*xenblkd;
 	unsigned int		waiting_reqs;
@@ -271,6 +292,7 @@ struct xen_blkif_ring {
 	wait_queue_head_t	pending_free_wq;
 
 	/* Tree to store persistent grants. */
+	spinlock_t		pers_gnts_lock;
 	struct rb_root		persistent_gnts;
 	unsigned int		persistent_gnt_c;
 	atomic_t		persistent_gnt_in_use;
@@ -291,12 +313,14 @@ struct xen_blkif_ring {
 	struct work_struct	persistent_purge_work;
 
 	/* Buffer of free pages to map grant refs. */
-	struct gnttab_page_cache free_pages;
+	spinlock_t		free_pages_lock;
+	int			free_pages_num;
+	struct list_head	free_pages;
 
 	struct work_struct	free_work;
 	/* Thread shutdown wait queue. */
 	wait_queue_head_t	shutdown_wq;
-	struct xen_blkif	*blkif;
+	struct xen_blkif 	*blkif;
 };
 
 struct xen_blkif {
@@ -315,12 +339,10 @@ struct xen_blkif {
 	atomic_t		drain;
 
 	struct work_struct	free_work;
-	unsigned int		nr_ring_pages;
-	bool			multi_ref;
+	unsigned int 		nr_ring_pages;
 	/* All rings for this device. */
 	struct xen_blkif_ring	*rings;
 	unsigned int		nr_rings;
-	unsigned long		buffer_squeeze_end;
 };
 
 struct seg_buf {
@@ -329,7 +351,7 @@ struct seg_buf {
 };
 
 struct grant_page {
-	struct page		*page;
+	struct page 		*page;
 	struct persistent_gnt	*persistent_gnt;
 	grant_handle_t		handle;
 	grant_ref_t		gref;
@@ -360,7 +382,9 @@ struct pending_req {
 };
 
 
-#define vbd_sz(_v)	bdev_nr_sectors((_v)->bdev)
+#define vbd_sz(_v)	((_v)->bdev->bd_part ? \
+			 (_v)->bdev->bd_part->nr_sects : \
+			  get_capacity((_v)->bdev->bd_disk))
 
 #define xen_blkif_get(_b) (atomic_inc(&(_b)->refcnt))
 #define xen_blkif_put(_b)				\
@@ -375,15 +399,13 @@ struct phys_req {
 	struct block_device	*bdev;
 	blkif_sector_t		sector_number;
 };
-
 int xen_blkif_interface_init(void);
-void xen_blkif_interface_fini(void);
 
 int xen_blkif_xenbus_init(void);
-void xen_blkif_xenbus_fini(void);
 
 irqreturn_t xen_blkif_be_int(int irq, void *dev_id);
 int xen_blkif_schedule(void *arg);
+int xen_blkif_purge_persistent(void *arg);
 void xen_blkbk_free_caches(struct xen_blkif_ring *ring);
 
 int xen_blkbk_flush_diskcache(struct xenbus_transaction xbt,
@@ -393,5 +415,101 @@ int xen_blkbk_barrier(struct xenbus_transaction xbt,
 		      struct backend_info *be, int state);
 struct xenbus_device *xen_blkbk_xenbus(struct backend_info *be);
 void xen_blkbk_unmap_purged_grants(struct work_struct *work);
+
+static inline void blkif_get_x86_32_req(struct blkif_request *dst,
+					struct blkif_x86_32_request *src)
+{
+	int i, n = BLKIF_MAX_SEGMENTS_PER_REQUEST, j;
+	dst->operation = READ_ONCE(src->operation);
+	switch (dst->operation) {
+	case BLKIF_OP_READ:
+	case BLKIF_OP_WRITE:
+	case BLKIF_OP_WRITE_BARRIER:
+	case BLKIF_OP_FLUSH_DISKCACHE:
+		dst->u.rw.nr_segments = src->u.rw.nr_segments;
+		dst->u.rw.handle = src->u.rw.handle;
+		dst->u.rw.id = src->u.rw.id;
+		dst->u.rw.sector_number = src->u.rw.sector_number;
+		barrier();
+		if (n > dst->u.rw.nr_segments)
+			n = dst->u.rw.nr_segments;
+		for (i = 0; i < n; i++)
+			dst->u.rw.seg[i] = src->u.rw.seg[i];
+		break;
+	case BLKIF_OP_DISCARD:
+		dst->u.discard.flag = src->u.discard.flag;
+		dst->u.discard.id = src->u.discard.id;
+		dst->u.discard.sector_number = src->u.discard.sector_number;
+		dst->u.discard.nr_sectors = src->u.discard.nr_sectors;
+		break;
+	case BLKIF_OP_INDIRECT:
+		dst->u.indirect.indirect_op = src->u.indirect.indirect_op;
+		dst->u.indirect.nr_segments = src->u.indirect.nr_segments;
+		dst->u.indirect.handle = src->u.indirect.handle;
+		dst->u.indirect.id = src->u.indirect.id;
+		dst->u.indirect.sector_number = src->u.indirect.sector_number;
+		barrier();
+		j = min(MAX_INDIRECT_PAGES, INDIRECT_PAGES(dst->u.indirect.nr_segments));
+		for (i = 0; i < j; i++)
+			dst->u.indirect.indirect_grefs[i] =
+				src->u.indirect.indirect_grefs[i];
+		break;
+	default:
+		/*
+		 * Don't know how to translate this op. Only get the
+		 * ID so failure can be reported to the frontend.
+		 */
+		dst->u.other.id = src->u.other.id;
+		break;
+	}
+}
+
+static inline void blkif_get_x86_64_req(struct blkif_request *dst,
+					struct blkif_x86_64_request *src)
+{
+	int i, n = BLKIF_MAX_SEGMENTS_PER_REQUEST, j;
+	dst->operation = READ_ONCE(src->operation);
+	switch (dst->operation) {
+	case BLKIF_OP_READ:
+	case BLKIF_OP_WRITE:
+	case BLKIF_OP_WRITE_BARRIER:
+	case BLKIF_OP_FLUSH_DISKCACHE:
+		dst->u.rw.nr_segments = src->u.rw.nr_segments;
+		dst->u.rw.handle = src->u.rw.handle;
+		dst->u.rw.id = src->u.rw.id;
+		dst->u.rw.sector_number = src->u.rw.sector_number;
+		barrier();
+		if (n > dst->u.rw.nr_segments)
+			n = dst->u.rw.nr_segments;
+		for (i = 0; i < n; i++)
+			dst->u.rw.seg[i] = src->u.rw.seg[i];
+		break;
+	case BLKIF_OP_DISCARD:
+		dst->u.discard.flag = src->u.discard.flag;
+		dst->u.discard.id = src->u.discard.id;
+		dst->u.discard.sector_number = src->u.discard.sector_number;
+		dst->u.discard.nr_sectors = src->u.discard.nr_sectors;
+		break;
+	case BLKIF_OP_INDIRECT:
+		dst->u.indirect.indirect_op = src->u.indirect.indirect_op;
+		dst->u.indirect.nr_segments = src->u.indirect.nr_segments;
+		dst->u.indirect.handle = src->u.indirect.handle;
+		dst->u.indirect.id = src->u.indirect.id;
+		dst->u.indirect.sector_number = src->u.indirect.sector_number;
+		barrier();
+		j = min(MAX_INDIRECT_PAGES, INDIRECT_PAGES(dst->u.indirect.nr_segments));
+		for (i = 0; i < j; i++)
+			dst->u.indirect.indirect_grefs[i] =
+				src->u.indirect.indirect_grefs[i];
+		break;
+	default:
+		/*
+		 * Don't know how to translate this op. Only get the
+		 * ID so failure can be reported to the frontend.
+		 */
+		dst->u.other.id = src->u.other.id;
+		break;
+	}
+}
 
 #endif /* __XEN_BLKIF__BACKEND__COMMON_H__ */

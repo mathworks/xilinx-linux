@@ -1,10 +1,27 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
+/* -*- mode: c; c-basic-offset: 8; -*-
+ * vim: noexpandtab sw=8 ts=8 sts=0:
+ *
  * netdebug.c
  *
  * debug functionality for o2net
  *
  * Copyright (C) 2005, 2008 Oracle.  All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this program; if not, write to the
+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
+ * Boston, MA 021110-1307, USA.
+ *
  */
 
 #ifdef CONFIG_DEBUG_FS
@@ -36,6 +53,10 @@
 #define SHOW_SOCK_STATS		1
 
 static struct dentry *o2net_dentry;
+static struct dentry *sc_dentry;
+static struct dentry *nst_dentry;
+static struct dentry *stats_dentry;
+static struct dentry *nodes_dentry;
 
 static DEFINE_SPINLOCK(o2net_debug_lock);
 
@@ -44,17 +65,17 @@ static LIST_HEAD(send_tracking);
 
 void o2net_debug_add_nst(struct o2net_send_tracking *nst)
 {
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	list_add(&nst->st_net_debug_item, &send_tracking);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 }
 
 void o2net_debug_del_nst(struct o2net_send_tracking *nst)
 {
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	if (!list_empty(&nst->st_net_debug_item))
 		list_del_init(&nst->st_net_debug_item);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 }
 
 static struct o2net_send_tracking
@@ -84,9 +105,9 @@ static void *nst_seq_start(struct seq_file *seq, loff_t *pos)
 {
 	struct o2net_send_tracking *nst, *dummy_nst = seq->private;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	nst = next_nst(dummy_nst);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return nst;
 }
@@ -95,13 +116,13 @@ static void *nst_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
 	struct o2net_send_tracking *nst, *dummy_nst = seq->private;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	nst = next_nst(dummy_nst);
 	list_del_init(&dummy_nst->st_net_debug_item);
 	if (nst)
 		list_add(&dummy_nst->st_net_debug_item,
 			 &nst->st_net_debug_item);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return nst; /* unused, just needs to be null when done */
 }
@@ -112,7 +133,7 @@ static int nst_seq_show(struct seq_file *seq, void *v)
 	ktime_t now;
 	s64 sock, send, status;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	nst = next_nst(dummy_nst);
 	if (!nst)
 		goto out;
@@ -145,7 +166,7 @@ static int nst_seq_show(struct seq_file *seq, void *v)
 		   (long long)status);
 
 out:
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return 0;
 }
@@ -191,16 +212,16 @@ static const struct file_operations nst_seq_fops = {
 
 void o2net_debug_add_sc(struct o2net_sock_container *sc)
 {
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	list_add(&sc->sc_net_debug_item, &sock_containers);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 }
 
 void o2net_debug_del_sc(struct o2net_sock_container *sc)
 {
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	list_del_init(&sc->sc_net_debug_item);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 }
 
 struct o2net_sock_debug {
@@ -236,9 +257,9 @@ static void *sc_seq_start(struct seq_file *seq, loff_t *pos)
 	struct o2net_sock_debug *sd = seq->private;
 	struct o2net_sock_container *sc, *dummy_sc = sd->dbg_sock;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	sc = next_sc(dummy_sc);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return sc;
 }
@@ -248,12 +269,12 @@ static void *sc_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 	struct o2net_sock_debug *sd = seq->private;
 	struct o2net_sock_container *sc, *dummy_sc = sd->dbg_sock;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	sc = next_sc(dummy_sc);
 	list_del_init(&dummy_sc->sc_net_debug_item);
 	if (sc)
 		list_add(&dummy_sc->sc_net_debug_item, &sc->sc_net_debug_item);
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return sc; /* unused, just needs to be null when done */
 }
@@ -328,7 +349,7 @@ static void sc_show_sock_container(struct seq_file *seq,
 		   "  func key:        0x%08x\n"
 		   "  func type:       %u\n",
 		   sc,
-		   kref_read(&sc->sc_kref),
+		   atomic_read(&sc->sc_kref.refcount),
 		   &saddr, inet ? ntohs(sport) : 0,
 		   &daddr, inet ? ntohs(dport) : 0,
 		   sc->sc_node->nd_name,
@@ -349,7 +370,7 @@ static int sc_seq_show(struct seq_file *seq, void *v)
 	struct o2net_sock_debug *sd = seq->private;
 	struct o2net_sock_container *sc, *dummy_sc = sd->dbg_sock;
 
-	spin_lock_bh(&o2net_debug_lock);
+	spin_lock(&o2net_debug_lock);
 	sc = next_sc(dummy_sc);
 
 	if (sc) {
@@ -359,7 +380,7 @@ static int sc_seq_show(struct seq_file *seq, void *v)
 			sc_show_sock_stats(seq, sc);
 	}
 
-	spin_unlock_bh(&o2net_debug_lock);
+	spin_unlock(&o2net_debug_lock);
 
 	return 0;
 }
@@ -405,7 +426,6 @@ static int sc_fop_release(struct inode *inode, struct file *file)
 	struct o2net_sock_container *dummy_sc = sd->dbg_sock;
 
 	o2net_debug_del_sc(dummy_sc);
-	kfree(dummy_sc);
 	return seq_release_private(inode, file);
 }
 
@@ -438,11 +458,11 @@ static int o2net_fill_bitmap(char *buf, int len)
 	unsigned long map[BITS_TO_LONGS(O2NM_MAX_NODES)];
 	int i = -1, out = 0;
 
-	o2net_fill_node_map(map, O2NM_MAX_NODES);
+	o2net_fill_node_map(map, sizeof(map));
 
 	while ((i = find_next_bit(map, O2NM_MAX_NODES, i + 1)) < O2NM_MAX_NODES)
-		out += scnprintf(buf + out, PAGE_SIZE - out, "%d ", i);
-	out += scnprintf(buf + out, PAGE_SIZE - out, "\n");
+		out += snprintf(buf + out, PAGE_SIZE - out, "%d ", i);
+	out += snprintf(buf + out, PAGE_SIZE - out, "\n");
 
 	return out;
 }
@@ -484,23 +504,36 @@ static const struct file_operations nodes_fops = {
 
 void o2net_debugfs_exit(void)
 {
-	debugfs_remove_recursive(o2net_dentry);
+	debugfs_remove(nodes_dentry);
+	debugfs_remove(stats_dentry);
+	debugfs_remove(sc_dentry);
+	debugfs_remove(nst_dentry);
+	debugfs_remove(o2net_dentry);
 }
 
-void o2net_debugfs_init(void)
+int o2net_debugfs_init(void)
 {
 	umode_t mode = S_IFREG|S_IRUSR;
 
 	o2net_dentry = debugfs_create_dir(O2NET_DEBUG_DIR, NULL);
+	if (o2net_dentry)
+		nst_dentry = debugfs_create_file(NST_DEBUG_NAME, mode,
+					o2net_dentry, NULL, &nst_seq_fops);
+	if (nst_dentry)
+		sc_dentry = debugfs_create_file(SC_DEBUG_NAME, mode,
+					o2net_dentry, NULL, &sc_seq_fops);
+	if (sc_dentry)
+		stats_dentry = debugfs_create_file(STATS_DEBUG_NAME, mode,
+					o2net_dentry, NULL, &stats_seq_fops);
+	if (stats_dentry)
+		nodes_dentry = debugfs_create_file(NODES_DEBUG_NAME, mode,
+					o2net_dentry, NULL, &nodes_fops);
+	if (nodes_dentry)
+		return 0;
 
-	debugfs_create_file(NST_DEBUG_NAME, mode, o2net_dentry, NULL,
-			    &nst_seq_fops);
-	debugfs_create_file(SC_DEBUG_NAME, mode, o2net_dentry, NULL,
-			    &sc_seq_fops);
-	debugfs_create_file(STATS_DEBUG_NAME, mode, o2net_dentry, NULL,
-			    &stats_seq_fops);
-	debugfs_create_file(NODES_DEBUG_NAME, mode, o2net_dentry, NULL,
-			    &nodes_fops);
+	o2net_debugfs_exit();
+	mlog_errno(-ENOMEM);
+	return -ENOMEM;
 }
 
 #endif	/* CONFIG_DEBUG_FS */

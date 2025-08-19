@@ -188,14 +188,16 @@ struct locomo_driver {
 	struct device_driver	drv;
 	unsigned int		devid;
 	int (*probe)(struct locomo_dev *);
-	void (*remove)(struct locomo_dev *);
+	int (*remove)(struct locomo_dev *);
+	int (*suspend)(struct locomo_dev *, pm_message_t);
+	int (*resume)(struct locomo_dev *);
 };
 
 #define LOCOMO_DRV(_d)	container_of((_d), struct locomo_driver, drv)
 
 #define LOCOMO_DRIVER_NAME(_ldev) ((_ldev)->dev.driver->name)
 
-extern void locomolcd_power(int on);
+void locomo_lcd_power(struct locomo_dev *, int, unsigned int);
 
 int locomo_driver_register(struct locomo_driver *);
 void locomo_driver_unregister(struct locomo_driver *);

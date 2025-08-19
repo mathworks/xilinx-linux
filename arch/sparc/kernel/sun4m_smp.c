@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  sun4m SMP support.
  *
@@ -9,7 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/profile.h>
 #include <linux/delay.h>
-#include <linux/sched/mm.h>
+#include <linux/sched.h>
 #include <linux/cpu.h>
 
 #include <asm/cacheflush.h>
@@ -60,7 +59,7 @@ void sun4m_cpu_pre_online(void *arg)
 			     : "memory" /* paranoid */);
 
 	/* Attach to the address space of init_task. */
-	mmgrab(&init_mm);
+	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
 
 	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
@@ -157,7 +156,7 @@ static void sun4m_ipi_mask_one(int cpu)
 }
 
 static struct smp_funcall {
-	void *func;
+	smpfunc_t func;
 	unsigned long arg1;
 	unsigned long arg2;
 	unsigned long arg3;
@@ -170,7 +169,7 @@ static struct smp_funcall {
 static DEFINE_SPINLOCK(cross_call_lock);
 
 /* Cross calls must be serialized, at least currently. */
-static void sun4m_cross_call(void *func, cpumask_t mask, unsigned long arg1,
+static void sun4m_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 			     unsigned long arg2, unsigned long arg3,
 			     unsigned long arg4)
 {
@@ -230,13 +229,11 @@ static void sun4m_cross_call(void *func, cpumask_t mask, unsigned long arg1,
 /* Running cross calls. */
 void smp4m_cross_call_irq(void)
 {
-	void (*func)(unsigned long, unsigned long, unsigned long, unsigned long,
-		     unsigned long) = ccall_info.func;
 	int i = smp_processor_id();
 
 	ccall_info.processors_in[i] = 1;
-	func(ccall_info.arg1, ccall_info.arg2, ccall_info.arg3, ccall_info.arg4,
-	     ccall_info.arg5);
+	ccall_info.func(ccall_info.arg1, ccall_info.arg2, ccall_info.arg3,
+			ccall_info.arg4, ccall_info.arg5);
 	ccall_info.processors_out[i] = 1;
 }
 

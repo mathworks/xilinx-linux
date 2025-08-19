@@ -1,5 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* net/sched/sch_teql.c	"True" (or "trivial") link equalizer.
+ *
+ *		This program is free software; you can redistribute it and/or
+ *		modify it under the terms of the GNU General Public License
+ *		as published by the Free Software Foundation; either version
+ *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Alexey Kuznetsov, <kuznet@ms2.inr.ac.ru>
  */
@@ -124,6 +128,7 @@ teql_reset(struct Qdisc *sch)
 	struct teql_sched_data *dat = qdisc_priv(sch);
 
 	skb_queue_purge(&dat->q);
+	sch->q.qlen = 0;
 }
 
 static void
@@ -132,9 +137,6 @@ teql_destroy(struct Qdisc *sch)
 	struct Qdisc *q, *prev;
 	struct teql_sched_data *dat = qdisc_priv(sch);
 	struct teql_master *master = dat->m;
-
-	if (!master)
-		return;
 
 	prev = master->slaves;
 	if (prev) {
@@ -165,8 +167,7 @@ teql_destroy(struct Qdisc *sch)
 	}
 }
 
-static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt,
-			   struct netlink_ext_ack *extack)
+static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_master *m = (struct teql_master *)sch->ops;
@@ -241,7 +242,7 @@ __teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
 		char haddr[MAX_ADDR_LEN];
 
 		neigh_ha_snapshot(haddr, n, dev);
-		err = dev_hard_header(skb, dev, ntohs(skb_protocol(skb, false)),
+		err = dev_hard_header(skb, dev, ntohs(tc_skb_protocol(skb)),
 				      haddr, NULL, skb->len);
 
 		if (err < 0)
@@ -297,7 +298,7 @@ restart:
 		struct net_device *slave = qdisc_dev(q);
 		struct netdev_queue *slave_txq = netdev_get_tx_queue(slave, 0);
 
-		if (rcu_access_pointer(slave_txq->qdisc_sleeping) != q)
+		if (slave_txq->qdisc_sleeping != q)
 			continue;
 		if (netif_xmit_stopped(netdev_get_tx_queue(slave, subq)) ||
 		    !netif_running(slave)) {
@@ -400,8 +401,8 @@ static int teql_master_close(struct net_device *dev)
 	return 0;
 }
 
-static void teql_master_stats64(struct net_device *dev,
-				struct rtnl_link_stats64 *stats)
+static struct rtnl_link_stats64 *teql_master_stats64(struct net_device *dev,
+						     struct rtnl_link_stats64 *stats)
 {
 	struct teql_master *m = netdev_priv(dev);
 
@@ -409,12 +410,16 @@ static void teql_master_stats64(struct net_device *dev,
 	stats->tx_bytes		= m->tx_bytes;
 	stats->tx_errors	= m->tx_errors;
 	stats->tx_dropped	= m->tx_dropped;
+	return stats;
 }
 
 static int teql_master_mtu(struct net_device *dev, int new_mtu)
 {
 	struct teql_master *m = netdev_priv(dev);
 	struct Qdisc *q;
+
+	if (new_mtu < 68)
+		return -EINVAL;
 
 	q = m->slaves;
 	if (q) {
@@ -455,8 +460,6 @@ static __init void teql_master_setup(struct net_device *dev)
 	dev->netdev_ops =       &teql_netdev_ops;
 	dev->type		= ARPHRD_VOID;
 	dev->mtu		= 1500;
-	dev->min_mtu		= 68;
-	dev->max_mtu		= 65535;
 	dev->tx_queue_len	= 100;
 	dev->flags		= IFF_NOARP;
 	dev->hard_header_len	= LL_MAX_HEADER;
@@ -491,7 +494,7 @@ static int __init teql_init(void)
 
 		master = netdev_priv(dev);
 
-		strscpy(master->qops.id, dev->name, IFNAMSIZ);
+		strlcpy(master->qops.id, dev->name, IFNAMSIZ);
 		err = register_qdisc(&master->qops);
 
 		if (err) {

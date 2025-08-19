@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *    HMC Drive FTP Services
  *
@@ -26,7 +25,7 @@
  * struct hmcdrv_ftp_ops - HMC drive FTP operations
  * @startup: startup function
  * @shutdown: shutdown function
- * @transfer: FTP transfer function
+ * @cmd: FTP transfer function
  */
 struct hmcdrv_ftp_ops {
 	int (*startup)(void);
@@ -137,7 +136,7 @@ static int hmcdrv_ftp_parse(char *cmd, struct hmcdrv_ftp_cmdspec *ftp)
 			while ((*cmd != '\0') && !iscntrl(*cmd))
 				++cmd;
 			ftp->fname = start;
-			fallthrough;
+			/* fall through */
 		default:
 			*cmd = '\0';
 			break;

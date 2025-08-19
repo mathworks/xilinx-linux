@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/arch/alpha/lib/memset.S
  *
@@ -14,14 +13,14 @@
  * The scheduling comments are according to the EV5 documentation (and done by 
  * hand, so they might well be incorrect, please do tell me about it..)
  */
-#include <linux/export.h>
+#include <asm/export.h>
 	.set noat
 	.set noreorder
 .text
 	.globl memset
 	.globl __memset
 	.globl ___memset
-	.globl __memset16
+	.globl __memsetw
 	.globl __constant_c_memset
 
 	.ent ___memset
@@ -111,8 +110,8 @@ EXPORT_SYMBOL(___memset)
 EXPORT_SYMBOL(__constant_c_memset)
 
 	.align 5
-	.ent __memset16
-__memset16:
+	.ent __memsetw
+__memsetw:
 	.prologue 0
 
 	inswl $17,0,$1		/* E0 */
@@ -124,8 +123,8 @@ __memset16:
 	or $1,$4,$17		/* E0 */
 	br __constant_c_memset	/* .. E1 */
 
-	.end __memset16
-EXPORT_SYMBOL(__memset16)
+	.end __memsetw
+EXPORT_SYMBOL(__memsetw)
 
 memset = ___memset
 __memset = ___memset

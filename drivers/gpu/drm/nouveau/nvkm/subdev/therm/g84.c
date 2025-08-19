@@ -203,7 +203,7 @@ g84_therm_fini(struct nvkm_therm *therm)
 	nvkm_wr32(device, 0x1100, 0x10000); /* PBUS */
 }
 
-void
+static void
 g84_therm_init(struct nvkm_therm *therm)
 {
 	g84_sensor_setup(therm);
@@ -223,13 +223,12 @@ g84_therm = {
 };
 
 int
-g84_therm_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-	      struct nvkm_therm **ptherm)
+g84_therm_new(struct nvkm_device *device, int index, struct nvkm_therm **ptherm)
 {
 	struct nvkm_therm *therm;
 	int ret;
 
-	ret = nvkm_therm_new_(&g84_therm, device, type, inst, &therm);
+	ret = nvkm_therm_new_(&g84_therm, device, index, &therm);
 	*ptherm = therm;
 	if (ret)
 		return ret;

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Assorted bcache debug code
  *
@@ -17,7 +16,7 @@
 #include <linux/random.h>
 #include <linux/seq_file.h>
 
-struct dentry *bcache_debug;
+static struct dentry *debug;
 
 #ifdef CONFIG_BCACHE_DEBUG
 
@@ -25,8 +24,8 @@ struct dentry *bcache_debug;
 	for (i = (start);						\
 	     (void *) i < (void *) (start) + (KEY_SIZE(&b->key) << 9) &&\
 	     i->seq == (start)->seq;					\
-	     i = (void *) i + set_blocks(i, block_bytes(b->c->cache)) *	\
-		 block_bytes(b->c->cache))
+	     i = (void *) i + set_blocks(i, block_bytes(b->c)) *	\
+		 block_bytes(b->c))
 
 void bch_btree_verify(struct btree *b)
 {
@@ -50,10 +49,10 @@ void bch_btree_verify(struct btree *b)
 	v->keys.ops = b->keys.ops;
 
 	bio = bch_bbio_alloc(b->c);
-	bio_set_dev(bio, b->c->cache->bdev);
+	bio->bi_bdev		= PTR_CACHE(b->c, &b->key, 0)->bdev;
 	bio->bi_iter.bi_sector	= PTR_OFFSET(&b->key, 0);
 	bio->bi_iter.bi_size	= KEY_SIZE(&v->key) << 9;
-	bio->bi_opf		= REQ_OP_READ | REQ_META;
+	bio_set_op_attrs(bio, REQ_OP_READ, REQ_META|READ_SYNC);
 	bch_bio_map(bio, sorted);
 
 	submit_bio_wait(bio);
@@ -67,35 +66,34 @@ void bch_btree_verify(struct btree *b)
 	if (inmemory->keys != sorted->keys ||
 	    memcmp(inmemory->start,
 		   sorted->start,
-		   (void *) bset_bkey_last(inmemory) -
-		   (void *) inmemory->start)) {
+		   (void *) bset_bkey_last(inmemory) - (void *) inmemory->start)) {
 		struct bset *i;
-		unsigned int j;
+		unsigned j;
 
 		console_lock();
 
-		pr_err("*** in memory:\n");
+		printk(KERN_ERR "*** in memory:\n");
 		bch_dump_bset(&b->keys, inmemory, 0);
 
-		pr_err("*** read back in:\n");
+		printk(KERN_ERR "*** read back in:\n");
 		bch_dump_bset(&v->keys, sorted, 0);
 
 		for_each_written_bset(b, ondisk, i) {
-			unsigned int block = ((void *) i - (void *) ondisk) /
-				block_bytes(b->c->cache);
+			unsigned block = ((void *) i - (void *) ondisk) /
+				block_bytes(b->c);
 
-			pr_err("*** on disk block %u:\n", block);
+			printk(KERN_ERR "*** on disk block %u:\n", block);
 			bch_dump_bset(&b->keys, i, block);
 		}
 
-		pr_err("*** block %zu not written\n",
-		       ((void *) i - (void *) ondisk) / block_bytes(b->c->cache));
+		printk(KERN_ERR "*** block %zu not written\n",
+		       ((void *) i - (void *) ondisk) / block_bytes(b->c));
 
 		for (j = 0; j < inmemory->keys; j++)
 			if (inmemory->d[j] != sorted->d[j])
 				break;
 
-		pr_err("b->written %u\n", b->written);
+		printk(KERN_ERR "b->written %u\n", b->written);
 
 		console_unlock();
 		panic("verify failed at %u\n", j);
@@ -107,48 +105,39 @@ void bch_btree_verify(struct btree *b)
 
 void bch_data_verify(struct cached_dev *dc, struct bio *bio)
 {
-	unsigned int nr_segs = bio_segments(bio);
+	char name[BDEVNAME_SIZE];
 	struct bio *check;
-	struct bio_vec bv, cbv;
-	struct bvec_iter iter, citer = { 0 };
+	struct bio_vec bv;
+	struct bvec_iter iter;
 
-	check = bio_kmalloc(nr_segs, GFP_NOIO);
+	check = bio_clone(bio, GFP_NOIO);
 	if (!check)
 		return;
-	bio_init(check, bio->bi_bdev, check->bi_inline_vecs, nr_segs,
-		 REQ_OP_READ);
-	check->bi_iter.bi_sector = bio->bi_iter.bi_sector;
-	check->bi_iter.bi_size = bio->bi_iter.bi_size;
+	bio_set_op_attrs(check, REQ_OP_READ, READ_SYNC);
 
-	bch_bio_map(check, NULL);
-	if (bch_bio_alloc_pages(check, GFP_NOIO))
+	if (bio_alloc_pages(check, GFP_NOIO))
 		goto out_put;
 
 	submit_bio_wait(check);
 
-	citer.bi_size = UINT_MAX;
 	bio_for_each_segment(bv, bio, iter) {
-		void *p1 = bvec_kmap_local(&bv);
-		void *p2;
+		void *p1 = kmap_atomic(bv.bv_page);
+		void *p2 = page_address(check->bi_io_vec[iter.bi_idx].bv_page);
 
-		cbv = bio_iter_iovec(check, citer);
-		p2 = bvec_kmap_local(&cbv);
-
-		cache_set_err_on(memcmp(p1, p2, bv.bv_len),
+		cache_set_err_on(memcmp(p1 + bv.bv_offset,
+					p2 + bv.bv_offset,
+					bv.bv_len),
 				 dc->disk.c,
-				 "verify failed at dev %pg sector %llu",
-				 dc->bdev,
+				 "verify failed at dev %s sector %llu",
+				 bdevname(dc->bdev, name),
 				 (uint64_t) bio->bi_iter.bi_sector);
 
-		kunmap_local(p2);
-		kunmap_local(p1);
-		bio_advance_iter(check, &citer, bv.bv_len);
+		kunmap_atomic(p1);
 	}
 
 	bio_free_pages(check);
 out_put:
-	bio_uninit(check);
-	kfree(check);
+	bio_put(check);
 }
 
 #endif
@@ -178,10 +167,11 @@ static ssize_t bch_dump_read(struct file *file, char __user *buf,
 
 	while (size) {
 		struct keybuf_key *w;
-		unsigned int bytes = min(i->bytes, size);
+		unsigned bytes = min(i->bytes, size);
 
-		if (copy_to_user(buf, i->buf, bytes))
-			return -EFAULT;
+		int err = copy_to_user(buf, i->buf, bytes);
+		if (err)
+			return err;
 
 		ret	 += bytes;
 		buf	 += bytes;
@@ -236,11 +226,11 @@ static const struct file_operations cache_set_debug_ops = {
 
 void bch_debug_init_cache_set(struct cache_set *c)
 {
-	if (!IS_ERR_OR_NULL(bcache_debug)) {
+	if (!IS_ERR_OR_NULL(debug)) {
 		char name[50];
+		snprintf(name, 50, "bcache-%pU", c->sb.set_uuid);
 
-		snprintf(name, 50, "bcache-%pU", c->set_uuid);
-		c->debug = debugfs_create_file(name, 0400, bcache_debug, c,
+		c->debug = debugfs_create_file(name, 0400, debug, c,
 					       &cache_set_debug_ops);
 	}
 }
@@ -249,15 +239,14 @@ void bch_debug_init_cache_set(struct cache_set *c)
 
 void bch_debug_exit(void)
 {
-	debugfs_remove_recursive(bcache_debug);
+	if (!IS_ERR_OR_NULL(debug))
+		debugfs_remove_recursive(debug);
 }
 
-void __init bch_debug_init(void)
+int __init bch_debug_init(struct kobject *kobj)
 {
-	/*
-	 * it is unnecessary to check return value of
-	 * debugfs_create_file(), we should not care
-	 * about this.
-	 */
-	bcache_debug = debugfs_create_dir("bcache", NULL);
+	int ret = 0;
+
+	debug = debugfs_create_dir("bcache", NULL);
+	return ret;
 }

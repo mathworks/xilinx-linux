@@ -282,12 +282,12 @@ static int xscaler_s_stream(struct v4l2_subdev *subdev, int enable)
  */
 
 static int xscaler_enum_frame_size(struct v4l2_subdev *subdev,
-				   struct v4l2_subdev_state *sd_state,
+				   struct v4l2_subdev_pad_config *cfg,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct v4l2_mbus_framefmt *format;
 
-	format = v4l2_subdev_get_try_format(subdev, sd_state, fse->pad);
+	format = v4l2_subdev_get_try_format(subdev, cfg, fse->pad);
 
 	if (fse->index || fse->code != format->code)
 		return -EINVAL;
@@ -302,63 +302,43 @@ static int xscaler_enum_frame_size(struct v4l2_subdev *subdev,
 
 static struct v4l2_mbus_framefmt *
 __xscaler_get_pad_format(struct xscaler_device *xscaler,
-			 struct v4l2_subdev_state *sd_state,
+			 struct v4l2_subdev_pad_config *cfg,
 			 unsigned int pad, u32 which)
 {
-	struct v4l2_mbus_framefmt *format;
-
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		format = v4l2_subdev_get_try_format(&xscaler->xvip.subdev,
-						    sd_state, pad);
-		break;
+		return v4l2_subdev_get_try_format(&xscaler->xvip.subdev, cfg,
+						  pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		format = &xscaler->formats[pad];
-		break;
+		return &xscaler->formats[pad];
 	default:
-		format = NULL;
-		break;
+		return NULL;
 	}
-
-	return format;
 }
 
 static struct v4l2_rect *__xscaler_get_crop(struct xscaler_device *xscaler,
-					    struct v4l2_subdev_state *sd_state,
+					    struct v4l2_subdev_pad_config *cfg,
 					    u32 which)
 {
-	struct v4l2_rect *crop;
-
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		crop = v4l2_subdev_get_try_crop(&xscaler->xvip.subdev,
-						sd_state,
+		return v4l2_subdev_get_try_crop(&xscaler->xvip.subdev, cfg,
 						XVIP_PAD_SINK);
-		break;
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
-		crop = &xscaler->crop;
-		break;
+		return &xscaler->crop;
 	default:
-		crop = NULL;
-		break;
+		return NULL;
 	}
-
-	return crop;
 }
 
 static int xscaler_get_format(struct v4l2_subdev *subdev,
-			      struct v4l2_subdev_state *sd_state,
+			      struct v4l2_subdev_pad_config *cfg,
 			      struct v4l2_subdev_format *fmt)
 {
 	struct xscaler_device *xscaler = to_scaler(subdev);
-	struct v4l2_mbus_framefmt *format;
 
-	format = __xscaler_get_pad_format(xscaler, sd_state, fmt->pad,
-					  fmt->which);
-	if (!format)
-		return -EINVAL;
-
-	fmt->format = *format;
+	fmt->format = *__xscaler_get_pad_format(xscaler, cfg, fmt->pad,
+						fmt->which);
 
 	return 0;
 }
@@ -376,17 +356,14 @@ static void xscaler_try_crop(const struct v4l2_mbus_framefmt *sink,
 }
 
 static int xscaler_set_format(struct v4l2_subdev *subdev,
-			      struct v4l2_subdev_state *sd_state,
+			      struct v4l2_subdev_pad_config *cfg,
 			      struct v4l2_subdev_format *fmt)
 {
 	struct xscaler_device *xscaler = to_scaler(subdev);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 
-	format = __xscaler_get_pad_format(xscaler, sd_state, fmt->pad,
-					  fmt->which);
-	if (!format)
-		return -EINVAL;
+	format = __xscaler_get_pad_format(xscaler, cfg, fmt->pad, fmt->which);
 
 	format->width = clamp_t(unsigned int, fmt->format.width,
 				  XSCALER_MIN_WIDTH, XSCALER_MAX_WIDTH);
@@ -397,9 +374,7 @@ static int xscaler_set_format(struct v4l2_subdev *subdev,
 
 	if (fmt->pad == XVIP_PAD_SINK) {
 		/* Set the crop rectangle to the full frame */
-		crop = __xscaler_get_crop(xscaler, sd_state, fmt->which);
-		if (!crop)
-			return -EINVAL;
+		crop = __xscaler_get_crop(xscaler, cfg, fmt->which);
 		crop->left = 0;
 		crop->top = 0;
 		crop->width = fmt->format.width;
@@ -410,34 +385,26 @@ static int xscaler_set_format(struct v4l2_subdev *subdev,
 }
 
 static int xscaler_get_selection(struct v4l2_subdev *subdev,
-				 struct v4l2_subdev_state *sd_state,
+				 struct v4l2_subdev_pad_config *cfg,
 				 struct v4l2_subdev_selection *sel)
 {
 	struct xscaler_device *xscaler = to_scaler(subdev);
 	struct v4l2_mbus_framefmt *format;
-	struct v4l2_rect *crop;
 
 	if (sel->pad != XVIP_PAD_SINK)
 		return -EINVAL;
 
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP_BOUNDS:
-		format = __xscaler_get_pad_format(xscaler, sd_state,
-						  XVIP_PAD_SINK,
+		format = __xscaler_get_pad_format(xscaler, cfg, XVIP_PAD_SINK,
 						  sel->which);
-		if (!format)
-			return -EINVAL;
-
 		sel->r.left = 0;
 		sel->r.top = 0;
 		sel->r.width = format->width;
 		sel->r.height = format->height;
 		return 0;
 	case V4L2_SEL_TGT_CROP:
-		crop = __xscaler_get_crop(xscaler, sd_state, sel->which);
-		if (!crop)
-			return -EINVAL;
-		sel->r = *crop;
+		sel->r = *__xscaler_get_crop(xscaler, cfg, sel->which);
 		return 0;
 	default:
 		return -EINVAL;
@@ -445,27 +412,19 @@ static int xscaler_get_selection(struct v4l2_subdev *subdev,
 }
 
 static int xscaler_set_selection(struct v4l2_subdev *subdev,
-				 struct v4l2_subdev_state *sd_state,
+				 struct v4l2_subdev_pad_config *cfg,
 				 struct v4l2_subdev_selection *sel)
 {
 	struct xscaler_device *xscaler = to_scaler(subdev);
 	struct v4l2_mbus_framefmt *format;
-	struct v4l2_rect *crop;
 
 	if ((sel->target != V4L2_SEL_TGT_CROP) || (sel->pad != XVIP_PAD_SINK))
 		return -EINVAL;
 
-	format = __xscaler_get_pad_format(xscaler, sd_state, XVIP_PAD_SINK,
+	format = __xscaler_get_pad_format(xscaler, cfg, XVIP_PAD_SINK,
 					  sel->which);
-	if (!format)
-		return -EINVAL;
-
 	xscaler_try_crop(format, &sel->r);
-	crop = __xscaler_get_crop(xscaler, sd_state, sel->which);
-	if (!crop)
-		return -EINVAL;
-
-	*crop = sel->r;
+	*__xscaler_get_crop(xscaler, cfg, sel->which) = sel->r;
 
 	return 0;
 }
@@ -480,11 +439,10 @@ static int xscaler_open(struct v4l2_subdev *subdev, struct v4l2_subdev_fh *fh)
 	struct v4l2_mbus_framefmt *format;
 
 	/* Initialize with default formats */
-	format = v4l2_subdev_get_try_format(subdev, fh->state, XVIP_PAD_SINK);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SINK);
 	*format = xscaler->default_formats[XVIP_PAD_SINK];
 
-	format = v4l2_subdev_get_try_format(subdev, fh->state,
-					    XVIP_PAD_SOURCE);
+	format = v4l2_subdev_get_try_format(subdev, fh->pad, XVIP_PAD_SOURCE);
 	*format = xscaler->default_formats[XVIP_PAD_SOURCE];
 
 	return 0;
@@ -738,7 +696,6 @@ MODULE_DEVICE_TABLE(of, xscaler_of_id_table);
 static struct platform_driver xscaler_driver = {
 	.driver			= {
 		.name		= "xilinx-scaler",
-		.pm		= &xscaler_pm_ops,
 		.of_match_table	= xscaler_of_id_table,
 	},
 	.probe			= xscaler_probe,
@@ -748,4 +705,4 @@ static struct platform_driver xscaler_driver = {
 module_platform_driver(xscaler_driver);
 
 MODULE_DESCRIPTION("Xilinx Scaler Driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

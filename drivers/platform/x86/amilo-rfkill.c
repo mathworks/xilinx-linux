@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Support for rfkill on some Fujitsu-Siemens Amilo laptops.
  * Copyright 2011 Ben Hutchings.
@@ -7,6 +6,11 @@
  * Copyright 2005 Alejandro Vidal Mata & Javier Vidal Mata.
  * and on the fsaa1655g driver, which is:
  * Copyright 2006 Martin Večeřa.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -124,10 +128,11 @@ fail:
 	return rc;
 }
 
-static void amilo_rfkill_remove(struct platform_device *device)
+static int amilo_rfkill_remove(struct platform_device *device)
 {
 	rfkill_unregister(amilo_rfkill_dev);
 	rfkill_destroy(amilo_rfkill_dev);
+	return 0;
 }
 
 static struct platform_driver amilo_rfkill_driver = {
@@ -135,7 +140,7 @@ static struct platform_driver amilo_rfkill_driver = {
 		.name	= KBUILD_MODNAME,
 	},
 	.probe	= amilo_rfkill_probe,
-	.remove_new = amilo_rfkill_remove,
+	.remove	= amilo_rfkill_remove,
 };
 
 static int __init amilo_rfkill_init(void)
@@ -149,8 +154,7 @@ static int __init amilo_rfkill_init(void)
 	if (rc)
 		return rc;
 
-	amilo_rfkill_pdev = platform_device_register_simple(KBUILD_MODNAME,
-							    PLATFORM_DEVID_NONE,
+	amilo_rfkill_pdev = platform_device_register_simple(KBUILD_MODNAME, -1,
 							    NULL, 0);
 	if (IS_ERR(amilo_rfkill_pdev)) {
 		rc = PTR_ERR(amilo_rfkill_pdev);

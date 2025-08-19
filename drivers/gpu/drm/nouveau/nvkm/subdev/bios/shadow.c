@@ -75,7 +75,7 @@ shadow_image(struct nvkm_bios *bios, int idx, u32 offset, struct shadow *mthd)
 	nvkm_debug(subdev, "%08x: type %02x, %d bytes\n",
 		   image.base, image.type, image.size);
 
-	if (!shadow_fetch(bios, mthd, image.base + image.size)) {
+	if (!shadow_fetch(bios, mthd, image.size)) {
 		nvkm_debug(subdev, "%08x: fetch failed\n", image.base);
 		return 0;
 	}
@@ -86,12 +86,9 @@ shadow_image(struct nvkm_bios *bios, int idx, u32 offset, struct shadow *mthd)
 		    nvbios_checksum(&bios->data[image.base], image.size)) {
 			nvkm_debug(subdev, "%08x: checksum failed\n",
 				   image.base);
-			if (!mthd->func->require_checksum) {
-				if (mthd->func->rw)
-					score += 1;
+			if (mthd->func->rw)
 				score += 1;
-			} else
-				return 0;
+			score += 1;
 		} else {
 			score += 3;
 		}
@@ -171,7 +168,7 @@ nvbios_shadow(struct nvkm_bios *bios)
 	struct shadow mthds[] = {
 		{ 0, &nvbios_of },
 		{ 0, &nvbios_ramin },
-		{ 0, &nvbios_prom },
+		{ 0, &nvbios_rom },
 		{ 0, &nvbios_acpi_fast },
 		{ 4, &nvbios_acpi_slow },
 		{ 1, &nvbios_pcirom },

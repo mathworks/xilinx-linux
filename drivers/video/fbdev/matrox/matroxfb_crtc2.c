@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * Hardware accelerated Matrox Millennium I, II, Mystique, G100, G200, G400 and G450.
@@ -563,7 +562,7 @@ static int matroxfb_dh_blank(int blank, struct fb_info* info) {
 #undef m2info
 }
 
-static const struct fb_ops matroxfb_dh_ops = {
+static struct fb_ops matroxfb_dh_ops = {
 	.owner =	THIS_MODULE,
 	.fb_open =	matroxfb_dh_open,
 	.fb_release =	matroxfb_dh_release,
@@ -603,8 +602,9 @@ static int matroxfb_dh_regit(const struct matrox_fb_info *minfo,
 	void* oldcrtc2;
 
 	m2info->fbcon.fbops = &matroxfb_dh_ops;
-	m2info->fbcon.flags = FBINFO_HWACCEL_XPAN |
-			      FBINFO_HWACCEL_YPAN;
+	m2info->fbcon.flags = FBINFO_FLAG_DEFAULT;
+	m2info->fbcon.flags |= FBINFO_HWACCEL_XPAN |
+			       FBINFO_HWACCEL_YPAN;
 	m2info->fbcon.pseudo_palette = m2info->cmap;
 	fb_alloc_cmap(&m2info->fbcon.cmap, 256, 1);
 
@@ -696,9 +696,10 @@ static void* matroxfb_crtc2_probe(struct matrox_fb_info* minfo) {
 	if (!minfo->devflags.crtc2)
 		return NULL;
 	m2info = kzalloc(sizeof(*m2info), GFP_KERNEL);
-	if (!m2info)
+	if (!m2info) {
+		printk(KERN_ERR "matroxfb_crtc2: Not enough memory for CRTC2 control structs\n");
 		return NULL;
-
+	}
 	m2info->primary_dev = minfo;
 	if (matroxfb_dh_registerfb(m2info)) {
 		kfree(m2info);

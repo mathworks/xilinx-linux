@@ -1,15 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *   Fujitu mb86a20s ISDB-T/ISDB-Tsb Module driver
  *
  *   Copyright (C) 2010-2013 Mauro Carvalho Chehab
  *   Copyright (C) 2009-2010 Douglas Landgraf <dougsland@redhat.com>
+ *
+ *   This program is free software; you can redistribute it and/or
+ *   modify it under the terms of the GNU General Public License as
+ *   published by the Free Software Foundation version 2.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ *   General Public License for more details.
  */
 
 #include <linux/kernel.h>
 #include <asm/div64.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 #include "mb86a20s.h"
 
 #define NUM_LAYERS 3
@@ -444,11 +452,11 @@ static int mb86a20s_get_interleaving(struct mb86a20s_state *state,
 				     unsigned layer)
 {
 	int rc;
-	static const int interleaving[] = {
+	int interleaving[] = {
 		0, 1, 2, 4, 8
 	};
 
-	static const unsigned char reg[] = {
+	static unsigned char reg[] = {
 		[0] = 0x88,	/* Layer A */
 		[1] = 0x8c,	/* Layer B */
 		[2] = 0x90,	/* Layer C */
@@ -517,7 +525,7 @@ static void mb86a20s_reset_frontend_cache(struct dvb_frontend *fe)
  * Estimates the bit rate using the per-segment bit rate given by
  * ABNT/NBR 15601 spec (table 4).
  */
-static const u32 isdbt_rate[3][5][4] = {
+static u32 isdbt_rate[3][5][4] = {
 	{	/* DQPSK/QPSK */
 		{  280850,  312060,  330420,  340430 },	/* 1/2 */
 		{  374470,  416080,  440560,  453910 },	/* 2/3 */
@@ -539,9 +547,13 @@ static const u32 isdbt_rate[3][5][4] = {
 	}
 };
 
-static u32 isdbt_layer_min_bitrate(struct dtv_frontend_properties *c,
-				   u32 layer)
+static void mb86a20s_layer_bitrate(struct dvb_frontend *fe, u32 layer,
+				   u32 modulation, u32 forward_error_correction,
+				   u32 guard_interval,
+				   u32 segment)
 {
+	struct mb86a20s_state *state = fe->demodulator_priv;
+	u32 rate;
 	int mod, fec, guard;
 
 	/*
@@ -549,7 +561,7 @@ static u32 isdbt_layer_min_bitrate(struct dtv_frontend_properties *c,
 	 * to consider the lowest bit rate, to avoid taking too long time
 	 * to get BER.
 	 */
-	switch (c->layer[layer].modulation) {
+	switch (modulation) {
 	case DQPSK:
 	case QPSK:
 	default:
@@ -563,7 +575,7 @@ static u32 isdbt_layer_min_bitrate(struct dtv_frontend_properties *c,
 		break;
 	}
 
-	switch (c->layer[layer].fec) {
+	switch (forward_error_correction) {
 	default:
 	case FEC_1_2:
 	case FEC_AUTO:
@@ -583,7 +595,7 @@ static u32 isdbt_layer_min_bitrate(struct dtv_frontend_properties *c,
 		break;
 	}
 
-	switch (c->guard_interval) {
+	switch (guard_interval) {
 	default:
 	case GUARD_INTERVAL_1_4:
 		guard = 0;
@@ -599,14 +611,29 @@ static u32 isdbt_layer_min_bitrate(struct dtv_frontend_properties *c,
 		break;
 	}
 
-	return isdbt_rate[mod][fec][guard] * c->layer[layer].segment_count;
+	/* Samples BER at BER_SAMPLING_RATE seconds */
+	rate = isdbt_rate[mod][fec][guard] * segment * BER_SAMPLING_RATE;
+
+	/* Avoids sampling too quickly or to overflow the register */
+	if (rate < 256)
+		rate = 256;
+	else if (rate > (1 << 24) - 1)
+		rate = (1 << 24) - 1;
+
+	dev_dbg(&state->i2c->dev,
+		"%s: layer %c bitrate: %d kbps; counter = %d (0x%06x)\n",
+		__func__, 'A' + layer,
+		segment * isdbt_rate[mod][fec][guard]/1000,
+		rate, rate);
+
+	state->estimated_rate[layer] = rate;
 }
 
 static int mb86a20s_get_frontend(struct dvb_frontend *fe)
 {
 	struct mb86a20s_state *state = fe->demodulator_priv;
 	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	int layer, rc, rate, counter;
+	int layer, rc;
 
 	dev_dbg(&state->i2c->dev, "%s called.\n", __func__);
 
@@ -657,21 +684,10 @@ static int mb86a20s_get_frontend(struct dvb_frontend *fe)
 		dev_dbg(&state->i2c->dev, "%s: interleaving %d.\n",
 			__func__, rc);
 		c->layer[layer].interleaving = rc;
-
-		rate = isdbt_layer_min_bitrate(c, layer);
-		counter = rate * BER_SAMPLING_RATE;
-
-		/* Avoids sampling too quickly or to overflow the register */
-		if (counter < 256)
-			counter = 256;
-		else if (counter > (1 << 24) - 1)
-			counter = (1 << 24) - 1;
-
-		dev_dbg(&state->i2c->dev,
-			"%s: layer %c bitrate: %d kbps; counter = %d (0x%06x)\n",
-			__func__, 'A' + layer, rate / 1000, counter, counter);
-
-		state->estimated_rate[layer] = counter;
+		mb86a20s_layer_bitrate(fe, layer, c->layer[layer].modulation,
+				       c->layer[layer].fec,
+				       c->guard_interval,
+				       c->layer[layer].segment_count);
 	}
 
 	rc = mb86a20s_writereg(state, 0x6d, 0x84);
@@ -1569,7 +1585,7 @@ static int mb86a20s_get_stats(struct dvb_frontend *fe, int status_nr)
 	u32 t_post_bit_error = 0, t_post_bit_count = 0;
 	u32 block_error = 0, block_count = 0;
 	u32 t_block_error = 0, t_block_count = 0;
-	int pre_ber_layers = 0, post_ber_layers = 0;
+	int active_layers = 0, pre_ber_layers = 0, post_ber_layers = 0;
 	int per_layers = 0;
 
 	dev_dbg(&state->i2c->dev, "%s called.\n", __func__);
@@ -1589,6 +1605,9 @@ static int mb86a20s_get_stats(struct dvb_frontend *fe, int status_nr)
 
 	for (layer = 0; layer < NUM_LAYERS; layer++) {
 		if (c->isdbt_layer_enabled & (1 << layer)) {
+			/* Layer is active and has rc segments */
+			active_layers++;
+
 			/* Handle BER before vterbi */
 			rc = mb86a20s_get_pre_ber(fe, layer,
 						  &bit_error, &bit_count);
@@ -1948,7 +1967,6 @@ static int mb86a20s_read_status_and_stats(struct dvb_frontend *fe,
 	if (status_nr < 0) {
 		dev_err(&state->i2c->dev,
 			"%s: Can't read frontend lock status\n", __func__);
-		rc = status_nr;
 		goto error;
 	}
 
@@ -2036,12 +2054,12 @@ static void mb86a20s_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static enum dvbfe_algo mb86a20s_get_frontend_algo(struct dvb_frontend *fe)
+static int mb86a20s_get_frontend_algo(struct dvb_frontend *fe)
 {
-	return DVBFE_ALGO_HW;
+        return DVBFE_ALGO_HW;
 }
 
-static const struct dvb_frontend_ops mb86a20s_ops;
+static struct dvb_frontend_ops mb86a20s_ops;
 
 struct dvb_frontend *mb86a20s_attach(const struct mb86a20s_config *config,
 				    struct i2c_adapter *i2c)
@@ -2052,9 +2070,12 @@ struct dvb_frontend *mb86a20s_attach(const struct mb86a20s_config *config,
 	dev_dbg(&i2c->dev, "%s called.\n", __func__);
 
 	/* allocate memory for the internal state */
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
-	if (!state)
-		return NULL;
+	state = kzalloc(sizeof(struct mb86a20s_state), GFP_KERNEL);
+	if (state == NULL) {
+		dev_err(&i2c->dev,
+			"%s: unable to allocate memory for state\n", __func__);
+		goto error;
+	}
 
 	/* setup the state */
 	state->config = config;
@@ -2067,20 +2088,26 @@ struct dvb_frontend *mb86a20s_attach(const struct mb86a20s_config *config,
 
 	/* Check if it is a mb86a20s frontend */
 	rev = mb86a20s_readreg(state, 0);
-	if (rev != 0x13) {
-		kfree(state);
+
+	if (rev == 0x13) {
+		dev_info(&i2c->dev,
+			 "Detected a Fujitsu mb86a20s frontend\n");
+	} else {
 		dev_dbg(&i2c->dev,
 			"Frontend revision %d is unknown - aborting.\n",
 		       rev);
-		return NULL;
+		goto error;
 	}
 
-	dev_info(&i2c->dev, "Detected a Fujitsu mb86a20s frontend\n");
 	return &state->frontend;
-}
-EXPORT_SYMBOL_GPL(mb86a20s_attach);
 
-static const struct dvb_frontend_ops mb86a20s_ops = {
+error:
+	kfree(state);
+	return NULL;
+}
+EXPORT_SYMBOL(mb86a20s_attach);
+
+static struct dvb_frontend_ops mb86a20s_ops = {
 	.delsys = { SYS_ISDBT },
 	/* Use dib8000 values per default */
 	.info = {
@@ -2092,9 +2119,9 @@ static const struct dvb_frontend_ops mb86a20s_ops = {
 			FE_CAN_TRANSMISSION_MODE_AUTO | FE_CAN_QAM_AUTO |
 			FE_CAN_GUARD_INTERVAL_AUTO    | FE_CAN_HIERARCHY_AUTO,
 		/* Actually, those values depend on the used tuner */
-		.frequency_min_hz =  45 * MHz,
-		.frequency_max_hz = 864 * MHz,
-		.frequency_stepsize_hz = 62500,
+		.frequency_min = 45000000,
+		.frequency_max = 864000000,
+		.frequency_stepsize = 62500,
 	},
 
 	.release = mb86a20s_release,

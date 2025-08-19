@@ -35,8 +35,8 @@ gk104_mspdec = {
 };
 
 int
-gk104_mspdec_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+gk104_mspdec_new(struct nvkm_device *device, int index,
 		 struct nvkm_engine **pengine)
 {
-	return nvkm_mspdec_new_(&gk104_mspdec, device, type, inst, pengine);
+	return nvkm_mspdec_new_(&gk104_mspdec, device, index, pengine);
 }

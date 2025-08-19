@@ -58,8 +58,7 @@ g94_bus = {
 };
 
 int
-g94_bus_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
-	    struct nvkm_bus **pbus)
+g94_bus_new(struct nvkm_device *device, int index, struct nvkm_bus **pbus)
 {
-	return nvkm_bus_new_(&g94_bus, device, type, inst, pbus);
+	return nvkm_bus_new_(&g94_bus, device, index, pbus);
 }

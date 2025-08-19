@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Regulator driver for STw4810/STw4811 VMMC regulator.
  *
@@ -6,6 +5,8 @@
  * Written on behalf of Linaro for ST-Ericsson
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
+ *
+ * License terms: GNU General Public License (GPL) version 2
  */
 
 #include <linux/err.h>
@@ -27,7 +28,7 @@ static const unsigned int stw481x_vmmc_voltages[] = {
 	3300000,
 };
 
-static const struct regulator_ops stw481x_vmmc_ops = {
+static struct regulator_ops stw481x_vmmc_ops = {
 	.list_voltage = regulator_list_voltage_table,
 	.enable      = regulator_enable_regmap,
 	.disable     = regulator_disable_regmap,
@@ -36,7 +37,7 @@ static const struct regulator_ops stw481x_vmmc_ops = {
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 };
 
-static const struct regulator_desc vmmc_regulator = {
+static struct regulator_desc vmmc_regulator = {
 	.name = "VMMC",
 	.id   = 0,
 	.ops  = &stw481x_vmmc_ops,
@@ -46,8 +47,7 @@ static const struct regulator_desc vmmc_regulator = {
 	.volt_table = stw481x_vmmc_voltages,
 	.enable_time = 200, /* FIXME: look this up */
 	.enable_reg = STW_CONF1,
-	.enable_mask = STW_CONF1_PDN_VMMC | STW_CONF1_MMC_LS_STATUS,
-	.enable_val = STW_CONF1_PDN_VMMC,
+	.enable_mask = STW_CONF1_PDN_VMMC,
 	.vsel_reg = STW_CONF1,
 	.vsel_mask = STW_CONF1_VMMC_MASK,
 };
@@ -95,7 +95,6 @@ static const struct of_device_id stw481x_vmmc_match[] = {
 static struct platform_driver stw481x_vmmc_regulator_driver = {
 	.driver = {
 		.name  = "stw481x-vmmc-regulator",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = stw481x_vmmc_match,
 	},
 	.probe = stw481x_vmmc_regulator_probe,

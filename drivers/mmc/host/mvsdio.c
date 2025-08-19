@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Marvell MMC/SD/SDIO driver
  *
  * Authors: Maen Suleiman, Nicolas Pitre
  * Copyright (C) 2008-2009 Marvell Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -21,7 +24,7 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/slot-gpio.h>
 
-#include <linux/sizes.h>
+#include <asm/sizes.h>
 #include <asm/unaligned.h>
 
 #include "mvsdio.h"
@@ -122,10 +125,10 @@ static int mvsd_setup_data(struct mvsd_host *host, struct mmc_data *data)
 		return 1;
 	} else {
 		dma_addr_t phys_addr;
-
-		host->sg_frags = dma_map_sg(mmc_dev(host->mmc),
-					    data->sg, data->sg_len,
-					    mmc_get_dma_dir(data));
+		int dma_dir = (data->flags & MMC_DATA_READ) ?
+			DMA_FROM_DEVICE : DMA_TO_DEVICE;
+		host->sg_frags = dma_map_sg(mmc_dev(host->mmc), data->sg,
+					    data->sg_len, dma_dir);
 		phys_addr = sg_dma_address(data->sg);
 		mvsd_write(MVSD_SYS_ADDR_LOW, (u32)phys_addr & 0xffff);
 		mvsd_write(MVSD_SYS_ADDR_HI,  (u32)phys_addr >> 16);
@@ -140,7 +143,6 @@ static void mvsd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct mmc_command *cmd = mrq->cmd;
 	u32 cmdreg = 0, xfer = 0, intr = 0;
 	unsigned long flags;
-	unsigned int timeout;
 
 	BUG_ON(host->mrq != NULL);
 	host->mrq = mrq;
@@ -232,8 +234,7 @@ static void mvsd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	mvsd_write(MVSD_NOR_INTR_EN, host->intr_en);
 	mvsd_write(MVSD_ERR_INTR_EN, 0xffff);
 
-	timeout = cmd->busy_timeout ? cmd->busy_timeout : 5000;
-	mod_timer(&host->timer, jiffies + msecs_to_jiffies(timeout));
+	mod_timer(&host->timer, jiffies + 5 * HZ);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -293,7 +294,8 @@ static u32 mvsd_finish_data(struct mvsd_host *host, struct mmc_data *data,
 		host->pio_size = 0;
 	} else {
 		dma_unmap_sg(mmc_dev(host->mmc), data->sg, host->sg_frags,
-			     mmc_get_dma_dir(data));
+			     (data->flags & MMC_DATA_READ) ?
+				DMA_FROM_DEVICE : DMA_TO_DEVICE);
 	}
 
 	if (err_status & MVSD_ERR_DATA_TIMEOUT)
@@ -507,9 +509,9 @@ static irqreturn_t mvsd_irq(int irq, void *dev)
 	return IRQ_NONE;
 }
 
-static void mvsd_timeout_timer(struct timer_list *t)
+static void mvsd_timeout_timer(unsigned long data)
 {
-	struct mvsd_host *host = from_timer(host, t, timer);
+	struct mvsd_host *host = (struct mvsd_host *)data;
 	void __iomem *iobase = host->base;
 	struct mmc_request *mrq;
 	unsigned long flags;
@@ -696,15 +698,17 @@ static int mvsd_probe(struct platform_device *pdev)
 	struct mmc_host *mmc = NULL;
 	struct mvsd_host *host = NULL;
 	const struct mbus_dram_target_info *dram;
+	struct resource *r;
 	int ret, irq;
 
 	if (!np) {
 		dev_err(&pdev->dev, "no DT node\n");
 		return -ENODEV;
 	}
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (!r || irq < 0)
+		return -ENXIO;
 
 	mmc = mmc_alloc_host(sizeof(struct mvsd_host), &pdev->dev);
 	if (!mmc) {
@@ -754,7 +758,7 @@ static int mvsd_probe(struct platform_device *pdev)
 
 	spin_lock_init(&host->lock);
 
-	host->base = devm_platform_ioremap_resource(pdev, 0);
+	host->base = devm_ioremap_resource(&pdev->dev, r);
 	if (IS_ERR(host->base)) {
 		ret = PTR_ERR(host->base);
 		goto out;
@@ -773,7 +777,7 @@ static int mvsd_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	timer_setup(&host->timer, mvsd_timeout_timer, 0);
+	setup_timer(&host->timer, mvsd_timeout_timer, (unsigned long)host);
 	platform_set_drvdata(pdev, mmc);
 	ret = mmc_add_host(mmc);
 	if (ret)
@@ -796,7 +800,7 @@ out:
 	return ret;
 }
 
-static void mvsd_remove(struct platform_device *pdev)
+static int mvsd_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc = platform_get_drvdata(pdev);
 
@@ -809,6 +813,8 @@ static void mvsd_remove(struct platform_device *pdev)
 	if (!IS_ERR(host->clk))
 		clk_disable_unprepare(host->clk);
 	mmc_free_host(mmc);
+
+	return 0;
 }
 
 static const struct of_device_id mvsdio_dt_ids[] = {
@@ -819,10 +825,9 @@ MODULE_DEVICE_TABLE(of, mvsdio_dt_ids);
 
 static struct platform_driver mvsd_driver = {
 	.probe		= mvsd_probe,
-	.remove_new	= mvsd_remove,
+	.remove		= mvsd_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = mvsdio_dt_ids,
 	},
 };

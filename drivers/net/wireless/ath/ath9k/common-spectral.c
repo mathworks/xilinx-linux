@@ -59,7 +59,8 @@ ath_cmn_max_idx_verify_ht20_fft(u8 *sample_end, int bytes_read)
 
 	sample = sample_end - SPECTRAL_HT20_SAMPLE_LEN + 1;
 
-	max_index = spectral_max_index_ht20(mag_info->all_bins);
+	max_index = spectral_max_index(mag_info->all_bins,
+				       SPECTRAL_HT20_NUM_BINS);
 	max_magnitude = spectral_max_magnitude(mag_info->all_bins);
 
 	max_exp = mag_info->max_exp & 0xf;
@@ -71,7 +72,7 @@ ath_cmn_max_idx_verify_ht20_fft(u8 *sample_end, int bytes_read)
 	if (bytes_read < SPECTRAL_HT20_SAMPLE_LEN && max_index < 1)
 		return -1;
 
-	if ((sample[max_index] & 0xf8) != ((max_magnitude >> max_exp) & 0xf8))
+	if (sample[max_index] != (max_magnitude >> max_exp))
 		return -1;
 	else
 		return 0;
@@ -99,10 +100,12 @@ ath_cmn_max_idx_verify_ht20_40_fft(u8 *sample_end, int bytes_read)
 	sample = sample_end - SPECTRAL_HT20_40_SAMPLE_LEN + 1;
 
 	lower_mag = spectral_max_magnitude(mag_info->lower_bins);
-	lower_max_index = spectral_max_index_ht40(mag_info->lower_bins);
+	lower_max_index = spectral_max_index(mag_info->lower_bins,
+					     SPECTRAL_HT20_40_NUM_BINS);
 
 	upper_mag = spectral_max_magnitude(mag_info->upper_bins);
-	upper_max_index = spectral_max_index_ht40(mag_info->upper_bins);
+	upper_max_index = spectral_max_index(mag_info->upper_bins,
+					     SPECTRAL_HT20_40_NUM_BINS);
 
 	max_exp = mag_info->max_exp & 0xf;
 
@@ -114,10 +117,19 @@ ath_cmn_max_idx_verify_ht20_40_fft(u8 *sample_end, int bytes_read)
 	   ((upper_max_index < 1) || (lower_max_index < 1)))
 		return -1;
 
-	if (((sample[upper_max_index + dc_pos] & 0xf8) !=
-	     ((upper_mag >> max_exp) & 0xf8)) ||
-	    ((sample[lower_max_index] & 0xf8) !=
-	     ((lower_mag >> max_exp) & 0xf8)))
+	/* Some time hardware messes up the index and adds
+	 * the index of the middle point (dc_pos). Try to fix it.
+	 */
+	if ((upper_max_index - dc_pos > 0) &&
+	   (sample[upper_max_index] == (upper_mag >> max_exp)))
+		upper_max_index -= dc_pos;
+
+	if ((lower_max_index - dc_pos > 0) &&
+	   (sample[lower_max_index - dc_pos] == (lower_mag >> max_exp)))
+		lower_max_index -= dc_pos;
+
+	if ((sample[upper_max_index + dc_pos] != (upper_mag >> max_exp)) ||
+	   (sample[lower_max_index] != (lower_mag >> max_exp)))
 		return -1;
 	else
 		return 0;
@@ -157,7 +169,8 @@ ath_cmn_process_ht20_fft(struct ath_rx_status *rs,
 	magnitude = spectral_max_magnitude(mag_info->all_bins);
 	fft_sample_20.max_magnitude = __cpu_to_be16(magnitude);
 
-	max_index = spectral_max_index_ht20(mag_info->all_bins);
+	max_index = spectral_max_index(mag_info->all_bins,
+					SPECTRAL_HT20_NUM_BINS);
 	fft_sample_20.max_index = max_index;
 
 	bitmap_w = spectral_bitmap_weight(mag_info->all_bins);
@@ -175,8 +188,7 @@ ath_cmn_process_ht20_fft(struct ath_rx_status *rs,
 					magnitude >> max_exp,
 					max_index);
 
-	if ((fft_sample_20.data[max_index] & 0xf8) !=
-	    ((magnitude >> max_exp) & 0xf8)) {
+	if (fft_sample_20.data[max_index] != (magnitude >> max_exp)) {
 		ath_dbg(common, SPECTRAL_SCAN, "Magnitude mismatch !\n");
 		ret = -1;
 	}
@@ -290,10 +302,12 @@ ath_cmn_process_ht20_40_fft(struct ath_rx_status *rs,
 	upper_mag = spectral_max_magnitude(mag_info->upper_bins);
 	fft_sample_40.upper_max_magnitude = __cpu_to_be16(upper_mag);
 
-	lower_max_index = spectral_max_index_ht40(mag_info->lower_bins);
+	lower_max_index = spectral_max_index(mag_info->lower_bins,
+					SPECTRAL_HT20_40_NUM_BINS);
 	fft_sample_40.lower_max_index = lower_max_index;
 
-	upper_max_index = spectral_max_index_ht40(mag_info->upper_bins);
+	upper_max_index = spectral_max_index(mag_info->upper_bins,
+					SPECTRAL_HT20_40_NUM_BINS);
 	fft_sample_40.upper_max_index = upper_max_index;
 
 	lower_bitmap_w = spectral_bitmap_weight(mag_info->lower_bins);
@@ -317,13 +331,29 @@ ath_cmn_process_ht20_40_fft(struct ath_rx_status *rs,
 					upper_mag >> max_exp,
 					upper_max_index);
 
+	/* Some time hardware messes up the index and adds
+	 * the index of the middle point (dc_pos). Try to fix it.
+	 */
+	if ((upper_max_index - dc_pos > 0) &&
+	   (fft_sample_40.data[upper_max_index] == (upper_mag >> max_exp))) {
+		upper_max_index -= dc_pos;
+		fft_sample_40.upper_max_index = upper_max_index;
+	}
+
+	if ((lower_max_index - dc_pos > 0) &&
+	   (fft_sample_40.data[lower_max_index - dc_pos] ==
+	   (lower_mag >> max_exp))) {
+		lower_max_index -= dc_pos;
+		fft_sample_40.lower_max_index = lower_max_index;
+	}
+
 	/* Check if we got the expected magnitude values at
 	 * the expected bins
 	 */
-	if (((fft_sample_40.data[upper_max_index + dc_pos] & 0xf8)
-	    != ((upper_mag >> max_exp) & 0xf8)) ||
-	   ((fft_sample_40.data[lower_max_index] & 0xf8)
-	    != ((lower_mag >> max_exp) & 0xf8))) {
+	if ((fft_sample_40.data[upper_max_index + dc_pos]
+	    != (upper_mag >> max_exp)) ||
+	   (fft_sample_40.data[lower_max_index]
+	    != (lower_mag >> max_exp))) {
 		ath_dbg(common, SPECTRAL_SCAN, "Magnitude mismatch !\n");
 		ret = -1;
 	}
@@ -381,7 +411,7 @@ ath_cmn_process_ht20_40_fft(struct ath_rx_status *rs,
 
 		ath_dbg(common, SPECTRAL_SCAN,
 			"Calculated new upper max 0x%X at %i\n",
-			tmp_mag, fft_sample_40.upper_max_index);
+			tmp_mag, i);
 	} else
 	for (i = dc_pos; i < SPECTRAL_HT20_40_NUM_BINS; i++) {
 		if (fft_sample_40.data[i] == (upper_mag >> max_exp))
@@ -449,16 +479,14 @@ ath_cmn_is_fft_buf_full(struct ath_spec_scan_priv *spec_priv)
 {
 	int i = 0;
 	int ret = 0;
-	struct rchan_buf *buf;
 	struct rchan *rc = spec_priv->rfs_chan_spec_scan;
 
-	for_each_possible_cpu(i) {
-		if ((buf = *per_cpu_ptr(rc->buf, i))) {
-			ret += relay_buf_full(buf);
-		}
-	}
+	for_each_online_cpu(i)
+		ret += relay_buf_full(rc->buf[i]);
 
-	if (ret)
+	i = num_online_cpus();
+
+	if (ret == i)
 		return 1;
 	else
 		return 0;
@@ -471,7 +499,6 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 	u8 sample_buf[SPECTRAL_SAMPLE_MAX_LEN] = {0};
 	struct ath_hw *ah = spec_priv->ah;
 	struct ath_common *common = ath9k_hw_common(spec_priv->ah);
-	struct ath_softc *sc = (struct ath_softc *)common->priv;
 	u8 num_bins, *vdata = (u8 *)hdr;
 	struct ath_radar_info *radar_info;
 	int len = rs->rs_datalen;
@@ -500,9 +527,6 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 	radar_info = ((struct ath_radar_info *)&vdata[len]) - 1;
 	if (!(radar_info->pulse_bw_info & SPECTRAL_SCAN_BITMASK))
 		return 0;
-
-	if (!spec_priv->rfs_chan_spec_scan)
-		return 1;
 
 	/* Output buffers are full, no need to process anything
 	 * since there is no space to put the result anyway
@@ -620,13 +644,8 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 						       sample_buf, sample_len,
 						       sample_bytes);
 
-				ret = fft_handler(rs, spec_priv, sample_buf,
-						  tsf, freq, chan_type);
-
-				if (ret == 0)
-					RX_STAT_INC(sc, rx_spectral_sample_good);
-				else
-					RX_STAT_INC(sc, rx_spectral_sample_err);
+				fft_handler(rs, spec_priv, sample_buf,
+					    tsf, freq, chan_type);
 
 				memset(sample_buf, 0, SPECTRAL_SAMPLE_MAX_LEN);
 
@@ -641,11 +660,6 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 				ret = fft_handler(rs, spec_priv, sample_start,
 						  tsf, freq, chan_type);
 
-				if (ret == 0)
-					RX_STAT_INC(sc, rx_spectral_sample_good);
-				else
-					RX_STAT_INC(sc, rx_spectral_sample_err);
-
 				/* Mix the received bins to the /dev/random
 				 * pool
 				 */
@@ -656,7 +670,7 @@ int ath_cmn_process_fft(struct ath_spec_scan_priv *spec_priv, struct ieee80211_h
 			 * loop.
 			 */
 			if (len <= fft_len + 2)
-				return 1;
+				break;
 
 			sample_start = &vdata[i + 1];
 
@@ -724,9 +738,6 @@ void ath9k_cmn_spectral_scan_trigger(struct ath_common *common,
 		ath_err(common, "spectrum analyzer not implemented on this hardware\n");
 		return;
 	}
-
-	if (!spec_priv->spec_config.enabled)
-		return;
 
 	ath_ps_ops(common)->wakeup(common);
 	rxfilter = ath9k_hw_getrxfilter(ah);
@@ -855,11 +866,16 @@ static ssize_t write_file_spectral_short_repeat(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	ssize_t ret;
+	char buf[32];
+	ssize_t len;
 
-	ret = kstrtoul_from_user(user_buf, count, 0, &val);
-	if (ret)
-		return ret;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
 
 	if (val > 1)
 		return -EINVAL;
@@ -898,11 +914,17 @@ static ssize_t write_file_spectral_count(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	ssize_t ret;
+	char buf[32];
+	ssize_t len;
 
-	ret = kstrtoul_from_user(user_buf, count, 0, &val);
-	if (ret)
-		return ret;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
+
 	if (val > 255)
 		return -EINVAL;
 
@@ -940,11 +962,16 @@ static ssize_t write_file_spectral_period(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	ssize_t ret;
+	char buf[32];
+	ssize_t len;
 
-	ret = kstrtoul_from_user(user_buf, count, 0, &val);
-	if (ret)
-		return ret;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
 
 	if (val > 255)
 		return -EINVAL;
@@ -983,11 +1010,16 @@ static ssize_t write_file_spectral_fft_period(struct file *file,
 {
 	struct ath_spec_scan_priv *spec_priv = file->private_data;
 	unsigned long val;
-	ssize_t ret;
+	char buf[32];
+	ssize_t len;
 
-	ret = kstrtoul_from_user(user_buf, count, 0, &val);
-	if (ret)
-		return ret;
+	len = min(count, sizeof(buf) - 1);
+	if (copy_from_user(buf, user_buf, len))
+		return -EFAULT;
+
+	buf[len] = '\0';
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
 
 	if (val > 15)
 		return -EINVAL;
@@ -1018,9 +1050,6 @@ static struct dentry *create_buf_file_handler(const char *filename,
 
 	buf_file = debugfs_create_file(filename, mode, parent, buf,
 				       &relay_file_operations);
-	if (IS_ERR(buf_file))
-		return NULL;
-
 	*is_global = 1;
 	return buf_file;
 }
@@ -1032,7 +1061,7 @@ static int remove_buf_file_handler(struct dentry *dentry)
 	return 0;
 }
 
-static const struct rchan_callbacks rfs_spec_scan_cb = {
+static struct rchan_callbacks rfs_spec_scan_cb = {
 	.create_buf_file = create_buf_file_handler,
 	.remove_buf_file = remove_buf_file_handler,
 };
@@ -1043,7 +1072,7 @@ static const struct rchan_callbacks rfs_spec_scan_cb = {
 
 void ath9k_cmn_spectral_deinit_debug(struct ath_spec_scan_priv *spec_priv)
 {
-	if (spec_priv->rfs_chan_spec_scan) {
+	if (IS_ENABLED(CONFIG_ATH9K_DEBUGFS)) {
 		relay_close(spec_priv->rfs_chan_spec_scan);
 		spec_priv->rfs_chan_spec_scan = NULL;
 	}
@@ -1057,27 +1086,24 @@ void ath9k_cmn_spectral_init_debug(struct ath_spec_scan_priv *spec_priv,
 					    debugfs_phy,
 					    1024, 256, &rfs_spec_scan_cb,
 					    NULL);
-	if (!spec_priv->rfs_chan_spec_scan)
-		return;
-
 	debugfs_create_file("spectral_scan_ctl",
-			    0600,
+			    S_IRUSR | S_IWUSR,
 			    debugfs_phy, spec_priv,
 			    &fops_spec_scan_ctl);
 	debugfs_create_file("spectral_short_repeat",
-			    0600,
+			    S_IRUSR | S_IWUSR,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_short_repeat);
 	debugfs_create_file("spectral_count",
-			    0600,
+			    S_IRUSR | S_IWUSR,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_count);
 	debugfs_create_file("spectral_period",
-			    0600,
+			    S_IRUSR | S_IWUSR,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_period);
 	debugfs_create_file("spectral_fft_period",
-			    0600,
+			    S_IRUSR | S_IWUSR,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_fft_period);
 }

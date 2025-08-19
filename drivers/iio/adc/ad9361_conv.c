@@ -343,20 +343,29 @@ int ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 	st = iio_priv(conv->indio_dev);
 	version = axiadc_read(st, 0x4000);
 
-	addr = 0x4418;
+	/* Still there but implemented a bit different */
+	if (PCORE_VERSION_MAJOR(version) > 7)
+		addr = 0x4418;
+	else
+		addr = 0x4414;
 
 	for (chan = 0; chan < conv->chip_info->num_channels; chan++) {
 		reg = axiadc_read(st, addr + (chan) * 0x40);
 
-		if (enable) {
-			if (reg != 0x8) {
+		if (PCORE_VERSION_MAJOR(version) > 7) {
+			if (enable && reg != 0x8) {
 				conv->scratch_reg[chan] = reg;
 				reg = 0x8;
+			} else if (reg == 0x8) {
+				reg = conv->scratch_reg[chan];
 			}
-		} else if (reg == 0x8) {
-			reg = conv->scratch_reg[chan];
+		} else {
+		/* DAC_LB_ENB If set enables loopback of receive data */
+			if (enable)
+				reg |= BIT(1);
+			else
+				reg &= ~BIT(1);
 		}
-
 		axiadc_write(st, addr + (chan) * 0x40, reg);
 	}
 
@@ -368,7 +377,10 @@ static int ad9361_iodelay_set(struct axiadc_state *st, unsigned lane,
 			      unsigned val, bool tx)
 {
 	if (tx) {
-		axiadc_write(st, 0x4000 + ADI_REG_DELAY(lane), val);
+		if (PCORE_VERSION_MAJOR(st->pcore_version) > 8)
+			axiadc_write(st, 0x4000 + ADI_REG_DELAY(lane), val);
+		else
+			return -ENODEV;
 	} else {
 		axiadc_idelay_set(st, lane, val);
 	}
@@ -534,6 +546,7 @@ static int ad9361_dig_tune_tx(struct ad9361_rf_phy *phy, unsigned long max_freq,
 	u32 saved_dsel[4], saved_chan_ctrl6[4], saved_chan_ctrl0[4];
 	unsigned int chan, num_chan;
 	unsigned int hdl_dac_version;
+	u32 tmp, saved = 0;
 	int ret;
 
 	num_chan = ad9361_num_phy_chan(conv);
@@ -550,23 +563,38 @@ static int ad9361_dig_tune_tx(struct ad9361_rf_phy *phy, unsigned long max_freq,
 			ADI_ENABLE | ADI_IQCOR_ENB);
 		axiadc_set_pnsel(st, chan, ADC_PN_CUSTOM);
 		saved_chan_ctrl6[chan] = axiadc_read(st, 0x4414 + (chan) * 0x40);
-
-		saved_dsel[chan] = axiadc_read(st, 0x4418 + (chan) * 0x40);
-		axiadc_write(st, 0x4418 + (chan) * 0x40, 9);
-		axiadc_write(st, 0x4414 + (chan) * 0x40, 0); /* !IQCOR_ENB */
-		axiadc_write(st, 0x4044, 1);
+		if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
+			saved_dsel[chan] = axiadc_read(st, 0x4418 + (chan) * 0x40);
+			axiadc_write(st, 0x4418 + (chan) * 0x40, 9);
+			axiadc_write(st, 0x4414 + (chan) * 0x40, 0); /* !IQCOR_ENB */
+			axiadc_write(st, 0x4044, 1);
+		} else {
+			axiadc_write(st, 0x4414 + (chan) * 0x40, 1); /* DAC_PN_ENB */
+		}
+	}
+	if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8) {
+		saved = tmp = axiadc_read(st, 0x4048);
+		tmp &= ~0xF;
+		tmp |= 1;
+		axiadc_write(st, 0x4048, tmp);
 	}
 
 	ret = ad9361_dig_tune_delay(phy, max_freq, flags, true);
 	if (flags & DO_ODELAY)
 		ad9361_dig_tune_iodelay(phy, true);
 
+	if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8)
+		axiadc_write(st, 0x4048, saved);
+
 	for (chan = 0; chan < num_chan; chan++) {
 		axiadc_write(st, ADI_REG_CHAN_CNTRL(chan),
 			     saved_chan_ctrl0[chan]);
 		axiadc_set_pnsel(st, chan, ADC_PN9);
-		axiadc_write(st, 0x4418 + chan * 0x40, saved_dsel[chan]);
-		axiadc_write(st, 0x4044, 1);
+		if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
+			axiadc_write(st, 0x4418 + chan * 0x40,
+				     saved_dsel[chan]);
+			axiadc_write(st, 0x4044, 1);
+		}
 
 		axiadc_write(st, 0x4414 + chan * 0x40, saved_chan_ctrl6[chan]);
 	}
@@ -581,7 +609,7 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 	struct ad9361_dig_tune_data data;
 	struct axiadc_state *st;
 	bool restore = false;
-	int ret = 0, ret_mute = -1;
+	int ret = 0;
 
 	if (!conv)
 		return -ENODEV;
@@ -601,7 +629,7 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 		restore = true;
 	} else {
 		/* Mute TX, we don't want to transmit the PRBS */
-		ret_mute = ad9361_tx_mute(phy, 1);
+		ad9361_tx_mute(phy, 1);
 
 		ad9361_ensm_mode_disable_pinctrl(phy);
 
@@ -637,8 +665,7 @@ int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 	axiadc_write(st, ADI_REG_RSTN, ADI_MMCM_RSTN);
 	axiadc_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
-	if (ret_mute == 0)
-		ad9361_tx_mute(phy, 0);
+	ad9361_tx_mute(phy, 0);
 
 	return ret;
 }
@@ -650,14 +677,8 @@ static int ad9361_post_setup(struct iio_dev *indio_dev)
 	struct axiadc_converter *conv = iio_device_get_drvdata(indio_dev);
 	struct ad9361_rf_phy *phy = conv->phy;
 	bool rx2tx2 = ad9361_uses_rx2tx2(phy);
-	bool half_rate = ad9361_axi_half_dac_rate(phy);
 	unsigned tmp, num_chan, flags;
-	unsigned int skipmode;
 	int i, ret;
-
-	skipmode = ad9361_get_dig_interface_tune_skipmode(phy);
-	if (ad9361_bb_clk_change_dig_tune_en(phy))
-		ad9361_set_dig_interface_tune_skipmode(phy, SKIP_ALL);
 
 	num_chan = ad9361_num_phy_chan(conv);
 
@@ -667,19 +688,13 @@ static int ad9361_post_setup(struct iio_dev *indio_dev)
 
 	if (!rx2tx2) {
 		axiadc_write(st, 0x4048, tmp | BIT(5)); /* R1_MODE */
-		if (!half_rate)
-			axiadc_write(st, 0x404c,
+		axiadc_write(st, 0x404c,
 			     ad9361_uses_lvds_mode(phy) ? 1 : 0); /* RATE */
-		else
-			axiadc_write(st, 0x404c, 0);
 	} else {
 		tmp &= ~BIT(5);
 		axiadc_write(st, 0x4048, tmp);
-		if (!half_rate)
-			axiadc_write(st, 0x404c,
+		axiadc_write(st, 0x404c,
 			     ad9361_uses_lvds_mode(phy) ? 3 : 1); /* RATE */
-		else
-			axiadc_write(st, 0x404c, 1);
 	}
 
 	for (i = 0; i < num_chan; i++) {
@@ -694,22 +709,17 @@ static int ad9361_post_setup(struct iio_dev *indio_dev)
 
 	flags = 0;
 
-	ret = ad9361_dig_tune(phy, 61440000, axiadc_read(st, ADI_AXI_REG_ID) ?
-		flags | RESTORE_DEFAULT : flags);
+	ret = ad9361_dig_tune(phy, (axiadc_read(st, ADI_REG_ID)) ?
+		0 : 61440000, flags);
 	if (ret < 0)
 		goto error;
 
 	if (flags & (DO_IDELAY | DO_ODELAY)) {
-		ret = ad9361_dig_tune(phy, 61440000,
-			axiadc_read(st, ADI_AXI_REG_ID) ?
-			flags | RESTORE_DEFAULT | BE_VERBOSE :
-			flags | BE_VERBOSE);
+		ret = ad9361_dig_tune(phy, (axiadc_read(st, ADI_REG_ID)) ?
+			0 : 61440000, flags & BE_VERBOSE);
 		if (ret < 0)
 			goto error;
 	}
-
-	if (ad9361_bb_clk_change_dig_tune_en(phy))
-		ad9361_set_dig_interface_tune_skipmode(phy, skipmode);
 
 	ret = ad9361_set_trx_clock_chain_default(phy);
 

@@ -500,6 +500,11 @@ static inline int alchemy_gpio_is_valid(int gpio)
 		alchemy_gpio1_is_valid(gpio);
 }
 
+static inline int alchemy_gpio_cansleep(int gpio)
+{
+	return 0;	/* Alchemy never gets tired */
+}
+
 static inline int alchemy_gpio_to_irq(int gpio)
 {
 	return (gpio >= ALCHEMY_GPIO2_BASE) ?

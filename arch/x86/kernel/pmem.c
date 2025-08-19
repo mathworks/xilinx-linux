@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015, Christoph Hellwig.
  * Copyright (c) 2015, Intel Corporation.
@@ -7,7 +6,7 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 
-static int found(struct resource *res, void *data)
+static int found(u64 start, u64 end, void *data)
 {
 	return 1;
 }
@@ -27,11 +26,6 @@ static __init int register_e820_pmem(void)
 	 * simply here to trigger the module to load on demand.
 	 */
 	pdev = platform_device_alloc("e820_pmem", -1);
-
-	rc = platform_device_add(pdev);
-	if (rc)
-		platform_device_put(pdev);
-
-	return rc;
+	return platform_device_add(pdev);
 }
 device_initcall(register_e820_pmem);

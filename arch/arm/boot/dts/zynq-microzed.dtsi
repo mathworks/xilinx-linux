@@ -1,4 +1,4 @@
-#include "zynq.dtsi"
+/include/ "zynq.dtsi"
 
 / {
 	model = "Avnet MicroZed";
@@ -8,7 +8,7 @@
 	};
 
 	chosen {
-		stdout-path = "/amba@0/uart@E0001000";
+		linux,stdout-path = "/amba@0/uart@E0001000";
 	};
 
 	fpga_axi: fpga-axi@0 {

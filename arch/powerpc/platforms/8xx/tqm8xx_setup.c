@@ -24,6 +24,8 @@
 #include <linux/device.h>
 #include <linux/delay.h>
 
+#include <linux/fs_enet_pd.h>
+#include <linux/fs_uart_pd.h>
 #include <linux/fsl_devices.h>
 #include <linux/mii.h>
 #include <linux/of_fdt.h>
@@ -37,10 +39,10 @@
 #include <asm/time.h>
 #include <asm/8xx_immap.h>
 #include <asm/cpm1.h>
+#include <asm/fs_pd.h>
 #include <asm/udbg.h>
 
 #include "mpc8xx.h"
-#include "pic.h"
 
 struct cpm_pin {
 	int port, pin, flags;
@@ -102,9 +104,6 @@ static void __init init_ioports(void)
 	if (dnode == NULL)
 		return;
 	prop = of_find_property(dnode, "ethernet1", &len);
-
-	of_node_put(dnode);
-
 	if (prop == NULL)
 		return;
 
@@ -116,6 +115,11 @@ static void __init tqm8xx_setup_arch(void)
 {
 	cpm_reset();
 	init_ioports();
+}
+
+static int __init tqm8xx_probe(void)
+{
+	return of_machine_is_compatible("tqc,tqm8xx");
 }
 
 static const struct of_device_id of_bus_ids[] __initconst = {
@@ -136,9 +140,9 @@ machine_device_initcall(tqm8xx, declare_of_platform_devices);
 
 define_machine(tqm8xx) {
 	.name			= "TQM8xx",
-	.compatible		= "tqc,tqm8xx",
+	.probe			= tqm8xx_probe,
 	.setup_arch		= tqm8xx_setup_arch,
-	.init_IRQ		= mpc8xx_pic_init,
+	.init_IRQ		= mpc8xx_pics_init,
 	.get_irq		= mpc8xx_get_irq,
 	.restart		= mpc8xx_restart,
 	.calibrate_decr		= mpc8xx_calibrate_decr,

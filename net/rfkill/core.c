@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2006 - 2007 Ivo van Doorn
  * Copyright (C) 2007 Dmitry Torokhov
  * Copyright 2009 Johannes Berg <johannes@sipsolutions.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/kernel.h>
@@ -40,7 +52,6 @@ struct rfkill {
 	enum rfkill_type	type;
 
 	unsigned long		state;
-	unsigned long		hard_block_reasons;
 
 	u32			idx;
 
@@ -48,7 +59,6 @@ struct rfkill {
 	bool			persistent;
 	bool			polling_paused;
 	bool			suspended;
-	bool			need_sync;
 
 	const struct rfkill_ops	*ops;
 	void			*data;
@@ -70,7 +80,7 @@ struct rfkill {
 
 struct rfkill_int_event {
 	struct list_head	list;
-	struct rfkill_event_ext	ev;
+	struct rfkill_event	ev;
 };
 
 struct rfkill_data {
@@ -79,7 +89,6 @@ struct rfkill_data {
 	struct mutex		mtx;
 	wait_queue_head_t	read_wait;
 	bool			input_handler;
-	u8			max_size;
 };
 
 
@@ -132,15 +141,13 @@ static void rfkill_led_trigger_event(struct rfkill *rfkill)
 		led_trigger_event(trigger, LED_FULL);
 }
 
-static int rfkill_led_trigger_activate(struct led_classdev *led)
+static void rfkill_led_trigger_activate(struct led_classdev *led)
 {
 	struct rfkill *rfkill;
 
 	rfkill = container_of(led->trigger, struct rfkill, led_trigger);
 
 	rfkill_led_trigger_event(rfkill);
-
-	return 0;
 }
 
 const char *rfkill_get_led_trigger_name(struct rfkill *rfkill)
@@ -169,64 +176,6 @@ static void rfkill_led_trigger_unregister(struct rfkill *rfkill)
 {
 	led_trigger_unregister(&rfkill->led_trigger);
 }
-
-static struct led_trigger rfkill_any_led_trigger;
-static struct led_trigger rfkill_none_led_trigger;
-static struct work_struct rfkill_global_led_trigger_work;
-
-static void rfkill_global_led_trigger_worker(struct work_struct *work)
-{
-	enum led_brightness brightness = LED_OFF;
-	struct rfkill *rfkill;
-
-	mutex_lock(&rfkill_global_mutex);
-	list_for_each_entry(rfkill, &rfkill_list, node) {
-		if (!(rfkill->state & RFKILL_BLOCK_ANY)) {
-			brightness = LED_FULL;
-			break;
-		}
-	}
-	mutex_unlock(&rfkill_global_mutex);
-
-	led_trigger_event(&rfkill_any_led_trigger, brightness);
-	led_trigger_event(&rfkill_none_led_trigger,
-			  brightness == LED_OFF ? LED_FULL : LED_OFF);
-}
-
-static void rfkill_global_led_trigger_event(void)
-{
-	schedule_work(&rfkill_global_led_trigger_work);
-}
-
-static int rfkill_global_led_trigger_register(void)
-{
-	int ret;
-
-	INIT_WORK(&rfkill_global_led_trigger_work,
-			rfkill_global_led_trigger_worker);
-
-	rfkill_any_led_trigger.name = "rfkill-any";
-	ret = led_trigger_register(&rfkill_any_led_trigger);
-	if (ret)
-		return ret;
-
-	rfkill_none_led_trigger.name = "rfkill-none";
-	ret = led_trigger_register(&rfkill_none_led_trigger);
-	if (ret)
-		led_trigger_unregister(&rfkill_any_led_trigger);
-	else
-		/* Delay activation until all global triggers are registered */
-		rfkill_global_led_trigger_event();
-
-	return ret;
-}
-
-static void rfkill_global_led_trigger_unregister(void)
-{
-	led_trigger_unregister(&rfkill_none_led_trigger);
-	led_trigger_unregister(&rfkill_any_led_trigger);
-	cancel_work_sync(&rfkill_global_led_trigger_work);
-}
 #else
 static void rfkill_led_trigger_event(struct rfkill *rfkill)
 {
@@ -240,23 +189,9 @@ static inline int rfkill_led_trigger_register(struct rfkill *rfkill)
 static inline void rfkill_led_trigger_unregister(struct rfkill *rfkill)
 {
 }
-
-static void rfkill_global_led_trigger_event(void)
-{
-}
-
-static int rfkill_global_led_trigger_register(void)
-{
-	return 0;
-}
-
-static void rfkill_global_led_trigger_unregister(void)
-{
-}
 #endif /* CONFIG_RFKILL_LEDS */
 
-static void rfkill_fill_event(struct rfkill_event_ext *ev,
-			      struct rfkill *rfkill,
+static void rfkill_fill_event(struct rfkill_event *ev, struct rfkill *rfkill,
 			      enum rfkill_operation op)
 {
 	unsigned long flags;
@@ -269,7 +204,6 @@ static void rfkill_fill_event(struct rfkill_event_ext *ev,
 	ev->hard = !!(rfkill->state & RFKILL_BLOCK_HW);
 	ev->soft = !!(rfkill->state & (RFKILL_BLOCK_SW |
 					RFKILL_BLOCK_SW_PREV));
-	ev->hard_block_reasons = rfkill->hard_block_reasons;
 	spin_unlock_irqrestore(&rfkill->lock, flags);
 }
 
@@ -363,21 +297,9 @@ static void rfkill_set_block(struct rfkill *rfkill, bool blocked)
 	spin_unlock_irqrestore(&rfkill->lock, flags);
 
 	rfkill_led_trigger_event(rfkill);
-	rfkill_global_led_trigger_event();
 
 	if (prev != curr)
 		rfkill_event(rfkill);
-}
-
-static void rfkill_sync(struct rfkill *rfkill)
-{
-	lockdep_assert_held(&rfkill_global_mutex);
-
-	if (!rfkill->need_sync)
-		return;
-
-	rfkill_set_block(rfkill, rfkill_global_states[rfkill->type].cur);
-	rfkill->need_sync = false;
 }
 
 static void rfkill_update_global_state(enum rfkill_type type, bool blocked)
@@ -514,8 +436,8 @@ void rfkill_remove_epo_lock(void)
 /**
  * rfkill_is_epo_lock_active - returns true EPO is active
  *
- * Returns 0 (false) if there is NOT an active EPO condition,
- * and 1 (true) if there is an active EPO condition, which
+ * Returns 0 (false) if there is NOT an active EPO contidion,
+ * and 1 (true) if there is an active EPO contition, which
  * locks all radios in one of the BLOCKED states.
  *
  * Can be called in atomic context.
@@ -538,41 +460,33 @@ bool rfkill_get_global_sw_state(const enum rfkill_type type)
 }
 #endif
 
-bool rfkill_set_hw_state_reason(struct rfkill *rfkill,
-				bool blocked, unsigned long reason)
+bool rfkill_set_hw_state(struct rfkill *rfkill, bool blocked)
 {
 	unsigned long flags;
 	bool ret, prev;
 
 	BUG_ON(!rfkill);
 
-	if (WARN(reason &
-	    ~(RFKILL_HARD_BLOCK_SIGNAL | RFKILL_HARD_BLOCK_NOT_OWNER),
-	    "hw_state reason not supported: 0x%lx", reason))
-		return blocked;
-
 	spin_lock_irqsave(&rfkill->lock, flags);
-	prev = !!(rfkill->hard_block_reasons & reason);
-	if (blocked) {
+	prev = !!(rfkill->state & RFKILL_BLOCK_HW);
+	if (blocked)
 		rfkill->state |= RFKILL_BLOCK_HW;
-		rfkill->hard_block_reasons |= reason;
-	} else {
-		rfkill->hard_block_reasons &= ~reason;
-		if (!rfkill->hard_block_reasons)
-			rfkill->state &= ~RFKILL_BLOCK_HW;
-	}
+	else
+		rfkill->state &= ~RFKILL_BLOCK_HW;
 	ret = !!(rfkill->state & RFKILL_BLOCK_ANY);
 	spin_unlock_irqrestore(&rfkill->lock, flags);
 
 	rfkill_led_trigger_event(rfkill);
-	rfkill_global_led_trigger_event();
 
-	if (rfkill->registered && prev != blocked)
+	if (!rfkill->registered)
+		return ret;
+
+	if (prev != blocked)
 		schedule_work(&rfkill->uevent_work);
 
 	return ret;
 }
-EXPORT_SYMBOL(rfkill_set_hw_state_reason);
+EXPORT_SYMBOL(rfkill_set_hw_state);
 
 static void __rfkill_set_sw_state(struct rfkill *rfkill, bool blocked)
 {
@@ -609,7 +523,6 @@ bool rfkill_set_sw_state(struct rfkill *rfkill, bool blocked)
 		schedule_work(&rfkill->uevent_work);
 
 	rfkill_led_trigger_event(rfkill);
-	rfkill_global_led_trigger_event();
 
 	return blocked;
 }
@@ -659,7 +572,6 @@ void rfkill_set_states(struct rfkill *rfkill, bool sw, bool hw)
 			schedule_work(&rfkill->uevent_work);
 
 		rfkill_led_trigger_event(rfkill);
-		rfkill_global_led_trigger_event();
 	}
 }
 EXPORT_SYMBOL(rfkill_set_states);
@@ -697,7 +609,7 @@ static ssize_t name_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	return sysfs_emit(buf, "%s\n", rfkill->name);
+	return sprintf(buf, "%s\n", rfkill->name);
 }
 static DEVICE_ATTR_RO(name);
 
@@ -706,7 +618,7 @@ static ssize_t type_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	return sysfs_emit(buf, "%s\n", rfkill_types[rfkill->type]);
+	return sprintf(buf, "%s\n", rfkill_types[rfkill->type]);
 }
 static DEVICE_ATTR_RO(type);
 
@@ -715,7 +627,7 @@ static ssize_t index_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	return sysfs_emit(buf, "%d\n", rfkill->idx);
+	return sprintf(buf, "%d\n", rfkill->idx);
 }
 static DEVICE_ATTR_RO(index);
 
@@ -724,7 +636,7 @@ static ssize_t persistent_show(struct device *dev,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	return sysfs_emit(buf, "%d\n", rfkill->persistent);
+	return sprintf(buf, "%d\n", rfkill->persistent);
 }
 static DEVICE_ATTR_RO(persistent);
 
@@ -733,7 +645,7 @@ static ssize_t hard_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	return sysfs_emit(buf, "%d\n", (rfkill->state & RFKILL_BLOCK_HW) ? 1 : 0);
+	return sprintf(buf, "%d\n", (rfkill->state & RFKILL_BLOCK_HW) ? 1 : 0 );
 }
 static DEVICE_ATTR_RO(hard);
 
@@ -742,11 +654,7 @@ static ssize_t soft_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
-	mutex_unlock(&rfkill_global_mutex);
-
-	return sysfs_emit(buf, "%d\n", (rfkill->state & RFKILL_BLOCK_SW) ? 1 : 0);
+	return sprintf(buf, "%d\n", (rfkill->state & RFKILL_BLOCK_SW) ? 1 : 0 );
 }
 
 static ssize_t soft_store(struct device *dev, struct device_attribute *attr,
@@ -767,23 +675,12 @@ static ssize_t soft_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
 	rfkill_set_block(rfkill, state);
 	mutex_unlock(&rfkill_global_mutex);
 
 	return count;
 }
 static DEVICE_ATTR_RW(soft);
-
-static ssize_t hard_block_reasons_show(struct device *dev,
-				       struct device_attribute *attr,
-				       char *buf)
-{
-	struct rfkill *rfkill = to_rfkill(dev);
-
-	return sysfs_emit(buf, "0x%lx\n", rfkill->hard_block_reasons);
-}
-static DEVICE_ATTR_RO(hard_block_reasons);
 
 static u8 user_state_from_blocked(unsigned long state)
 {
@@ -800,11 +697,7 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
-	mutex_unlock(&rfkill_global_mutex);
-
-	return sysfs_emit(buf, "%d\n", user_state_from_blocked(rfkill->state));
+	return sprintf(buf, "%d\n", user_state_from_blocked(rfkill->state));
 }
 
 static ssize_t state_store(struct device *dev, struct device_attribute *attr,
@@ -826,7 +719,6 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
 	rfkill_set_block(rfkill, state == RFKILL_USER_STATE_SOFT_BLOCKED);
 	mutex_unlock(&rfkill_global_mutex);
 
@@ -842,7 +734,6 @@ static struct attribute *rfkill_dev_attrs[] = {
 	&dev_attr_state.attr,
 	&dev_attr_soft.attr,
 	&dev_attr_hard.attr,
-	&dev_attr_hard_block_reasons.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(rfkill_dev);
@@ -854,11 +745,10 @@ static void rfkill_release(struct device *dev)
 	kfree(rfkill);
 }
 
-static int rfkill_dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int rfkill_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 	unsigned long flags;
-	unsigned long reasons;
 	u32 state;
 	int error;
 
@@ -871,13 +761,10 @@ static int rfkill_dev_uevent(const struct device *dev, struct kobj_uevent_env *e
 		return error;
 	spin_lock_irqsave(&rfkill->lock, flags);
 	state = rfkill->state;
-	reasons = rfkill->hard_block_reasons;
 	spin_unlock_irqrestore(&rfkill->lock, flags);
 	error = add_uevent_var(env, "RFKILL_STATE=%d",
 			       user_state_from_blocked(state));
-	if (error)
-		return error;
-	return add_uevent_var(env, "RFKILL_HW_BLOCK_REASON=0x%lx", reasons);
+	return error;
 }
 
 void rfkill_pause_polling(struct rfkill *rfkill)
@@ -927,9 +814,6 @@ static int rfkill_resume(struct device *dev)
 
 	rfkill->suspended = false;
 
-	if (!rfkill->registered)
-		return 0;
-
 	if (!rfkill->persistent) {
 		cur = !!(rfkill->state & RFKILL_BLOCK_SW);
 		rfkill_set_block(rfkill, cur);
@@ -969,18 +853,6 @@ bool rfkill_blocked(struct rfkill *rfkill)
 }
 EXPORT_SYMBOL(rfkill_blocked);
 
-bool rfkill_soft_blocked(struct rfkill *rfkill)
-{
-	unsigned long flags;
-	u32 state;
-
-	spin_lock_irqsave(&rfkill->lock, flags);
-	state = rfkill->state;
-	spin_unlock_irqrestore(&rfkill->lock, flags);
-
-	return !!(state & RFKILL_BLOCK_SW);
-}
-EXPORT_SYMBOL(rfkill_soft_blocked);
 
 struct rfkill * __must_check rfkill_alloc(const char *name,
 					  struct device *parent,
@@ -1054,23 +926,24 @@ static void rfkill_uevent_work(struct work_struct *work)
 
 static void rfkill_sync_work(struct work_struct *work)
 {
-	struct rfkill *rfkill = container_of(work, struct rfkill, sync_work);
+	struct rfkill *rfkill;
+	bool cur;
+
+	rfkill = container_of(work, struct rfkill, sync_work);
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
+	cur = rfkill_global_states[rfkill->type].cur;
+	rfkill_set_block(rfkill, cur);
 	mutex_unlock(&rfkill_global_mutex);
 }
 
 int __must_check rfkill_register(struct rfkill *rfkill)
 {
 	static unsigned long rfkill_no;
-	struct device *dev;
+	struct device *dev = &rfkill->dev;
 	int error;
 
-	if (!rfkill)
-		return -EINVAL;
-
-	dev = &rfkill->dev;
+	BUG_ON(!rfkill);
 
 	mutex_lock(&rfkill_global_mutex);
 
@@ -1105,7 +978,6 @@ int __must_check rfkill_register(struct rfkill *rfkill)
 			round_jiffies_relative(POLL_INTERVAL));
 
 	if (!rfkill->persistent || rfkill_epo_lock_active) {
-		rfkill->need_sync = true;
 		schedule_work(&rfkill->sync_work);
 	} else {
 #ifdef CONFIG_RFKILL_INPUT
@@ -1116,7 +988,6 @@ int __must_check rfkill_register(struct rfkill *rfkill)
 #endif
 	}
 
-	rfkill_global_led_trigger_event();
 	rfkill_send_events(rfkill, RFKILL_OP_ADD);
 
 	mutex_unlock(&rfkill_global_mutex);
@@ -1149,7 +1020,6 @@ void rfkill_unregister(struct rfkill *rfkill)
 	mutex_lock(&rfkill_global_mutex);
 	rfkill_send_events(rfkill, RFKILL_OP_DEL);
 	list_del_init(&rfkill->node);
-	rfkill_global_led_trigger_event();
 	mutex_unlock(&rfkill_global_mutex);
 
 	rfkill_led_trigger_unregister(rfkill);
@@ -1173,13 +1043,12 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 	if (!data)
 		return -ENOMEM;
 
-	data->max_size = RFKILL_EVENT_SIZE_V1;
-
 	INIT_LIST_HEAD(&data->events);
 	mutex_init(&data->mtx);
 	init_waitqueue_head(&data->read_wait);
 
 	mutex_lock(&rfkill_global_mutex);
+	mutex_lock(&data->mtx);
 	/*
 	 * start getting events from elsewhere but hold mtx to get
 	 * startup events added first
@@ -1189,20 +1058,19 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 		ev = kzalloc(sizeof(*ev), GFP_KERNEL);
 		if (!ev)
 			goto free;
-		rfkill_sync(rfkill);
 		rfkill_fill_event(&ev->ev, rfkill, RFKILL_OP_ADD);
-		mutex_lock(&data->mtx);
 		list_add_tail(&ev->list, &data->events);
-		mutex_unlock(&data->mtx);
 	}
 	list_add(&data->list, &rfkill_fds);
+	mutex_unlock(&data->mtx);
 	mutex_unlock(&rfkill_global_mutex);
 
 	file->private_data = data;
 
-	return stream_open(inode, file);
+	return nonseekable_open(inode, file);
 
  free:
+	mutex_unlock(&data->mtx);
 	mutex_unlock(&rfkill_global_mutex);
 	mutex_destroy(&data->mtx);
 	list_for_each_entry_safe(ev, tmp, &data->events, list)
@@ -1211,16 +1079,16 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 	return -ENOMEM;
 }
 
-static __poll_t rfkill_fop_poll(struct file *file, poll_table *wait)
+static unsigned int rfkill_fop_poll(struct file *file, poll_table *wait)
 {
 	struct rfkill_data *data = file->private_data;
-	__poll_t res = EPOLLOUT | EPOLLWRNORM;
+	unsigned int res = POLLOUT | POLLWRNORM;
 
 	poll_wait(file, &data->read_wait, wait);
 
 	mutex_lock(&data->mtx);
 	if (!list_empty(&data->events))
-		res = EPOLLIN | EPOLLRDNORM;
+		res = POLLIN | POLLRDNORM;
 	mutex_unlock(&data->mtx);
 
 	return res;
@@ -1257,7 +1125,6 @@ static ssize_t rfkill_fop_read(struct file *file, char __user *buf,
 				list);
 
 	sz = min_t(unsigned long, sizeof(ev->ev), count);
-	sz = min_t(unsigned long, sz, data->max_size);
 	ret = sz;
 	if (copy_to_user(buf, &ev->ev, sz))
 		ret = -EFAULT;
@@ -1272,9 +1139,8 @@ static ssize_t rfkill_fop_read(struct file *file, char __user *buf,
 static ssize_t rfkill_fop_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *pos)
 {
-	struct rfkill_data *data = file->private_data;
 	struct rfkill *rfkill;
-	struct rfkill_event_ext ev;
+	struct rfkill_event ev;
 	int ret;
 
 	/* we don't need the 'hard' variable but accept it */
@@ -1287,7 +1153,6 @@ static ssize_t rfkill_fop_write(struct file *file, const char __user *buf,
 	 * our API version even in a write() call, if it cares.
 	 */
 	count = min(count, sizeof(ev));
-	count = min_t(size_t, count, data->max_size);
 	if (copy_from_user(&ev, buf, count))
 		return -EFAULT;
 
@@ -1347,47 +1212,31 @@ static int rfkill_fop_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+#ifdef CONFIG_RFKILL_INPUT
 static long rfkill_fop_ioctl(struct file *file, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct rfkill_data *data = file->private_data;
-	int ret = -ENOSYS;
-	u32 size;
 
 	if (_IOC_TYPE(cmd) != RFKILL_IOC_MAGIC)
 		return -ENOSYS;
 
+	if (_IOC_NR(cmd) != RFKILL_IOC_NOINPUT)
+		return -ENOSYS;
+
 	mutex_lock(&data->mtx);
-	switch (_IOC_NR(cmd)) {
-#ifdef CONFIG_RFKILL_INPUT
-	case RFKILL_IOC_NOINPUT:
-		if (!data->input_handler) {
-			if (atomic_inc_return(&rfkill_input_disabled) == 1)
-				printk(KERN_DEBUG "rfkill: input handler disabled\n");
-			data->input_handler = true;
-		}
-		ret = 0;
-		break;
-#endif
-	case RFKILL_IOC_MAX_SIZE:
-		if (get_user(size, (__u32 __user *)arg)) {
-			ret = -EFAULT;
-			break;
-		}
-		if (size < RFKILL_EVENT_SIZE_V1 || size > U8_MAX) {
-			ret = -EINVAL;
-			break;
-		}
-		data->max_size = size;
-		ret = 0;
-		break;
-	default:
-		break;
+
+	if (!data->input_handler) {
+		if (atomic_inc_return(&rfkill_input_disabled) == 1)
+			printk(KERN_DEBUG "rfkill: input handler disabled\n");
+		data->input_handler = true;
 	}
+
 	mutex_unlock(&data->mtx);
 
-	return ret;
+	return 0;
 }
+#endif
 
 static const struct file_operations rfkill_fops = {
 	.owner		= THIS_MODULE,
@@ -1396,17 +1245,17 @@ static const struct file_operations rfkill_fops = {
 	.write		= rfkill_fop_write,
 	.poll		= rfkill_fop_poll,
 	.release	= rfkill_fop_release,
+#ifdef CONFIG_RFKILL_INPUT
 	.unlocked_ioctl	= rfkill_fop_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
+	.compat_ioctl	= rfkill_fop_ioctl,
+#endif
 	.llseek		= no_llseek,
 };
 
-#define RFKILL_NAME "rfkill"
-
 static struct miscdevice rfkill_miscdev = {
+	.name	= "rfkill",
 	.fops	= &rfkill_fops,
-	.name	= RFKILL_NAME,
-	.minor	= RFKILL_MINOR,
+	.minor	= MISC_DYNAMIC_MINOR,
 };
 
 static int __init rfkill_init(void)
@@ -1417,33 +1266,24 @@ static int __init rfkill_init(void)
 
 	error = class_register(&rfkill_class);
 	if (error)
-		goto error_class;
+		goto out;
 
 	error = misc_register(&rfkill_miscdev);
-	if (error)
-		goto error_misc;
-
-	error = rfkill_global_led_trigger_register();
-	if (error)
-		goto error_led_trigger;
+	if (error) {
+		class_unregister(&rfkill_class);
+		goto out;
+	}
 
 #ifdef CONFIG_RFKILL_INPUT
 	error = rfkill_handler_init();
-	if (error)
-		goto error_input;
+	if (error) {
+		misc_deregister(&rfkill_miscdev);
+		class_unregister(&rfkill_class);
+		goto out;
+	}
 #endif
 
-	return 0;
-
-#ifdef CONFIG_RFKILL_INPUT
-error_input:
-	rfkill_global_led_trigger_unregister();
-#endif
-error_led_trigger:
-	misc_deregister(&rfkill_miscdev);
-error_misc:
-	class_unregister(&rfkill_class);
-error_class:
+ out:
 	return error;
 }
 subsys_initcall(rfkill_init);
@@ -1453,11 +1293,7 @@ static void __exit rfkill_exit(void)
 #ifdef CONFIG_RFKILL_INPUT
 	rfkill_handler_exit();
 #endif
-	rfkill_global_led_trigger_unregister();
 	misc_deregister(&rfkill_miscdev);
 	class_unregister(&rfkill_class);
 }
 module_exit(rfkill_exit);
-
-MODULE_ALIAS_MISCDEV(RFKILL_MINOR);
-MODULE_ALIAS("devname:" RFKILL_NAME);
